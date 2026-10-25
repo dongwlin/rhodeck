@@ -142,6 +142,10 @@ func resolveAndRegister(lib *Library, reg symbolRegistrar) (*APITable, error) {
 		addrs[i] = addr
 		resolved[i] = true
 		if spec.Policy == optional {
+			// 置位集合由 symbols_static_test.go 的
+			// TestCapabilitySwitchMatchesOptionalSpecs 与 optional
+			// 条目交叉钉死;新增 optional 符号必须同步本 switch 与
+			// 该测试的能力字段映射,漏改即静态测试失败。
 			switch spec.Name {
 			case "AsstCreate":
 				caps.create = true

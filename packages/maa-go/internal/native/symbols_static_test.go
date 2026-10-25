@@ -13,7 +13,9 @@
 //     返回值在规范化器或白名单处直接失败;
 //   - symbolSpecs 的冻结形式(单 return 字面量、四具名 key、
 //     &table.<字段> 目标、无任何调用)、exclusions 的 4 条排除、
-//     两个策略/平台 const 块与两个 callback 签名分别核验。
+//     两个策略/平台 const 块与两个 callback 签名分别核验;
+//   - register.go 中能力置位 switch 的 case 集合与期望表的 optional
+//     条目交叉钉死,新增 optional 符号漏改置位逻辑即测试失败。
 
 package native
 
@@ -87,6 +89,17 @@ var expectedCallbackSigs = []struct {
 }{
 	{"unixCallback", "func(msg int32, detailsJSON *byte, customArg uintptr)"},
 	{"windowsCallback", "func(msg int32, detailsJSON *byte, customArg uintptr) uintptr"},
+}
+
+// expectedCapabilityFields 是 optional 符号到 Capabilities 字段的
+// 手写内联映射:键集合必须与期望表中 policy 为 optional 的条目
+// (Asst + 字段名)一一对应,值是能力置位 switch 写入的字段名。
+// 新增 optional 符号时,期望表、本表与 register.go 的 switch 三处
+// 必须同步修改,任何一处遗漏都会在交叉校验中失败。
+var expectedCapabilityFields = map[string]string{
+	"AsstCreate":            "create",
+	"AsstGetImageBgr":       "imageBgr",
+	"AsstAsyncAttachWindow": "asyncAttachWindow",
 }
 
 // staticFiles 是被静态自检的三个源文件,均不允许平台条件。
@@ -685,6 +698,106 @@ func TestCallbackTypeSignatures(t *testing.T) {
 				t.Errorf("type %s 签名 = %q, want %q", want.typeName, got, expect)
 			}
 		})
+	}
+}
+
+// TestCapabilitySwitchMatchesOptionalSpecs 把 register.go 中能力置位
+// switch 与 optional 符号清单钉死为静态交叉校验。若未来新增 optional
+// 符号而漏改置位逻辑,符号会照常注册但能力恒关、行为用例全部通过,
+// 本测试以「两处独立期望的集合相等」堵住该漂移。断言:
+//
+//   - expectedCapabilityFields 的键集合与期望表中 optional 条目
+//     ("Asst"+字段名)完全相等;
+//   - register.go 恰有一个对 spec.Name 的 switch,case 集合与该映射
+//     完全相等,无 default 分支;
+//   - 每个 case 的函数体恰为 caps.<字段> = true 一条赋值,写入字段
+//     与映射一致。
+func TestCapabilitySwitchMatchesOptionalSpecs(t *testing.T) {
+	optional := map[string]bool{}
+	for _, want := range expectedAPIFields {
+		if want.policy == "optional" {
+			optional["Asst"+want.field] = true
+		}
+	}
+	if len(expectedCapabilityFields) != len(optional) {
+		t.Fatalf("能力字段期望映射 %d 项与期望表 optional 条目 %d 项数量不等",
+			len(expectedCapabilityFields), len(optional))
+	}
+	for name := range expectedCapabilityFields {
+		if !optional[name] {
+			t.Errorf("能力字段映射中的 %q 不是期望表中的 optional 条目", name)
+		}
+	}
+	for name := range optional {
+		if _, ok := expectedCapabilityFields[name]; !ok {
+			t.Errorf("optional 条目 %q 缺少能力字段映射", name)
+		}
+	}
+
+	file := parsePackageFile(t, "register.go")
+	var switches []*ast.SwitchStmt
+	ast.Inspect(file, func(n ast.Node) bool {
+		if sw, ok := n.(*ast.SwitchStmt); ok {
+			if sel, ok := sw.Tag.(*ast.SelectorExpr); ok && isIdent(sel.X, "spec") && sel.Sel.Name == "Name" {
+				switches = append(switches, sw)
+			}
+		}
+		return true
+	})
+	if len(switches) != 1 {
+		t.Fatalf("register.go 应恰有一个对 spec.Name 的能力置位 switch, got %d 个", len(switches))
+	}
+
+	got := map[string]string{}
+	for _, stmt := range switches[0].Body.List {
+		clause, ok := stmt.(*ast.CaseClause)
+		if !ok {
+			t.Fatalf("switch 体内出现非 case 语句 %T", stmt)
+		}
+		if clause.List == nil {
+			t.Fatal("能力置位 switch 不得有 default 分支, case 集合应与 optional 清单完全相等")
+		}
+		if len(clause.List) != 1 {
+			t.Fatalf("每个 case 恰好一个符号字面量, got %d 个", len(clause.List))
+		}
+		lit, ok := clause.List[0].(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			t.Fatalf("case 值必须是字符串字面量, got %T", clause.List[0])
+		}
+		symbol, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			t.Fatalf("case 值 %s 不是合法字符串字面量: %v", lit.Value, err)
+		}
+		if _, dup := got[symbol]; dup {
+			t.Errorf("case %s 重复出现", symbol)
+		}
+		if len(clause.Body) != 1 {
+			t.Fatalf("case %s 的函数体必须恰为一条赋值, got %d 条", symbol, len(clause.Body))
+		}
+		assign, ok := clause.Body[0].(*ast.AssignStmt)
+		if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 || !isIdent(assign.Rhs[0], "true") {
+			t.Fatalf("case %s 的函数体必须是 caps.<字段> = true 一条赋值", symbol)
+		}
+		sel, ok := assign.Lhs[0].(*ast.SelectorExpr)
+		if !ok || !isIdent(sel.X, "caps") {
+			t.Fatalf("case %s 的赋值目标必须是 caps.<字段>", symbol)
+		}
+		got[symbol] = sel.Sel.Name
+	}
+	for symbol, field := range expectedCapabilityFields {
+		actual, ok := got[symbol]
+		if !ok {
+			t.Errorf("能力置位 switch 缺少 optional 符号 %q 的 case", symbol)
+			continue
+		}
+		if actual != field {
+			t.Errorf("case %q 置位字段 = %q, want %q", symbol, actual, field)
+		}
+	}
+	for symbol := range got {
+		if _, ok := expectedCapabilityFields[symbol]; !ok {
+			t.Errorf("能力置位 switch 出现 optional 清单之外的符号 %q", symbol)
+		}
 	}
 }
 
