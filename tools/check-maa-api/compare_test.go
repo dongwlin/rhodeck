@@ -1,6 +1,7 @@
 // compare_test.go 校验宽度级 C↔Go 逐参数语义比对与 callback 平台适
 // 配比对:冻结参数名映射与类型映射表逐条钉死(接受侧含 byte 别名,
-// 拒绝侧含设计 §9.1.2 的全部宽度/指针/角色向量);正例以真实生产
+// 拒绝侧含设计 §9.1.2 的全部宽度/指针/角色向量,含 char pointee 的
+// const 语义:丢 const 与 UUID buff 加 const 都拒绝);正例以真实生产
 // native 包加合成 C 输入证明冻结映射与生产 api.go/callback_types.go
 // 逐字段一致;失败向量直接构造改动并断言 signature 类诊断的过错方定
 // 位(Go 侧定位到字段/callback 声明行,C 侧定位到 C 声明行);端到端
@@ -176,6 +177,11 @@ func TestPermittedGoTypesTable(t *testing.T) {
 			func() CType { return sigCScalar("int64", 64, true) }, nil},
 		{"const char pointer", "AsstSetUserDir", "path", cConstCharPtr, []GoSourceType{"*byte"}},
 		{"char pointer uuid buff", "AsstGetUUID", "buff", cCharPtr, []GoSourceType{"*byte"}},
+		{"non-const char pointer outside uuid buff rejected", "AsstSetUserDir", "path", cCharPtr, nil},
+		{"non-const char pointer on another output rejected", "AsstGetUUID", "path", cCharPtr, nil},
+		{"const char pointer on uuid buff rejected", "AsstGetUUID", "buff", cConstCharPtr, nil},
+		{"non-const char pointer return rejected", "AsstGetVersion", "", cCharPtr, nil},
+		{"non-const char pointer on callback rejected", "unixCallback", "details_json", cCharPtr, nil},
 		{"uint8 pointee rejected", "AsstGetVersion", "", func() CType { return sigCPtr(cUint8()) }, nil},
 		{"int32 pointer task list", "AsstGetTasksList", "buff", cInt32Ptr, []GoSourceType{"*int32"}},
 		{"opaque handle", "AsstDestroy", "handle",
@@ -541,6 +547,72 @@ func TestCompareSignatureCSideFailures(t *testing.T) {
 	}
 }
 
+// TestCompareSignatureCharPointeeConstFailures 钉死设计 §9.1.2 的
+// "改变 const" 反例:C 侧 char pointee 丢 const(UTF-8 输入参数、
+// callback 的 details_json、AsstGetVersion 返回值)与 AsstGetUUID
+// buff 加 const 都拒绝,诊断定位到 C 声明行,expected/actual 以冻结
+// 与实际拼写显式给出两侧 const 语义。callback typedef 的拼写冻结在
+// c-syntax 层,真实 C 输入到不了比对,故该向量直接改动提取结果,
+// 钉死比对层自身的规则(两 callback 共用同一 C typedef,诊断按
+// callbackCases 顺序以 unixCallback 报出)。
+func TestCompareSignatureCharPointeeConstFailures(t *testing.T) {
+	cases := []struct {
+		name         string
+		symbol       string
+		mutate       func(t *testing.T, c *CExtraction)
+		wantExpected string
+		wantActual   string
+	}{
+		{"append task type drops const", "AsstAppendTask",
+			func(t *testing.T, c *CExtraction) {
+				mutateCFunc(t, c, "AsstAppendTask", func(f *CFunction) { f.Params[1].Type.Pointee.Const = false })
+			},
+			"const char*", "char*"},
+		{"get uuid buff gains const", "AsstGetUUID",
+			func(t *testing.T, c *CExtraction) {
+				mutateCFunc(t, c, "AsstGetUUID", func(f *CFunction) { f.Params[1].Type.Pointee.Const = true })
+			},
+			"char*", "const char*"},
+		{"get version return drops const", "AsstGetVersion",
+			func(t *testing.T, c *CExtraction) {
+				mutateCFunc(t, c, "AsstGetVersion", func(f *CFunction) { f.Ret.Pointee.Const = false })
+			},
+			"const char*", "char*"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, g, link := mustSignatureBase(t)
+			tc.mutate(t, c)
+			cf := findFunction(t, c.Functions, tc.symbol)
+			d := mustSigFail(t, c, g, link, FileAsstCaller, cf.Line, tc.symbol,
+				tc.wantExpected, tc.wantActual, "char pointee constness")
+			if d.Expected != tc.wantExpected || d.Actual != tc.wantActual {
+				t.Errorf("expected/actual = %q/%q, want %q/%q",
+					d.Expected, d.Actual, tc.wantExpected, tc.wantActual)
+			}
+		})
+	}
+
+	t.Run("callback details_json drops const", func(t *testing.T) {
+		c, g, link := mustSignatureBase(t)
+		var td *CTypedef
+		for i := range c.Typedefs {
+			if c.Typedefs[i].Name == "AsstApiCallback" {
+				td = &c.Typedefs[i]
+			}
+		}
+		if td == nil {
+			t.Fatal("AsstApiCallback typedef missing from the c extraction")
+		}
+		td.Type.Sig.Params[1].Type.Pointee.Const = false
+		d := mustSigFail(t, c, g, link, FileAsstCaller, td.Line, "unixCallback",
+			"const char*", "char*", "parameter 2 (details_json)", "char pointee constness")
+		if d.Expected != "const char*" || d.Actual != "char*" {
+			t.Errorf("expected/actual = %q/%q, want %q/%q", d.Expected, d.Actual, "const char*", "char*")
+		}
+	})
+}
+
 // ---- 失败向量:callback 平台适配 ----
 
 // TestCompareSignatureCallbackFailures 是 callback 侧破坏向量:平台
@@ -776,6 +848,11 @@ func TestRealNativeSignatureVariantsFailThroughCLI(t *testing.T) {
 			fs[FileAsstCaller] = mustReplace(t, fs[FileAsstCaller],
 				"AsstLog(const char* level", "AsstLog(const uint8_t* level")
 		}, func(t *testing.T, fs map[string]string) {}, "AsstLog"},
+		{"c-side dropped const on AsstAppendTask", func(t *testing.T, fs map[string]string) {
+			fs[FileAsstCaller] = mustReplace(t, fs[FileAsstCaller],
+				"AsstAppendTask(AsstHandle handle, const char* type",
+				"AsstAppendTask(AsstHandle handle, char* type")
+		}, func(t *testing.T, fs map[string]string) {}, "AsstAppendTask"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

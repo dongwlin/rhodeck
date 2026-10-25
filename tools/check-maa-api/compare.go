@@ -12,9 +12,12 @@
 //   - uint8 标量 → uint8(byte 是同类型别名,同样接受);int32 标量
 //     → int32;uint64 标量 → uint64;const 标量与 char 标量无许可
 //     映射;
-//   - pointee 为 char 的指针(const char* 与 char*)→ *byte;
-//     pointee 为 int32 的指针(任务列表)→ *int32;其余 pointee
-//     (含 uint8*、二级指针)无许可映射;
+//   - pointee 为 char 的指针(const char* 与 char*)→ *byte,但
+//     pointee 的 const 标志必须与冻结分布一致:非 const 仅许可
+//     AsstGetUUID 的 buff(UTF-8 输出缓冲区),其余任何位置丢
+//     const 或该位置加 const 均无许可映射(设计 §9.1.2 改变
+//     const 失败);pointee 为 int32 的指针(任务列表)→ *int32;
+//     其余 pointee(含 uint8*、二级指针)无许可映射;
 //   - struct AsstExtAPI*(opaque handle)→ uintptr;
 //   - callback 函数指针 → uintptr;
 //   - void* 仅三种冻结上下文许可:C 参数名恰为 custom_arg → uintptr
@@ -75,6 +78,16 @@ var (
 	voidPtrImageSymbols  = newSet("AsstGetImage", "AsstGetImageBgr")
 )
 
+// frozenNonConstCharPointees 是 char pointee 冻结 const 分布中许可非
+// const 的 (符号, 参数名) 集合:锁定 profile 全集(与归档
+// upstream/AsstCaller.h 逐一核对一致)仅 AsstGetUUID 的 buff 是
+// UTF-8 输出缓冲区 char*,其余 char pointee(各 UTF-8 输入参数、
+// callback 的 details_json、AsstGetVersion 的返回值)全部为 const
+// char*。返回位置没有参数名,不在集合内。
+var frozenNonConstCharPointees = map[string]map[string]bool{
+	"AsstGetUUID": newSet("buff"),
+}
+
 // permittedGoTypes 返回 C 规范化类型在给定符号/参数上下文中许可的 Go
 // raw 类型拼写(固定顺序;uint8 的 byte 别名随后);空切片表示无
 // 许可映射。paramName 为返回位置传入空串,void* 的三个上下文许可都
@@ -103,8 +116,14 @@ func permittedGoTypes(symbol, paramName string, ct CType) []GoSourceType {
 		case CKindScalar:
 			switch pt.Name {
 			case "char":
-				// const char*(UTF-8 输入/返回)与 char*(UUID 缓冲区)
-				// 都映射 *byte。
+				// const char*(UTF-8 输入/返回)与 char*(UUID 输出
+				// 缓冲区)都映射 *byte,但 pointee 的 const 标志必须
+				// 与冻结分布一致:pointee 已 const 而此处要求非
+				// const(UUID buff 加 const),或 pointee 非 const 而
+				// 此处要求 const(其余位置丢 const),均无许可映射。
+				if pt.Const == frozenNonConstCharPointees[symbol][paramName] {
+					return nil
+				}
 				return []GoSourceType{"*byte"}
 			case "int32":
 				// 任务列表 AsstTaskId*。
@@ -153,6 +172,36 @@ func joinGoTypes(list []GoSourceType) string {
 	return strings.Join(out, " or ")
 }
 
+// charPointeeConstDiag 在 C 类型是单层 char 指针且 pointee 的 const
+// 标志偏离冻结分布时,给出定位到 C 声明的 signature 诊断:expected
+// 取该位置的冻结拼写,actual 用 CType.String()(自带 const 前缀),
+// 两侧均显式表达 const 语义。类型形状不符或 const 一致时返回 nil,
+// 由调用方走通用无许可映射诊断。position 从 1 起为参数位置,0 表示
+// 返回位置。
+func charPointeeConstDiag(symbol, paramName string, position int, ct CType, cLoc sigLocation) *Diagnostic {
+	if ct.Kind != CKindPointer || ct.Pointee == nil ||
+		ct.Pointee.Kind != CKindScalar || ct.Pointee.Name != "char" {
+		return nil
+	}
+	nonConstOK := frozenNonConstCharPointees[symbol][paramName]
+	if ct.Pointee.Const != nonConstOK {
+		return nil
+	}
+	want := "const char*"
+	if nonConstOK {
+		want = "char*"
+	}
+	what := "the return type"
+	if position > 0 {
+		what = fmt.Sprintf("parameter %d (%s)", position, paramName)
+	}
+	return &Diagnostic{Category: CatSignature, File: cLoc.file, Line: cLoc.line, Symbol: symbol,
+		Expected: want,
+		Actual:   ct.String(),
+		Message: fmt.Sprintf("%s: the char pointee constness must match the frozen distribution; "+
+			"dropping or adding const on the c side fails", what)}
+}
+
 // sigLocation 是比对双方的声明位置(C 头或 Go 文件 + 行号)。
 type sigLocation struct {
 	file string
@@ -181,6 +230,9 @@ func compareSignatureParams(symbol string, cParams []CParam, goParams []GoParam,
 		}
 		permitted := permittedGoTypes(symbol, cp.Name, cp.Type)
 		if len(permitted) == 0 {
+			if d := charPointeeConstDiag(symbol, cp.Name, i+1, cp.Type, cLoc); d != nil {
+				return d
+			}
 			return &Diagnostic{Category: CatSignature, File: cLoc.file, Line: cLoc.line, Symbol: symbol,
 				Expected: "a c parameter type with a frozen go mapping",
 				Actual:   cp.Type.String(),
@@ -212,6 +264,9 @@ func compareSignatureReturn(symbol string, cRet CType, goResult GoSourceType, cL
 	}
 	permitted := permittedGoTypes(symbol, "", cRet)
 	if len(permitted) == 0 {
+		if d := charPointeeConstDiag(symbol, "", 0, cRet, cLoc); d != nil {
+			return d
+		}
 		return &Diagnostic{Category: CatSignature, File: cLoc.file, Line: cLoc.line, Symbol: symbol,
 			Expected: "a c return type with a frozen go mapping",
 			Actual:   cRet.String(),
