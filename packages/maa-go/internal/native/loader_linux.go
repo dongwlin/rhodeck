@@ -34,3 +34,11 @@ func (dlopenPrimitives) open(path string) (uintptr, error) {
 func (dlopenPrimitives) lookup(handle uintptr, name string) (uintptr, error) {
 	return purego.Dlsym(handle, name)
 }
+
+// NewLoader 构造生产加载器:Linux 上使用真实平台原语(dlopenPrimitives,
+// 即 purego dlopen/dlsym 直传)与冻结的 ABI 组合标识。生产代码经本
+// 函数取得加载器;测试注入用 newLoader 挂接假原语,不替换任何全局
+// 函数变量。非 Linux 平台的同签名实现见 loader_other.go。
+func NewLoader() *Loader {
+	return newLoader(dlopenPrimitives{}, abiProfile)
+}

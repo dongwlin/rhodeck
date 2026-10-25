@@ -140,3 +140,35 @@ func TestOpenAndLookupRealSystemLibrary(t *testing.T) {
 		t.Errorf("诊断字段不符: %+v", sle)
 	}
 }
+
+// TestNewLoaderProductionWiring 验证生产构造入口 NewLoader 接线正确:
+// 使用冻结 ABI 组合标识与真实平台原语。用真实系统 loader 打开不存在
+// 的库,失败必须是携带系统「文件不存在」原因的 *LibraryLoadError,
+// 证明请求确实进入了 dlopenPrimitives,而非某个假原语。全程不调用
+// 任何函数地址。
+func TestNewLoaderProductionWiring(t *testing.T) {
+	const missing = "/nonexistent/rhodeck-libMaaCore.so"
+
+	ldr := NewLoader()
+	if ldr == nil {
+		t.Fatal("NewLoader 必须返回生产加载器")
+	}
+	if ldr.profile != abiProfile {
+		t.Errorf("生产加载器的 ABI 组合标识 = %q, want %q", ldr.profile, abiProfile)
+	}
+
+	lib, err := ldr.Open(missing)
+	if lib != nil {
+		t.Fatalf("打开不存在的库不得返回 Library, got %+v", lib)
+	}
+	var lle *LibraryLoadError
+	if !errors.As(err, &lle) {
+		t.Fatalf("errors.As 未得到 *LibraryLoadError, got %T: %v", err, err)
+	}
+	if lle.Path != missing {
+		t.Errorf("Path = %q, want %q", lle.Path, missing)
+	}
+	if lle.Err == nil || !strings.Contains(lle.Err.Error(), "No such file or directory") {
+		t.Errorf("底层错误 = %v, want 保留系统 loader 的「文件不存在」原因", lle.Err)
+	}
+}
