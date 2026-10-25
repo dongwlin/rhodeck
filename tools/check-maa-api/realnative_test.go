@@ -100,6 +100,9 @@ func TestRealNativeVariantsFailThroughCLI(t *testing.T) {
 		{"empty api struct", "linux", func(t *testing.T, fs map[string]string) {
 			fs["api.go"] = replaceGoBlock(t, fs["api.go"], "type api struct {", "type api struct {}")
 		}, CatGoSyntax, "empty struct"},
+		{"generic api struct", "linux", func(t *testing.T, fs map[string]string) {
+			fs["api.go"] = mustReplace(t, fs["api.go"], "type api struct {", "type api[T any] struct {")
+		}, CatGoSyntax, "non-generic type"},
 		{"missing binding for one symbol", "linux", func(t *testing.T, fs map[string]string) {
 			fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
 				"		{Name: \"AsstBackToHome\", Target: &table.BackToHome, Policy: required, Platform: allPlatforms},\n", "")

@@ -185,6 +185,12 @@ func ExtractGo(sel *GoSelection) (*GoExtraction, []Diagnostic) {
 							}
 							ext.WindowsCallback = cb
 						case "api":
+							if ts.TypeParams != nil {
+								return fail(Diagnostic{Category: CatGoSyntax, File: pf.rel,
+									Line: fset.Position(ts.Pos()).Line, Symbol: "api",
+									Expected: "non-generic type", Actual: "type parameters",
+									Message: "api struct must not be generic"})
+							}
 							st, ok := unwrapParen(ts.Type).(*ast.StructType)
 							if !ok {
 								return fail(Diagnostic{Category: CatGoSyntax, File: pf.rel,
