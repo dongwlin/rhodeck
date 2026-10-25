@@ -33,6 +33,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -358,7 +359,7 @@ func runM1Child(t *testing.T, timeout time.Duration, mode string, extraEnv map[s
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, exe, "-test.run=^$")
-	cmd.Env = append(os.Environ(), childModeEnv+"="+mode)
+	cmd.Env = childEnviron(mode)
 	for k, v := range extraEnv {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
@@ -382,6 +383,23 @@ func runM1Child(t *testing.T, timeout time.Duration, mode string, extraEnv map[s
 	return out
 }
 
+// childEnviron 构造子进程环境:父进程环境剥离动态链接器注入变量
+// (LD_LIBRARY_PATH/LD_PRELOAD/LD_AUDIT)后原样继承,再附上模式标记。
+// MAA-01 的锁定策略是不依赖任何 LD_* 配置——libMaaCore.so 的依赖只经
+// $ORIGIN RUNPATH 与系统默认路径解析;父进程环境残留这些变量(如指向
+// 其他 MAA 安装的 LD_LIBRARY_PATH)会把子进程的依赖解析带离锁定策略,
+// 故三种模式的子进程一律在无 LD_* 注入的环境下验收,其余变量不受影响。
+func childEnviron(mode string) []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, kv := range os.Environ() {
+		if key, _, _ := strings.Cut(kv, "="); key == "LD_LIBRARY_PATH" || key == "LD_PRELOAD" || key == "LD_AUDIT" {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, childModeEnv+"="+mode)
+}
+
 // childDiagnostics 渲染子进程诊断:错误类别(超时/信号/退出码)+
 // 完整 stdout/stderr,保证三种失败情形都留下可辨识证据。
 func childDiagnostics(mode string, out childOutcome) string {
@@ -398,6 +416,48 @@ func childDiagnostics(mode string, out childOutcome) string {
 	}
 	fmt.Fprintf(&b, "--- stdout ---\n%s\n--- stderr ---\n%s", out.stdout, out.stderr)
 	return b.String()
+}
+
+// verifySuccessChildMetadata 对 success 子进程的 stdout 做父进程侧
+// 元数据复验:解析 successMarker 行打印的 version= 与 nullSize= 实际
+// 值,独立核对锁定基线。子进程内的同名断言与本复验互相独立(纵深
+// 防御):父进程不信任子进程内的断言是否真实执行,只以 stdout 实际
+// 打印值为准——缺行、格式异常或任一值不符都判定父测试失败。
+func verifySuccessChildMetadata(stdout string) error {
+	line, ok := successMetadataLine(stdout)
+	if !ok {
+		return fmt.Errorf("stdout 缺少 %s version=... nullSize=... 元数据行", successMarker)
+	}
+	fields := strings.Fields(line)
+	gotVersion := strings.TrimPrefix(fields[1], "version=")
+	if gotVersion != lockedCoreVersion {
+		return fmt.Errorf("stdout 复验 Version = %q, want %q (锁定基线)", gotVersion, lockedCoreVersion)
+	}
+	gotNullSize, err := strconv.ParseUint(strings.TrimPrefix(fields[2], "nullSize="), 10, 64)
+	if err != nil {
+		return fmt.Errorf("stdout 复验 nullSize %q 不是十进制 uint64: %w", fields[2], err)
+	}
+	if gotNullSize != math.MaxUint64 {
+		return fmt.Errorf("stdout 复验 NullSize = %d (0x%x), want %d (0x%x, 锁定 profile 哨兵)",
+			gotNullSize, gotNullSize, uint64(math.MaxUint64), uint64(math.MaxUint64))
+	}
+	return nil
+}
+
+// successMetadataLine 从子进程 stdout 中定位元数据行:以 successMarker
+// 开头且第二、三字段分别为 version=、nullSize= 前缀的那一行;capabilities
+// 行同以 successMarker 开头但不匹配此形态。
+func successMetadataLine(stdout string) (string, bool) {
+	for _, line := range strings.Split(stdout, "\n") {
+		if !strings.HasPrefix(line, successMarker+" ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && strings.HasPrefix(fields[1], "version=") && strings.HasPrefix(fields[2], "nullSize=") {
+			return line, true
+		}
+	}
+	return "", false
 }
 
 // TestM1RealLibraryOpenSucceedsInFreshProcess 验收真实库成功路径:
@@ -424,6 +484,10 @@ func TestM1RealLibraryOpenSucceedsInFreshProcess(t *testing.T) {
 		if !strings.Contains(out.stdout, successMarker) || !strings.Contains(out.stdout, "capabilities ") {
 			t.Fatalf("success 子进程第 %d 次退出码 0,但 stdout 缺少成功标记:\n%s",
 				attempt, childDiagnostics(childModeSuccess, out))
+		}
+		if err := verifySuccessChildMetadata(out.stdout); err != nil {
+			t.Fatalf("success 子进程第 %d 次 stdout 元数据复验失败(与子进程内断言独立):\n%v\n%s",
+				attempt, err, childDiagnostics(childModeSuccess, out))
 		}
 		t.Logf("success 子进程第 %d 次运行成功:\n%s", attempt, out.stdout)
 		if out.stderr != "" {
