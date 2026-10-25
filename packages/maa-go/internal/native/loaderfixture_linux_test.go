@@ -348,7 +348,7 @@ func TestM2LoaderFixtureCompleteLoadsInFreshSubprocess(t *testing.T) {
 	}
 	wantSymbols := countApplicableSpecs()
 	if gotSymbols != wantSymbols {
-		t.Fatalf("complete 标记行 symbols = %d, want %d(夹具与 symbolSpecs 的同步检查):\n%s",
+		t.Fatalf("complete 标记行 symbols = %d, want %d(标记行与符号清单现算条数不符,防标记行失真):\n%s",
 			gotSymbols, wantSymbols, out.Diagnostics())
 	}
 
