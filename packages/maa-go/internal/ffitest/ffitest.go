@@ -56,7 +56,9 @@
 //
 // 子进程不得派生会持有 stdout/stderr 管道的后代进程:子进程退出后,
 // 持管道的孙进程会让 cmd.Wait 一直阻塞到 WaitDelay(waitDelay 常量)
-// 耗尽,把快用例拖成超时失败;该延迟只是兜底,不是功能。
+// 耗尽,之后 Wait 返回包装 ErrWaitDelay 的错误——仍是可见失败
+// (Err 非 nil,调用方据此判失败),但类别上不是 TimedOut;该延迟
+// 只是兜底,不是功能。
 package ffitest
 
 import (

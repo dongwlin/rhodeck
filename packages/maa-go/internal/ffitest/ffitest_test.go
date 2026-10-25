@@ -205,6 +205,59 @@ func TestRunExtraEnvPassedThrough(t *testing.T) {
 	}
 }
 
+// inheritedEnvValue 与 overrideEnvValue 是 ExtraEnv 覆盖语义用例的
+// 父进程继承值与覆盖值:经 t.Setenv 供子进程继承,再以 ExtraEnv 同名
+// 键覆盖。
+const (
+	inheritedEnvValue = "inherited-from-parent-env"
+	overrideEnvValue  = "override-from-extra-env"
+)
+
+// TestRunExtraEnvOverridesInheritedValue 验收 ExtraEnv 的覆盖语义:父
+// 进程经 t.Setenv 提供同名继承值,子进程必须读到 ExtraEnv 的覆盖值而
+// 非继承值——覆盖在构造环境时显式去重保证,不依赖 environ 重复条目
+// 的解析顺序。
+func TestRunExtraEnvOverridesInheritedValue(t *testing.T) {
+	t.Setenv(echoEnvName, inheritedEnvValue)
+	out := ffitest.Run(t, ffitest.Options{
+		Mode:     modeEchoEnv,
+		Timeout:  childTimeout,
+		ExtraEnv: map[string]string{echoEnvName: overrideEnvValue},
+	})
+	if out.Err != nil {
+		t.Fatalf("echo-env 子进程失败:\n%s", out.Diagnostics())
+	}
+	want := fmt.Sprintf("%s %s=%q", echoEnvMarker, echoEnvName, overrideEnvValue)
+	if !strings.Contains(out.Stdout, want) {
+		t.Fatalf("子进程应读到 ExtraEnv 覆盖值 %q:\n%s", overrideEnvValue, out.Diagnostics())
+	}
+	if strings.Contains(out.Stdout, inheritedEnvValue) {
+		t.Fatalf("子进程读到了父进程继承值 %q,覆盖未生效:\n%s", inheritedEnvValue, out.Diagnostics())
+	}
+}
+
+// TestRunChildModeEnvExclusiveOverExtraEnv 验收模式变量独占:ExtraEnv
+// 中试图篡改 ChildModeEnv 的条目必须被忽略,分派仍按 Options.Mode 走
+// echo-env(退出 0、打印标记);若条目生效,子进程将分派 modeExit 并
+// 以 42 退出。
+func TestRunChildModeEnvExclusiveOverExtraEnv(t *testing.T) {
+	out := ffitest.Run(t, ffitest.Options{
+		Mode:    modeEchoEnv,
+		Timeout: childTimeout,
+		ExtraEnv: map[string]string{
+			ffitest.ChildModeEnv: modeExit,
+			echoEnvName:          echoEnvValue,
+		},
+	})
+	if out.Err != nil {
+		t.Fatalf("ExtraEnv 中的 ChildModeEnv 条目必须被忽略,分派按 Options.Mode 进行:\n%s", out.Diagnostics())
+	}
+	want := fmt.Sprintf("%s %s=%q", echoEnvMarker, echoEnvName, echoEnvValue)
+	if !strings.Contains(out.Stdout, want) {
+		t.Fatalf("echo-env 子进程退出 0,但 stdout 缺少标记(分派可能被篡改):\n%s", out.Diagnostics())
+	}
+}
+
 // TestRegisterContractPanics 验收 Register 的编程错误契约:重复 mode、
 // nil run 与空 mode 一律 panic——注册期炸掉比把错误推迟到用例运行时
 // 安全。
