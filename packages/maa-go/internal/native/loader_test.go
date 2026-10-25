@@ -23,6 +23,9 @@ type fakePrimitives struct {
 	lookupAddr uintptr // lookup 成功时返回的地址
 	lookupErr  error   // lookup 失败时返回的错误
 	nullAddr   bool    // 置位时 lookup 返回 (0, nil) 的契约破坏情形
+
+	lookupFailures  map[string]error // 按符号名注入查找失败(优先于 lookupErr)
+	lookupNullAddrs map[string]bool  // 按符号名注入 (0, nil) 契约破坏情形(优先于 nullAddr)
 }
 
 func (f *fakePrimitives) open(path string) (uintptr, error) {
@@ -39,6 +42,12 @@ func (f *fakePrimitives) open(path string) (uintptr, error) {
 func (f *fakePrimitives) lookup(handle uintptr, name string) (uintptr, error) {
 	f.lookupHandles = append(f.lookupHandles, handle)
 	f.lookupNames = append(f.lookupNames, name)
+	if f.lookupFailures[name] != nil {
+		return 0, f.lookupFailures[name]
+	}
+	if f.lookupNullAddrs[name] {
+		return 0, nil
+	}
 	if f.lookupErr != nil {
 		return 0, f.lookupErr
 	}

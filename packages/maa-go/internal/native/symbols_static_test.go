@@ -687,3 +687,110 @@ func TestCallbackTypeSignatures(t *testing.T) {
 		})
 	}
 }
+
+// TestNativePackageExportsNoRawFunctions 把「raw 函数只能作为未导出
+// 类型的未导出/具名字段存在于包内;公开层不出现可复制的 raw 函数
+// 变量」钉死为静态断言。扫描包目录全部非 _test.go 文件(go/parser,
+// 测试运行目录即包目录),断言:
+//
+//   - 无导出的包级 var/const 其显式类型为函数类型;
+//   - 无导出的函数或方法其结果类型为函数类型;
+//   - 无导出结构体类型的导出字段为函数类型;
+//   - 特别断言 APITable 与 Capabilities 没有任何导出字段——能力
+//     只能经方法读取。
+func TestNativePackageExportsNoRawFunctions(t *testing.T) {
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd 失败,无法定位包目录: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("读取包目录 %s 失败: %v", dir, err)
+	}
+	var names []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		t.Fatal("包目录内未找到任何非测试 Go 源文件")
+	}
+
+	seenStructs := map[string]bool{}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			file := parsePackageFile(t, name)
+			for _, decl := range file.Decls {
+				switch d := decl.(type) {
+				case *ast.GenDecl:
+					switch d.Tok {
+					case token.VAR, token.CONST:
+						for _, spec := range d.Specs {
+							vs, ok := spec.(*ast.ValueSpec)
+							if !ok || vs.Type == nil {
+								continue
+							}
+							if _, isFunc := vs.Type.(*ast.FuncType); !isFunc {
+								continue
+							}
+							kind := "var"
+							if d.Tok == token.CONST {
+								kind = "const"
+							}
+							for _, id := range vs.Names {
+								if ast.IsExported(id.Name) {
+									t.Errorf("导出包级 %s %q 的显式类型为函数类型,公开层不得出现可复制的 raw 函数变量", kind, id.Name)
+								}
+							}
+						}
+					case token.TYPE:
+						for _, spec := range d.Specs {
+							ts := spec.(*ast.TypeSpec)
+							st, ok := ts.Type.(*ast.StructType)
+							if !ok {
+								continue
+							}
+							exportedType := ast.IsExported(ts.Name.Name)
+							for _, field := range st.Fields.List {
+								if _, isFunc := field.Type.(*ast.FuncType); !isFunc || len(field.Names) == 0 {
+									continue
+								}
+								for _, id := range field.Names {
+									if exportedType && ast.IsExported(id.Name) {
+										t.Errorf("导出结构体 %s 的导出字段 %q 类型为函数类型,不得向公开层导出可复制的 raw 函数", ts.Name.Name, id.Name)
+									}
+								}
+							}
+							if ts.Name.Name == "APITable" || ts.Name.Name == "Capabilities" {
+								seenStructs[ts.Name.Name] = true
+								for _, field := range st.Fields.List {
+									for _, id := range field.Names {
+										if ast.IsExported(id.Name) {
+											t.Errorf("导出结构体 %s 不得有任何导出字段, got %q", ts.Name.Name, id.Name)
+										}
+									}
+								}
+							}
+						}
+					}
+				case *ast.FuncDecl:
+					if !ast.IsExported(d.Name.Name) || d.Type.Results == nil {
+						continue
+					}
+					for _, result := range d.Type.Results.List {
+						if _, isFunc := result.Type.(*ast.FuncType); isFunc {
+							t.Errorf("导出函数/方法 %q 的结果类型为函数类型,不得向公开层导出可复制的 raw 函数", d.Name.Name)
+						}
+					}
+				}
+			}
+		})
+	}
+
+	if !seenStructs["APITable"] || !seenStructs["Capabilities"] {
+		t.Errorf("包内必须存在 APITable 与 Capabilities 两个只读发布类型, 实际找到 %v", seenStructs)
+	}
+}
