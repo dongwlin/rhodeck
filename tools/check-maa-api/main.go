@@ -1,9 +1,9 @@
 // Command check-maa-api 是 maa-go 的最小静态 API checker 命令入口:
 // 解析五个必需 flag → profile → 目标 → LoadCInput → ExtractC → Go 文件
-// 选择 → Go 提取 → C↔Go 关联。成功退出 0,并在 stdout 输出键序稳定的
-// JSON 结果;任何失败都以非零退出码结束,stderr 输出 profile、目标与
-// 诊断(Diagnostic.String()),绝不输出 PASS。生产入口不提供跳过摘要、
-// 未锁定 profile 或其他逃逸参数。
+// 选择 → Go 提取 → C↔Go 关联 → 锁定 profile 独立策略期望比对。成功
+// 退出 0,并在 stdout 输出键序稳定的 JSON 结果;任何失败都以非零退出
+// 码结束,stderr 输出 profile、目标与诊断(Diagnostic.String()),绝不
+// 输出 PASS。生产入口不提供跳过摘要、未锁定 profile 或其他逃逸参数。
 
 package main
 
@@ -35,11 +35,12 @@ func main() {
 // reportJSON 是成功输出的顶层 JSON 结构:字段顺序即键序,列表一律
 // 按名称排序,保证输出确定性。
 type reportJSON struct {
-	Profile string     `json:"profile"`
-	Target  targetJSON `json:"target"`
-	C       cReport    `json:"c"`
-	Go      goReport   `json:"go"`
-	Link    linkReport `json:"link"`
+	Profile string       `json:"profile"`
+	Target  targetJSON   `json:"target"`
+	C       cReport      `json:"c"`
+	Go      goReport     `json:"go"`
+	Link    linkReport   `json:"link"`
+	Expect  expectReport `json:"expect"`
 }
 
 type targetJSON struct {
@@ -121,6 +122,21 @@ type linkReport struct {
 	Bound     []linkBoundJSON `json:"bound"`
 	NonTarget []string        `json:"nontarget_bindings"`
 	Excluded  []string        `json:"excluded"`
+}
+
+type expectSideJSON struct {
+	Policy   string `json:"policy"`
+	Platform string `json:"platform"`
+}
+
+type expectEntryJSON struct {
+	Symbol   string         `json:"symbol"`
+	Expected expectSideJSON `json:"expected"`
+	Actual   expectSideJSON `json:"actual"`
+}
+
+type expectReport struct {
+	Symbols []expectEntryJSON `json:"symbols"`
 }
 
 // Run 承载全部命令逻辑;返回进程退出码。stdout 只在成功时收到 JSON。
@@ -205,8 +221,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if len(diags) > 0 {
 		return fail(diags)
 	}
+	expect, diags := CompareExpectations(gext)
+	if len(diags) > 0 {
+		return fail(diags)
+	}
 
-	report := buildReport(profileID, target, cext, gext, sel, link)
+	report := buildReport(profileID, target, cext, gext, sel, link, expect)
 	enc, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fail([]Diagnostic{{Category: CatInput, Symbol: "report",
@@ -231,9 +251,10 @@ func printFailure(stderr io.Writer, profileID string, target Target, diags []Dia
 }
 
 // buildReport 组装确定性成功输出:所有列表按名称排序;空列表输出
-// 为 [],不输出 null。
+// 为 [],不输出 null。expect 段给出冻结期望表的逐符号 policy/platform
+// 期望与实际对照(30 项,按符号名排序,与目标无关)。
 func buildReport(profileID string, target Target, cext *CExtraction, gext *GoExtraction,
-	sel *GoSelection, link *LinkResult) reportJSON {
+	sel *GoSelection, link *LinkResult, expect *ExpectResult) reportJSON {
 	report := reportJSON{
 		Profile: profileID,
 		Target:  targetJSON{GOOS: target.GOOS, GOARCH: target.GOARCH},
@@ -282,6 +303,13 @@ func buildReport(profileID string, target Target, cext *CExtraction, gext *GoExt
 	}
 	report.Link.NonTarget = append(report.Link.NonTarget, link.NonTarget...)
 	report.Link.Excluded = append(report.Link.Excluded, link.Excluded...)
+
+	report.Expect = expectReport{Symbols: []expectEntryJSON{}}
+	for _, e := range expect.Entries {
+		report.Expect.Symbols = append(report.Expect.Symbols, expectEntryJSON{Symbol: e.Symbol,
+			Expected: expectSideJSON{Policy: e.Expected.Policy, Platform: e.Expected.Platform},
+			Actual:   expectSideJSON{Policy: e.Actual.Policy, Platform: e.Actual.Platform}})
+	}
 	return report
 }
 

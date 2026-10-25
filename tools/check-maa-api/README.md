@@ -5,11 +5,11 @@ maa-go 的最小静态 API checker:对锁定的 MaaCore C 头与
 任何不一致都以非零退出码失败。工具只使用 Go 标准库,是主仓库根
 module 下的开发工具,不成为 maa-go 的运行依赖。
 
-静态自检证明的是**声明层**的一致性:符号覆盖、R/O 与排除清单、参数
-个数/顺序/具名、返回值形态、类型宽度/符号位/指针用途。它**不能**
-证明寄存器传递、内存有效性、原生行为或 Windows 运行支持(绑定设计
-§9.1);R/O 策略与锁定 profile 独立期望的比对、宽度级 C↔Go 逐参数
-语义比对由 MAA-10 在此基础上继续实现。
+静态自检证明的是**声明层**的一致性:符号覆盖、R/O 与排除清单、与锁
+定 profile 冻结期望表的独立策略比对、参数个数/顺序/具名、返回值形态、
+类型宽度/符号位/指针用途。它**不能**证明寄存器传递、内存有效性、原
+生行为或 Windows 运行支持(绑定设计 §9.1);宽度级 C↔Go 逐参数语义
+比对在此基础上继续实现。
 
 ## 使用方式
 
@@ -45,7 +45,13 @@ check-maa-api --profile maa-v6.20.1 --goos windows --goarch amd64 \
   条目与两个 callback 签名;
 - `link`:关联分类表——`bound`(目标适用 R/O 绑定)、
   `nontarget_bindings`(非目标平台的 windowsOnly 条目)、`excluded`
-  (精确排除覆盖项)。
+  (精确排除覆盖项);
+- `expect`:锁定 profile 冻结期望表的逐符号策略对照——30 项(23 项
+  required+allPlatforms、2 项 optional+allPlatforms、1 项
+  optional+windowsOnly、4 项 excluded),每项给出 `expected` 与
+  `actual` 的 policy/platform,按符号名排序,与目标无关。期望表是
+  checker 内部常量,不从被检查的 Go 文件推导:同时改写 Go 符号表与
+  其派生清单使二者一致,只要偏离冻结期望仍失败。
 
 ## 失败行为与退出码
 
@@ -60,6 +66,7 @@ check-maa-api --profile maa-v6.20.1 --goos windows --goarch amd64 \
 | `c-syntax` | C 输入的受限语法、宏、条件与 typedef(第一段冻结) |
 | `go-syntax` | Go 解析、§3.1 声明形式、raw 类型词表、名字遮蔽、unsafe 导入形态、重复声明、空清单、共用文件自带 build 约束 |
 | `relation` | C↔Go 一对一关联:未知导出、漏绑、重复绑定、错误/重复 Target、多余 raw 字段、陈旧或重复排除、实验发现未排除或被绑定、平台矛盾 |
+| `policy` | 锁定 profile 独立期望比对:绑定未冻结符号、D/实验项改绑、required↔optional 互换、allPlatforms↔windowsOnly 互换、期望绑定符号被排除或缺失绑定;诊断含条目文件/行号/符号与 expected/actual 策略 |
 
 ## 支持的声明语法边界
 
@@ -94,8 +101,8 @@ check-maa-api --profile maa-v6.20.1 --goos windows --goarch amd64 \
   多级指针、host 的 `int/long/size_t` 代换、外部预定义 `ASST_CALL`。
 - Go:helper/append/循环/条件/拼接/反射构造的清单、间接变量目标、
   自定义宽度别名、别名或伪造的 unsafe 导入、泛型声明。
-- 任何 `Policy` 常量的序数值比较与 R/O 期望比对(MAA-10);实际
-  purego callback 装配(MAA-13)。
+- `Policy`/`Platform` 常量的序数值比较;宽度级 C↔Go 逐参数语义比对;
+  实际 purego callback 装配(MAA-13)。
 
 ## 文件选择规则
 
@@ -148,6 +155,8 @@ CGO_ENABLED=0 go test ./tools/check-maa-api/... -count=1
 ```
 
 覆盖:C 输入校验与受限 C 提取(含失败向量)、Go 文件选择、Go 提取
-形式向量、C↔Go 关联向量、真实目录破坏变体的完整命令入口端到端失败、
-真实发行包头的两目标端到端正例(归档缺失时 SKIP 并写明受阻原因,
-受阻不是通过)。全部测试 `CGO_ENABLED=0` 可跑,无网络与绝对路径依赖。
+形式向量、C↔Go 关联向量、冻结期望表逐项钉死与期望比对失败向量、真实
+目录破坏变体的完整命令入口端到端失败(含 R↔O 互换、D 项改绑、适用
+导出被排除的 policy 类反例)、真实发行包头的两目标端到端正例(归档
+缺失时 SKIP 并写明受阻原因,受阻不是通过)。全部测试 `CGO_ENABLED=0`
+可跑,无网络与绝对路径依赖。

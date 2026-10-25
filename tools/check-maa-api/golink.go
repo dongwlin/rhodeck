@@ -11,7 +11,8 @@
 //     allPlatforms 绑定、all 平台导出与 windowsOnly 绑定的平台矛盾失败;
 //   - api 字段必须恰被一条条目指向,多余 raw func 字段失败。
 //
-// R/O 策略与锁定 profile 的独立期望比对属 MAA-10,本阶段不实现。
+// R/O 策略与锁定 profile 的独立期望比对在 link 成功之后执行,
+// 见 expect.go 的 CompareExpectations(policy 类诊断)。
 
 package main
 
