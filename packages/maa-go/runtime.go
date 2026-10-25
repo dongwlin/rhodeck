@@ -41,7 +41,8 @@ import (
 )
 
 // StaticOption 是一条进程级静态选项:key 为 int32(StaticOptionKey
-// 语义,锁定值见绑定设计 §3.0:Invalid=0、CpuOCR=1、GpuOCR=2;
+// 语义,锁定值见绑定设计 §3.0:Invalid=0、CpuOCR=1、GpuOCR=2;key
+// 为 0 即 Invalid,在纯 Go 校验阶段拒绝并返回 ErrInvalidInput;
 // 未识别的非零 key 原样透传,不把业务选项封闭为枚举),value 允许
 // 空串。key 不得重复。
 type StaticOption struct {
@@ -372,6 +373,14 @@ func validateConfigContent(cfg RuntimeConfig, limits Limits) error {
 	}
 	seenKey := make(map[int32]bool, len(cfg.StaticOptions))
 	for i, opt := range cfg.StaticOptions {
+		if opt.Key == 0 {
+			// StaticOptionKey 的 Invalid=0(设计 §3.0;MAA-03 冻结向量
+			// C10:option key 为 0 → ErrInvalidInput,原生调用计数为
+			// 0,纯 Go 校验失败不消耗生命周期,运行归属含 MAA-07)。
+			// 不得透传给原生:锁定 Core 对 key 0 走 default 返回失败,
+			// 真实库上只会以 ErrNativeRejected 烧掉进程生命周期。
+			return fmt.Errorf("maa: StaticOptions[%d].Key must not be 0 (Invalid): %w", i, native.ErrInvalidInput)
+		}
 		if seenKey[opt.Key] {
 			return fmt.Errorf("maa: StaticOptions[%d] duplicates key %d: %w", i, opt.Key, native.ErrInvalidInput)
 		}

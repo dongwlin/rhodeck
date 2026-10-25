@@ -53,6 +53,9 @@ func TestConfigValidationRejectsInvalidContent(t *testing.T) {
 		{"静态选项 key 重复", func(c *RuntimeConfig) {
 			c.StaticOptions = []StaticOption{{Key: 1, Value: "a"}, {Key: 1, Value: "b"}}
 		}, "StaticOptions[1]"},
+		{"静态选项 key 为 0", func(c *RuntimeConfig) {
+			c.StaticOptions = []StaticOption{{Key: 0, Value: "v"}}
+		}, "StaticOptions[0].Key"},
 		{"静态选项 value 内嵌 NUL", func(c *RuntimeConfig) {
 			c.StaticOptions = []StaticOption{{Key: 1, Value: "v" + nul}}
 		}, "StaticOptions[0].Value"},
@@ -332,6 +335,45 @@ func TestStaticOptionValueMayBeEmpty(t *testing.T) {
 	}
 	if snap.staticOptions[0].Value != "" || snap.staticOptions[1].Value != "x" {
 		t.Errorf("静态选项快照不符: %+v", snap.staticOptions)
+	}
+}
+
+// TestStaticOptionZeroKeyRejected 验证 MAA-03 冻结向量 C10 的 option
+// key 为 0 分支:key 0(StaticOptionKey 的 Invalid,设计 §3.0)在纯
+// Go 校验阶段被拒,错误含字段路径;校验发生在触碰生命周期门之前,
+// 原生调用计数为 0,同一 gate 修正输入后仍可成功 Open。
+func TestStaticOptionZeroKeyRejected(t *testing.T) {
+	cfg := validRuntimeConfig()
+	// 无效 key 放在合法项之后:逐元素校验不因前面有合法项而短路。
+	cfg.StaticOptions = []StaticOption{{Key: 1, Value: "ok"}, {Key: 0, Value: "invalid"}}
+
+	snap, err := snapshotConfig(cfg)
+	if err == nil {
+		t.Fatal("option key 为 0 必须返回错误")
+	}
+	if len(snap.staticOptions) != 0 || len(snap.resourceRoots) != 0 || len(snap.connectionExtras) != 0 || snap.limits != (Limits{}) {
+		t.Fatalf("校验失败不得返回快照, got %+v", snap)
+	}
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
+	}
+	if !strings.Contains(err.Error(), "StaticOptions[1].Key") {
+		t.Errorf("错误文本 %q 未包含字段路径 StaticOptions[1].Key", err.Error())
+	}
+
+	// 经注入边界的 open 复核 C10 的运行语义:原生调用计数为 0,
+	// 校验失败不消耗进程生命周期。
+	env := &fakeEnv{session: newValidFakeSession()}
+	gate := &lifecycleGate{}
+	rt, err := open(cfg, env, gate)
+	if rt != nil || !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("open 必须在校验阶段失败: rt=%v err=%v", rt, err)
+	}
+	if n := env.loadCount(); n != 0 {
+		t.Errorf("loadLibrary 被调用 %d 次, want 0(原生调用计数必须为 0)", n)
+	}
+	if _, err := open(validRuntimeConfig(), env, gate); err != nil {
+		t.Fatalf("校验失败后同一 gate 必须仍可成功 Open: %v", err)
 	}
 }
 
