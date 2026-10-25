@@ -161,6 +161,64 @@ tag `v6.20.1`,commit `d94dd007aca3b519395fb1f0aee26c7bd5ba5d5f`。
    `os.UserCacheDir()/maa/MAA-v6.20.1-linux-x86_64.tar.gz` 构建输入,
    可用 `CHECK_MAA_API_TARBALL` 覆盖归档路径)。
 
+## 反例覆盖
+
+绑定设计 §9.1.2 的反例目录按类别以**完整命令入口**验收:每个反例在
+进程内走 Run 的完整 CLI 路径(参数解析 → 摘要校验 → 文件读取 → C
+提取 → Go 选择/提取 → 关联 → 期望比对 → 签名比对 → 退出),断言非
+零退出、stdout 无内容且无 PASS、stderr 含 profile/目标头、诊断类别
+与文件/行号/符号定位。C 侧变体经仅 `_test.go` 可达的测试 profile 注
+册表为变体文件计算独立摘要注册合成 profile(生产注册表不动),从而
+越过摘要校验走到解析与比对;Go 侧变体用复制后的真实 native 目录改
+写。拒绝层如实归属:被更早层冻结规则拒绝的向量钉死在该层,不强行移
+到比对层。
+
+| §9.1.2 类别 | Run() 级反例测试 | 拒绝层 |
+|---|---|---|
+| 输入/目标 | `TestRunArgumentFailures`(缺 flag、未知 profile、未知目标)、`TestRunInputFailures`(缺头、缺清单、缺 native 目录)、`TestCounterexampleCInputThroughCLI`(空文件、盘上摘要不符、清单路径越界)、`TestRealNativeVariantsFailThroughCLI`(空 API/符号/排除表) | input |
+| C 提取 | `TestCounterexampleCExtractionThroughCLI`(未知 typedef、循环别名、非活跃分支未知条件、GetVersion 特殊拼写、ASST_CALL 右值与外部预定义、零参数函数加参) | c-syntax |
+| 覆盖/关系 | `TestRealNativeVariantsFailThroughCLI`(漏绑、重复绑定、Name 拼错、不存在字段、字段无条目)、`TestCounterexampleCoverageRelationThroughCLI`(Target 指向另一存在字段、helper/计算构造、拼接符号名、别名 unsafe 导入) | relation / go-syntax |
+| 策略/平台 | `TestRealNativeVariantsFailThroughCLI`(R↔O 互换、D 项改绑、适用导出被排除、平台互换) | policy / relation(平台互换被 link 先拒绝,期望比对独立性由 expect_test.go 直接钉死) |
+| 宽度/符号 | `TestRealNativeSignatureVariantsFailThroughCLI`(uint64→uintptr 等)、`TestCounterexampleSignatureThroughCLI`(uint8→bool、int32→int/uint32、void 虚构 uint8 返回、增删参数) | signature / go-syntax(词表外拼写) |
+| 指针/角色 | `TestRealNativeSignatureVariantsFailThroughCLI`(图像 unsafe.Pointer→uintptr、const char*→uint8_t*、丢 const)、`TestCounterexampleSignatureThroughCLI`(char* 返回→uintptr、*int32→unsafe.Pointer;char** 以 c-syntax 拒绝) | signature / c-syntax(多级指针) |
+| 参数次序 | `TestRealNativeSignatureVariantsFailThroughCLI`(x/y)、`TestCounterexampleSignatureThroughCLI`(level/message、callback/customArg、窗口 method) | signature |
+| 精确排除 | `TestRealNativeVariantsFailThroughCLI`(改名失效排除)、`TestCounterexampleExclusionThroughCLI`(重复、空原因、通配符样式、排除已绑定项、实验导出删除/新增/脱离守卫) | relation / go-syntax(空原因)/ c-syntax(发现集) |
+| callback | `TestCounterexampleCallbackThroughCLI`(Unix 增返回、Windows 少返回/返回非 uintptr、两平台参数调序/错类型、C 侧 void 改非 void/丢 ASST_CALL;比对层等价向量见 compare_test.go) | go-syntax(返回形态)/ signature(参数)/ c-syntax(C 侧拼写) |
+| 文件选择 | `TestRealNativeVariantsFailThroughCLI`(共用文件缺失/被约束隐藏)、`TestCounterexampleFileSelectionThroughCLI`(平台 tag、ignore tag、_test.go 中的正确副本均不掩盖生产错误) | input / signature / go-syntax |
+| 独立性 | `TestRealNativeVariantsFailThroughCLI`(只改 Go 派生表的 policy 破坏)、`TestCounterexampleIndependenceThroughCLI`(字段+Target 同步改名、Go 自洽参数调序) | relation / signature / policy |
+
+「以默认 feature=0 漏做 Extra 发现」的路径被结构性关闭:实验发现
+pass 恒以 `ASST_WITH_EXTRA_CALLERS=1` 运行,其结果集被钉死为两个锁
+定实验符号(cextract.go),任何扰动(删除、新增、脱离守卫)都以
+c-syntax 拒绝;正例基线同时断言成功报告的 `discovery_exports` 恰为
+两项(main_test.go)。
+
+### 范围边界
+
+静态 checker 只证明**声明层**的一致性(绑定设计 §9.1 分层检查表的
+第一行),它不能证明:
+
+- 寄存器传参与调用约定的实际执行效果——由独立 C ABI fixture 的真
+  实调用验收;
+- 内存有效性、缓冲区容量与指针生命周期——宽度/角色比对只核验声明
+  形态;
+- 真实 callback 行为——`unixCallback`/`windowsCallback` 的平台适
+  配只是声明层形式核验(无返回/uintptr),实际 purego
+  `NewCallback` 装配、trampoline 常量 0 返回与线程行为由 MAA-13
+  接入后验收;
+- Windows 运行支持——`(windows, amd64)` 目标只按同一套冻结规则
+  解析声明并核验 Windows 分支拼写,不声称 Windows 库执行通过。
+
+生产路径没有逃逸通道:命令不提供 skip-hash、`-D`、自定义 build
+tags 或未锁定 profile 参数;`testProfileFromFiles`/
+`registerTestProfile` 只存在于 `_test.go`,生产注册表恒只含锁定
+profile(profile_env_test.go 钉死)。C 解析器破坏样例因此经测试
+profile 注册表固定独立摘要后仍走完整命令路径,而不是停在摘要校验。
+宏环境固定(无外部 `-D`/host 继承),外部预定义 `ASST_CALL` 在
+进入 AsstPort.h 前即被拒绝,Wine 调用约定分支的拼写冻结在 Port 宏
+表内——外部 ASST_CALL/Wine 配置没有输入通道
+(TestPassZeroAndHostileEnv、TestNewMacroEnv)。
+
 ## 测试
 
 ```sh
@@ -171,8 +229,9 @@ CGO_ENABLED=0 go test ./tools/check-maa-api/... -count=1
 形式向量、C↔Go 关联向量、冻结期望表逐项钉死与期望比对失败向量、
 宽度级签名比对的冻结映射表钉死与接受/拒绝向量(真实生产树正例、
 Go/C 两侧过错方定位、callback 平台适配、C callback 变体的 c-syntax
-拒绝归属)、真实目录破坏变体的完整命令入口端到端失败(含 R↔O 互
-换、D 项改绑、适用导出被排除的 policy 类反例与宽度/指针/调序的
-signature 类反例)、真实发行包头的两目标端到端正例与 signatures 段
-确定性(归档缺失时 SKIP 并写明受阻原因,受阻不是通过)。全部测试
+拒绝归属)、真实目录破坏变体与按 §9.1.2 目录类别归组的完整命令入
+口反例集(counterexample_cli_test.go,含 C 提取、输入摘要、覆盖/
+关系、精确排除与实验发现、宽度/指针/次序、callback、文件选择正确
+副本不掩盖、独立性)、真实发行包头的两目标端到端正例与 signatures
+段确定性(归档缺失时 SKIP 并写明受阻原因,受阻不是通过)。全部测试
 `CGO_ENABLED=0` 可跑,无网络与绝对路径依赖。
