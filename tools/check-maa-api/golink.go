@@ -12,7 +12,9 @@
 //   - api 字段必须恰被一条条目指向,多余 raw func 字段失败。
 //
 // R/O 策略与锁定 profile 的独立期望比对在 link 成功之后执行,
-// 见 expect.go 的 CompareExpectations(policy 类诊断)。
+// 见 expect.go 的 CompareExpectations(policy 类诊断);宽度级逐参数
+// 签名比对与 callback 平台适配比对在其后执行,见 compare.go 的
+// CompareSignatures(signature 类诊断)。
 
 package main
 

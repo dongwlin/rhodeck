@@ -13,13 +13,15 @@ import (
 // 诊断类别:input(命令参数/清单/文件/摘要/目标/profile/文件选择)、
 // c-syntax(C 语法/宏/条件/typedef)、go-syntax(Go 解析/声明形式/
 // 类型词表/遮蔽)、relation(C↔Go 一对一关联失败)、policy(锁定
-// profile 独立 R/O 策略期望比对失败)。
+// profile 独立 R/O 策略期望比对失败)、signature(宽度级 C↔Go 逐
+// 参数语义比对与 callback 平台适配失败)。
 const (
-	CatInput    = "input"
-	CatCSyntax  = "c-syntax"
-	CatGoSyntax = "go-syntax"
-	CatRelation = "relation"
-	CatPolicy   = "policy"
+	CatInput     = "input"
+	CatCSyntax   = "c-syntax"
+	CatGoSyntax  = "go-syntax"
+	CatRelation  = "relation"
+	CatPolicy    = "policy"
+	CatSignature = "signature"
 )
 
 // Diagnostic 是单条失败诊断:Category/File/Line 定位来源,Symbol 指出

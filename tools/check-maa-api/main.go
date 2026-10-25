@@ -1,9 +1,10 @@
 // Command check-maa-api 是 maa-go 的最小静态 API checker 命令入口:
 // 解析五个必需 flag → profile → 目标 → LoadCInput → ExtractC → Go 文件
-// 选择 → Go 提取 → C↔Go 关联 → 锁定 profile 独立策略期望比对。成功
-// 退出 0,并在 stdout 输出键序稳定的 JSON 结果;任何失败都以非零退出
-// 码结束,stderr 输出 profile、目标与诊断(Diagnostic.String()),绝不
-// 输出 PASS。生产入口不提供跳过摘要、未锁定 profile 或其他逃逸参数。
+// 选择 → Go 提取 → C↔Go 关联 → 锁定 profile 独立策略期望比对 → 宽度
+// 级 C↔Go 逐参数签名比对与 callback 平台适配比对。成功退出 0,并在
+// stdout 输出键序稳定的 JSON 结果;任何失败都以非零退出码结束,stderr
+// 输出 profile、目标与诊断(Diagnostic.String()),绝不输出 PASS。生产
+// 入口不提供跳过摘要、未锁定 profile 或其他逃逸参数。
 
 package main
 
@@ -35,12 +36,13 @@ func main() {
 // reportJSON 是成功输出的顶层 JSON 结构:字段顺序即键序,列表一律
 // 按名称排序,保证输出确定性。
 type reportJSON struct {
-	Profile string       `json:"profile"`
-	Target  targetJSON   `json:"target"`
-	C       cReport      `json:"c"`
-	Go      goReport     `json:"go"`
-	Link    linkReport   `json:"link"`
-	Expect  expectReport `json:"expect"`
+	Profile    string          `json:"profile"`
+	Target     targetJSON      `json:"target"`
+	C          cReport         `json:"c"`
+	Go         goReport        `json:"go"`
+	Link       linkReport      `json:"link"`
+	Expect     expectReport    `json:"expect"`
+	Signatures signatureReport `json:"signatures"`
 }
 
 type targetJSON struct {
@@ -139,6 +141,43 @@ type expectReport struct {
 	Symbols []expectEntryJSON `json:"symbols"`
 }
 
+type signatureParamJSON struct {
+	Position int    `json:"position"`
+	CName    string `json:"c_name"`
+	GoName   string `json:"go_name"`
+	CType    string `json:"c_type"`
+	GoType   string `json:"go_type"`
+}
+
+type signatureReturnJSON struct {
+	CType  string `json:"c_type"`
+	GoType string `json:"go_type"`
+}
+
+type signatureSymbolJSON struct {
+	Symbol  string               `json:"symbol"`
+	Field   string               `json:"field"`
+	CHeader string               `json:"c_header"`
+	CLine   int                  `json:"c_line"`
+	GoFile  string               `json:"go_file"`
+	GoLine  int                  `json:"go_line"`
+	Params  []signatureParamJSON `json:"params"`
+	Return  signatureReturnJSON  `json:"return"`
+}
+
+type signatureCallbackJSON struct {
+	Name   string               `json:"name"`
+	GoFile string               `json:"go_file"`
+	GoLine int                  `json:"go_line"`
+	Params []signatureParamJSON `json:"params"`
+	Return signatureReturnJSON  `json:"return"`
+}
+
+type signatureReport struct {
+	Symbols   []signatureSymbolJSON   `json:"symbols"`
+	Callbacks []signatureCallbackJSON `json:"callbacks"`
+}
+
 // Run 承载全部命令逻辑;返回进程退出码。stdout 只在成功时收到 JSON。
 func Run(args []string, stdout, stderr io.Writer) int {
 	profileID := ""
@@ -225,8 +264,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if len(diags) > 0 {
 		return fail(diags)
 	}
+	signatures, diags := CompareSignatures(cext, gext, link)
+	if len(diags) > 0 {
+		return fail(diags)
+	}
 
-	report := buildReport(profileID, target, cext, gext, sel, link, expect)
+	report := buildReport(profileID, target, cext, gext, sel, link, expect, signatures)
 	enc, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fail([]Diagnostic{{Category: CatInput, Symbol: "report",
@@ -252,9 +295,12 @@ func printFailure(stderr io.Writer, profileID string, target Target, diags []Dia
 
 // buildReport 组装确定性成功输出:所有列表按名称排序;空列表输出
 // 为 [],不输出 null。expect 段给出冻结期望表的逐符号 policy/platform
-// 期望与实际对照(30 项,按符号名排序,与目标无关)。
+// 期望与实际对照(30 项,按符号名排序,与目标无关);signatures 段
+// 给出宽度级逐参数核验记录(Bound 符号按符号名排序,两个 callback
+// 固定顺序),含每个参数位置的 C/Go 名称与类型、返回映射与双方声明
+// 位置。
 func buildReport(profileID string, target Target, cext *CExtraction, gext *GoExtraction,
-	sel *GoSelection, link *LinkResult, expect *ExpectResult) reportJSON {
+	sel *GoSelection, link *LinkResult, expect *ExpectResult, signatures *SignatureResult) reportJSON {
 	report := reportJSON{
 		Profile: profileID,
 		Target:  targetJSON{GOOS: target.GOOS, GOARCH: target.GOARCH},
@@ -310,7 +356,31 @@ func buildReport(profileID string, target Target, cext *CExtraction, gext *GoExt
 			Expected: expectSideJSON{Policy: e.Expected.Policy, Platform: e.Expected.Platform},
 			Actual:   expectSideJSON{Policy: e.Actual.Policy, Platform: e.Actual.Platform}})
 	}
+
+	report.Signatures = signatureReport{Symbols: []signatureSymbolJSON{}, Callbacks: []signatureCallbackJSON{}}
+	for _, e := range signatures.Symbols {
+		report.Signatures.Symbols = append(report.Signatures.Symbols, signatureSymbolJSON{
+			Symbol: e.Symbol, Field: e.Field, CHeader: e.Header, CLine: e.CLine,
+			GoFile: e.GoFile, GoLine: e.GoLine,
+			Params: signatureParamReports(e.Params),
+			Return: signatureReturnJSON{CType: e.Return.CType, GoType: e.Return.GoType}})
+	}
+	for _, cb := range signatures.Callbacks {
+		report.Signatures.Callbacks = append(report.Signatures.Callbacks, signatureCallbackJSON{
+			Name: cb.Name, GoFile: cb.GoFile, GoLine: cb.GoLine,
+			Params: signatureParamReports(cb.Params),
+			Return: signatureReturnJSON{CType: cb.Return.CType, GoType: cb.Return.GoType}})
+	}
 	return report
+}
+
+func signatureParamReports(params []SignatureParam) []signatureParamJSON {
+	out := make([]signatureParamJSON, 0, len(params))
+	for _, p := range params {
+		out = append(out, signatureParamJSON{Position: p.Position, CName: p.CName, GoName: p.GoName,
+			CType: p.CType, GoType: p.GoType})
+	}
+	return out
 }
 
 func sortedFunctionNames(fns []CFunction) []string {

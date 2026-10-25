@@ -6,10 +6,11 @@ maa-go 的最小静态 API checker:对锁定的 MaaCore C 头与
 module 下的开发工具,不成为 maa-go 的运行依赖。
 
 静态自检证明的是**声明层**的一致性:符号覆盖、R/O 与排除清单、与锁
-定 profile 冻结期望表的独立策略比对、参数个数/顺序/具名、返回值形态、
-类型宽度/符号位/指针用途。它**不能**证明寄存器传递、内存有效性、原
-生行为或 Windows 运行支持(绑定设计 §9.1);宽度级 C↔Go 逐参数语义
-比对在此基础上继续实现。
+定 profile 冻结期望表的独立策略比对、宽度级 C↔Go 逐参数语义比对
+(参数个数/顺序/具名、返回值形态、类型宽度/符号位/指针用途,含
+void* 的三种上下文许可与 callback 平台适配)。它**不能**证明寄存器
+传递、内存有效性、原生行为或 Windows 运行支持(绑定设计 §9.1);
+实际 purego callback 装配(MAA-13)在此基础上继续验收。
 
 ## 使用方式
 
@@ -52,6 +53,15 @@ check-maa-api --profile maa-v6.20.1 --goos windows --goarch amd64 \
   `actual` 的 policy/platform,按符号名排序,与目标无关。期望表是
   checker 内部常量,不从被检查的 Go 文件推导:同时改写 Go 符号表与
   其派生清单使二者一致,只要偏离冻结期望仍失败。
+- `signatures`:宽度级 C↔Go 逐参数语义比对的核验记录——每条目标
+  适用绑定一个符号条目(按符号名排序),含双方声明位置
+  (`c_header`/`c_line` 与 `go_file`/`go_line`)、逐参数位置的
+  C 名/批准映射后的 Go 名与 C 规范化类型/Go raw 类型
+  (`position`/`c_name`/`go_name`/`c_type`/`go_type`)、返回映射
+  (`return`,`c_type` 与 `go_type`,C void 与 Go 无结果均为空串);
+  `callbacks` 给出两个 callback 类型的同样核验(unixCallback 原样
+  void,windowsCallback 许可适配为 uintptr)。映射是 checker 内部的
+  冻结常量表(设计 §3),不从被检查输入推导。
 
 ## 失败行为与退出码
 
@@ -67,6 +77,7 @@ check-maa-api --profile maa-v6.20.1 --goos windows --goarch amd64 \
 | `go-syntax` | Go 解析、§3.1 声明形式、raw 类型词表、名字遮蔽、unsafe 导入形态、重复声明、空清单、共用文件自带 build 约束 |
 | `relation` | C↔Go 一对一关联:未知导出、漏绑、重复绑定、错误/重复 Target、多余 raw 字段、陈旧或重复排除、实验发现未排除或被绑定、平台矛盾 |
 | `policy` | 锁定 profile 独立期望比对:绑定未冻结符号、D/实验项改绑、required↔optional 互换、allPlatforms↔windowsOnly 互换、期望绑定符号被排除或缺失绑定;诊断含条目文件/行号/符号与 expected/actual 策略 |
+| `signature` | 宽度级 C↔Go 逐参数语义比对与 callback 平台适配:参数个数增删、匿名/未批准重命名/同类型调序(定位到参数位置)、uint8→bool、int32→int/uint32、uint64→uintptr/uint32、char 标量与 const 标量、pointee 语义改变(const char*→uint8_t*)、二级指针、uint8* 指针、char*→uintptr、任务 *int32→unsafe.Pointer、图像 unsafe.Pointer→uintptr、void* 上下文许可外的任何用途、void 返回虚构成功码、Unix callback 增加返回、Windows callback 少返回或返回非 uintptr;Go 侧错误定位到字段/callback 声明行,C 类型无许可映射定位到 C 声明行(C 侧类型以规范化拼写给出) |
 
 ## 支持的声明语法边界
 
@@ -101,8 +112,8 @@ check-maa-api --profile maa-v6.20.1 --goos windows --goarch amd64 \
   多级指针、host 的 `int/long/size_t` 代换、外部预定义 `ASST_CALL`。
 - Go:helper/append/循环/条件/拼接/反射构造的清单、间接变量目标、
   自定义宽度别名、别名或伪造的 unsafe 导入、泛型声明。
-- `Policy`/`Platform` 常量的序数值比较;宽度级 C↔Go 逐参数语义比对;
-  实际 purego callback 装配(MAA-13)。
+- `Policy`/`Platform` 常量的序数值比较;实际 purego callback 装配
+  (MAA-13)。
 
 ## 文件选择规则
 
@@ -155,8 +166,11 @@ CGO_ENABLED=0 go test ./tools/check-maa-api/... -count=1
 ```
 
 覆盖:C 输入校验与受限 C 提取(含失败向量)、Go 文件选择、Go 提取
-形式向量、C↔Go 关联向量、冻结期望表逐项钉死与期望比对失败向量、真实
-目录破坏变体的完整命令入口端到端失败(含 R↔O 互换、D 项改绑、适用
-导出被排除的 policy 类反例)、真实发行包头的两目标端到端正例(归档
-缺失时 SKIP 并写明受阻原因,受阻不是通过)。全部测试 `CGO_ENABLED=0`
-可跑,无网络与绝对路径依赖。
+形式向量、C↔Go 关联向量、冻结期望表逐项钉死与期望比对失败向量、
+宽度级签名比对的冻结映射表钉死与接受/拒绝向量(真实生产树正例、
+Go/C 两侧过错方定位、callback 平台适配、C callback 变体的 c-syntax
+拒绝归属)、真实目录破坏变体的完整命令入口端到端失败(含 R↔O 互
+换、D 项改绑、适用导出被排除的 policy 类反例与宽度/指针/调序的
+signature 类反例)、真实发行包头的两目标端到端正例与 signatures 段
+确定性(归档缺失时 SKIP 并写明受阻原因,受阻不是通过)。全部测试
+`CGO_ENABLED=0` 可跑,无网络与绝对路径依赖。
