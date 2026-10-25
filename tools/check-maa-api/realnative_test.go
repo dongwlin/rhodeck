@@ -1,9 +1,11 @@
 // realnative_test.go 以真实仓库 native 目录(复制到临时目录构造变体
 // go-root)做最小破坏变体,走完整命令入口 Run 验收失败行为:空清单、
 // 漏绑、错误 Target、多余字段、陈旧/重复排除、Name 拼错、重复绑定、
-// 共用文件缺失/被约束隐藏与平台矛盾,各断言非零退出、诊断类别、定位
-// 与绝不输出 PASS。R/O 策略与锁定 profile 的独立期望比对属 MAA-10,
-// required↔optional 互换变体在本任务跳过并留待 MAA-10。
+// 共用文件缺失/被约束隐藏、平台矛盾,以及锁定 profile 独立期望比对
+// 的策略破坏(required↔optional 互换、D 项改绑、适用导出被排除),
+// 各断言非零退出、诊断类别、定位与绝不输出 PASS。期望比对在 link 之
+// 后执行:策略类变体以 policy 类诊断失败;平台互换已被 link 先行以
+// relation 类拒绝,期望比对的独立成立由 expect_test.go 直接覆盖。
 
 package main
 
@@ -71,10 +73,22 @@ func realNativeNames(t *testing.T) []string {
 	return names
 }
 
+// fmtJSON 序列化为紧凑 JSON,供跨目标比较期望段。
+func fmtJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
 // TestRealNativeVariantsFailThroughCLI 是真实目录破坏变体的端到端
 // 验收:每个变体都断言非零退出、stdout 无 PASS、stderr 含诊断类别
 // 与定位片段。C 输入用测试 profile 注册表的合成正例(与锁定形状
-// 一致),Go 侧为改写后的真实目录副本。
+// 一致),Go 侧为改写后的真实目录副本。策略类向量(R↔O 互换、D 项
+// 改绑、适用导出被排除)由 MAA-10 的期望比对以 policy 类诊断拒绝;
+// 平台互换向量已被 link 先行以 relation 类拒绝。
 func TestRealNativeVariantsFailThroughCLI(t *testing.T) {
 	cFiles := positiveFiles(t)
 	registerTestProfile(t, testProfileFromFiles(cFiles))
@@ -133,6 +147,47 @@ func TestRealNativeVariantsFailThroughCLI(t *testing.T) {
 				"Policy: optional, Platform: windowsOnly},",
 				"Policy: optional, Platform: allPlatforms},")
 		}, CatRelation, "windows-conditional"},
+		{"all-platform entry narrowed to windowsOnly", "linux", func(t *testing.T, fs map[string]string) {
+			fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
+				"{Name: \"AsstStart\", Target: &table.Start, Policy: required, Platform: allPlatforms},",
+				"{Name: \"AsstStart\", Target: &table.Start, Policy: required, Platform: windowsOnly},")
+		}, CatRelation, "AsstStart"},
+		{"required downgraded to optional", "linux", func(t *testing.T, fs map[string]string) {
+			fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
+				"{Name: \"AsstStart\", Target: &table.Start, Policy: required, Platform: allPlatforms},",
+				"{Name: \"AsstStart\", Target: &table.Start, Policy: optional, Platform: allPlatforms},")
+		}, CatPolicy, "AsstStart"},
+		{"optional upgraded to required", "linux", func(t *testing.T, fs map[string]string) {
+			fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
+				"{Name: \"AsstCreate\", Target: &table.Create, Policy: optional, Platform: allPlatforms},",
+				"{Name: \"AsstCreate\", Target: &table.Create, Policy: required, Platform: allPlatforms},")
+		}, CatPolicy, "AsstCreate"},
+		{"deprecated AsstConnect rebound after exclusion removed", "linux", func(t *testing.T, fs map[string]string) {
+			fs["symbols.go"] = replaceGoBlock(t, fs["symbols.go"],
+				"var exclusions = []exclusionSpec{",
+				"var exclusions = []exclusionSpec{\n"+
+					"\t{Name: \"AsstAttachWindow\", Header: \"AsstCaller.h\", Reason: \"deprecated\"},\n"+
+					"\t{Name: \"AsstGetMapLevelKey\", Header: \"AsstCallerExtra.h\", Reason: \"experimental\"},\n"+
+					"\t{Name: \"AsstGetItemName\", Header: \"AsstCallerExtra.h\", Reason: \"experimental\"},\n"+
+					"}")
+			fs["api.go"] = mustReplace(t, fs["api.go"],
+				"	Log                 func(level *byte, message *byte)",
+				"	Log                 func(level *byte, message *byte)\n\tConnect             func(handle uintptr, adbPath *byte, address *byte, config *byte) uint8")
+			fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
+				"		{Name: \"AsstLog\", Target: &table.Log, Policy: required, Platform: allPlatforms},",
+				"		{Name: \"AsstLog\", Target: &table.Log, Policy: required, Platform: allPlatforms},\n"+
+					"		{Name: \"AsstConnect\", Target: &table.Connect, Policy: required, Platform: allPlatforms},")
+		}, CatPolicy, "AsstConnect"},
+		{"required AsstStart excluded instead of bound", "linux", func(t *testing.T, fs map[string]string) {
+			fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
+				"		{Name: \"AsstStart\", Target: &table.Start, Policy: required, Platform: allPlatforms},\n", "")
+			fs["api.go"] = mustReplace(t, fs["api.go"],
+				"	Start               func(handle uintptr) uint8\n", "")
+			fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
+				"var exclusions = []exclusionSpec{",
+				"var exclusions = []exclusionSpec{\n"+
+					"	{Name: \"AsstStart\", Header: \"AsstCaller.h\", Reason: \"wrongly excluded\"},")
+		}, CatPolicy, "AsstStart"},
 		{"shared file hidden by constraint", "linux", func(t *testing.T, fs map[string]string) {
 			fs["api.go"] = "//go:build windows\n\n" + fs["api.go"]
 		}, CatInput, "hidden"},
@@ -171,11 +226,52 @@ func TestRealNativeVariantsFailThroughCLI(t *testing.T) {
 	}
 }
 
-// TestPolicySwapDeferredToM10 记录 MAA-09/10 的任务边界:R/O 策略与
-// 锁定 profile 独立期望的比对属 MAA-10;required↔optional 互换不构成
-// 关联或形式失败,本变体在此跳过,由 MAA-10 的期望比对接管。
-func TestPolicySwapDeferredToM10(t *testing.T) {
-	t.Skip("MAA-09 不实现 R/O 策略与锁定 profile 期望的比对;required↔optional 互换反例由 MAA-10 接管")
+// TestRealNativePolicyExpectationBaseline 真实目录在两个目标下经完整
+// 命令入口均可成功(合成 c 输入),成功报告携带 30 项逐符号的期望/
+// 实际策略对照,证明冻结期望表与生产 symbols.go/exclusions 一致且两
+// 目标一致。策略破坏变体见 TestRealNativeVariantsFailThroughCLI 的
+// policy 向量;「绑定未冻结符号」无法经完整 CLI 构造(C 输入被锁定
+// 为 30 项导出且 link 先拒绝未知符号),由 expect_test.go 直接覆盖。
+func TestRealNativePolicyExpectationBaseline(t *testing.T) {
+	cFiles := positiveFiles(t)
+	registerTestProfile(t, testProfileFromFiles(cFiles))
+	cInput := writeCInputDir(t, cFiles, nil)
+
+	reports := map[string]reportJSON{}
+	for _, goos := range []string{"linux", "windows"} {
+		var stdout, stderr bytes.Buffer
+		code := Run([]string{
+			"--profile", testProfileID, "--goos", goos, "--goarch", "amd64",
+			"--c-input", cInput, "--go-root", repoRoot(t),
+		}, &stdout, &stderr)
+		if code != 0 {
+			t.Fatalf("%s baseline unexpectedly failed:\n%s", goos, stderr.String())
+		}
+		var report reportJSON
+		if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+			t.Fatalf("%s baseline stdout is not JSON: %v", goos, err)
+		}
+		reports[goos] = report
+		if len(report.Expect.Symbols) != 30 {
+			t.Fatalf("%s expect entries = %d, want 30", goos, len(report.Expect.Symbols))
+		}
+		for i, e := range report.Expect.Symbols {
+			wantSym := sortedExpectationSymbols()[i]
+			if e.Symbol != wantSym {
+				t.Errorf("%s expect[%d].Symbol = %q, want %q (must be sorted)", goos, i, e.Symbol, wantSym)
+			}
+			want := lockedPolicyExpectations[e.Symbol]
+			if e.Expected.Policy != want.Policy || e.Expected.Platform != want.Platform {
+				t.Errorf("%s expect[%d] expected = %+v, want %+v", goos, i, e.Expected, want)
+			}
+			if e.Actual != e.Expected {
+				t.Errorf("%s expect[%s] actual = %+v, want %+v", goos, e.Symbol, e.Actual, e.Expected)
+			}
+		}
+	}
+	if fmtJSON(t, reports["linux"].Expect) != fmtJSON(t, reports["windows"].Expect) {
+		t.Error("expect section must be identical across targets")
+	}
 }
 
 // TestRealNativeSelectionBaseline 真实目录在两个目标下经完整命令入口

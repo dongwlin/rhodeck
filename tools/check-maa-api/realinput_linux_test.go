@@ -295,6 +295,28 @@ func TestRealHeaderCheckerEndToEnd(t *testing.T) {
 		t.Errorf("windows link = bound %d nontarget %v", len(winRep.Link.Bound), winRep.Link.NonTarget)
 	}
 
+	// 期望比对段(MAA-10):真实独立 C 头 + 真实 Go 树下,30 项冻结
+	// 期望逐符号 expected=actual,两目标一致——证明冻结期望表与生产
+	// symbols.go/exclusions 一致。
+	for goos, r := range map[string]reportJSON{"linux": linuxRep, "windows": winRep} {
+		if len(r.Expect.Symbols) != 30 {
+			t.Errorf("%s expect entries = %d, want 30", goos, len(r.Expect.Symbols))
+			continue
+		}
+		for i, e := range r.Expect.Symbols {
+			if e.Symbol != sortedExpectationSymbols()[i] {
+				t.Errorf("%s expect[%d].Symbol = %q, want %q (must be sorted)",
+					goos, i, e.Symbol, sortedExpectationSymbols()[i])
+			}
+			if e.Actual != e.Expected {
+				t.Errorf("%s expect[%s] actual = %+v, want %+v", goos, e.Symbol, e.Actual, e.Expected)
+			}
+		}
+	}
+	if fmtJSON(t, linuxRep.Expect) != fmtJSON(t, winRep.Expect) {
+		t.Error("expect section must be identical across targets")
+	}
+
 	// 规范化类型:宽度、符号位与指针用途按位置保留。
 	cFunc := func(r reportJSON, name string) cFuncJSON {
 		t.Helper()
