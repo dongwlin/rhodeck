@@ -1,6 +1,6 @@
-// diag.go 定义 checker 的统一诊断模型:输入校验、C 语法与后续阶段的
-// 关联失败都以 Diagnostic 结构表达,类别用字符串常量导出,后续阶段按
-// 同一模式扩展(go-syntax/relation)。任何失败最终以非零退出码结束,
+// diag.go 定义 checker 的统一诊断模型:输入校验、C 语法、Go 声明
+// 提取与 C↔Go 关联失败都以 Diagnostic 结构表达,类别用字符串常量
+// 导出,后续阶段按同一模式扩展。任何失败最终以非零退出码结束,
 // 失败路径不得输出 PASS。
 
 package main
@@ -10,11 +10,14 @@ import (
 	"strings"
 )
 
-// 诊断类别:本阶段冻结 input(清单/文件/摘要/目标/profile)与
-// c-syntax(C 语法/宏/条件/typedef)两类。
+// 诊断类别:input(命令参数/清单/文件/摘要/目标/profile/文件选择)、
+// c-syntax(C 语法/宏/条件/typedef)、go-syntax(Go 解析/声明形式/
+// 类型词表/遮蔽)、relation(C↔Go 一对一关联失败)。
 const (
-	CatInput   = "input"
-	CatCSyntax = "c-syntax"
+	CatInput    = "input"
+	CatCSyntax  = "c-syntax"
+	CatGoSyntax = "go-syntax"
+	CatRelation = "relation"
 )
 
 // Diagnostic 是单条失败诊断:Category/File/Line 定位来源,Symbol 指出
