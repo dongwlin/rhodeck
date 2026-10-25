@@ -90,6 +90,7 @@ type LibraryLoadError struct {
 
 	// Err 是系统 loader 返回的底层错误。依赖库缺失等系统级原因
 	// 可通过该错误定位(如 dlopen 的错误文本经包装保留)。
+	// 构造时必须提供非 nil 的底层原因。
 	Err error
 }
 
@@ -118,6 +119,7 @@ type SymbolLookupError struct {
 
 	// Err 是底层查找错误。查找成功但地址为 0 时,loader 会生成明确的
 	// 原因放入本字段(空地址同样视为失败,不返回可用函数)。
+	// 构造时必须提供非 nil 的底层原因。
 	Err error
 }
 
@@ -140,7 +142,7 @@ type FunctionRegistrationError struct {
 	// "func(callback uintptr, customArg uintptr) uintptr"。
 	Signature string
 
-	// Err 是注册失败的底层原因。
+	// Err 是注册失败的底层原因。构造时必须提供非 nil 的底层原因。
 	//
 	// 验收契约:当注册边界的 recover 捕获到的 panic 值本身是 error 时,
 	// 该 error 直接保留为本字段(不再包一层诊断错误),因此错误链上的

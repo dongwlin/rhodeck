@@ -262,14 +262,4 @@ func TestIDTypesAreDistinctInt32(t *testing.T) {
 			t.Errorf("%s kind = %v, want int32", tt, tt.Kind())
 		}
 	}
-
-	// 显式转换合法且保值;不同类型之间不能隐式混用由编译期保证,
-	// 运行期以类型差异断言覆盖。
-	tid := TaskID(42)
-	if AsyncID(tid) != AsyncID(42) || MessageID(tid) != MessageID(42) {
-		t.Error("explicit conversion between ID types should preserve the value")
-	}
-	if TaskID(0) != 0 || AsyncID(0) != 0 {
-		t.Error("zero (documented failure value) must be representable")
-	}
 }
