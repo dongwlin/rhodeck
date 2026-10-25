@@ -301,6 +301,74 @@ func TestLimitsValidationAcceptsBoundaries(t *testing.T) {
 	}
 }
 
+// TestConfigEntriesExactUpperBoundAccepted 验证 MAA-03 冻结向量 C07
+// 的恰达上界接受侧(本任务运行部分):合计项数恰为 ConfigEntries
+// (默认 256)被接受,再多一项拒绝。固定字段若被误计入项数,恰达
+// 上界的配置将变成 258 项而被拒,故接受侧同时钉死「固定字段与
+// Limits 自身不计入项数」。
+func TestConfigEntriesExactUpperBoundAccepted(t *testing.T) {
+	cfg := validRuntimeConfig()
+	cfg.ResourceRoots = make([]string, defaultLimits().ConfigEntries)
+	for i := range cfg.ResourceRoots {
+		cfg.ResourceRoots[i] = "/opt/res"
+	}
+	snap, err := snapshotConfig(cfg)
+	if err != nil {
+		t.Fatalf("合计项数恰为 ConfigEntries 的配置应当被接受: %v", err)
+	}
+	if len(snap.resourceRoots) != len(cfg.ResourceRoots) {
+		t.Fatalf("快照资源根数 = %d, want %d", len(snap.resourceRoots), len(cfg.ResourceRoots))
+	}
+
+	// 多一项即拒绝,与恰达上界构成边界对。
+	cfg.ResourceRoots = append(cfg.ResourceRoots, "/opt/res")
+	if _, err := snapshotConfig(cfg); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("合计项数超 ConfigEntries 一项必须拒绝, got %v", err)
+	}
+}
+
+// TestConfigBytesExactUpperBoundAccepted 验证 MAA-03 冻结向量 C08 的
+// 恰达限接受侧(本任务运行部分):全部文本字节合计(含固定路径)
+// 恰为 ConfigBytes(默认 4,194,304)被接受,再多 1 字节拒绝;各单串
+// 均不超 InputStringBytes,超的只是总预算。
+func TestConfigBytesExactUpperBoundAccepted(t *testing.T) {
+	// 用资源根凑足文本:每根取 min(余量, InputStringBytes),末根取
+	// 余量,使固定路径 + 各根合计恰为默认 ConfigBytes。
+	cfg := validRuntimeConfig()
+	remaining := defaultLimits().ConfigBytes - uint64(len(cfg.LibraryPath)+len(cfg.UserDir))
+	cfg.ResourceRoots = nil
+	for remaining > 0 {
+		n := remaining
+		if n > defaultLimits().InputStringBytes {
+			n = defaultLimits().InputStringBytes
+		}
+		cfg.ResourceRoots = append(cfg.ResourceRoots, "/"+strings.Repeat("r", int(n)-1))
+		remaining -= n
+	}
+	total := uint64(len(cfg.LibraryPath) + len(cfg.UserDir))
+	for _, root := range cfg.ResourceRoots {
+		total += uint64(len(root))
+	}
+	if total != defaultLimits().ConfigBytes {
+		t.Fatalf("测试构造失准: 文本合计 %d, want 恰为 %d", total, defaultLimits().ConfigBytes)
+	}
+
+	snap, err := snapshotConfig(cfg)
+	if err != nil {
+		t.Fatalf("文本合计恰为 ConfigBytes 的配置应当被接受: %v", err)
+	}
+	if len(snap.resourceRoots) != len(cfg.ResourceRoots) {
+		t.Fatalf("快照资源根数 = %d, want %d", len(snap.resourceRoots), len(cfg.ResourceRoots))
+	}
+
+	// 末根再多 1 字节仍在 InputStringBytes 之内,被拒的只是总预算。
+	last := len(cfg.ResourceRoots) - 1
+	cfg.ResourceRoots[last] += "x"
+	if _, err := snapshotConfig(cfg); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("文本合计超 ConfigBytes 1 字节必须拒绝, got %v", err)
+	}
+}
+
 // TestConnectionExtraJSONAcceptsObjectForms 验证合法 extras JSON 被
 // 接受且原文逐字节保留:{} 允许、\u0000 转义合法并原样保留、大
 // 整数不经 float64 往返、尾随空白允许。

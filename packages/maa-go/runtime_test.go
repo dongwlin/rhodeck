@@ -329,6 +329,32 @@ func TestOpenSessionStepsAndMetadata(t *testing.T) {
 	}
 }
 
+// TestOpenAcceptsVersionAtScanWindowBoundary 验证 Version 扫描窗的
+// 恰达边界接受侧(MAA-03 冻结向量 C13 的本层运行部分):Version 恰
+// 为 4,096 字节、NUL 落在扫描窗(4,097 字节)末端时被接受,复制结果
+// 逐字节正确。fake 假 buffer 恒分配满 4,097 字节(见 fakeSession.version
+// 的注释),4,096 字节文本经 versionText 注入后 NUL 恰在窗口末字节;
+// 若扫描窗被缩短到 4,096 字节,本用例将因界内无 NUL 而失败。「窗口
+// 内无 NUL → ErrProtocol」的拒绝侧见 TestOpenStepFailuresTerminateLifecycle
+// 的「version 界内无 NUL」。C13 的完整验收(含真实库行为)归属
+// MAA-08/12/14,本用例不宣称已完成 C13。
+func TestOpenAcceptsVersionAtScanWindowBoundary(t *testing.T) {
+	sess := newValidFakeSession()
+	env := &fakeEnv{session: sess}
+	gate := &lifecycleGate{}
+
+	text := strings.Repeat("v", versionBytesLimit)
+	sess.versionText = text
+
+	rt, err := open(validRuntimeConfig(), env, gate)
+	if err != nil || rt == nil {
+		t.Fatalf("扫描窗末端 NUL 的 Version 应当被接受: rt=%v err=%v", rt, err)
+	}
+	if got := rt.Version(); got != text {
+		t.Errorf("Version() 长度 = %d, want %d,且内容必须逐字节一致", len(got), versionBytesLimit)
+	}
+}
+
 // TestOpenSnapshotIsDeepCopy 验证:Open 返回后修改原配置的一切可变
 // 内容,白盒断言 Runtime 私有限制快照与假会话收到的 *byte 内容仍
 // 为原始值。
