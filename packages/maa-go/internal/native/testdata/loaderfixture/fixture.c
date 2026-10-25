@@ -18,7 +18,8 @@
  *   - 默认(完整变体):26 个导出全部在场;
  *   - -DLOADER_FIXTURE_MISSING(缺失变体):省略 3 个 required
  *     allPlatforms 符号 AsstSetUserDir、AsstAsyncScreencap、AsstLog
- *     (恰跨 allPlatforms 清单首、中、尾,便于验收聚合诊断的顺序);
+ *     (位于 allPlatforms 清单(25 条)第 1、18、25 条——首部、后部、
+ *     尾部,便于验收聚合诊断的顺序);
  *   - 缺失集合必须与 Go 测试(loaderfixture_linux_test.go 的
  *     expectedMissingFixtureSymbols)严格一致:任何一侧改动都必须
  *     同步另一侧。

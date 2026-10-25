@@ -84,7 +84,8 @@ const (
 )
 
 // expectedMissingFixtureSymbols 是缺失变体必须被聚合报告的符号集合,
-// 顺序即 symbolSpecs 声明顺序(恰跨 allPlatforms 清单首、中、尾)。
+// 顺序即 symbolSpecs 声明顺序(位于 allPlatforms 清单(25 条)第 1、
+// 18、25 条——首部、后部、尾部)。
 // 该集合必须与 fixture.c 的 LOADER_FIXTURE_MISSING 变体严格一致:
 // 任何一侧改动都必须同步另一侧,否则两用例之一必然失败。
 var expectedMissingFixtureSymbols = []string{
@@ -315,8 +316,12 @@ func runLoaderFixtureMissingChild() int {
 // 新子进程中 NewLoader().Open → ResolveAndRegister 全部成功并发布
 // API 表。父进程断言子进程退出 0、标记行在场,并独立复验两处:
 //   - symbols 值等于父进程侧由 symbolSpecs(new(api)) 现算的适用符号
-//     条数(Linux 上即 allPlatforms 条数 25)——这是夹具与符号清单的
-//     同步检查;
+//     条数(Linux 上即 allPlatforms 条数 25)。子进程标记行与父进程
+//     复验出自同一测试二进制内的同一现算函数(countApplicableSpecs),
+//     该比对只防标记行失真或过期硬编码,防不了夹具↔symbolSpecs 的
+//     漂移;夹具↔符号清单的最终同步以子进程 ResolveAndRegister 的
+//     成败为裁决(缺必需导出即整体失败),加本用例硬编码复验的
+//     caps=1,1,0;
 //   - caps 字段恰为 create=1,imageBgr=1,attach=0。
 //
 // 无编译器时在构建入口处 skip(不构建夹具、不启动子进程);子进程
