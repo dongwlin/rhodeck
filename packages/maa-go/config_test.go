@@ -321,6 +321,20 @@ func TestConnectionExtraJSONAcceptsObjectForms(t *testing.T) {
 	}
 }
 
+// TestStaticOptionValueMayBeEmpty 验证 option value 允许空串
+// (路径与 extras name 仍必须非空):空串贡献 0 字节预算。
+func TestStaticOptionValueMayBeEmpty(t *testing.T) {
+	cfg := validRuntimeConfig()
+	cfg.StaticOptions = []StaticOption{{Key: 1, Value: ""}, {Key: 2, Value: "x"}}
+	snap, err := snapshotConfig(cfg)
+	if err != nil {
+		t.Fatalf("空 option value 应当被接受: %v", err)
+	}
+	if snap.staticOptions[0].Value != "" || snap.staticOptions[1].Value != "x" {
+		t.Errorf("静态选项快照不符: %+v", snap.staticOptions)
+	}
+}
+
 // TestSnapshotDeepCopiesConfig 验证快照深拷贝:snapshotConfig 返回
 // 后修改原配置的 slice 元素、RawMessage 底层字节与追加,不影响快照。
 func TestSnapshotDeepCopiesConfig(t *testing.T) {
