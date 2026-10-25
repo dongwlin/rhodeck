@@ -310,7 +310,9 @@ func TestCounterexampleExclusionThroughCLI(t *testing.T) {
 // profile 注册表。词表外的拼写(uint8→bool、int32→int/uint32)在
 // go-syntax 层被冻结词表拒绝;词表内但语义错误的改动到达签名比对层以
 // signature 类拒绝。图像缓冲区→uintptr、const char*→uint8_t*、丢
-// const、x/y 调序已由 compare_test.go 的 CLI 向量覆盖,不重复。
+// const、x/y 调序已由 compare_test.go 的 CLI 向量覆盖,不重复。窗口
+// 符号的 method 调序在两目标下都必须以 signature 拒绝:linux 目标下
+// 该绑定属 NonTarget,签名比对同样逐参数核验。
 func TestCounterexampleSignatureThroughCLI(t *testing.T) {
 	cInput := positiveCInput(t)
 	cases := []struct {
@@ -375,6 +377,14 @@ func TestCounterexampleSignatureThroughCLI(t *testing.T) {
 			mustFailWithGoMutation(t, "linux", cInput, tc.mutate, tc.wantCat, tc.wantLoc)
 		})
 	}
+
+	t.Run("window method reorder on the linux target (non-target binding)", func(t *testing.T) {
+		mustFailWithGoMutation(t, "linux", cInput, func(t *testing.T, fs map[string]string) {
+			fs["api.go"] = mustReplace(t, fs["api.go"],
+				"AsyncAttachWindow   func(handle uintptr, hwnd uintptr, screencapMethod uint64, mouseMethod uint64, keyboardMethod uint64, block uint8) int32",
+				"AsyncAttachWindow   func(handle uintptr, hwnd uintptr, mouseMethod uint64, screencapMethod uint64, keyboardMethod uint64, block uint8) int32")
+		}, CatSignature, "parameter 3 name screencapMethod")
+	})
 
 	t.Run("window method reorder on the windows target", func(t *testing.T) {
 		mustFailWithGoMutation(t, "windows", cInput, func(t *testing.T, fs map[string]string) {

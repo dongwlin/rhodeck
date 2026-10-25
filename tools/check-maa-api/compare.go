@@ -1,11 +1,12 @@
 // compare.go 在 link 与锁定期望比对成功之后执行宽度级 C↔Go 逐参数
-// 语义比对:对每条 Bound 条目取 C 函数声明与对应 Go api 字段做逐位置
-// 具名序列比对(参数个数、参数名映射、类型映射、返回值映射),并对
-// 两个 Go callback 类型与 C 的 AsstApiCallback typedef 做平台适配
-// 比对。失败以 signature 类诊断报第一条,定位到过错方(Go 参数名/
-// 类型错误定位到 Go 字段或 callback 声明;C 类型无许可映射定位到 C
-// 声明),含符号、参数位置与名称、expected/actual(C 侧类型用
-// CType.String())。
+// 语义比对:对每条绑定条目——link.Bound 的目标适用绑定与
+// link.NonTarget 的非目标平台 windowsOnly 绑定——取 C 函数声明与对应
+// Go api 字段做逐位置具名序列比对(参数个数、参数名映射、类型映射、
+// 返回值映射),并对两个 Go callback 类型与 C 的 AsstApiCallback
+// typedef 做平台适配比对。失败以 signature 类诊断报第一条,定位到
+// 过错方(Go 参数名/类型错误定位到 Go 字段或 callback 声明;C 类型无
+// 许可映射定位到 C 声明),含符号、参数位置与名称、expected/actual
+// (C 侧类型用 CType.String())。
 //
 // 类型映射是绑定设计 §3 冻结的常量表,不做任何猜测(不实现通用 C
 // 编译器/数据流分析);其余一切 C 类型形状无许可映射,出现即失败:
@@ -21,9 +22,10 @@
 //   - struct AsstExtAPI*(opaque handle)→ uintptr;
 //   - callback 函数指针 → uintptr;
 //   - void* 仅三种冻结上下文许可:C 参数名恰为 custom_arg → uintptr
-//     (token);恰为 hwnd 且符号为两个窗口符号之一 → uintptr(窗口
-//     句柄);恰为 buff 且符号为 AsstGetImage/AsstGetImageBgr →
-//     unsafe.Pointer(图像缓冲区)。其余任何 void* 位置失败。
+//     (token);恰为 hwnd 且符号为被绑定的窗口符号
+//     AsstAsyncAttachWindow → uintptr(窗口句柄);恰为 buff 且符号
+//     为 AsstGetImage/AsstGetImageBgr → unsafe.Pointer(图像缓冲区)。
+//     其余任何 void* 位置失败。
 //
 // 参数名映射仅允许设计 §3 冻结的 8 个重命名,其余参数必须原样同名;
 // 匿名与空白参数名、未批准重命名以及同类型参数调序(x/y、
@@ -70,11 +72,13 @@ func approvedParamName(cName string) string {
 	return cName
 }
 
-// void* 指针用途的冻结符号上下文:窗口句柄仅两个窗口符号,图像缓冲
-// 区仅 AsstGetImage/AsstGetImageBgr;custom_arg token 按参数名许可
-// (带它的符号集合由 C 输入的锁定导出集合约束)。
+// void* 指针用途的冻结符号上下文:窗口句柄仅 AsstAsyncAttachWindow
+// (唯一被绑定的窗口符号;deprecated 的 AsstAttachWindow 被精确排除、
+// 永无绑定,到不了比对层,不构成许可上下文),图像缓冲区仅
+// AsstGetImage/AsstGetImageBgr;custom_arg token 按参数名许可(带它
+// 的符号集合由 C 输入的锁定导出集合约束)。
 var (
-	voidPtrWindowSymbols = newSet("AsstAttachWindow", "AsstAsyncAttachWindow")
+	voidPtrWindowSymbols = newSet("AsstAsyncAttachWindow")
 	voidPtrImageSymbols  = newSet("AsstGetImage", "AsstGetImageBgr")
 )
 
@@ -184,6 +188,10 @@ func charPointeeConstDiag(symbol, paramName string, position int, ct CType, cLoc
 		return nil
 	}
 	nonConstOK := frozenNonConstCharPointees[symbol][paramName]
+	// 触发条件:本函数仅被 permittedGoTypes 因 const 失配返回无许可
+	// 映射的调用方调用,故此处 Const == nonConstOK 恰为偏离冻结分布
+	// (const 要求恒为 nonConstOK 的补集);一致时返回 nil 交回通用
+	// 无许可映射诊断。
 	if ct.Pointee.Const != nonConstOK {
 		return nil
 	}
@@ -319,17 +327,20 @@ type SignatureCallbackEntry struct {
 	Return SignatureReturn
 }
 
-// SignatureResult 是签名比对结果:Symbols 覆盖全部 Bound 条目(按符
-// 号名排序),Callbacks 覆盖两个 callback 类型(unixCallback、
-// windowsCallback 固定顺序)。
+// SignatureResult 是签名比对结果:Symbols 覆盖全部绑定条目
+// (link.Bound 的目标适用绑定与 link.NonTarget 的非目标 windowsOnly
+// 绑定,两目标均为全部 26 个生产字段,按符号名排序,与目标无关),
+// Callbacks 覆盖两个 callback 类型(unixCallback、windowsCallback
+// 固定顺序)。
 type SignatureResult struct {
 	Symbols   []SignatureEntry
 	Callbacks []SignatureCallbackEntry
 }
 
-// CompareSignatures 执行宽度级签名比对:先对每条 Bound 条目比对 C
-// 函数与 Go 字段,再对两个 callback 类型比对 C 的 AsstApiCallback
-// typedef。失败返回单条 signature 诊断,定位到过错方。
+// CompareSignatures 执行宽度级签名比对:先对每条绑定条目(Bound 与
+// NonTarget 的 windowsOnly 绑定)比对 C 函数与 Go 字段,再对两个
+// callback 类型比对 C 的 AsstApiCallback typedef。失败返回单条
+// signature 诊断,定位到过错方。
 func CompareSignatures(c *CExtraction, g *GoExtraction, link *LinkResult) (*SignatureResult, []Diagnostic) {
 	fail := func(d Diagnostic) (*SignatureResult, []Diagnostic) { return nil, []Diagnostic{d} }
 	if c == nil || g == nil || link == nil {
@@ -348,28 +359,32 @@ func CompareSignatures(c *CExtraction, g *GoExtraction, link *LinkResult) (*Sign
 	}
 
 	res := &SignatureResult{}
-	for _, b := range link.Bound {
-		cf, ok := cByName[b.Symbol]
+	// compareEntry 比对单个绑定符号的 C 声明与 Go 字段并追加核验记
+	// 录;C 声明或 Go 字段缺失、参数或返回值失配都返回诊断,由调用方
+	// 失败关闭。C 侧一律取完整声明集合(c.Functions 在两目标都含
+	// windowsOnly 声明)。
+	compareEntry := func(symbol, field string) *Diagnostic {
+		cf, ok := cByName[symbol]
 		if !ok {
-			return fail(Diagnostic{Category: CatSignature, Symbol: b.Symbol,
-				Expected: "c declaration for the bound symbol", Actual: "missing",
-				Message: "signature comparison requires the c declaration of every bound symbol"})
+			return &Diagnostic{Category: CatSignature, Symbol: symbol,
+				Expected: "c declaration for the compared binding", Actual: "missing",
+				Message: "signature comparison requires the c declaration of every compared binding"}
 		}
-		gf, ok := fieldByName[b.Field]
+		gf, ok := fieldByName[field]
 		if !ok {
-			return fail(Diagnostic{Category: CatSignature, Symbol: b.Symbol,
-				Expected: "api field for the bound symbol", Actual: "missing",
-				Message: "signature comparison requires the go field of every bound symbol"})
+			return &Diagnostic{Category: CatSignature, Symbol: symbol,
+				Expected: "api field for the compared binding", Actual: "missing",
+				Message: "signature comparison requires the go field of every compared binding"}
 		}
 		cLoc := sigLocation{file: cf.Header, line: cf.Line}
 		goLoc := sigLocation{file: gf.File, line: gf.Line}
-		if d := compareSignatureParams(b.Symbol, cf.Params, gf.Params, cLoc, goLoc); d != nil {
-			return fail(*d)
+		if d := compareSignatureParams(symbol, cf.Params, gf.Params, cLoc, goLoc); d != nil {
+			return d
 		}
-		if d := compareSignatureReturn(b.Symbol, cf.Ret, gf.Result, cLoc, goLoc); d != nil {
-			return fail(*d)
+		if d := compareSignatureReturn(symbol, cf.Ret, gf.Result, cLoc, goLoc); d != nil {
+			return d
 		}
-		entry := SignatureEntry{Symbol: b.Symbol, Field: b.Field, Header: cf.Header, CLine: cf.Line,
+		entry := SignatureEntry{Symbol: symbol, Field: field, Header: cf.Header, CLine: cf.Line,
 			GoFile: gf.File, GoLine: gf.Line,
 			Return: SignatureReturn{CType: cf.Ret.String(), GoType: string(gf.Result)}}
 		for i := range cf.Params {
@@ -378,9 +393,38 @@ func CompareSignatures(c *CExtraction, g *GoExtraction, link *LinkResult) (*Sign
 				CType: cf.Params[i].Type.String(), GoType: string(gf.Params[i].Type)})
 		}
 		res.Symbols = append(res.Symbols, entry)
+		return nil
 	}
-	// link.Bound 已按符号名排序;此处独立排序,保证报告契约不依赖
-	// link 内部实现。
+	for _, b := range link.Bound {
+		if d := compareEntry(b.Symbol, b.Field); d != nil {
+			return fail(*d)
+		}
+	}
+	// NonTarget 的 windowsOnly 绑定同样逐参数核验:api.go 与
+	// symbols.go 无平台条件,其声明真实参与两目标构建,窗口符号的字段
+	// 签名破坏(如参数调序)必须在任何目标下都报出,不能只靠 windows
+	// 目标发现——与 policy 比对一致,signature 比对不接收 Target。
+	// spec 条目由 link 保证存在(link 只在 windowsOnly 条目存在时才
+	// 分类 NonTarget),此处防御性缺失仍失败关闭。
+	specByName := map[string]GoSymbolSpec{}
+	for _, s := range g.Specs {
+		if _, dup := specByName[s.Name]; !dup {
+			specByName[s.Name] = s
+		}
+	}
+	for _, name := range link.NonTarget {
+		s, ok := specByName[name]
+		if !ok {
+			return fail(Diagnostic{Category: CatSignature, Symbol: name,
+				Expected: "symbolSpec entry for the non-target windowsOnly binding", Actual: "missing",
+				Message: "signature comparison requires the spec entry of every compared binding"})
+		}
+		if d := compareEntry(name, s.Field); d != nil {
+			return fail(*d)
+		}
+	}
+	// link.Bound 与 link.NonTarget 已按符号名排序;此处独立排序,保证
+	// 报告契约不依赖 link 内部实现。
 	sort.Slice(res.Symbols, func(i, j int) bool { return res.Symbols[i].Symbol < res.Symbols[j].Symbol })
 
 	// C 的 AsstApiCallback typedef:解析层冻结其精确拼写,提取成功后

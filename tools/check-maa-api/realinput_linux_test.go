@@ -398,11 +398,11 @@ func TestRealHeaderCheckerEndToEnd(t *testing.T) {
 }
 
 // TestRealHeaderSignatureSection 用真实独立 C 头核验宽度级签名比对
-// 的成功报告段(MAA-10):windows 目标下 26 条绑定全部通过,即冻结
-// 映射与生产 api.go/callback_types.go 逐字段一致——任何一处宽度/
-// 符号位/指针用途/参数名偏离都会使整个命令失败;linux 目标为 25 条
-// (窗口符号属非目标绑定,不参与比对)。callback 平台适配两条均核
-// 验;同参数两次运行 stdout 逐字节一致(signatures 段键序稳定)。
+// 的成功报告段(MAA-10):两目标下全部 26 条绑定(含 linux 目标下属
+// NonTarget 的 windowsOnly 绑定)全部通过,即冻结映射与生产
+// api.go/callback_types.go 逐字段一致——任何一处宽度/符号位/指针
+// 用途/参数名偏离都会使整个命令失败。callback 平台适配两条均核验;
+// 同参数两次运行 stdout 逐字节一致(signatures 段键序稳定)。
 func TestRealHeaderSignatureSection(t *testing.T) {
 	cInput := requireRealCInput(t)
 	goRoot := repoRoot(t)
@@ -450,8 +450,8 @@ func TestRealHeaderSignatureSection(t *testing.T) {
 		t.Error("success output including the signatures section must be byte-identical across runs")
 	}
 	linuxRep := parse(linuxOut, "linux")
-	if len(linuxRep.Signatures.Symbols) != 25 {
-		t.Fatalf("linux signature symbols = %d, want 25", len(linuxRep.Signatures.Symbols))
+	if len(linuxRep.Signatures.Symbols) != 26 {
+		t.Fatalf("linux signature symbols = %d, want 26 (all bindings, including the non-target windowsOnly binding)", len(linuxRep.Signatures.Symbols))
 	}
 	for i := 1; i < len(linuxRep.Signatures.Symbols); i++ {
 		if linuxRep.Signatures.Symbols[i-1].Symbol >= linuxRep.Signatures.Symbols[i].Symbol {
@@ -539,7 +539,20 @@ func TestRealHeaderSignatureSection(t *testing.T) {
 		t.Errorf("windowsCallback record = %+v", wc)
 	}
 
-	// windows 目标:26 条绑定全部通过,含窗口符号的 hwnd/method 映射。
+	// linux 目标:窗口符号属 NonTarget 的 windowsOnly 绑定,同样被
+	// 逐参数核验并出现在核验记录里。
+	awl := symbol(linuxRep, "AsstAsyncAttachWindow")
+	if p := param(awl, 1); p != (signatureParamJSON{Position: 2, CName: "hwnd", GoName: "hwnd",
+		CType: "void*", GoType: "uintptr"}) {
+		t.Errorf("linux AsstAsyncAttachWindow hwnd = %+v", p)
+	}
+	if p := param(awl, 2); p != (signatureParamJSON{Position: 3, CName: "screencap_method",
+		GoName: "screencapMethod", CType: "uint64", GoType: "uint64"}) {
+		t.Errorf("linux AsstAsyncAttachWindow screencap_method = %+v", p)
+	}
+
+	// windows 目标:26 条绑定全部通过,窗口符号经 Bound 分类核验,
+	// hwnd/method 映射与 linux 目标一致,不得重复报错或行为回退。
 	winRep := parse(run("windows"), "windows")
 	if len(winRep.Signatures.Symbols) != 26 {
 		t.Fatalf("windows signature symbols = %d, want 26", len(winRep.Signatures.Symbols))

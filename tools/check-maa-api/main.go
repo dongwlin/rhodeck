@@ -296,9 +296,10 @@ func printFailure(stderr io.Writer, profileID string, target Target, diags []Dia
 // buildReport 组装确定性成功输出:所有列表按名称排序;空列表输出
 // 为 [],不输出 null。expect 段给出冻结期望表的逐符号 policy/platform
 // 期望与实际对照(30 项,按符号名排序,与目标无关);signatures 段
-// 给出宽度级逐参数核验记录(Bound 符号按符号名排序,两个 callback
-// 固定顺序),含每个参数位置的 C/Go 名称与类型、返回映射与双方声明
-// 位置。
+// 给出宽度级逐参数核验记录(全部绑定符号——目标适用绑定与非目标平
+// 台的 windowsOnly 绑定,两目标均为 26 项——按符号名排序,两个
+// callback 固定顺序),含每个参数位置的 C/Go 名称与类型、返回映射与
+// 双方声明位置。
 func buildReport(profileID string, target Target, cext *CExtraction, gext *GoExtraction,
 	sel *GoSelection, link *LinkResult, expect *ExpectResult, signatures *SignatureResult) reportJSON {
 	report := reportJSON{

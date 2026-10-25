@@ -54,8 +54,9 @@ check-maa-api --profile maa-v6.20.1 --goos windows --goarch amd64 \
   `actual` 的 policy/platform,按符号名排序,与目标无关。期望表是
   checker 内部常量,不从被检查的 Go 文件推导:同时改写 Go 符号表与
   其派生清单使二者一致,只要偏离冻结期望仍失败。
-- `signatures`:宽度级 C↔Go 逐参数语义比对的核验记录——每条目标
-  适用绑定一个符号条目(按符号名排序),含双方声明位置
+- `signatures`:宽度级 C↔Go 逐参数语义比对的核验记录——每条绑定一
+  个符号条目(目标适用绑定与非目标平台的 windowsOnly 绑定,两目标均
+  为全部 26 项,按符号名排序,与目标无关),含双方声明位置
   (`c_header`/`c_line` 与 `go_file`/`go_line`)、逐参数位置的
   C 名/批准映射后的 Go 名与 C 规范化类型/Go raw 类型
   (`position`/`c_name`/`go_name`/`c_type`/`go_type`)、返回映射

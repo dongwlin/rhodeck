@@ -42,7 +42,8 @@ func sigCFuncPtr() CType {
 // ---- 提取基线与改动辅助 ----
 
 // mustSignatureBase 用合成 C 正例加真实生产 native 包构造 link 成功
-// 后的比对基线(linux 目标,25 条 Bound)。
+// 后的比对基线(linux 目标,25 条 Bound + 1 条 NonTarget 的
+// windowsOnly 绑定,共 26 个被比对符号)。
 func mustSignatureBase(t *testing.T) (*CExtraction, *GoExtraction, *LinkResult) {
 	t.Helper()
 	c := mustExtract(t, positiveFiles(t), linuxTarget)
@@ -223,21 +224,37 @@ func TestPermittedGoTypesTable(t *testing.T) {
 
 // TestCompareSignaturesPositiveRealNative 用真实生产 native 包加合成
 // C 正例证明冻结映射与生产 api.go/callback_types.go 逐字段一致:两
-// 目标全部 Bound 条目通过,符号按名排序,callback 两条均核验;关键映
-// 射逐点抽查。byte 别名同样接受。
+// 目标全部绑定条目(目标适用绑定与非目标 windowsOnly 绑定,共 26
+// 项)通过,符号按名排序,callback 两条均核验;关键映射逐点抽查。
+// byte 别名同样接受。
 func TestCompareSignaturesPositiveRealNative(t *testing.T) {
 	c, g, link := mustSignatureBase(t)
 	res, diags := CompareSignatures(c, g, link)
 	if len(diags) != 0 {
 		t.Fatalf("CompareSignatures unexpectedly failed: %v", diags)
 	}
-	if len(res.Symbols) != len(link.Bound) {
-		t.Fatalf("symbols = %d, want %d (one entry per bound symbol)", len(res.Symbols), len(link.Bound))
+	if len(res.Symbols) != len(link.Bound)+len(link.NonTarget) {
+		t.Fatalf("symbols = %d, want %d (one entry per binding, including non-target windowsOnly bindings)",
+			len(res.Symbols), len(link.Bound)+len(link.NonTarget))
 	}
+	covered := map[string]bool{}
 	for i, e := range res.Symbols {
-		if e.Symbol != link.Bound[i].Symbol {
-			t.Fatalf("symbols[%d] = %q, want %q (must follow the sorted bound order)",
-				i, e.Symbol, link.Bound[i].Symbol)
+		if i > 0 && e.Symbol <= res.Symbols[i-1].Symbol {
+			t.Fatalf("symbols must be strictly sorted: %q after %q", e.Symbol, res.Symbols[i-1].Symbol)
+		}
+		if covered[e.Symbol] {
+			t.Fatalf("symbol %s compared more than once", e.Symbol)
+		}
+		covered[e.Symbol] = true
+	}
+	for _, b := range link.Bound {
+		if !covered[b.Symbol] {
+			t.Errorf("bound symbol %s missing from the signature result", b.Symbol)
+		}
+	}
+	for _, n := range link.NonTarget {
+		if !covered[n] {
+			t.Errorf("non-target windowsOnly binding %s missing from the signature result", n)
 		}
 	}
 	entry := func(symbol string) SignatureEntry {
@@ -342,7 +359,21 @@ func TestCompareSignaturesPositiveRealNative(t *testing.T) {
 		t.Fatalf("byte alias must be accepted: %v", diags)
 	}
 
-	// windows 目标:26 条绑定全部通过,含窗口符号的 hwnd/method 映射。
+	// linux 目标:窗口符号属 NonTarget 的 windowsOnly 绑定,同样被
+	// 逐参数核验并出现在核验记录里(hwnd 与 method 映射与 windows
+	// 目标一致)。
+	awl := entry("AsstAsyncAttachWindow")
+	if p := awl.Params[1]; p.CName != "hwnd" || p.GoName != "hwnd" ||
+		p.CType != "void*" || p.GoType != "uintptr" {
+		t.Errorf("linux AsstAsyncAttachWindow hwnd = %+v", p)
+	}
+	if p := awl.Params[2]; p.CName != "screencap_method" || p.GoName != "screencapMethod" ||
+		p.CType != "uint64" || p.GoType != "uint64" {
+		t.Errorf("linux AsstAsyncAttachWindow screencap_method = %+v", p)
+	}
+
+	// windows 目标:26 条绑定全部通过,窗口符号经 Bound 分类核验,
+	// hwnd/method 映射同上,不得重复报错或行为回退。
 	cw := mustExtract(t, positiveFiles(t), windowsTarget)
 	linkw, diags := LinkCGo(cw, g, windowsTarget)
 	if len(diags) != 0 {
@@ -459,8 +490,18 @@ func TestCompareSignatureGoSideFailures(t *testing.T) {
 		})
 	}
 
-	// 窗口 method 调序:linux 目标下该符号是非目标绑定,不参与比对;
-	// 在 windows 目标下必须被拒绝。
+	// 窗口 method 调序:该符号的声明无平台条件、真实参与两目标构建,
+	// linux 目标下作为 NonTarget 的 windowsOnly 绑定同样参与比对,
+	// windows 目标下经 Bound 分类核验——两目标都必须被拒绝。
+	t.Run("window method reorder on linux target (non-target binding)", func(t *testing.T) {
+		c, g, link := mustSignatureBase(t)
+		mutateField(t, g, "AsyncAttachWindow", func(f *GoField) {
+			f.Params[2].Name, f.Params[3].Name = f.Params[3].Name, f.Params[2].Name
+		})
+		fl := sigField(t, g, "AsyncAttachWindow")
+		mustSigFail(t, c, g, link, "api.go", fl.Line, "AsstAsyncAttachWindow",
+			"parameter 3 name screencapMethod")
+	})
 	t.Run("window method reorder on windows target", func(t *testing.T) {
 		c := mustExtract(t, positiveFiles(t), windowsTarget)
 		g := mustExtractGo(t, copyRealNative(t))
@@ -768,8 +809,8 @@ func TestRealNativeSignatureBaseline(t *testing.T) {
 		t.Error("success output including the signatures section must be byte-identical across runs")
 	}
 	linuxRep := parse(linuxOut, "linux")
-	if len(linuxRep.Signatures.Symbols) != 25 {
-		t.Fatalf("linux signature symbols = %d, want 25", len(linuxRep.Signatures.Symbols))
+	if len(linuxRep.Signatures.Symbols) != 26 {
+		t.Fatalf("linux signature symbols = %d, want 26 (all bindings, including the non-target windowsOnly binding)", len(linuxRep.Signatures.Symbols))
 	}
 	for i := 1; i < len(linuxRep.Signatures.Symbols); i++ {
 		if linuxRep.Signatures.Symbols[i-1].Symbol >= linuxRep.Signatures.Symbols[i].Symbol {
@@ -790,6 +831,13 @@ func TestRealNativeSignatureBaseline(t *testing.T) {
 	if lg.Return != (signatureReturnJSON{CType: "void", GoType: ""}) {
 		t.Errorf("AsstLog return = %+v", lg.Return)
 	}
+
+	// linux 目标:窗口符号属 NonTarget 的 windowsOnly 绑定,同样被
+	// 逐参数核验并出现在核验记录里。
+	awl := reportSignatureSymbol(t, linuxRep, "AsstAsyncAttachWindow")
+	assertReportParam(t, "AsstAsyncAttachWindow", awl.Params[1], 2, "hwnd", "hwnd", "void*", "uintptr")
+	assertReportParam(t, "AsstAsyncAttachWindow", awl.Params[2], 3,
+		"screencap_method", "screencapMethod", "uint64", "uint64")
 
 	if len(linuxRep.Signatures.Callbacks) != 2 {
 		t.Fatalf("callbacks = %d, want 2", len(linuxRep.Signatures.Callbacks))
