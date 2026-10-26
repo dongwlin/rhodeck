@@ -111,10 +111,10 @@ func TestAsyncResultRecordSnapshotIsIndependent(t *testing.T) {
 }
 
 // TestEventAndResultSnapshotsDoNotShareBuffers 验证:Event 与
-// AsyncResult 不共享可被用户修改的内部 JSON 缓冲区——两份快照的
-// RawMessage 底层不重叠,互不串扰。
+// AsyncResult 不共享可被用户修改的内部 JSON 缓冲区——同一来源原文
+// 分别喂给两条记录,各自独立 clone;从任一侧原地改写快照副本,另
+// 一侧的副本与两条记录的缓存都不受影响(双向独立)。
 func TestEventAndResultSnapshotsDoNotShareBuffers(t *testing.T) {
-	// 同一来源原文分别喂给两条记录:各自独立 clone,不共享。
 	src := json.RawMessage(testEventJSON)
 	evRec := newEventRecord(MessageID(1), src, 1)
 	resRec := newResultRecord(AsyncID(2), testResultWhat, true, src)
@@ -122,6 +122,7 @@ func TestEventAndResultSnapshotsDoNotShareBuffers(t *testing.T) {
 	ev := evRec.snapshot()
 	res := resRec.snapshot()
 
+	// Event 侧原地改写:AsyncResult 副本与两条记录缓存不受影响。
 	for i := range ev.JSON {
 		ev.JSON[i] = '#'
 	}
@@ -133,6 +134,22 @@ func TestEventAndResultSnapshotsDoNotShareBuffers(t *testing.T) {
 	}
 	if got := string(resRec.snapshot().Details); got != testEventJSON {
 		t.Errorf("Event 快照的改写串扰到结果缓存: %q", got)
+	}
+
+	// AsyncResult 侧原地改写:全新取得的 Event 快照与两条记录缓存
+	// 不受影响(ev 副本已被上一段有意改写,它是调用者拥有的独立
+	// 数据,允许保持改写状态)。
+	for i := range res.Details {
+		res.Details[i] = '@'
+	}
+	if got := string(evRec.snapshot().JSON); got != testEventJSON {
+		t.Errorf("AsyncResult 快照的改写串扰到事件缓存: %q", got)
+	}
+	if got := string(resRec.snapshot().Details); got != testEventJSON {
+		t.Errorf("AsyncResult 快照的改写串扰到结果缓存: %q", got)
+	}
+	if got := string(evRec.snapshot().JSON); got != testEventJSON {
+		t.Errorf("AsyncResult 快照的改写串扰到新取得的 Event 快照: %q", got)
 	}
 }
 
