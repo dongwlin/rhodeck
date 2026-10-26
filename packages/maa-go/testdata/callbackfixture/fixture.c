@@ -174,6 +174,9 @@ int cbfx_call_on_threads(cbfx_callback callback,
                          int32_t msg1, const char* details1, uintptr_t token1,
                          int32_t msg2, const char* details2, uintptr_t token2) {
     cbfx_thread_job jobs[3];
+    /* 零初始化:任一 fill 失败走统一清理时,未填充作业的 details 保持
+     * NULL,free(NULL) 为无操作,不会释放未初始化的栈值。 */
+    memset(jobs, 0, sizeof(jobs));
     if (cbfx_fill_job(&jobs[0], callback, msg0, details0, token0, 0, 0) != 0 ||
         cbfx_fill_job(&jobs[1], callback, msg1, details1, token1, 0, 0) != 0 ||
         cbfx_fill_job(&jobs[2], callback, msg2, details2, token2, 0, 0) != 0) {
