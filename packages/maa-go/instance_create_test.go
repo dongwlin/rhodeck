@@ -33,6 +33,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
 )
@@ -188,11 +189,12 @@ type fakeAsyncCall struct {
 	screencap *fakeAsyncScreencapCall
 }
 
-// fakeInstanceCaller 是同步业务调用(MAA-22)与异步提交(MAA-23)的
-// 受控 fake native(对照 fakeInstanceCreator 先例):逐次记录全部业
-// 务调用(方法名、顺序、handle 与解码参数),支持注入返回值(缺省
-// 全部成功)与动作(onStart/onAsync* 在对应调用返回前执行,供早到
-// 完成投递与屏障注入)。不加载任何原生库。
+// fakeInstanceCaller 是同步业务调用(MAA-22)、异步提交(MAA-23)与
+// 输出缓冲区读取(MAA-24)的受控 fake native(对照 fakeInstanceCreator
+// 先例):逐次记录全部业务调用(方法名、顺序、handle 与解码参数),
+// 支持注入返回值(缺省全部成功)与动作(onStart/onAsync* 在对应调用
+// 返回前执行,供早到完成投递与屏障注入;image/uuid/tasks 三类读取经
+// respond 脚本写入 buffer 并决定原生返回值)。不加载任何原生库。
 type fakeInstanceCaller struct {
 	mu               sync.Mutex
 	sequence         []string
@@ -200,10 +202,14 @@ type fakeInstanceCaller struct {
 	setParamsCalls   []fakeSetParamsCall
 	boolCalls        []fakeBoolCall
 	asyncCalls       []fakeAsyncCall
+	outputCalls      []fakeOutputCall
 	appendRet        int32
 	setParamsRet     uint8
 	boolRets         map[string]uint8
 	asyncRets        map[string]int32
+	imageRespond     func(call fakeOutputCall) uint64
+	uuidRespond      func(call fakeOutputCall) uint64
+	tasksRespond     func(call fakeOutputCall) uint64
 	onStart          func(handle uintptr)
 	onAsyncConnect   func(handle uintptr)
 	onAsyncClick     func(handle uintptr)
@@ -366,6 +372,147 @@ func (f *fakeInstanceCaller) asyncRecordByName(i int, name string) fakeAsyncCall
 		}
 	}
 	return fakeAsyncCall{}
+}
+
+// fakeOutputCall 记录一次输出缓冲区读取调用(MAA-24 的 getImage/
+// getUUID/getTasksList 三类共用):handle 是收到的实例句柄,buffPtr
+// 是 buffer 首地址(以 unsafe.Pointer 记录,GC 据此保活目标内存——
+// 供调用返回后改写原生内容、验证 Go 快照独立性),buffSize 是收到
+// 的容量(按接口自身单位计:PNG/UUID 为字节,Tasks 为 int32 元素)。
+type fakeOutputCall struct {
+	name     string
+	handle   uintptr
+	buffPtr  unsafe.Pointer
+	buffSize uint64
+}
+
+// fakeOutputPoison 与 fakeTaskPoison 是输出读取 buffer 尾部的毒化
+// 值:fake 写入应答内容后把剩余容量全部毒化,binding 若超出返回长
+// 度读取(或把毒化内容放进结果),毒化值即出现在断言中暴露。
+const (
+	fakeOutputPoison = byte(0xDD)
+	fakeTaskPoison   = int32(-303700799) // 与合法任务 ID 明显可辨
+)
+
+// outputByteBuffer 把字节接口(PNG/UUID)调用记录的 buffer 还原为
+// 字节切片:指针为空或容量为零即 binding 违反「实际非空 buffer」契
+// 约(§6.2),按编程错误 panic 暴露,不以 0 容量静默继续。
+func outputByteBuffer(call fakeOutputCall) []byte {
+	if call.buffPtr == nil || call.buffSize == 0 {
+		panic(fmt.Sprintf("fake: %s received an empty output buffer (nil=%v, size=%d)", call.name, call.buffPtr == nil, call.buffSize))
+	}
+	return unsafe.Slice((*byte)(call.buffPtr), call.buffSize)
+}
+
+// outputInt32Buffer 把元素接口(Tasks)调用记录的 buffer 还原为
+// int32 元素切片:容量契约同 outputByteBuffer(容量按元素计)。
+func outputInt32Buffer(call fakeOutputCall) []int32 {
+	if call.buffPtr == nil || call.buffSize == 0 {
+		panic(fmt.Sprintf("fake: %s received an empty output buffer (nil=%v, size=%d)", call.name, call.buffPtr == nil, call.buffSize))
+	}
+	return unsafe.Slice((*int32)(call.buffPtr), call.buffSize)
+}
+
+// writeOutputBytes 把 content 写入一次字节接口读取调用的 buffer(超
+// 出容量截断),毒化剩余空间,并返回原生应答字节数。
+func writeOutputBytes(call fakeOutputCall, content []byte) uint64 {
+	buf := outputByteBuffer(call)
+	n := copy(buf, content)
+	for i := n; i < len(buf); i++ {
+		buf[i] = fakeOutputPoison
+	}
+	return uint64(n)
+}
+
+// writeOutputInt32s 把 ids 写入一次元素接口读取调用的 buffer(超出
+// 容量截断),毒化剩余元素,并返回原生应答元素数。
+func writeOutputInt32s(call fakeOutputCall, ids []int32) uint64 {
+	buf := outputInt32Buffer(call)
+	n := copy(buf, ids)
+	for i := n; i < len(buf); i++ {
+		buf[i] = fakeTaskPoison
+	}
+	return uint64(n)
+}
+
+// overwriteOutput 在读取调用返回后把 fake 记录的原生 buffer 全容量
+// 改写为毒化值(模拟 Core 在 binding 返回后更新缓存内容):已取得
+// 的 Go 快照若与原生 buffer 别名,毒化值即出现在快照断言中。
+func overwriteOutput(call fakeOutputCall) {
+	switch call.name {
+	case "getTasksList":
+		buf := outputInt32Buffer(call)
+		for i := range buf {
+			buf[i] = fakeTaskPoison
+		}
+	default:
+		buf := outputByteBuffer(call)
+		for i := range buf {
+			buf[i] = fakeOutputPoison
+		}
+	}
+}
+
+// getImage 对应 AsstGetImage:记录调用(非空 buffer 契约由写入时刻
+// 的 outputByteBuffer 守卫),锁外执行注入的 respond 脚本;未配置脚
+// 本时写入空内容并返回 0(合法空结果)。脚本可自由阻塞/写 buffer,
+// 不持有 fake 锁。
+func (f *fakeInstanceCaller) getImage(handle uintptr, buff unsafe.Pointer, buffSize uint64) uint64 {
+	f.mu.Lock()
+	f.sequence = append(f.sequence, "getImage")
+	call := fakeOutputCall{name: "getImage", handle: handle, buffPtr: buff, buffSize: buffSize}
+	f.outputCalls = append(f.outputCalls, call)
+	script := f.imageRespond
+	f.mu.Unlock()
+	if script != nil {
+		return script(call)
+	}
+	return 0
+}
+
+// getUUID 对应 AsstGetUUID:契约与脚本语义同 getImage。
+func (f *fakeInstanceCaller) getUUID(handle uintptr, buff *byte, buffSize uint64) uint64 {
+	f.mu.Lock()
+	f.sequence = append(f.sequence, "getUUID")
+	call := fakeOutputCall{name: "getUUID", handle: handle, buffPtr: unsafe.Pointer(buff), buffSize: buffSize}
+	f.outputCalls = append(f.outputCalls, call)
+	script := f.uuidRespond
+	f.mu.Unlock()
+	if script != nil {
+		return script(call)
+	}
+	return 0
+}
+
+// getTasksList 对应 AsstGetTasksList:契约与脚本语义同 getImage,
+// 容量按元素计。
+func (f *fakeInstanceCaller) getTasksList(handle uintptr, buff *int32, buffSize uint64) uint64 {
+	f.mu.Lock()
+	f.sequence = append(f.sequence, "getTasksList")
+	call := fakeOutputCall{name: "getTasksList", handle: handle, buffPtr: unsafe.Pointer(buff), buffSize: buffSize}
+	f.outputCalls = append(f.outputCalls, call)
+	script := f.tasksRespond
+	f.mu.Unlock()
+	if script != nil {
+		return script(call)
+	}
+	return 0
+}
+
+// outputRecordByName 返回第 i 次指定名称输出读取调用的记录快照。
+func (f *fakeInstanceCaller) outputRecordByName(i int, name string) fakeOutputCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.outputCalls {
+		if c.name == name {
+			if n == i {
+				return c
+			}
+			n++
+		}
+	}
+	return fakeOutputCall{}
 }
 
 // count 返回指定方法名的累计调用次数。
