@@ -447,17 +447,30 @@ func TestOperationWaitCancellation(t *testing.T) {
 	})
 
 	t.Run("终态已发布时取消的 ctx 仍取得终态", func(t *testing.T) {
-		id := AsyncID(23)
-		op := newOperation(id)
-		op.complete(newResultRecord(id, "Click", true, json.RawMessage(`{"ret":true}`)))
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
+		const (
+			rounds = 30
+			id     = AsyncID(23)
+		)
+		// wait 的 select 在 done 与 ctx.Done() 同时就绪时随机择一,
+		// 终态优先靠实现的复核纪律保证;单次抽样只有约 35% 概率走进
+		// 取消分支而命中「复核缺失」缺陷,故循环采样 30 轮(参照同
+		// 文件竞争用例的做法),每轮新建 operation 发布终态后配已取
+		// 消的 ctx,任一轮观察到取消形态即失败,使检出概率趋近必然。
+		for round := 0; round < rounds; round++ {
+			op := newOperation(id)
+			op.complete(newResultRecord(id, "Click", true, json.RawMessage(`{"ret":true}`)))
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
 
-		// 完成与取消竞争时已发布终态优先:done 与 ctx.Done() 同时就
-		// 绪,无论 select 取哪一支,观察到的都必须是稳定终态。
-		res, err := waitGuarded(t, op, ctx)
-		if err != nil || res.ID != id || !res.OK || string(res.Details) != `{"ret":true}` {
-			t.Fatalf("已结算后取消 ctx 的等待 = (%+v, %v), want 终态优先", res, err)
+			// 完成与取消竞争时已发布终态优先:done 与 ctx.Done() 同时
+			// 就绪,无论 select 取哪一支,观察到的都必须是稳定终态。
+			res, err := waitGuarded(t, op, ctx)
+			if errors.Is(err, context.Canceled) {
+				t.Fatalf("第 %d 轮:已结算后取消 ctx 的等待被误报为取消(err = %v), want 终态优先", round, err)
+			}
+			if err != nil || res.ID != id || !res.OK || string(res.Details) != `{"ret":true}` {
+				t.Fatalf("第 %d 轮:已结算后取消 ctx 的等待 = (%+v, %v), want 终态优先", round, res, err)
+			}
 		}
 	})
 }
