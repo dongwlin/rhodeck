@@ -36,8 +36,9 @@
 // 仍被逐条处理恰好一次,不为每条丢失事件再入队诊断事件。
 //
 // panic 边界:closeIntake 后 admit、slot 重复 commit/abort、commit
-// 长度与预留不符、drain 前置契约违反等属于接线层编程错误,一律
-// panic,不允许静默继续污染预算或丢失消息(对照 state.go 先例)。
+// 长度与预留不符、排空前置契约违反(drain/waitProcessed/closeEvents)
+// 等属于接线层编程错误,一律 panic,不允许静默继续污染预算或丢失消
+// 息(对照 state.go 先例)。
 
 package maa
 
@@ -122,9 +123,21 @@ type eventDispatcher struct {
 	intakeClosed   bool
 	drainRequested bool
 	// started 防 start 双重启动;exited 由 dispatcher goroutine 在
-	// 关闭公开通道后关闭一次,drain 以它为返回边界。
+	// 关闭公开通道后关闭一次,drain/closeEvents 以它为返回边界。
 	started bool
 	exited  chan struct{}
+	// processed 是发送者停止点(§8.1:Events 的发送者停止是 Events
+	// 关闭的前置):drain 已请求且内部队列清空时由 dispatcher
+	// goroutine 关闭一次;关闭所有者经 waitProcessed 在此点之后完成
+	// 剩余结算与终态发布,再经 closeEvents 触发 Events 关闭(§8 第 5
+	// 步:先发布最终错误和 closed 状态,再由通道所有者关闭 Events)。
+	processed chan struct{}
+	// releaseRequested 是通道所有者的释放信号:置位后 dispatcher 才
+	// 关闭公开通道并退出。关闭动作本身仍由 dispatcher 执行——公开通
+	// 道只有它发送和关闭(§7.1),所有者只发出信号并等待。只在持有 mu
+	// 时读写,releaseCond 挂起期间释放 mu。
+	releaseRequested bool
+	releaseCond      *sync.Cond
 
 	// public 是公开 Events 缓冲:容量 publicEvents,只有 dispatcher
 	// 发送和关闭(§7.1)。
@@ -161,10 +174,12 @@ func newEventDispatcher(
 		publicEvents:   publicEvents,
 		publicBytes:    publicBytes,
 		// 冻结范围 PublicEvents ≤ 65,536 保证 int 转换无损。
-		public: make(chan Event, int(publicEvents)),
-		exited: make(chan struct{}),
+		public:    make(chan Event, int(publicEvents)),
+		exited:    make(chan struct{}),
+		processed: make(chan struct{}),
 	}
 	d.cond = sync.NewCond(&d.mu)
+	d.releaseCond = sync.NewCond(&d.mu)
 	return d
 }
 
@@ -302,7 +317,7 @@ func (d *eventDispatcher) events() <-chan Event {
 // closeIntake 关闭内部队列入口,此后 admit 即编程错误。由关闭流程
 // 在 callback 准入关闭、已准入 callback 全部退出后调用(§8 第 4
 // 步);至多一次,重复关闭即编程错误,panic。已入队消息不受影响,
-// 由 drain 排空。
+// 由排空段(drain 或分步序列)处理。
 func (d *eventDispatcher) closeIntake() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -312,17 +327,63 @@ func (d *eventDispatcher) closeIntake() {
 	d.intakeClosed = true
 }
 
-// drain 供关闭所有者在 closeIntake 之后请求排空并等待完成(§8 第 5
-// 步、§8.1):dispatcher 把内部队列剩余每项「先结算通知、再非阻塞
-// 投递」处理恰好一次,无法投递的计丢失并按溢出契约记录故障,然后
-// 关闭公开 Events 通道并退出 goroutine。drain 返回以通道关闭为界,
-// 不等待外部消费者读取——已缓冲事件关闭后仍可读,已交付副本仍有效。
+// drain 供仅需一次性完整排空的调用方走完「请求排空 → 等待发送者停
+// 止 → 释放并等待 Events 关闭与 goroutine 退出」的完整序列(§8 第 5
+// 步、§8.1):dispatcher 把内部队列剩余每项「先结算通知、再非阻塞投
+// 递」处理恰好一次,无法投递的计丢失并按溢出契约记录故障,然后关闭
+// 公开 Events 通道并退出 goroutine。关闭流程需要在发送者停止点与
+// Events 关闭之间插入剩余结算与终态发布(§8 第 5 步),应改用
+// requestDrain/waitProcessed/closeEvents 的分步形式,不得用本方法。
+// drain 返回以公开通道关闭与 goroutine 退出为界,不等待外部消费者读
+// 取——已缓冲事件关闭后仍可读,已交付副本仍有效。
 //
 // 前置契约(违反即编程错误,panic):start 已调用;intake 未关即
 // drain;重复 drain。已准入 callback 必须全部退出后再调用(MAA-20
 // 关闭流程第 4 步保证),否则迟到的 commit 会 panic。
 func (d *eventDispatcher) drain() {
 	d.requestDrain()
+	d.waitProcessed()
+	d.closeEvents()
+}
+
+// waitProcessed 供关闭所有者在 requestDrain 之后等待发送者停止点
+// (§8.1:Events 的发送者停止是 Events 关闭的前置):dispatcher 已把
+// 内部队列剩余每项处理恰好一次——可确认结果已结算、可投递事件已按
+// 公开预算交付、无法投递的已计丢失并记录故障。此后关闭流程完成剩余
+// 结算与终态发布,再经 closeEvents 触发 Events 关闭(§8 第 5 步)。
+// processed 只由 dispatcher goroutine 关闭一次,重复等待无害。前置
+// 契约:requestDrain 已调用,违反即编程错误,panic——否则停止点永
+// 不到达,等待将静默挂死。
+func (d *eventDispatcher) waitProcessed() {
+	d.mu.Lock()
+	drained := d.drainRequested
+	d.mu.Unlock()
+	if !drained {
+		panic("maa: event dispatcher waited for processed before drain is requested")
+	}
+	<-d.processed
+}
+
+// closeEvents 由通道所有者在剩余结算与终态发布完成之后触发公开
+// Events 通道关闭,并等待 dispatcher goroutine 退出(§8 第 5 步:先
+// 发布最终错误和 closed 状态,再由通道所有者关闭 Events)。close 本
+// 身仍由 dispatcher goroutine 在停止点执行——公开通道只有 dispatcher
+// 发送和关闭(§7.1),所有者只发出释放信号并等待;等待期间不持有任
+// 何状态锁。前置契约(违反即编程错误,panic):requestDrain 已调用;
+// 至多一次。
+func (d *eventDispatcher) closeEvents() {
+	d.mu.Lock()
+	if !d.drainRequested {
+		d.mu.Unlock()
+		panic("maa: event dispatcher events closed before drain is requested")
+	}
+	if d.releaseRequested {
+		d.mu.Unlock()
+		panic("maa: event dispatcher events closed more than once")
+	}
+	d.releaseRequested = true
+	d.releaseCond.Broadcast()
+	d.mu.Unlock()
 	<-d.exited
 }
 
@@ -346,8 +407,10 @@ func (d *eventDispatcher) requestDrain() {
 }
 
 // run 是 dispatcher goroutine 主循环:逐条取出排队消息串行处理,
-// 直到 drain 已请求且队列清空;退出前按 §7.1「关闭前再核账一次」
-// 对账,然后关闭公开通道并通知 drain。公开通道只在此处关闭。
+// 直到 drain 已请求且队列清空;到达发送者停止点(§8.1)后先对账并
+// 关闭 processed 通知关闭所有者,再等待释放信号——Events 的关闭因此
+// 晚于关闭流程的剩余结算与终态发布(§8 第 5 步:先发布最终错误和
+// closed 状态,再由通道所有者关闭 Events)。公开通道只在此处关闭。
 func (d *eventDispatcher) run() {
 	for {
 		item, ok := d.take()
@@ -358,6 +421,10 @@ func (d *eventDispatcher) run() {
 	}
 	d.mu.Lock()
 	d.reconcileLedgerLocked()
+	close(d.processed)
+	for !d.releaseRequested {
+		d.releaseCond.Wait()
+	}
 	close(d.public)
 	d.mu.Unlock()
 	close(d.exited)

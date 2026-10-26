@@ -25,14 +25,18 @@
 //  4. Destroy 返回后关闭 callback 准入门,等待全部已准入 callback
 //     退出,再移除 token(§8 第 4 步;最后一个回调的复制/投递与关
 //     闭通道不能竞态——关门、等待退空先行,token 移除在后)。
-//  5. 关闭分发器入口并排空(§8 第 5 步、§8.1):dispatcher 对内部
-//     队列每项先结算可确认结果、再非阻塞投递公开通道,无法投递的按
-//     溢出契约计丢失并记录故障,然后关闭 Events;此后把剩余 pending
-//     以 ErrClosed 结算一次(sticky 首因场景下首因线性化扫描已统一
-//     结算,此处为无害空操作,不覆盖已发布终态)。先发布最终错误和
-//     closed 状态,再关闭 Done/closeDone(观察者见到关闭即见稳定终
-//     态:Err 与全部 Operation 终态均已稳定);Events 的发送者停止
-//     先于 Done 关闭,Done 的观察者无需先消费 Events(§8.1)。
+//  5. 排空分发器并结算剩余(§8 第 5 步、§8.1):关闭入口并请求排
+//     空,等待发送者停止点——dispatcher 对内部队列每项先结算可确认
+//     结果、再非阻塞投递公开通道,无法投递的按溢出契约计丢失并记录
+//     故障;到达停止点(队列清空)后,把剩余 pending 以 ErrClosed 结
+//     算一次(sticky 首因场景下首因线性化扫描已统一结算,此处为无害
+//     空操作,不覆盖已发布终态),先发布最终错误和 closed 状态,最后
+//     才由通道所有者关闭 Events(§8.1:Events 的发送者停止、所有
+//     callback 退出、Operation 全部结算后,才关闭 Events;固定容量
+//     和关闭顺序是本次冻结的验收要求)。Done 与 closeDone 由
+//     state.go 冻结的 publishClosed 原子发布——§8 第 5 步「再由通道
+//     所有者关闭 Events、Done 和 closeDone」据此落实为「发布(含
+//     Done/closeDone)先于 Events 关闭」。
 //
 // 复用边界(§8.1):同一流程供创建失败回滚(MAA-21,已取得 handle
 // 后失败执行同一 Stop/Destroy)与 Runtime.Close(MAA-25,委托同一流
@@ -162,19 +166,24 @@ func (in *instance) close() error {
 	in.state.waitCallbacksDrained()
 	native.UnregisterCallbackTarget(in.token)
 
-	// 5. 排空分发器并结算剩余(§8 第 5 步):dispatcher 对每项先结算
-	//    可确认结果、再非阻塞投递,无法投递的按溢出契约计丢失并记录
-	//    故障,然后关闭 Events;排空以通道关闭为界,不等待外部读者。
-	//    剩余 pending 以 ErrClosed 结算一次(首因场景下表已空,无害)。
+	// 5. 排空分发器并结算剩余(§8 第 5 步、§8.1):关闭入口并请求排
+	//    空,等待发送者停止点——dispatcher 对每项先结算可确认结果、
+	//    再非阻塞投递公开通道,无法投递的按溢出契约计丢失并记录故障;
+	//    停止点之后把剩余 pending 以 ErrClosed 结算一次(首因场景下表
+	//    已空,无害),发布最终错误与 closed 状态,最后才由通道所有者
+	//    触发 Events 关闭——Events 的关闭晚于发送者停止、全部
+	//    Operation 结算与终态发布,Done 的观察者无需先消费 Events。
 	in.disp.closeIntake()
-	in.disp.drain()
+	in.disp.requestDrain()
+	in.disp.waitProcessed()
 	in.state.settleRemainingPending()
-
-	// 6. 发布稳定终态(§8 第 5 步):先发布最终错误与 closed 状态,
-	//    再关闭 Done/closeDone;观察者见到关闭即见稳定 Err 与全部
-	//    Operation 终态。返回值即已存储的最终错误。
 	in.state.publishFinalError(composeCloseError(in.state.currentFault(), stopDiag))
 	in.state.publishClosed()
+	// 6. 关闭 Events 并收敛(§8 第 5 步):通道所有者触发公开通道关
+	//    闭并等待分发器退出,不残留悬挂 goroutine;返回值即已存储的最
+	//    终错误——发布先于 Events 关闭与任一 Close 返回,观察者见到
+	//    Done 或 Close 返回即见稳定 Err 与全部 Operation 终态。
+	in.disp.closeEvents()
 	return in.state.finalError()
 }
 

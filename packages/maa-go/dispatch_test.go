@@ -1078,8 +1078,60 @@ func TestEventDispatchLifecyclePanics(t *testing.T) {
 		d.closeIntake()
 		d.requestDrain()
 		assertPanics(t, "drain 请求后 commit", func() { slot.commit([]byte("ok")) })
-		// 分发器在空队列 + drain 请求下自行退出并关闭公开通道,无需再
-		// 排空(重复 drain 属契约违约)。
+		// 空队列 + drain 请求:发送者已停在停止点等待释放(§8 第 5 步,
+		// Events 的关闭由通道所有者在终态发布后触发);经 closeEvents
+		// 关闭公开通道并等待退出,不留悬挂 goroutine。
+		d.closeEvents()
+	})
+}
+
+// TestEventDispatchStopPointAndRelease 白盒钉住发送者停止点与 Events
+// 关闭的拆分契约(§8 第 5 步、§8.1:发送者停止是 Events 关闭的前置,
+// Events 的关闭由通道所有者在终态发布后触发):requestDrain 后
+// waitProcessed 到达停止点,此刻 Events 仍开放;closeEvents 触发关闭
+// 并等待退出;未 requestDrain 即等待/释放与重复释放均按编程错误
+// panic。
+func TestEventDispatchStopPointAndRelease(t *testing.T) {
+	t.Run("停止点后 Events 仍开放,释放后才关闭", func(t *testing.T) {
+		d, _ := newTestDispatcher(t, nil, generousBudgets())
+		d.start()
+		d.closeIntake()
+		d.requestDrain()
+		stopped := make(chan struct{})
+		go func() {
+			d.waitProcessed()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(hangGuard):
+			t.Fatal("waitProcessed 未在防挂死上限内返回:发送者停止点未到达")
+		}
+		// 停止点已到达而 Events 尚未关闭:无缓冲事件时接收不得就绪。
+		select {
+		case _, ok := <-d.events():
+			if ok {
+				t.Error("无缓冲事件时不应收到事件")
+			} else {
+				t.Error("closeEvents 之前 Events 不得被关闭(§8 第 5 步:先发布终态,再关闭 Events)")
+			}
+		default:
+		}
+		d.closeEvents()
+		if _, ok := <-d.events(); ok {
+			t.Error("closeEvents 后 Events 应已关闭")
+		}
+	})
+
+	t.Run("前置契约违反 panic", func(t *testing.T) {
+		d, _ := newTestDispatcher(t, nil, generousBudgets())
+		assertPanics(t, "未 requestDrain 即 waitProcessed", func() { d.waitProcessed() })
+		assertPanics(t, "未 requestDrain 即 closeEvents", func() { d.closeEvents() })
+		d.start()
+		d.closeIntake()
+		d.requestDrain()
+		d.closeEvents()
+		assertPanics(t, "重复 closeEvents", func() { d.closeEvents() })
 	})
 }
 

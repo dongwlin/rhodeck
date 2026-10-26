@@ -119,10 +119,20 @@ type closeRig struct {
 
 // newCloseRig 构造受控实例,并注册 t.Cleanup 兜底收尾。
 func newCloseRig(t *testing.T, handle uintptr, b dispatchBudgets) *closeRig {
+	return newCloseRigWithSettle(t, handle, b, nil)
+}
+
+// newCloseRigWithSettle 构造受控实例并注入自定义结算通知(nil 取
+// s.settleCompletion 的生产接线):供需要拦截分发器处理进度的用例
+// (如在可确认结算处设屏障以确定性冻结关闭流程)。
+func newCloseRigWithSettle(t *testing.T, handle uintptr, b dispatchBudgets, settle func(completionInfo)) *closeRig {
 	t.Helper()
 	s := newInstanceState(handle, 128)
 	s.publishReady()
-	d := newEventDispatcher(s, s.settleCompletion, b.callbackBytes, b.internalEvents, b.internalBytes, b.publicEvents, b.publicBytes)
+	if settle == nil {
+		settle = s.settleCompletion
+	}
+	d := newEventDispatcher(s, settle, b.callbackBytes, b.internalEvents, b.internalBytes, b.publicEvents, b.publicBytes)
 	d.start()
 	target := newCallbackTarget(s, d, b.callbackBytes)
 	token, err := native.RegisterCallbackTarget(target.deliver)
@@ -866,5 +876,136 @@ func TestInstanceCloseZeroHandleSkipsStopDestroy(t *testing.T) {
 	case <-rig.s.done():
 	default:
 		t.Error("close 完成后 closeDone 未关闭")
+	}
+}
+
+// TestInstanceCloseEventsClosedAfterSettlementAndPublication 钉住冻
+// 结的关闭顺序(§8 第 5 步:先发布最终错误和 closed 状态,再由通道
+// 所有者关闭 Events;§8.1:Events 的发送者停止、所有 callback 退出、
+// Operation 全部结算后,才关闭 Events——固定容量和关闭顺序是冻结的
+// 验收要求):用一次性结算屏障把分发器拦停在「可确认结算已完成、尚
+// 未投递」处(发送者停止点因此未到达,关闭流程确定性停在
+// waitProcessed 的通道接收上,不持任何锁),测试持有状态锁后放行——
+// 分发器到达停止点时流程恰好冻结在剩余结算(settleRemainingPending)
+// 的状态锁上,不存在任何调度窗口;若实现把 Events 关闭提前到剩余结
+// 算与终态发布之前(审查指出的回归形态),closeEvents 不触碰状态锁,
+// 关闭在观察窗内必然完成,冻结点的开放性检查即失序暴露。
+func TestInstanceCloseEventsClosedAfterSettlementAndPublication(t *testing.T) {
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	// settleState 由构造后的赋值填充:屏障只在实际处理消息(构造并入
+	// 队之后)时运行,赋值经提交入队的 cond 交接对分发器 goroutine 可
+	// 见。屏障位于结算之后、投递之前:放行后分发器到停止点的路径不再
+	// 需要状态锁,测试持有的状态锁恰好冻结流程于剩余结算。
+	var settleState *instanceState
+	settle := func(info completionInfo) {
+		settleState.settleCompletion(info)
+		reached <- struct{}{}
+		<-release
+	}
+	rig := newCloseRigWithSettle(t, 0xC700, generousBudgets(), settle)
+	settleState = rig.s
+	rig.closer.stopRet = 0 // 最终错误非 nil,发布时点可观察
+
+	// opSettled:带可确认完成消息,结算后拦停在投递之前;op:无完成
+	// 消息,留给剩余结算,是顺序断言的观察对象。
+	opSettled := mustAdmitPending(t, rig.s, AsyncID(20), "可确认完成提交")
+	op := mustAdmitPending(t, rig.s, AsyncID(21), "关闭时未完成任务")
+	enqueue(t, rig.d, asyncCallInfoMessageID, asyncCallInfoPayload(AsyncID(20), "Screencap", `{"ret":true}`))
+	<-reached // 分发器已完成可确认结算,拦停在投递之前(不持任何锁)
+
+	closeErr := make(chan error, 1)
+	go func() { closeErr <- rig.in.close() }()
+
+	// 等待关闭流程越过入口关闭:此刻它已请求排空并停在 waitProcessed
+	// 的通道接收上——分发器仍被结算屏障拦停,停止点不可能到达,流程
+	// 此后不再触碰状态锁,加锁无竞争。
+	waitUntil(t, "关闭流程越过入口关闭", func() bool {
+		rig.d.mu.Lock()
+		defer rig.d.mu.Unlock()
+		return rig.d.intakeClosed
+	})
+
+	// 持有状态锁冻结流程。
+	rig.s.mu.Lock()
+
+	// 放行投递:分发器非阻塞投递 → 到达发送者停止点并关闭 processed
+	// → 在释放信号上挂起;全程不需要状态锁,与测试持有的状态锁无竞争。
+	close(release)
+
+	// 等待发送者停止点:流程随即从 waitProcessed 返回并冻结在剩余结
+	// 算的状态锁上(测试持有)。
+	select {
+	case <-rig.d.processed:
+	case <-time.After(hangGuard):
+		rig.s.mu.Unlock()
+		t.Fatal("发送者停止点未在防挂死上限内到达")
+	}
+	// 观察窗(仍持状态锁):正确实现中,剩余结算、终态发布与
+	// closeEvents 都被状态锁挡在冻结点之后,持有期间 Events 不可能被
+	// 关闭;回归实现(closeEvents 先于剩余结算)不触碰状态锁,关闭在
+	// 本窗口内必然完成,随后的开放性检查即失序暴露。
+	<-time.After(notWithin)
+
+	// 冻结点断言(状态锁内白盒读取 + 通道排空,无调度竞争):可确认
+	// 结果已结算、剩余 Operation 未结算、最终错误未发布;Events 排空
+	// 缓冲后必须仍然开放——带缓冲的已关闭通道会先交出缓冲项(ok=
+	// true),故以排空到 ok=false 或 default 为准判别。
+	if n := len(rig.s.pending); n != 1 {
+		t.Errorf("冻结点 pending 占用 = %d, want 1(仅剩无完成消息的未结项)", n)
+	}
+	if rig.s.finalErr != nil {
+		t.Errorf("冻结点最终错误 = %v, want nil(尚未发布)", rig.s.finalErr)
+	}
+	eventsOpen := true
+	for eventsOpen {
+		select {
+		case _, ok := <-rig.d.events():
+			eventsOpen = ok
+			if !ok {
+				t.Error("剩余结算与终态发布之前 Events 不得被关闭(§8 第 5 步、§8.1 冻结顺序)")
+			}
+		default:
+			eventsOpen = false // 已空且未关闭:顺序正确
+		}
+	}
+
+	// 放行:剩余结算 → 发布最终错误与 closed 状态 → 通道所有者关闭
+	// Events → close 返回。
+	rig.s.mu.Unlock()
+	select {
+	case err := <-closeErr:
+		if !errors.Is(err, native.ErrNativeRejected) {
+			t.Fatalf("close = %v, want 含 ErrNativeRejected 的停止诊断(stopRet=0 令最终错误可观察)", err)
+		}
+	case <-time.After(hangGuard):
+		t.Fatal("放行后 close 未在防挂死上限内完成")
+	}
+
+	// close 返回后复核终态稳定:未完成项已按 ErrClosed 结项,可确认
+	// 结果不因随后公开排空而改写,Events 已由通道所有者关闭,缓冲中
+	// 的事件(冻结点若未读走)关闭后仍可读。
+	if _, werr := waitGuarded(t, op, context.Background()); !errors.Is(werr, native.ErrClosed) {
+		t.Errorf("未完成项结算错误 = %v, want 包装 native.ErrClosed", werr)
+	}
+	res, werr := waitGuarded(t, opSettled, context.Background())
+	if werr != nil || !res.OK || res.ID != AsyncID(20) {
+		t.Errorf("可确认结果 = %+v, %v; want 成功终态不被改写", res, werr)
+	}
+	for {
+		select {
+		case _, ok := <-rig.d.events():
+			if ok {
+				continue // 冻结点未读走的缓冲事件关闭后仍可读
+			}
+		case <-time.After(hangGuard):
+			t.Fatal("排空公开缓冲超时(防挂死上限触发)")
+		}
+		break // ok=false:已关闭且排空,终态成立
+	}
+	select {
+	case <-rig.s.done():
+	default:
+		t.Error("close 返回后 Done 未关闭")
 	}
 }
