@@ -24,11 +24,24 @@
 // 应用实例选项 → 在 Runtime 同一状态门内复核可发布性与早到故障并发
 // 布 ready Instance。全部步骤成功才返回实例;CreateEx=0、选项被原生
 // 拒绝、早到故障或发布被 closing 抢先都走统一单次关闭/回滚流程清理,
-// Runtime 终止使用,调用者拿不到半初始化实例。Instance 当前公开面只
-// 有 Close:同步、幂等的单次关闭流程,返回后不再允许原生调用;实例
-// 关闭后 Runtime 进入终止使用状态,后续 Open/NewInstance 返回
+// Runtime 终止使用,调用者拿不到半初始化实例。
+//
+// Instance 的公开面为同步生命周期与任务方法:Close 同步、幂等的单
+// 次关闭流程,返回后不再允许原生调用;AppendTask(taskType, params)
+// 原样透传未知任务类型与 JSON 字段并返回 TaskID(0 明确表示提交失
+// 败);SetTaskParams、Start、Stop、BackToHome 解释对应 C bool——
+// 返回 nil 只表示请求被 Core 接受,一律不赋予任务开始/停止/完成等
+// 执行语义(接受请求不等于任务执行完成,任务进度经事件流观察);
+// Running、Connected 的 false 是正常查询结果,不转换成错误,生命周
+// 期失败(closing/faulted/closed 的拒绝)单独经错误返回。实例关闭后
+// Runtime 进入终止使用状态,后续 Open/NewInstance 返回
 // ErrRuntimeTerminated——每进程单 Runtime、单活动实例,不在同进程
 // 重建实例或重试资源组合。
+//
+// Runtime.Log(level, message) 经 Core 全局日志接口(AsstLog,进程级、
+// 无 handle)写入一条日志:C void 函数,返回 nil 只表示调用已发出并
+// 返回,不构成原生确认成功的证明;错误返回只来自输入校验或 Runtime
+// 生命周期终止。
 //
 // 实例与连接、任务输入的数据类型(InstanceConfig、InstanceOption、
 // ConnectConfig)已定义,对应的纯 Go 校验与快照辅助同样遵循 MAA-03
@@ -46,9 +59,9 @@
 // 有效。原始 JSON 不经 map[string]any 的 float64 往返,未知任务
 // 类型、未知字段、未知消息 ID 与超过 2^53 的整数按原文字节保留。
 //
-// Instance 的业务方法(连接、任务、事件流与结果读取)与公开
-// Operation 由 M3 后续任务接入;在它们被声明并验证之前,调用方不应
-// 假设这些 API 可用。
+// Instance 的连接方法(Connect/Click/Screencap)、事件流与输出读取
+// 以及公开 Operation 由 MAA-23、24 接入;在它们被声明并验证之前,
+// 调用方不应假设这些 API 可用。
 //
 // # Open 的进程级契约
 //

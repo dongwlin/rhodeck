@@ -132,6 +132,167 @@ func (f *fakeInstanceCreator) exCallback(i int) uintptr {
 	return f.exCallbacks[i]
 }
 
+// fakeAppendCall 记录一次 AppendTask 调用:taskType 与 params 是
+// *byte 参数解码出的 C 字符串内容(逐字节还原,含未知字段原文)。
+type fakeAppendCall struct {
+	handle   uintptr
+	taskType string
+	params   string
+}
+
+// fakeSetParamsCall 记录一次 SetTaskParams 调用。
+type fakeSetParamsCall struct {
+	handle uintptr
+	id     int32
+	params string
+}
+
+// fakeBoolCall 记录一次 bool 返回类业务调用(Start/Stop/BackToHome/
+// Running/Connected)。
+type fakeBoolCall struct {
+	name   string
+	handle uintptr
+}
+
+// fakeInstanceCaller 是同步业务调用的受控 fake native(对照
+// fakeInstanceCreator 先例):逐次记录全部业务调用(方法名、顺序、
+// handle 与解码参数),支持注入返回值(缺省全部成功)与动作
+// (onStart 在 start 返回前执行,供屏障注入)。不加载任何原生库。
+type fakeInstanceCaller struct {
+	mu             sync.Mutex
+	sequence       []string
+	appendCalls    []fakeAppendCall
+	setParamsCalls []fakeSetParamsCall
+	boolCalls      []fakeBoolCall
+	appendRet      int32
+	setParamsRet   uint8
+	boolRets       map[string]uint8
+	onStart        func(handle uintptr)
+}
+
+// newFakeInstanceCaller 构造 fake caller:全部调用缺省成功(appendTask
+// 返回 1,其余 bool 类返回 1)。
+func newFakeInstanceCaller() *fakeInstanceCaller {
+	return &fakeInstanceCaller{appendRet: 1, setParamsRet: 1}
+}
+
+// boolRet 返回指定 bool 类调用的注入返回值:未注入的名称缺省 1。
+// 要求持有 mu。
+func (f *fakeInstanceCaller) boolRetLocked(name string) uint8 {
+	if ret, ok := f.boolRets[name]; ok {
+		return ret
+	}
+	return 1
+}
+
+func (f *fakeInstanceCaller) appendTask(handle uintptr, taskType *byte, params *byte) int32 {
+	f.mu.Lock()
+	f.sequence = append(f.sequence, "appendTask")
+	f.appendCalls = append(f.appendCalls, fakeAppendCall{handle: handle, taskType: cArgString(taskType), params: cArgString(params)})
+	ret := f.appendRet
+	f.mu.Unlock()
+	return ret
+}
+
+func (f *fakeInstanceCaller) setTaskParams(handle uintptr, id int32, params *byte) uint8 {
+	f.mu.Lock()
+	f.sequence = append(f.sequence, "setTaskParams")
+	f.setParamsCalls = append(f.setParamsCalls, fakeSetParamsCall{handle: handle, id: id, params: cArgString(params)})
+	ret := f.setParamsRet
+	f.mu.Unlock()
+	return ret
+}
+
+func (f *fakeInstanceCaller) start(handle uintptr) uint8 {
+	f.mu.Lock()
+	f.sequence = append(f.sequence, "start")
+	f.boolCalls = append(f.boolCalls, fakeBoolCall{name: "start", handle: handle})
+	f.mu.Unlock()
+	if f.onStart != nil {
+		f.onStart(handle)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.boolRetLocked("start")
+}
+
+func (f *fakeInstanceCaller) stop(handle uintptr) uint8 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sequence = append(f.sequence, "stop")
+	f.boolCalls = append(f.boolCalls, fakeBoolCall{name: "stop", handle: handle})
+	return f.boolRetLocked("stop")
+}
+
+func (f *fakeInstanceCaller) backToHome(handle uintptr) uint8 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sequence = append(f.sequence, "backToHome")
+	f.boolCalls = append(f.boolCalls, fakeBoolCall{name: "backToHome", handle: handle})
+	return f.boolRetLocked("backToHome")
+}
+
+func (f *fakeInstanceCaller) running(handle uintptr) uint8 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sequence = append(f.sequence, "running")
+	f.boolCalls = append(f.boolCalls, fakeBoolCall{name: "running", handle: handle})
+	return f.boolRetLocked("running")
+}
+
+func (f *fakeInstanceCaller) connected(handle uintptr) uint8 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sequence = append(f.sequence, "connected")
+	f.boolCalls = append(f.boolCalls, fakeBoolCall{name: "connected", handle: handle})
+	return f.boolRetLocked("connected")
+}
+
+// count 返回指定方法名的累计调用次数。
+func (f *fakeInstanceCaller) count(name string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.sequence {
+		if c == name {
+			n++
+		}
+	}
+	return n
+}
+
+// total 返回全部业务调用的累计次数(断言「无原生副作用」)。
+func (f *fakeInstanceCaller) total() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.sequence)
+}
+
+// calls 返回调用序列的副本。
+func (f *fakeInstanceCaller) calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.sequence...)
+}
+
+func (f *fakeInstanceCaller) appendRecord(i int) fakeAppendCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.appendCalls[i]
+}
+
+func (f *fakeInstanceCaller) setParamsRecord(i int) fakeSetParamsCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.setParamsCalls[i]
+}
+
+func (f *fakeInstanceCaller) boolRecord(i int) fakeBoolCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.boolCalls[i]
+}
+
 // gateView 是生命周期门创建相关字段的白盒快照(锁内读取,不绕锁)。
 type gateView struct {
 	state          lifecycleState
@@ -154,13 +315,15 @@ func gateSnapshot(g *lifecycleGate) gateView {
 }
 
 // createRig 组装受控创建环境:独立生命周期门(不触碰进程级门)的
-// ready Runtime、fake creator 与 closer。成功创建的实例经 track 登记,
-// cleanup 兜底 Close(幂等),不留未注销 token 与悬挂分发循环。
+// ready Runtime、fake creator、closer 与 caller。成功创建的实例经
+// track 登记,cleanup 兜底 Close(幂等),不留未注销 token 与悬挂
+// 分发循环。
 type createRig struct {
 	rt      *Runtime
 	gate    *lifecycleGate
 	creator *fakeInstanceCreator
 	closer  *fakeInstanceCloser
+	caller  *fakeInstanceCaller
 
 	mu   sync.Mutex
 	inst *Instance
@@ -179,7 +342,8 @@ func newCreateRig(t *testing.T, handle uintptr) *createRig {
 	}
 	creator := newFakeInstanceCreator(handle)
 	closer := newFakeInstanceCloser()
-	rig := &createRig{rt: rt, gate: gate, creator: creator, closer: closer}
+	caller := newFakeInstanceCaller()
+	rig := &createRig{rt: rt, gate: gate, creator: creator, closer: closer, caller: caller}
 	t.Cleanup(func() { rig.cleanup() })
 	return rig
 }
@@ -207,11 +371,11 @@ func (r *createRig) cleanup() {
 }
 
 // runNewInstance 以防挂死上限兜底执行一次创建事务:经私有
-// createInstance 注入 fake creator/closer(对照 open(cfg, env, gate)
-// 先例——公开 NewInstance 固定使用生产 creator,触达 native 的用例
-// 必须走注入路径)。正常路径必须有限步完成;若实现挂死,按超时失败
-// 而不是用例挂死。
-func runNewInstance(t *testing.T, rt *Runtime, creator instanceCreator, closer instanceCloser, cfg InstanceConfig) (*Instance, error) {
+// createInstance 注入 fake creator/closer/caller(对照
+// open(cfg, env, gate) 先例——公开 NewInstance 固定使用生产接缝,
+// 触达 native 的用例必须走注入路径)。正常路径必须有限步完成;若实
+// 现挂死,按超时失败而不是用例挂死。
+func runNewInstance(t *testing.T, rt *Runtime, creator instanceCreator, closer instanceCloser, caller instanceCaller, cfg InstanceConfig) (*Instance, error) {
 	t.Helper()
 	type outcome struct {
 		inst *Instance
@@ -219,7 +383,7 @@ func runNewInstance(t *testing.T, rt *Runtime, creator instanceCreator, closer i
 	}
 	ch := make(chan outcome, 1)
 	go func() {
-		inst, err := createInstance(rt, cfg, creator, closer)
+		inst, err := createInstance(rt, cfg, creator, closer, caller)
 		ch <- outcome{inst, err}
 	}()
 	select {
@@ -391,7 +555,7 @@ func TestNewInstanceValidationFailureDoesNotReserve(t *testing.T) {
 		{"value 超单字符串预算", InstanceConfig{Options: []InstanceOption{{Key: 3, Value: strings.Repeat("x", 65_537)}}}},
 	}
 	for _, tc := range bad {
-		_, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, tc.cfg)
+		_, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, tc.cfg)
 		if !errors.Is(err, native.ErrInvalidInput) {
 			t.Errorf("%s: err = %v, want errors.Is native.ErrInvalidInput", tc.what, err)
 		}
@@ -404,7 +568,7 @@ func TestNewInstanceValidationFailureDoesNotReserve(t *testing.T) {
 		}
 	}
 	// 修正输入后同门仍可成功创建:校验失败不消耗 Runtime。
-	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, InstanceConfig{Options: []InstanceOption{{Key: 3, Value: "ok"}}})
+	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, InstanceConfig{Options: []InstanceOption{{Key: 3, Value: "ok"}}})
 	if err != nil {
 		t.Fatalf("校验失败后同门创建不得失败: %v", err)
 	}
@@ -422,7 +586,7 @@ func TestNewInstanceSuccessPublishesReady(t *testing.T) {
 	rig := newCreateRig(t, handle)
 	cfg := InstanceConfig{Options: []InstanceOption{{Key: 123, Value: "opt-a"}, {Key: -5, Value: ""}}}
 
-	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, cfg)
+	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, cfg)
 	if err != nil {
 		t.Fatalf("NewInstance = %v, want nil", err)
 	}
@@ -459,7 +623,7 @@ func TestNewInstanceSuccessPublishesReady(t *testing.T) {
 	waitLeaseReleased(t, rig.gate)
 
 	// 唯一名额已占用:再次创建被拒(§8:首期单活动实例)。
-	if _, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, InstanceConfig{}); !errors.Is(err, native.ErrRuntimeInUse) {
+	if _, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, InstanceConfig{}); !errors.Is(err, native.ErrRuntimeInUse) {
 		t.Errorf("名额占用后再次创建 = %v, want errors.Is native.ErrRuntimeInUse", err)
 	}
 	if got := rig.creator.count("createEx"); got != 1 {
@@ -514,7 +678,7 @@ func TestNewInstanceEarlyMessagesDuringCreateEx(t *testing.T) {
 	}
 
 	// 至少一个实例选项,使选项应用期间的早到消息钩子得以执行。
-	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer,
+	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller,
 		InstanceConfig{Options: []InstanceOption{{Key: 41, Value: "anchor"}}})
 	if err != nil {
 		t.Fatalf("NewInstance = %v, want nil", err)
@@ -550,7 +714,7 @@ func TestNewInstanceEarlyMessagesDuringCreateEx(t *testing.T) {
 // token、排空与终态发布照常,Runtime 终止使用。
 func TestNewInstanceCreateExZeroRollback(t *testing.T) {
 	rig := newCreateRig(t, 0) // handle=0:CreateEx 失败
-	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, InstanceConfig{})
+	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, InstanceConfig{})
 	if inst != nil {
 		t.Fatalf("CreateEx=0 不得返回实例: %+v", inst)
 	}
@@ -591,7 +755,7 @@ func TestNewInstanceOptionFailureRollsBackSingleClose(t *testing.T) {
 	rig.creator.rejectOptionN = 2
 	cfg := InstanceConfig{Options: []InstanceOption{{Key: 11, Value: "first"}, {Key: -7, Value: "second"}, {Key: 13, Value: "third"}}}
 
-	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, cfg)
+	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, cfg)
 	if inst != nil {
 		t.Fatalf("选项失败不得返回实例: %+v", inst)
 	}
@@ -639,7 +803,7 @@ func TestNewInstanceEarlyFaultFailsCreation(t *testing.T) {
 		}
 		cfg := InstanceConfig{Options: []InstanceOption{{Key: 21, Value: "applied"}}}
 
-		inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, cfg)
+		inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, cfg)
 		if inst != nil {
 			t.Fatalf("早到故障不得返回实例: %+v", inst)
 		}
@@ -678,7 +842,7 @@ func TestNewInstanceEarlyFaultFailsCreation(t *testing.T) {
 		}
 		cfg := InstanceConfig{Options: []InstanceOption{{Key: 22, Value: "one"}, {Key: 23, Value: "two"}}}
 
-		inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, cfg)
+		inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, cfg)
 		if inst != nil {
 			t.Fatalf("早到故障不得返回实例: %+v", inst)
 		}
@@ -717,7 +881,7 @@ func TestNewInstancePublishRejectedByRuntimeClose(t *testing.T) {
 	errCh := make(chan error, 1)
 	var inst *Instance
 	go func() {
-		i, err := createInstance(rig.rt, InstanceConfig{Options: []InstanceOption{{Key: 31, Value: "late"}}}, rig.creator, rig.closer)
+		i, err := createInstance(rig.rt, InstanceConfig{Options: []InstanceOption{{Key: 31, Value: "late"}}}, rig.creator, rig.closer, rig.caller)
 		inst = i
 		errCh <- err
 	}()
@@ -782,7 +946,7 @@ func TestNewInstanceConcurrentCreationSingleReserve(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			inst, err := createInstance(rig.rt, InstanceConfig{}, rig.creator, rig.closer)
+			inst, err := createInstance(rig.rt, InstanceConfig{}, rig.creator, rig.closer, rig.caller)
 			insts[i], errs[i] = inst, err
 			if errors.Is(err, native.ErrRuntimeInUse) {
 				rejected.Add(1)
@@ -828,7 +992,7 @@ func TestNewInstanceConcurrentCreationSingleReserve(t *testing.T) {
 // 入 native。
 func TestInstanceCloseConcurrentTerminatesRuntime(t *testing.T) {
 	rig := newCreateRig(t, 0xD100)
-	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, InstanceConfig{})
+	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, InstanceConfig{})
 	if err != nil {
 		t.Fatalf("NewInstance = %v, want nil", err)
 	}

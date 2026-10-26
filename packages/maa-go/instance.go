@@ -63,6 +63,8 @@
 package maa
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"runtime"
 
@@ -232,15 +234,21 @@ func composeCloseError(fault, stopDiag error) error {
 // 造函数返回的指针使用)。在 NewInstance 全部创建步骤成功之前,调用
 // 者无法从公开面获得本类型——不存在可获得的半初始化实例(§8)。
 //
-// 业务方法(连接、任务、事件流与结果读取)由后续里程碑接入;当前
-// 公开面只有 Close。
+// 业务方法(连接、事件流与结果读取)由 MAA-23、24 接入;当前公开面
+// 为 Close(MAA-20)与同步任务/请求/查询方法(MAA-22:AppendTask、
+// SetTaskParams、Start、Stop、BackToHome、Running、Connected)。
 type Instance struct {
 	// inst 是私有单次关闭组件(MAA-20):持有共享状态、事件分发器、
 	// callback token 与 native 停止/销毁接缝,Close 委托它的唯一流程。
 	inst *instance
 	// rt 是创建本实例的 Runtime:实例关闭后经它的生命周期门进入终止
-	// 使用状态(§8:一个实例关闭后 Runtime 进入终止态)。
+	// 使用状态(§8:一个实例关闭后 Runtime 进入终止态);limits 快照
+	// 供同步方法的输入预算校验使用。
 	rt *Runtime
+	// caller 是同步业务调用的 native 接缝(MAA-22):生产接线转发
+	// Runtime 的 API 表,受控用例注入 fake;公开方法先经实例状态准入
+	// 再触达它,handle 只在准入 lease 与 raw 门禁段内读取。
+	caller instanceCaller
 }
 
 // Close 同步销毁实例:幂等,返回稳定的最终错误(正常关闭为 nil)。
@@ -294,6 +302,64 @@ func (c apiTableCreator) setInstanceOption(handle uintptr, key int32, value *byt
 	return c.table.SetInstanceOption(handle, key, value)
 }
 
+// instanceCaller 是同步业务调用(任务、请求与状态查询,MAA-22)的
+// native 注入边界(对照 instanceCloser 先例):生产实现转发 calls.go
+// 的 raw 调用包装,fake 实现供受控用例记录原始参数、调用次数与注入
+// 返回值,不替换生产包的全局函数变量。与关闭接缝分开定义:关闭流程
+// 的 instanceCloser 刻意不暴露业务符号(§8.1:关闭所有者无条件执行
+// 一次 Stop,不先查询 Running),业务路径也不经关闭接缝触达原生;
+// 业务 Stop 与关闭 Stop 各有本接口与 instanceCloser 的独立方法,转
+// 发同一 raw 包装但准入纪律不同。方法只接收 handle 参数并原样转发:
+// handle 的唯一来源是已准入 callLease.handle(),本接口不持有、不缓
+// 存任何 handle(§8:不能另存一份裸 handle 绕过状态检查)。
+type instanceCaller interface {
+	// appendTask 对应 AsstAppendTask(handle, taskType, params):返回
+	// 0(InvalidId)表示提交失败。调用契约:仅在调用 lease 已准入、
+	// raw 串行门禁已进入后调用一次。
+	appendTask(handle uintptr, taskType *byte, params *byte) int32
+	// setTaskParams 对应 AsstSetTaskParams(handle, id, params):返回
+	// 0 表示原生拒绝。调用契约同 appendTask。
+	setTaskParams(handle uintptr, id int32, params *byte) uint8
+	// start 对应 AsstStart(handle):返回 0 表示原生拒绝。
+	start(handle uintptr) uint8
+	// stop 对应 AsstStop(handle):业务语义的停止请求,返回 0 表示原
+	// 生拒绝;与 instanceCloser.stop(关闭所有者的销毁前置停止)转发
+	// 同一 raw 包装,准入纪律互不相同。
+	stop(handle uintptr) uint8
+	// backToHome 对应 AsstBackToHome(handle):返回 0 表示原生拒绝。
+	backToHome(handle uintptr) uint8
+	// running 对应 AsstRunning(handle):返回 0(false)是正常查询
+	// 结果,不是错误。
+	running(handle uintptr) uint8
+	// connected 对应 AsstConnected(handle):返回 0(false)是正常查
+	// 询结果,不是错误。
+	connected(handle uintptr) uint8
+}
+
+// apiTableCaller 是 instanceCaller 的生产实现:转发 *native.APITable
+// 的同步业务 raw 调用包装,不解释返回值、不重试、不编造诊断。
+type apiTableCaller struct {
+	table *native.APITable
+}
+
+func (c apiTableCaller) appendTask(handle uintptr, taskType *byte, params *byte) int32 {
+	return c.table.AppendTask(handle, taskType, params)
+}
+
+func (c apiTableCaller) setTaskParams(handle uintptr, id int32, params *byte) uint8 {
+	return c.table.SetTaskParams(handle, id, params)
+}
+
+func (c apiTableCaller) start(handle uintptr) uint8 { return c.table.Start(handle) }
+
+func (c apiTableCaller) stop(handle uintptr) uint8 { return c.table.Stop(handle) }
+
+func (c apiTableCaller) backToHome(handle uintptr) uint8 { return c.table.BackToHome(handle) }
+
+func (c apiTableCaller) running(handle uintptr) uint8 { return c.table.Running(handle) }
+
+func (c apiTableCaller) connected(handle uintptr) uint8 { return c.table.Connected(handle) }
+
 // createInstance 是 NewInstance 的完整创建事务(§8 初始化第 2 阶段),
 // 执行顺序严格按绑定设计:
 //
@@ -315,7 +381,12 @@ func (c apiTableCreator) setInstanceOption(handle uintptr, key int32, value *byt
 // 理、终止 Runtime 使用、释放创建 lease;调用者只拿到错误,拿不到
 // 半初始化实例。锁序:Runtime 状态门(lifecycleGate.mu)→ 实例状态
 // 锁(publishInstance 内),无反向获取。
-func createInstance(rt *Runtime, cfg InstanceConfig, creator instanceCreator, closer instanceCloser) (*Instance, error) {
+func createInstance(rt *Runtime, cfg InstanceConfig, creator instanceCreator, closer instanceCloser, caller instanceCaller) (*Instance, error) {
+	if creator == nil || closer == nil || caller == nil {
+		// 三个 native 接缝都不可缺席:缺席即接线层编程错误,在触碰生
+		// 命周期门之前 panic(对照 newInstance 的先例)。
+		panic("maa: instance created without complete native seams (creator/closer/caller)")
+	}
 	// 1. 预占前:纯 Go 校验 + 深拷贝快照(预算取 Open 时已校验冻结的
 	//    Limits 快照,InstanceConfig 不覆盖 Runtime 的限制,§5.1)。
 	snap, err := snapshotInstanceConfig(cfg, rt.limits)
@@ -382,7 +453,7 @@ func createInstance(rt *Runtime, cfg InstanceConfig, creator instanceCreator, cl
 	// 7. 发布成功:释放创建 lease(§8:Runtime.Close 等待该流程,不重
 	//    复 Destroy)并返回公开实例——至此全部步骤成功。
 	rt.gate.releaseCreationLease()
-	return &Instance{inst: in, rt: rt}, nil
+	return &Instance{inst: in, rt: rt, caller: caller}, nil
 }
 
 // rollbackCreation 是创建事务的统一失败回滚入口(§8:CreateEx 返回 0
@@ -422,4 +493,247 @@ func rollbackCreation(rt *Runtime, s *instanceState, d *eventDispatcher, token u
 	rt.gate.terminate(err)
 	rt.gate.releaseCreationLease()
 	return err
+}
+
+// ---- 同步业务调用(MAA-22;绑定设计 §3、§5、§6、§7)----
+//
+// 公开同步入口的公共纪律(§7 调用纪律、§5.1 输入限制):
+//   - 纯 Go 输入校验与快照先行(对照 createInstance 的预占前校验先
+//     例):发生在触碰生命周期门与原生调用之前,失败返回带字段路径
+//     的 ErrInvalidInput,不进入 native、不占在途计数、不占 pending;
+//   - 随后 syncCall 先取得调用 lease、再进入独立的 raw 串行门禁:
+//     closing/faulted/closed 在准入处拒绝(错误身份见 admitCall),
+//     准入后的调用覆盖排队、native 调用与输出复制全过程;任何
+//     native 调用都不持有状态锁(§8);
+//   - handle 只在 lease 与门禁段内经 callLease.handle 读取,立即用
+//     于本次调用,不另存裸 handle(§8);
+//   - 全部实例原生入口经过同一 lease 与同一 raw 串行门禁,无绕过状
+//     态的第二通道;instanceCaller 接缝不持有 handle。
+//
+// 返回值语义基线(§3、§5):C bool=false 的请求类入口(Start/Stop/
+// BackToHome/SetTaskParams)包装 ErrNativeRejected——通常无结构化原
+// 因,不编造 LastError;接受请求只证明 Core 收下请求,一律不赋予任
+// 务开始/完成语义,任务进度经事件流观察。查询类入口(Running/
+// Connected)的 false 是正常查询结果,不转换成错误;生命周期失败单
+// 独经错误返回。C void 入口(Log,Runtime 全局)只有输入与生命周
+// 期错误,不伪造原生成功确认。
+
+// syncCall 执行一次同步业务调用的公共骨架:先取得调用 lease,再等
+// 待独立的 raw 串行门禁,在门禁段内读取 handle 并执行 call(§7)。
+// defer 顺序保证先退 raw 门禁、后释放在途计数;call 执行期间不持有
+// 状态锁。call 收到的 handle 只在本次调用内有效,不得外泄或缓存。
+func (in *Instance) syncCall(what string, call func(handle uintptr) error) error {
+	lease, err := in.inst.state.admitCall(what)
+	if err != nil {
+		return err
+	}
+	defer lease.release()
+	in.inst.state.raw.enter()
+	defer in.inst.state.raw.exit()
+	return call(lease.handle())
+}
+
+// boolCall 是「C bool 返回的实例操作请求」的公共解释(Start/Stop/
+// BackToHome):nil 只表示请求被 Core 接受(C bool=true),绝不赋予
+// 任务开始/停止/完成等执行语义(§5:不伪造任务完成语义);返回 0
+// 表示原生拒绝,包装 ErrNativeRejected,无结构化原因,不编造
+// LastError。
+func (in *Instance) boolCall(what string, call func(handle uintptr) uint8) error {
+	return in.syncCall(what, func(handle uintptr) error {
+		if call(handle) == 0 {
+			return fmt.Errorf("maa: Asst%s returned 0 (false), request rejected: %w", what, native.ErrNativeRejected)
+		}
+		return nil
+	})
+}
+
+// queryCall 是「C bool 返回的实例状态查询」的公共解释(Running/
+// Connected):false 是正常查询结果,返回 (false, nil),不转换成错
+// 误(§3、§5:生命周期错误单独返回,正常 false 不转换成错误)。
+func (in *Instance) queryCall(what string, call func(handle uintptr) uint8) (bool, error) {
+	var ret uint8
+	err := in.syncCall(what, func(handle uintptr) error {
+		ret = call(handle)
+		return nil
+	})
+	return ret != 0, err
+}
+
+// AppendTask 向实例任务队列追加一个任务:taskType 原样透传,不做业
+// 务枚举校验——未知任务类型保留,以免 binding 阻碍 Core 功能演进
+// (§1、§5.1);params 必须是非空、完整的 JSON object 原文,未知字
+// 段与超过 2^53 的整数按原文字节透传,不经 map[string]any 往返、不
+// 丢弃字段(§5.1、§6.1)。
+//
+// 返回的 TaskID 非 0 只证明任务已被 Core 接受入队——接受请求不等
+// 于任务已开始或执行完成,任务进度经事件流观察(§3:入队不等于完
+// 成;本方法不做任务完成推断)。返回 (0, err) 且错误包装
+// ErrNativeRejected 表示提交被原生拒绝(TaskID 0 明确表示提交失败);
+// 输入校验失败返回包装 ErrInvalidInput 的错误,不进入 native;实例
+// closing/faulted/closed 的拒绝经错误链可辨(ErrClosing/首因/
+// ErrClosed)。
+func (in *Instance) AppendTask(taskType string, params json.RawMessage) (TaskID, error) {
+	// 纯 Go 校验与快照先行:taskType 非空、合法 UTF-8、无内嵌 NUL,
+	// params 为完整 JSON object,合计不超预算;快照为逐字节独立副本,
+	// 方法返回后调用者可原地改写原 RawMessage 而不影响提交(§6.1)。
+	snap, err := snapshotTaskInput(taskType, params, in.rt.limits)
+	if err != nil {
+		return 0, err
+	}
+	var id int32
+	err = in.syncCall("AppendTask", func(handle uintptr) error {
+		t, tBuf := cString(snap.taskType)
+		p, pBuf := cString(string(snap.params))
+		id = in.caller.appendTask(handle, t, p)
+		// 带 NUL 的 C buffer 持有至 raw 返回(§6:调用期保活)。
+		runtime.KeepAlive(tBuf)
+		runtime.KeepAlive(pBuf)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if id == 0 {
+		return 0, fmt.Errorf("maa: AsstAppendTask returned 0, task submission rejected: %w", native.ErrNativeRejected)
+	}
+	return TaskID(id), nil
+}
+
+// SetTaskParams 更新已提交任务的原始 JSON 参数:params 必须是非空、
+// 完整的 JSON object 原文,与任务 params 同一校验语义(§5.1),未知
+// 字段按原文字节透传;id 原样透传(保留 int32 符号位),不存在或已
+// 结束的任务由 Core 原生拒绝。
+//
+// 返回 nil 只表示修改请求被 Core 接受——接受请求不等于任务执行成
+// 功,也不等于参数已按新值生效于进行中的步骤;任务进度经事件流观
+// 察(§5:修改请求被 Core 接受不代表任务执行成功)。返回包装
+// ErrNativeRejected 的错误表示请求被原生拒绝;输入与生命周期错误
+// 语义同 AppendTask。
+func (in *Instance) SetTaskParams(id TaskID, params json.RawMessage) error {
+	if err := validateJSONObject("params", params, in.rt.limits.InputJSONBytes); err != nil {
+		return err
+	}
+	// 独立快照:方法返回后调用者可原地改写原 RawMessage 而不影响提交
+	// (§6.1;cString 编码前的这份 clone 与任务输入快照同一纪律)。
+	snap := bytes.Clone(params)
+	return in.syncCall("SetTaskParams", func(handle uintptr) error {
+		p, pBuf := cString(string(snap))
+		ret := in.caller.setTaskParams(handle, int32(id), p)
+		runtime.KeepAlive(pBuf)
+		if ret == 0 {
+			return fmt.Errorf("maa: AsstSetTaskParams returned 0 (false), param update rejected: %w", native.ErrNativeRejected)
+		}
+		return nil
+	})
+}
+
+// Start 请求启动实例的任务队列。返回 nil 只表示请求被 Core 接受
+// (C bool=true)——不表示任务队列已开始执行,更不表示任何任务执行
+// 成功;任务进度经事件流观察。返回包装 ErrNativeRejected 的错误表示
+// 请求被原生拒绝(C bool=false,无结构化原因)。与 Close 不同,本
+// 方法被拒绝时只向本次调用返回拒绝:不自动 Destroy、不撤销异步队
+// 列(§8.1:普通公开 Stop 返回 false 只向本次调用返回拒绝)。
+func (in *Instance) Start() error {
+	return in.boolCall("Start", in.caller.start)
+}
+
+// Stop 请求停止实例的全部任务:停止请求作用于任务队列,不是按
+// async ID 取消单个异步操作(§3;C API 无按 async ID 取消接口)。
+// 返回 nil 只表示停止请求被 Core 接受——不表示任务已停止或队列已
+// 排空,停止进度经事件流观察;返回包装 ErrNativeRejected 的错误表示
+// 请求被原生拒绝:不自动 Destroy、不撤销异步队列(§8.1)。输入与生
+// 命周期错误语义同 AppendTask。
+func (in *Instance) Stop() error {
+	return in.boolCall("Stop", in.caller.stop)
+}
+
+// BackToHome 请求实例回到主界面。返回 nil 只表示请求被 Core 接受,
+// 不表示界面动作已完成;返回包装 ErrNativeRejected 的错误表示请求被
+// 原生拒绝。输入与生命周期错误语义同 AppendTask。
+func (in *Instance) BackToHome() error {
+	return in.boolCall("BackToHome", in.caller.backToHome)
+}
+
+// Running 查询实例的任务队列是否正在执行:false 是正常查询结果,
+// 返回 (false, nil),不转换成错误(§3:AsstRunning 的 false 是正常
+// 查询结果;§5:正常 false 不转换成错误)。生命周期失败(closing/
+// faulted/closed 的准入拒绝)单独经错误返回,与正常 false 可辨;
+// 错误包装 ErrClosing、实例首因或 ErrClosed。
+func (in *Instance) Running() (bool, error) {
+	return in.queryCall("Running", in.caller.running)
+}
+
+// Connected 查询实例是否已连接设备:false 是正常查询结果,返回
+// (false, nil),不转换成错误;生命周期失败单独经错误返回,语义同
+// Running。
+func (in *Instance) Connected() (bool, error) {
+	return in.queryCall("Connected", in.caller.connected)
+}
+
+// runtimeLogger 是 Runtime 全局日志(AsstLog:进程级,无 handle)的
+// native 注入边界(对照 instanceCaller 先例):生产实现转发 calls.go
+// 的 Log 包装,fake 实现供受控用例记录原始参数与调用次数。
+type runtimeLogger interface {
+	// log 对应 AsstLog(level, message):C void 函数,没有成功码。
+	log(level *byte, message *byte)
+}
+
+// apiTableLogger 是 runtimeLogger 的生产实现:转发 *native.APITable
+// 的 Log raw 调用包装,不解释、不编造成功确认。
+type apiTableLogger struct {
+	table *native.APITable
+}
+
+func (l apiTableLogger) log(level *byte, message *byte) { l.table.Log(level, message) }
+
+// Log 经 Core 全局日志接口(AsstLog)写入一条日志:level 与 message
+// 非 printf 变参、原样透传——合法 UTF-8、无内嵌 NUL、各不超过单字
+// 符串预算,合计不超过 ConfigBytes(§5.1:方法输入同样合计);允许
+// 空串,由 Core 解释。
+//
+// C void 函数:没有成功码可查。返回 nil 只表示调用已发出并返回,不
+// 构成原生确认成功的证明(§5:AsstLog 只提供输入/生命周期错误);
+// 错误返回只来自输入校验(ErrInvalidInput)或 Runtime 生命周期终止
+// (ErrRuntimeTerminated)。本方法不经过实例状态:AsstLog 是进程级
+// 全局函数,没有 handle,也不持有实例状态锁;生命周期检查在门锁内
+// 读取状态,native 调用在锁外执行(§8:任何 native 调用都不持有状
+// 态锁)。
+func (rt *Runtime) Log(level, message string) error {
+	if err := validateStringField("level", level, rt.limits.InputStringBytes, true); err != nil {
+		return err
+	}
+	if err := validateStringField("message", message, rt.limits.InputStringBytes, true); err != nil {
+		return err
+	}
+	total, ok := addChecked(uint64(len(level)), uint64(len(message)))
+	if !ok {
+		return fmt.Errorf("maa: log input text bytes total overflows uint64: %w", native.ErrInvalidInput)
+	}
+	if total > rt.limits.ConfigBytes {
+		return fmt.Errorf("maa: log input text bytes total %d exceeds Limits.ConfigBytes %d: %w",
+			total, rt.limits.ConfigBytes, native.ErrInvalidInput)
+	}
+	rt.gate.mu.Lock()
+	var lifecycleErr error
+	switch rt.gate.state {
+	case lifecycleReady:
+		// ready:正常放行。
+	case lifecycleTerminated:
+		lifecycleErr = rt.gate.terminatedErrLocked()
+	default:
+		// idle/reserved 对经 Open 获得的 Runtime 不可达,防御拒绝
+		// (对照 reserveInstance 的非 ready 分支)。
+		lifecycleErr = fmt.Errorf("maa: runtime is not ready, log rejected: %w", native.ErrRuntimeInUse)
+	}
+	rt.gate.mu.Unlock()
+	if lifecycleErr != nil {
+		return lifecycleErr
+	}
+	lv, lvBuf := cString(level)
+	msg, msgBuf := cString(message)
+	rt.logger.log(lv, msg)
+	// 带 NUL 的 C buffer 持有至 raw 返回(§6:调用期保活)。
+	runtime.KeepAlive(lvBuf)
+	runtime.KeepAlive(msgBuf)
+	return nil
 }

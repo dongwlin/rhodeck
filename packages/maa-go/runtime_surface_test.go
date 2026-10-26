@@ -1,14 +1,19 @@
 // 本文件是公开面的静态守卫(仿 rawfunc_surface_test.go 风格):把
 // 当前里程碑冻结的公开 API 表面钉死为 AST 断言。MAA-21 交付实例创
 // 建接线(Runtime.NewInstance 与公开 Instance.Close,绑定设计 §5、
-// §8)时有意识地更新本守卫;后续里程碑交付新公开面时,同样必须有
-// 意识地更新。
+// §8)、MAA-22 交付任务与同步实例方法(Runtime.Log 与 Instance 的
+// AppendTask/SetTaskParams/Start/Stop/BackToHome/Running/Connected,
+// 绑定设计 §3、§5)时有意识地更新本守卫;后续里程碑交付新公开面
+// 时,同样必须有意识地更新。
 //
 // 断言:
 //   - *Runtime 的导出方法集恰为 {Version, Capabilities, NullSize,
-//     NewInstance}(只读元数据访问 + 唯一的实例创建事务入口);
-//   - *Instance 的导出方法集恰为 {Close}(单次关闭的公开入口;业务
-//     方法由 M3 后续任务接入);
+//     Log, NewInstance}(只读元数据访问 + 全局日志 + 唯一的实例创建
+//     事务入口);
+//   - *Instance 的导出方法集恰为 {Close, AppendTask, SetTaskParams,
+//     Start, Stop, BackToHome, Running, Connected}(单次关闭的公开
+//     入口 + 同步任务/请求/查询方法;连接与事件流/输出读取由
+//     MAA-23、24 接入);
 //   - 除 *Runtime 的 NewInstance 与 *Instance 的 Close 外,不存在其
 //     他名为 NewInstance/Close 的导出函数或方法;
 //   - 包级导出函数恰为 {Open}(唯一的进程初始化入口)。
@@ -116,7 +121,7 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	}
 
 	// *Runtime 的导出方法集恰为冻结集合。
-	want := map[string]bool{"Version": true, "Capabilities": true, "NullSize": true, "NewInstance": true}
+	want := map[string]bool{"Version": true, "Capabilities": true, "NullSize": true, "Log": true, "NewInstance": true}
 	for m := range want {
 		if !runtimeMethods[m] {
 			t.Errorf("*Runtime 缺少冻结的导出方法 %s", m)
@@ -128,8 +133,17 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		}
 	}
 
-	// *Instance 的导出方法集恰为 {Close}。
-	wantInstance := map[string]bool{"Close": true}
+	// *Instance 的导出方法集恰为 {Close} + MAA-22 同步方法。
+	wantInstance := map[string]bool{
+		"Close":         true,
+		"AppendTask":    true,
+		"SetTaskParams": true,
+		"Start":         true,
+		"Stop":          true,
+		"BackToHome":    true,
+		"Running":       true,
+		"Connected":     true,
+	}
 	for m := range wantInstance {
 		if !instanceMethods[m] {
 			t.Errorf("*Instance 缺少冻结的导出方法 %s", m)

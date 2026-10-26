@@ -836,6 +836,7 @@ func open(cfg RuntimeConfig, env initEnv, gate *lifecycleGate) (*Runtime, error)
 		nullSize: ns,
 		limits:   snap.limits,
 		gate:     gate,
+		logger:   apiTableLogger{table: sess.table()},
 	}
 	gate.publish(rt)
 	return rt, nil
@@ -873,9 +874,10 @@ type Capabilities = native.Capabilities
 // Runtime 表示一次成功初始化的进程级 MaaCore 绑定。全部字段未导出
 // 且在初始化时冻结,发布后只读;零值不可用,只能经 Open 返回的
 // 指针使用,不按值复制。table 是本次加载事务发布的临时 API 表(供
-// 实例创建经它调用 raw 函数),caps/version/nullSize/limits 是
-// 初始化时复制的不可变元数据与限制快照;gate 是本 Runtime 的生命周
-// 期门(唯一实例名额的预留/复核与终止使用经它进行)。
+// 实例创建与同步业务调用经它调用 raw 函数),caps/version/nullSize/
+// limits 是初始化时复制的不可变元数据与限制快照;gate 是本 Runtime
+// 的生命周期门(唯一实例名额的预留/复核、终止使用与全局 Log 的生
+// 命周期检查经它进行);logger 是全局日志的 native 接缝(MAA-22)。
 type Runtime struct {
 	table    *native.APITable
 	caps     native.Capabilities
@@ -883,6 +885,7 @@ type Runtime struct {
 	nullSize uint64
 	limits   Limits
 	gate     *lifecycleGate
+	logger   runtimeLogger
 }
 
 // Version 返回初始化时复制的 Core 版本字符串。只读不可变元数据,
@@ -923,5 +926,8 @@ func (rt *Runtime) NullSize() uint64 { return rt.nullSize }
 // 配置快照:校验通过后、预留名额前深拷贝冻结(§6.1),方法返回后
 // 修改原配置不影响实例;调用者在方法返回前不得并发修改输入。
 func (rt *Runtime) NewInstance(cfg InstanceConfig) (*Instance, error) {
-	return createInstance(rt, cfg, apiTableCreator{table: rt.table}, apiTableCloser{table: rt.table})
+	return createInstance(rt, cfg,
+		apiTableCreator{table: rt.table},
+		apiTableCloser{table: rt.table},
+		apiTableCaller{table: rt.table})
 }

@@ -1,15 +1,15 @@
 // 本文件是 APITable 的 raw 调用包装边界:为 Runtime 初始化(Open
-// 事务)所需的 6 个 raw 函数与实例创建(NewInstance 事务)所需的
-// 2 个 raw 函数提供直接转发的方法。函数指针与函数表仍不外泄——
+// 事务)所需的 6 个 raw 函数、实例创建(NewInstance 事务)所需的
+// 2 个 raw 函数与实例同步业务调用(MAA-22)所需的 8 个 raw 函数提供
+// 直接转发的方法。函数指针与函数表仍不外泄——
 // APITable 只经公开层 Runtime 私有持有,本层方法不向公开层暴露任何
 // func 值;*byte 参数的编码(构造带 NUL 的 UTF-8 buffer 与保活)、
 // 返回值的解释与复制全部由公开层完成。raw 签名保持绑定设计 §3 冻
 // 结的 C 宽度,不做任何 Go 化改写。
 //
 // 转发即全部语义:本层不重试、不解释返回值、不为 C void 函数
-// (SetConnectionExtras)虚构成功码。其余 raw 字段暂无调用包装,
-// 由实例与回调里程碑按需添加;api.go/symbols.go/callback_types.go
-// 及其静态测试保持冻结,不得因新增包装而改动。
+// (SetConnectionExtras、Log)虚构成功码。api.go/symbols.go/
+// callback_types.go 及其静态测试保持冻结,不得因新增包装而改动。
 
 package native
 
@@ -77,3 +77,42 @@ func (t *APITable) CreateEx(callback uintptr, customArg uintptr) uintptr {
 func (t *APITable) SetInstanceOption(handle uintptr, key int32, value *byte) uint8 {
 	return t.api.SetInstanceOption(handle, key, value)
 }
+
+// AppendTask 对应 AsstAppendTask(handle, type, params):向实例任务
+// 队列追加一个任务,type 与 params 原样透传。返回值是 AsstTaskId
+// (int32):0(InvalidId)表示提交失败;非零只证明任务已入队,入
+// 队不等于任务已开始或执行成功(AsstCaller.h:81),解释权在调用方。
+func (t *APITable) AppendTask(handle uintptr, taskType *byte, params *byte) int32 {
+	return t.api.AppendTask(handle, taskType, params)
+}
+
+// SetTaskParams 对应 AsstSetTaskParams(handle, id, params):更新已
+// 提交任务的原始 JSON 参数。返回 0 表示原生拒绝;C bool=false 通常
+// 没有结构化原因,调用方不得编造 LastError 或其他不存在的诊断信息。
+// 修改请求被接受同样不代表任务执行成功。
+func (t *APITable) SetTaskParams(handle uintptr, id int32, params *byte) uint8 {
+	return t.api.SetTaskParams(handle, id, params)
+}
+
+// Start 对应 AsstStart(handle):请求启动实例的任务队列。返回 0 表示
+// 原生拒绝,语义同 SetTaskParams;返回非零只证明请求被接受。
+func (t *APITable) Start(handle uintptr) uint8 { return t.api.Start(handle) }
+
+// Running 对应 AsstRunning(handle):查询任务队列是否正在执行。
+// 返回 0(false)是正常查询结果(未在执行,或实例未初始化),不是
+// 可判别的错误;解释权在调用方。
+func (t *APITable) Running(handle uintptr) uint8 { return t.api.Running(handle) }
+
+// Connected 对应 AsstConnected(handle):查询实例是否已连接设备。
+// 返回 0(false)是正常查询结果,语义同 Running。
+func (t *APITable) Connected(handle uintptr) uint8 { return t.api.Connected(handle) }
+
+// BackToHome 对应 AsstBackToHome(handle):请求实例回到主界面。返回
+// 0 表示原生拒绝,语义同 SetTaskParams。
+func (t *APITable) BackToHome(handle uintptr) uint8 { return t.api.BackToHome(handle) }
+
+// Log 对应 AsstLog(level, message):进程级全局日志写入,level 与
+// message 非 printf 变参、原样透传。C void 函数,没有成功码可查,
+// 本包装同样无返回值——不得伪造成功,也不得把「调用已返回」解释成
+// 原生确认(AsstCaller.cpp 的实现只把文本交给内部日志器)。
+func (t *APITable) Log(level *byte, message *byte) { t.api.Log(level, message) }
