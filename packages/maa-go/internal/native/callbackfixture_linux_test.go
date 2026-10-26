@@ -4,8 +4,10 @@
 // 夹具(testdata/callbackfixture/fixture.c,回调指针类型与锁定的
 // AsstCaller.h:53 AsstApiCallback 一致)在 pthread 启动并 join 的原生
 // 线程上调用生产 trampoline,验证 Unix 无返回 Go callback 的参数往
-// 返、整数 token、details 即时复制与 panic 边界,为 M3 的实例注册表
-// 与事件分发器提供可信 callback 层依据。
+// 返、整数 token、回调窗口内的 details 读取与 panic 边界,为 M3 的
+// 关闭与创建接线(MAA-20/21)提供可信 callback 层依据。捕获处理器
+// 经生产 token 注册表(callback_registry.go)安装在本文件选定的固
+// 定 token 常量上,直接锻炼 dispatchCallback 的查表分发路径。
 //
 // 与既有检查的关系(分开报告,不得混用统计):
 //   - 静态 API checker(MAA-09/10)只核对声明一致性;
@@ -18,22 +20,25 @@
 // 三组用例各自在独立子进程中执行(internal/ffitest,复用包内唯一
 // TestMain 的分派与 abifixture 的 2 分钟外部强制超时常量;崩溃/超时
 // /死锁判失败),子进程内 NewLoader().Open → Lookup cbfx 导出 →
-// purego.RegisterFunc 本地绑定 → 安装测试 sink → 经原生线程触发回调
-// → 断言,全部通过后打印标记行;父进程不信任「退出 0」,逐字段复验
-// 标记行(纵深防御)。分组:
+// purego.RegisterFunc 本地绑定 → 向 token 注册表安装捕获处理器 →
+// 经原生线程触发回调 → 断言,全部通过后打印标记行;父进程不信任
+// 「退出 0」,逐字段复验标记行(纵深防御)。分组:
 //   - roundtrip(MAA_M2_CALLBACK_ROUNDTRIP_OK):3 个并发原生线程各带
 //     不同负 msg(含 MinInt32)、不同非零整数 token、不同 details,
 //     回调参数逐项精确往返;trampoline 地址 1000 次重复获取保持同一
 //     (每进程恰好一个,数量不随获取次数增长);
 //   - snapshot(MAA_M2_CALLBACK_SNAPSHOT_OK):callback 返回后原生立即
-//     整体改写 details 缓冲,Go 快照逐字节保留原始内容——未知字段
-//     (futureField 嵌套对象/数组)与超大整数(>2^53)逐字符保留,
-//     json.Number 抽查证明不经 float64 往返(生产复制是原始字节复
-//     制,本身不做任何 JSON 解析);
-//   - panic(MAA_M2_CALLBACK_PANIC_FAULT_OK):sink 处理器内 Go panic
-//     被 native 边界 recover 为可见故障记录;C 线程存活并正常 join、
-//     fixture 导出正常返回。不宣称 recover 原生崩溃(SIGSEGV 等)或
-//     C++ 异常——那类失败由 ffitest 表现为可见的进程失败。
+//     整体改写 details 缓冲,捕获处理器在回调窗口内读取 *byte 复制
+//     的快照逐字节保留原始内容——未知字段(futureField 嵌套对象/
+//     数组)与超大整数(>2^53)逐字符保留,json.Number 抽查证明不经
+//     float64 往返(回调窗口内的复制是原始字节复制,本身不做任何
+//     JSON 解析);
+//   - panic(MAA_M2_CALLBACK_PANIC_FAULT_OK):注册的捕获处理器内 Go
+//     panic(该处理器无内层 recover,panic 越过不 recover 的
+//     dispatchCallback)被 nativeCallback 顶栏 recover 为可见故障记
+//     录;C 线程存活并正常 join、fixture 导出正常返回。不宣称
+//     recover 原生崩溃(SIGSEGV 等)或 C++ 异常——那类失败由
+//     ffitest 表现为可见的进程失败。
 //
 // token 纪律:全部用例的 custom_arg 都是本文件内选定的非零整数常量,
 // 全程不把任何 Go 对象地址交给原生侧。
@@ -59,6 +64,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"unsafe"
 
 	"github.com/ebitengine/purego"
 
@@ -207,32 +213,67 @@ func cbFixtureOpenChild(scope, so string) (lib *Library, ok bool) {
 	return lib, true
 }
 
-// callbackRecord 是测试 sink 捕获到的一次投递快照。
+// callbackRecord 是捕获处理器记录的一次投递快照。
 type callbackRecord struct {
 	msg     int32
 	details []byte
 	token   uintptr
 }
 
-// callbackRecorder 安装捕获 sink 并返回:record 读取函数(互斥保护,
-// 投递来自并发原生线程)与 restore(恢复 nil sink)。
-func callbackRecorder() (record func() []callbackRecord, restore func()) {
+// cbFixtureMaxDetailsBytes 是测试侧有界读取的原子上界(1 MiB):捕获
+// 处理器读 *byte 到 NUL 为止,至多读这么多个字节。它是本文件自持的
+// 测试常量,不依赖生产侧的复制辅助;上界只防御夹具内容异常,夹具
+// details 远小于该值。
+const cbFixtureMaxDetailsBytes = 1 << 20
+
+// cbFixtureCopyDetails 在测试内有界读取借用的 C 字符串(遇 NUL 停,
+// 至多 cbFixtureMaxDetailsBytes 字节),复制为 Go 数据;原始字节复制,
+// 不做任何解析。到达上界仍未遇 NUL 时 panic——夹具内容违反 NUL 结
+// 尾契约属于测试自身的错误,经 native 边界 recover 转为故障记录后
+// 会被 checkNoCallbackFault 暴露,不静默截断。
+func cbFixtureCopyDetails(p *byte) []byte {
+	if p == nil {
+		return nil
+	}
+	out := make([]byte, 0, 256)
+	for i := 0; i < cbFixtureMaxDetailsBytes; i++ {
+		c := *(*byte)(unsafe.Add(unsafe.Pointer(p), i))
+		if c == 0 {
+			return out
+		}
+		out = append(out, c)
+	}
+	panic(fmt.Sprintf("callback fixture details 在 %d 字节内未遇到 NUL,夹具内容超出测试上界", cbFixtureMaxDetailsBytes))
+}
+
+// callbackRegistryRecorder 向生产 token 注册表为每个给定 token 安装
+// 捕获处理器(registry 直写登记点,token 用本文件选定的固定常量,
+// 与原生侧 custom_arg 逐一对上;生产 token 由生成器铸造,fixture 无
+// 法预知,故走直写接缝),返回 record 读取函数(互斥保护,投递来自
+// 并发原生线程)与 restore(注销全部 token)。处理器收到的
+// detailsJSON 指向原生缓冲,仅在本次回调内有效:先经 cbFixtureCopy
+// Details 有界复制,再防御性复制一份,不依赖任何别名行为。子进程
+// 是独立进程,注册表天然从空开始。
+func callbackRegistryRecorder(tokens ...uintptr) (record func() []callbackRecord, restore func()) {
 	var mu sync.Mutex
 	var got []callbackRecord
-	var sink callbackSink = func(msg int32, details []byte, token uintptr) {
-		// details 已是 nativeCallback 在返回前复制的 Go 拥有字节串;
-		// 这里再复制一份是测试侧防御,不依赖生产快照的别名行为。
-		cp := append([]byte(nil), details...)
-		mu.Lock()
-		defer mu.Unlock()
-		got = append(got, callbackRecord{msg: msg, details: cp, token: token})
+	for _, token := range tokens {
+		callbackTargets.install(token, func(msg int32, detailsJSON *byte) {
+			cp := append([]byte(nil), cbFixtureCopyDetails(detailsJSON)...)
+			mu.Lock()
+			defer mu.Unlock()
+			got = append(got, callbackRecord{msg: msg, details: cp, token: token})
+		})
 	}
-	callbackSinkSlot.Store(&sink)
 	return func() []callbackRecord {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]callbackRecord(nil), got...)
-	}, func() { callbackSinkSlot.Store(nil) }
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]callbackRecord(nil), got...)
+		}, func() {
+			for _, token := range tokens {
+				UnregisterCallbackTarget(token)
+			}
+		}
 }
 
 // checkNoCallbackFault 断言当前无任何边界故障记录(正常路径下
@@ -269,16 +310,16 @@ func runCallbackFixtureRoundtripChild() int {
 
 	// trampoline 稳定性:每进程恰好一个,重复获取返回同一地址,数量
 	// 不随获取次数无界增长。
-	tramp := callbackTrampoline()
+	tramp := CallbackTrampoline()
 	for i := 0; i < callbackTrampolineFetches; i++ {
-		if again := callbackTrampoline(); again != tramp {
+		if again := CallbackTrampoline(); again != tramp {
 			fmt.Fprintf(os.Stderr, "callback fixture %s child: 第 %d 次获取 trampoline 地址变化: %#x -> %#x\n",
 				scope, i, tramp, again)
 			return 1
 		}
 	}
 
-	record, restore := callbackRecorder()
+	record, restore := callbackRegistryRecorder(cbFixtureTokenA, cbFixtureTokenB, cbFixtureTokenC)
 	defer restore()
 
 	// 一次性并发启动 3 个原生线程(各带独立 msg/details/token),全部
@@ -355,10 +396,10 @@ func runCallbackFixtureSnapshotChild() int {
 	var callThenOverwrite func(cb uintptr, msg int32, details *byte, token uintptr, fill uint8) int32
 	purego.RegisterFunc(&callThenOverwrite, addr)
 
-	record, restore := callbackRecorder()
+	record, restore := callbackRegistryRecorder(cbFixtureSnapshotToken)
 	defer restore()
 
-	rc := callThenOverwrite(callbackTrampoline(),
+	rc := callThenOverwrite(CallbackTrampoline(),
 		cbFixtureSnapshotMsg, abiCBytes(callbackSnapshotPayload), cbFixtureSnapshotToken, cbFixtureSnapshotFill)
 	if rc != 0 {
 		fmt.Fprintf(os.Stderr, "callback fixture %s child: cbfx_call_then_overwrite = %d, want 0\n", scope, rc)
@@ -429,9 +470,10 @@ func runCallbackFixtureSnapshotChild() int {
 	return 0
 }
 
-// runCallbackFixturePanicChild 验证 panic 边界:sink 处理器内的 Go
-// panic 被 native 边界 recover 为可见故障记录;C 线程存活并正常
-// join、fixture 导出正常返回。不宣称 recover 原生崩溃或 C++ 异常。
+// runCallbackFixturePanicChild 验证 panic 边界:注册的捕获处理器内
+// 的 Go panic(无内层 recover)被 nativeCallback 顶栏 recover 为可
+// 见故障记录;C 线程存活并正常 join、fixture 导出正常返回。不宣称
+// recover 原生崩溃或 C++ 异常。
 func runCallbackFixturePanicChild() int {
 	const scope = "panic"
 	lib, ok := cbFixtureOpenChild(scope, os.Getenv(callbackFixtureSOEnv))
@@ -447,24 +489,24 @@ func runCallbackFixturePanicChild() int {
 	purego.RegisterFunc(&callOnThread, addr)
 
 	var invoked atomic.Bool
-	var sink callbackSink = func(msg int32, details []byte, token uintptr) {
+	callbackTargets.install(cbFixturePanicToken, func(msg int32, detailsJSON *byte) {
 		invoked.Store(true)
 		panic(cbFixturePanicProbe)
-	}
-	callbackSinkSlot.Store(&sink)
-	defer callbackSinkSlot.Store(nil)
+	})
+	defer UnregisterCallbackTarget(cbFixturePanicToken)
 
-	// 处理器 panic 被 nativeCallback 顶部的 defer/recover 拦截并转为
-	// 故障记录后,回调正常返回:C 线程继续置 invoked、改写缓冲、退出,
-	// join 成功,导出返回 0。
-	rc := callOnThread(callbackTrampoline(),
+	// 捕获处理器没有内层 recover:panic 越过不 recover 的
+	// dispatchCallback,被 nativeCallback 顶部的 defer/recover 拦截并
+	// 转为故障记录后,回调正常返回——这正是本 fixture 验证的边界。
+	// C 线程继续置 invoked、改写缓冲、退出,join 成功,导出返回 0。
+	rc := callOnThread(CallbackTrampoline(),
 		cbFixturePanicMsg, abiCBytes(cbFixturePanicDetail), cbFixturePanicToken)
 	if rc != 0 {
 		fmt.Fprintf(os.Stderr, "callback fixture %s child: cbfx_call_on_thread = %d, want 0(panic 被 recover 后 C 线程必须存活并正常 join)\n", scope, rc)
 		return 1
 	}
 	if !invoked.Load() {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: sink 处理器未被调用\n", scope)
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: 捕获处理器未被调用\n", scope)
 		return 1
 	}
 	f := lastCallbackFault.Load()
