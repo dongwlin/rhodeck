@@ -42,3 +42,17 @@ func (t *APITable) LoadResource(path *byte) uint8 { return t.api.LoadResource(pa
 func (t *APITable) SetConnectionExtras(name *byte, extras *byte) {
 	t.api.SetConnectionExtras(name, extras)
 }
+
+// Stop 对应 AsstStop(handle):请求停止实例的全部任务。返回 0 表示
+// 原生拒绝;C bool=false 通常没有结构化原因,调用方不得编造
+// LastError 或其他不存在的诊断信息。返回 0 不证明 handle 已被销毁,
+// 也不证明任务队列已停止,解释权在调用方(关闭流程按 §8.1 仅将其
+// 保留为清理诊断)。
+func (t *APITable) Stop(handle uintptr) uint8 { return t.api.Stop(handle) }
+
+// Destroy 对应 AsstDestroy(handle):C void 函数,没有成功码可查,
+// 本包装同样无返回值——不得伪造成功,也不得把「调用已返回」解释
+// 成原生确认或资源已回收。锁定 Core 的实现(Assistant 析构)在
+// join 工作线程后于本调用线程同步触发 Destroyed 回调,回调经实例
+// 的 callback 准入门照常入队。
+func (t *APITable) Destroy(handle uintptr) { t.api.Destroy(handle) }
