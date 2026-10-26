@@ -175,6 +175,16 @@ func UnregisterCallbackTarget(token uintptr) {
 	callbackTargets.remove(token)
 }
 
+// LookupCallbackDelivery 返回 token 对应的投递函数,未命中返回 nil。
+// 供 maa 层创建接线用例在 CreateEx 调用期间经真实查表路径投递早到消
+// 息,验证「注册表先于 CreateEx 建立、早到回调能找到实例状态」的时
+// 序(§4);生产路径不使用本函数——原生回调的分发序由 dispatchCallback
+// 承接。锁纪律与 lookupCallbackTarget 相同:取出函数值后立即释放读
+// 锁,调用方不得在投递期间持有任何锁。
+func LookupCallbackDelivery(token uintptr) CallbackDelivery {
+	return lookupCallbackTarget(token)
+}
+
 // lookupCallbackTarget 返回 token 对应的投递函数,未命中返回 nil:
 // 分发序与后续关闭/创建接线共用的内部查表入口,锁纪律见
 // callbackTargetRegistry.lookup。

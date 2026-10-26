@@ -1,14 +1,17 @@
 // 本文件是公开面的静态守卫(仿 rawfunc_surface_test.go 风格):把
-// 本里程碑冻结的公开 API 表面钉死为 AST 断言。公开面必须仍然没有
-// 可创建半成品 Instance 的入口——实例创建与完整关闭由 M3 承接;
-// 后续里程碑交付新公开面时,必须有意识地更新本守卫。
+// 当前里程碑冻结的公开 API 表面钉死为 AST 断言。MAA-21 交付实例创
+// 建接线(Runtime.NewInstance 与公开 Instance.Close,绑定设计 §5、
+// §8)时有意识地更新本守卫;后续里程碑交付新公开面时,同样必须有
+// 意识地更新。
 //
 // 断言:
-//   - *Runtime 的导出方法集恰为 {Version, Capabilities, NullSize}
-//     (全部只读元数据访问,没有触发业务操作的方法);
-//   - 包内不存在名为 NewInstance/Close 的导出函数或方法(实例生命
-//     周期入口);
-//   - 包级导出函数恰为 {Open}(唯一的生命周期入口)。
+//   - *Runtime 的导出方法集恰为 {Version, Capabilities, NullSize,
+//     NewInstance}(只读元数据访问 + 唯一的实例创建事务入口);
+//   - *Instance 的导出方法集恰为 {Close}(单次关闭的公开入口;业务
+//     方法由 M3 后续任务接入);
+//   - 除 *Runtime 的 NewInstance 与 *Instance 的 Close 外,不存在其
+//     他名为 NewInstance/Close 的导出函数或方法;
+//   - 包级导出函数恰为 {Open}(唯一的进程初始化入口)。
 
 package maa
 
@@ -49,8 +52,10 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	}
 
 	runtimeMethods := map[string]bool{}
+	instanceMethods := map[string]bool{}
 	packageFuncs := map[string]bool{}
 	seenRuntime := false
+	seenInstance := false
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -74,7 +79,7 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 					}
 					packageFuncs[fd.Name.Name] = true
 					if fd.Name.Name == "NewInstance" || fd.Name.Name == "Close" {
-						t.Errorf("包级导出函数 %q 属于实例生命周期入口,本里程碑不得存在", fd.Name.Name)
+						t.Errorf("包级导出函数 %q 属于实例生命周期入口,只能作为类型方法存在", fd.Name.Name)
 					}
 					continue
 				}
@@ -85,8 +90,19 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 						runtimeMethods[fd.Name.Name] = true
 					}
 				}
+				if recv == "Instance" {
+					seenInstance = true
+					if ast.IsExported(fd.Name.Name) {
+						instanceMethods[fd.Name.Name] = true
+					}
+				}
 				if ast.IsExported(fd.Name.Name) && (fd.Name.Name == "NewInstance" || fd.Name.Name == "Close") {
-					t.Errorf("类型 %s 的导出方法 %q 属于实例生命周期入口,本里程碑不得存在", recv, fd.Name.Name)
+					switch {
+					case recv == "Runtime" && fd.Name.Name == "NewInstance", recv == "Instance" && fd.Name.Name == "Close":
+						// MAA-21 交付的两个生命周期入口。
+					default:
+						t.Errorf("类型 %s 的导出方法 %q 不在生命周期入口冻结集合内", recv, fd.Name.Name)
+					}
 				}
 			}
 		})
@@ -95,9 +111,12 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	if !seenRuntime {
 		t.Fatal("未找到 Runtime 类型的方法声明")
 	}
+	if !seenInstance {
+		t.Fatal("未找到 Instance 类型的方法声明")
+	}
 
 	// *Runtime 的导出方法集恰为冻结集合。
-	want := map[string]bool{"Version": true, "Capabilities": true, "NullSize": true}
+	want := map[string]bool{"Version": true, "Capabilities": true, "NullSize": true, "NewInstance": true}
 	for m := range want {
 		if !runtimeMethods[m] {
 			t.Errorf("*Runtime 缺少冻结的导出方法 %s", m)
@@ -109,7 +128,20 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		}
 	}
 
-	// 包级导出函数恰为 {Open}:唯一的生命周期入口。
+	// *Instance 的导出方法集恰为 {Close}。
+	wantInstance := map[string]bool{"Close": true}
+	for m := range wantInstance {
+		if !instanceMethods[m] {
+			t.Errorf("*Instance 缺少冻结的导出方法 %s", m)
+		}
+	}
+	for m := range instanceMethods {
+		if !wantInstance[m] {
+			t.Errorf("*Instance 出现冻结集合之外的导出方法 %s", m)
+		}
+	}
+
+	// 包级导出函数恰为 {Open}:唯一的进程初始化入口。
 	wantFuncs := map[string]bool{"Open": true}
 	for f := range wantFuncs {
 		if !packageFuncs[f] {

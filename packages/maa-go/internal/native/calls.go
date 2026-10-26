@@ -1,9 +1,10 @@
 // 本文件是 APITable 的 raw 调用包装边界:为 Runtime 初始化(Open
-// 事务)所需的 6 个 raw 函数提供直接转发的方法。函数指针与函数表
-// 仍不外泄——APITable 只经公开层 Runtime 私有持有,本层方法不向
-// 公开层暴露任何 func 值;*byte 参数的编码(构造带 NUL 的 UTF-8
-// buffer 与保活)、返回值的解释与复制全部由公开层完成。raw 签名
-// 保持绑定设计 §3 冻结的 C 宽度,不做任何 Go 化改写。
+// 事务)所需的 6 个 raw 函数与实例创建(NewInstance 事务)所需的
+// 2 个 raw 函数提供直接转发的方法。函数指针与函数表仍不外泄——
+// APITable 只经公开层 Runtime 私有持有,本层方法不向公开层暴露任何
+// func 值;*byte 参数的编码(构造带 NUL 的 UTF-8 buffer 与保活)、
+// 返回值的解释与复制全部由公开层完成。raw 签名保持绑定设计 §3 冻
+// 结的 C 宽度,不做任何 Go 化改写。
 //
 // 转发即全部语义:本层不重试、不解释返回值、不为 C void 函数
 // (SetConnectionExtras)虚构成功码。其余 raw 字段暂无调用包装,
@@ -51,8 +52,28 @@ func (t *APITable) SetConnectionExtras(name *byte, extras *byte) {
 func (t *APITable) Stop(handle uintptr) uint8 { return t.api.Stop(handle) }
 
 // Destroy 对应 AsstDestroy(handle):C void 函数,没有成功码可查,
-// 本包装同样无返回值——不得伪造成功,也不得把「调用已返回」解释
-// 成原生确认或资源已回收。锁定 Core 的实现(Assistant 析构)在
+// 本包装同样无返回值——不得伪造成功,也不得把「调用已返回」解释成
+// 原生确认或资源已回收。锁定 Core 的实现(Assistant 析构)在
 // join 工作线程后于本调用线程同步触发 Destroyed 回调,回调经实例
 // 的 callback 准入门照常入队。
 func (t *APITable) Destroy(handle uintptr) { t.api.Destroy(handle) }
+
+// CreateEx 对应 AsstCreateEx(callback, custom_arg):以进程唯一的
+// callback trampoline 地址与整数 token 创建实例。返回 0(nullptr)
+// 表示创建失败,没有结构化原因,调用方不得编造诊断;返回的非零值
+// 是实例 handle 的唯一来源。custom_arg 是原生按值持有、回调按值收
+// 回的整数 token(不是 Go 地址,绝不解引用);token 的登记必须先于
+// 本调用(§4:创建过程中的早到回调也要能找到实例状态),由公开层
+// 创建事务保证。
+func (t *APITable) CreateEx(callback uintptr, customArg uintptr) uintptr {
+	return t.api.CreateEx(callback, customArg)
+}
+
+// SetInstanceOption 对应 AsstSetInstanceOption(handle, key, value):
+// 设置实例级选项。返回 0 表示原生拒绝;C bool=false 通常没有结构化
+// 原因,调用方不得编造 LastError 或其他不存在的诊断信息。调用契约:
+// 仅在 CreateEx 已返回有效非零 handle 之后、由创建事务按配置顺序调
+// 用(§8 NewInstance)。
+func (t *APITable) SetInstanceOption(handle uintptr, key int32, value *byte) uint8 {
+	return t.api.SetInstanceOption(handle, key, value)
+}

@@ -18,6 +18,18 @@
 // 默认值,非 nil 表示完整显式配置,越界与跨字段矛盾返回带字段路径
 // 的 ErrInvalidInput,不静默截断或夹取。
 //
+// Runtime.NewInstance(InstanceConfig) 执行实例创建事务并返回
+// *Instance:校验并复制实例配置 → 预留唯一实例名额并登记创建 lease
+// → 建立实例状态、事件入口、callback 门与 token → CreateEx → 按序
+// 应用实例选项 → 在 Runtime 同一状态门内复核可发布性与早到故障并发
+// 布 ready Instance。全部步骤成功才返回实例;CreateEx=0、选项被原生
+// 拒绝、早到故障或发布被 closing 抢先都走统一单次关闭/回滚流程清理,
+// Runtime 终止使用,调用者拿不到半初始化实例。Instance 当前公开面只
+// 有 Close:同步、幂等的单次关闭流程,返回后不再允许原生调用;实例
+// 关闭后 Runtime 进入终止使用状态,后续 Open/NewInstance 返回
+// ErrRuntimeTerminated——每进程单 Runtime、单活动实例,不在同进程
+// 重建实例或重试资源组合。
+//
 // 实例与连接、任务输入的数据类型(InstanceConfig、InstanceOption、
 // ConnectConfig)已定义,对应的纯 Go 校验与快照辅助同样遵循 MAA-03
 // 冻结的语义(option key 非 0 且不重复、value 允许空串;ADBPath
@@ -34,13 +46,9 @@
 // 有效。原始 JSON 不经 map[string]any 的 float64 往返,未知任务
 // 类型、未知字段、未知消息 ID 与超过 2^53 的整数按原文字节保留。
 //
-// 上述实例、连接与任务输入类型尚未接入任何构造函数或 raw 调用;
-// Event/AsyncResult 的 callback 准入、分发器与 Wait 接线同样由 M3
-// 后续任务承接。
-//
-// Instance、Operation、事件流与 Close 仍不存在,由 M3 承接;在它们
-// 被声明并验证之前,调用方不应假设这些 API 可用。公开面没有任何
-// 可创建半成品 Instance 的入口。
+// Instance 的业务方法(连接、任务、事件流与结果读取)与公开
+// Operation 由 M3 后续任务接入;在它们被声明并验证之前,调用方不应
+// 假设这些 API 可用。
 //
 // # Open 的进程级契约
 //

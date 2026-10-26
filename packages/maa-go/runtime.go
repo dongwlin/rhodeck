@@ -18,8 +18,11 @@
 //     Open 返回后修改原配置不影响已初始化 Runtime。调用者在 Open
 //     返回前不得并发修改输入。
 //
-// 本里程碑不交付 NewInstance/Close/Instance:公开面没有可创建半成品
-// Instance 的方法,实例创建与完整关闭由 M3 承接。
+// 实例创建(MAA-21,§8 初始化第 2 阶段)在同一状态门内预留唯一实
+// 例名额并登记创建 lease:每 Runtime 至多一个实例,名额预占后的创建
+// 失败或实例关闭都使 Runtime 进入终止使用状态,不允许同进程重建实
+// 例或重试资源组合;Runtime.Close 的创建准入与完整等待归 MAA-25,
+// 本文件交付预留/复核接口(closeCreationAdmission/waitCreationLease)。
 
 package maa
 
@@ -399,9 +402,9 @@ func snapshotConfig(cfg RuntimeConfig) (configSnapshot, error) {
 
 // lifecycleState 是进程级 Runtime 生命周期的阶段:idle 尚未预占、
 // reserved 已预占(初始化进行中)、ready 已发布活动 Runtime、
-// terminated 使用权已终止。M3 的 Close/创建竞争将在此基础上扩展
-// closing/closed 状态与创建 lease(绑定设计 §8),本里程碑的状态
-// 迁移只有 idle→reserved→ready 与 reserved→terminated。
+// terminated 使用权已终止。状态迁移:idle→reserved→ready 与
+// reserved→terminated(Open 事务);ready→terminated(实例关闭、
+// 创建失败回滚,MAA-21);Runtime.Close 的关闭迁移归 MAA-25。
 type lifecycleState uint8
 
 const (
@@ -411,14 +414,46 @@ const (
 	lifecycleTerminated
 )
 
+// instanceSlotState 是 Runtime 内唯一实例名额的占用阶段(§8:首期每
+// 进程单 Runtime、单活动 Instance;Runtime 必须看见尚在 initializing
+// 的实例):none 尚无实例、creating 名额已预留且创建事务进行中
+// (创建 lease 已登记)、active 已发布活动实例。名额预占后的创建失
+// 败与实例关闭都使整个生命周期门进入 terminated,名额不复用、不重
+// 置——同进程不重建实例(§8)。
+type instanceSlotState uint8
+
+const (
+	slotNone     instanceSlotState = iota
+	slotCreating                   // 名额已预留,创建事务进行中(创建 lease 已登记)
+	slotActive                     // ready 实例已发布
+)
+
 // lifecycleGate 是进程级单 Runtime 生命周期门:串行化全部 Open 的
 // 预占,保证并发 Open 至多一个进入原生初始化;记录原生加载开始后
-// 的首个失败原因,terminated 之后供后续 Open 诊断。
+// 的首个失败原因,terminated 之后供后续 Open 诊断。MAA-21 在同一状
+// 态门内承载唯一实例名额与创建 lease:Runtime.Close(先关闭创建准
+// 入,再等待创建 lease)的完整流程归 MAA-25,本门交付预留/复核接口。
+//
+// 锁序:lifecycleGate.mu → instanceState.mu(publishInstance 持门锁
+// 调用状态锁内发布);不存在反向获取——实例状态的方法绝不获取本门。
 type lifecycleGate struct {
 	mu       sync.Mutex
 	state    lifecycleState
-	active   *Runtime // 已发布的活动 Runtime;M3 的 Close/创建竞争将经此扩展
+	active   *Runtime // 已发布的活动 Runtime
 	firstErr error    // 原生加载开始后的首个失败原因,terminated 后供后续 Open 诊断
+
+	// 唯一实例名额(§8):slot 非 none 时名额已占用;creating 期间
+	// creationDone 是创建 lease——登记于 reserveInstance,由创建者在
+	// 事务结束(发布或回滚完成)后经 releaseCreationLease 关闭一次;
+	// creationDoneClosed 防重复关闭。activeInstance 是已发布的活动实
+	// 例(§8:Runtime 必须能找到它;MAA-25 的 Runtime.Close 经此关
+	// 闭)。closeRequested 表示创建准入已关闭(Runtime.Close 已请求):
+	// 此后预留与发布都被拒绝,已 closing 时由创建者完成回滚(§8)。
+	slot               instanceSlotState
+	creationDone       chan struct{}
+	creationDoneClosed bool
+	closeRequested     bool
+	activeInstance     *instance
 }
 
 // reserve 原子预占生命周期:idle→reserved 成功;reserved/ready 拒绝
@@ -436,11 +471,7 @@ func (g *lifecycleGate) reserve() error {
 	case lifecycleReserved, lifecycleReady:
 		return native.ErrRuntimeInUse
 	case lifecycleTerminated:
-		if g.firstErr != nil {
-			return fmt.Errorf("maa: runtime lifecycle already terminated (first failure: %v): %w",
-				g.firstErr, native.ErrRuntimeTerminated)
-		}
-		return native.ErrRuntimeTerminated
+		return g.terminatedErrLocked()
 	default:
 		// lifecycleState 只有四个值,其余分支不可达;到达此处意味着
 		// 私有状态机的内部不变量被破坏,按编程错误处理,不允许静默
@@ -449,9 +480,131 @@ func (g *lifecycleGate) reserve() error {
 	}
 }
 
+// terminatedErrLocked 返回 terminated 状态下的统一拒绝错误:附首个
+// 失败原因文本作诊断(%v,不建立错误链——首个失败已在其原始错误中
+// 保留);正常关闭/回滚终止(无失败原因)返回裸哨兵。要求持有 mu。
+func (g *lifecycleGate) terminatedErrLocked() error {
+	if g.firstErr != nil {
+		return fmt.Errorf("maa: runtime lifecycle already terminated (first failure: %v): %w",
+			g.firstErr, native.ErrRuntimeTerminated)
+	}
+	return native.ErrRuntimeTerminated
+}
+
+// reserveInstance 在 Runtime 状态门内预留唯一实例名额并登记创建
+// lease(§8 NewInstance 第 2 步:在 Runtime 中预留唯一实例名额并登
+// 记创建 lease)。成功前置:Runtime 已发布(ready)、名额空闲且创建
+// 准入未关闭;成功即 slot=creating 并建立创建 lease。拒绝语义:
+//   - terminated:包装 ErrRuntimeTerminated(附首个失败原因),预占
+//     名额后的创建失败与实例关闭都到达此处——同进程不重建实例、不
+//     重试资源组合(§8);
+//   - 非 ready(reserved 等,公开面不可达,防御拒绝):ErrRuntimeInUse;
+//   - 创建准入已关闭(Runtime.Close 已请求):包装 ErrClosing(§8
+//     错误契约:Runtime.Close 期间创建者不得再发布实例);
+//   - 名额已占用(creating 或 active):包装 ErrRuntimeInUse——唯一
+//     实例名额已消耗,不复用、不排队。
+func (g *lifecycleGate) reserveInstance() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	switch {
+	case g.state == lifecycleTerminated:
+		return g.terminatedErrLocked()
+	case g.state != lifecycleReady:
+		return fmt.Errorf("maa: runtime is not ready, instance creation rejected: %w", native.ErrRuntimeInUse)
+	case g.closeRequested:
+		return fmt.Errorf("maa: runtime close has been requested, instance creation rejected: %w", native.ErrClosing)
+	case g.slot != slotNone:
+		return fmt.Errorf("maa: the runtime allows a single instance, instance slot is %d: %w",
+			g.slot, native.ErrRuntimeInUse)
+	}
+	g.slot = slotCreating
+	g.creationDone = make(chan struct{})
+	g.creationDoneClosed = false
+	return nil
+}
+
+// publishInstance 在 Runtime 状态门内复核可发布性并发布 ready 实例
+// (§8:创建者在 Runtime 的同一状态门内决定发布;ready 发布与
+// Runtime 状态复核在同一状态门内):创建准入未关闭且实例状态无早到
+// 故障时,在门锁内完成实例状态发布(tryPublishReady,锁序:门锁 →
+// 状态锁)并把名额转为 active、登记活动实例;否则不发布并返回拒绝
+// 原因,由创建者完成同一单次关闭/回滚流程后释放 lease(§8:Runtime.
+// Close 等待该流程,不重复 Destroy):
+//   - 创建准入已关闭:包装 ErrClosing(不发布,不产生 ready 实例);
+//   - 早到故障:返回首因(tryPublishReady 在状态锁内原子复核——故障
+//     在选项应用后、发布前的任意时点到达都只能得到「不发布」一种结
+//     论,不存在 faulted 仍发布的窗口)。
+//
+// 调用契约:仅由创建者在 reserveInstance 成功之后、释放 lease 之前
+// 调用一次;slot 非 creating 或状态非 ready 到达此处即内部不变量破
+// 坏,panic(创建失败回滚已使门 terminated,发布不可达)。
+func (g *lifecycleGate) publishInstance(in *instance) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state != lifecycleReady || g.slot != slotCreating {
+		panic(fmt.Sprintf("maa: lifecycle gate publishes instance in state %d with slot %d", g.state, g.slot))
+	}
+	if g.closeRequested {
+		return fmt.Errorf("maa: runtime close has been requested, the instance is not published: %w", native.ErrClosing)
+	}
+	if err := in.state.tryPublishReady(); err != nil {
+		// 早到故障(§8:callback 已可接收,早到故障会使创建失败并按既
+		// 定规则清理):不发布,名额保持 creating,回滚统一收尾。
+		return err
+	}
+	g.slot = slotActive
+	g.activeInstance = in
+	return nil
+}
+
+// releaseCreationLease 释放创建 lease:由创建者在事务结束(全部步骤
+// 成功发布 ready,或统一回滚完成)后调用一次(§8:由创建者完成同一
+// 单次关闭/回滚流程后释放 lease;Runtime.Close 等待该流程)。未预留
+// 即释放或重复释放即内部不变量破坏,panic。
+func (g *lifecycleGate) releaseCreationLease() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.creationDone == nil || g.creationDoneClosed {
+		panic("maa: creation lease released without a reservation or more than once")
+	}
+	g.creationDoneClosed = true
+	close(g.creationDone)
+}
+
+// waitCreationLease 等待已登记的创建 lease 释放(§8:Runtime.Close 先
+// 关闭创建准入,再等待已登记的创建 lease,不能因尚无 ready Instance
+// 而提前完成):创建事务结束(发布或回滚完成)后返回。尚未预留名额
+// 时立即返回(无可等待的 lease);完整 Runtime.Close 集成归 MAA-25。
+func (g *lifecycleGate) waitCreationLease() {
+	g.mu.Lock()
+	ch := g.creationDone
+	g.mu.Unlock()
+	if ch != nil {
+		<-ch
+	}
+}
+
+// closeCreationAdmission 关闭创建准入(§8:Runtime.Close 先关闭创建准
+// 入):此后 reserveInstance 与 publishInstance 一律拒绝,正在进行的
+// 创建事务不受影响、由创建者自行完成(发布或回滚)。返回本次调用是
+// 否为首个请求(后续调用幂等返回 false);Runtime.Close 的完整流程
+// (等待 lease、关闭活动实例、终止使用)归 MAA-25,本方法只承载创
+// 建准入标志。
+func (g *lifecycleGate) closeCreationAdmission() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closeRequested {
+		return false
+	}
+	g.closeRequested = true
+	return true
+}
+
 // terminate 记录原生加载开始后的首个失败原因并进入 terminated 终态。
 // 同一道内 terminate 至多被调用一次(任何后续 Open 都在 reserve 处
-// 被拒绝),保留首个失败,不覆盖。
+// 被拒绝),保留首个失败,不覆盖;终止使用同时解除活动实例登记的可
+// 达引用(§8:实例关闭或创建失败回滚后,后续 Open/NewInstance 一律
+// 被拒,已终止的实例不再被生命周期门引用)。
 func (g *lifecycleGate) terminate(cause error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -459,6 +612,7 @@ func (g *lifecycleGate) terminate(cause error) {
 		g.firstErr = cause
 	}
 	g.state = lifecycleTerminated
+	g.activeInstance = nil
 }
 
 // publish 在全部初始化步骤成功后发布 ready Runtime 并记录活动对象。
@@ -681,6 +835,7 @@ func open(cfg RuntimeConfig, env initEnv, gate *lifecycleGate) (*Runtime, error)
 		version:  version,
 		nullSize: ns,
 		limits:   snap.limits,
+		gate:     gate,
 	}
 	gate.publish(rt)
 	return rt, nil
@@ -718,14 +873,16 @@ type Capabilities = native.Capabilities
 // Runtime 表示一次成功初始化的进程级 MaaCore 绑定。全部字段未导出
 // 且在初始化时冻结,发布后只读;零值不可用,只能经 Open 返回的
 // 指针使用,不按值复制。table 是本次加载事务发布的临时 API 表(供
-// M3 的实例创建经它调用 raw 函数),caps/version/nullSize/limits 是
-// 初始化时复制的不可变元数据与限制快照。
+// 实例创建经它调用 raw 函数),caps/version/nullSize/limits 是
+// 初始化时复制的不可变元数据与限制快照;gate 是本 Runtime 的生命周
+// 期门(唯一实例名额的预留/复核与终止使用经它进行)。
 type Runtime struct {
 	table    *native.APITable
 	caps     native.Capabilities
 	version  string
 	nullSize uint64
 	limits   Limits
+	gate     *lifecycleGate
 }
 
 // Version 返回初始化时复制的 Core 版本字符串。只读不可变元数据,
@@ -740,3 +897,31 @@ func (rt *Runtime) Capabilities() Capabilities { return rt.caps }
 // 约定为 math.MaxUint64)。它是输出缓冲区容量协议的锚点,供外部
 // 核验;只读不可变元数据,不触发任何原生调用;并发安全。
 func (rt *Runtime) NullSize() uint64 { return rt.nullSize }
+
+// NewInstance 创建一个带 callback 的实例:校验并复制实例配置 → 预留
+// 唯一实例名额并登记创建 lease → 建立实例状态、事件入口、callback
+// 门与 token → CreateEx → 按序应用实例选项 → 在 Runtime 同一状态门
+// 内复核可发布性与早到故障并发布 ready Instance(§8 初始化第 2 阶
+// 段)。全部步骤成功才返回 *Instance;任何失败都不向调用者返回半初
+// 始化实例,也不返回尚可重试的假象。
+//
+// 步骤与错误契约(详见绑定设计 §8、§5.1):
+//   - 预占前纯 Go 配置校验失败:返回带字段路径的 ErrInvalidInput,
+//     不消耗 Runtime,不改名额与生命周期;
+//   - 预留被拒:Runtime 已终止使用(实例关闭、创建失败回滚或初始
+//     化失败之后)返回包装 ErrRuntimeTerminated 的错误;名额已被占
+//     用(creating/active)返回包装 ErrRuntimeInUse 的错误;Runtime
+//     关闭准入已关闭返回包装 ErrClosing 的错误;
+//   - 预占后失败(CreateEx=0、选项被原生拒绝、早到故障、发布被
+//     closing 抢先):统一走单次关闭/回滚流程清理,Runtime 终止使用
+//     (后续 Open/NewInstance 返回包装 ErrRuntimeTerminated 的错误),
+//     不允许同进程重建实例或重试资源组合(§8);
+//   - CreateEx 之前 token、callback 门与事件队列已可用:创建期间的
+//     早到消息照常准入入队,不遗失状态(§4);已发布实例的事件缓冲
+//     中因此可能带有创建期间收到的早到消息。
+//
+// 配置快照:校验通过后、预留名额前深拷贝冻结(§6.1),方法返回后
+// 修改原配置不影响实例;调用者在方法返回前不得并发修改输入。
+func (rt *Runtime) NewInstance(cfg InstanceConfig) (*Instance, error) {
+	return createInstance(rt, cfg, apiTableCreator{table: rt.table}, apiTableCloser{table: rt.table})
+}

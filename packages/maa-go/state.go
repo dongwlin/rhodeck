@@ -22,8 +22,13 @@
 // 终态存储与等待语义见 operation.go;同步清空由结算本身完成,不启
 // 动 goroutine、不轮询、无 reaper。
 //
-// 本单元只承载状态与基础 lease 原语:不接 CreateEx/NewInstance,不
-// 实现关闭流程本体,不接 callback 分发;公开面(导出符号)零变化。
+// MAA-21 在同一状态门内增补创建期发布原语(§8 NewInstance):
+// publishHandle 登记 CreateEx 返回的句柄,tryPublishReady 在最终发布
+// 点原子复核早到故障并发布 ready——发布与故障复核同锁段,早到故障
+// 的任意到达时序都只能得到「不发布 + 按首因回滚」一种结论。
+//
+// 本单元只承载状态与基础 lease 原语:不调用 CreateEx,不实现关闭流
+// 程本体,不接 callback 分发;公开面(导出符号)零变化。
 //
 // 并发契约(绑定设计 §7、§8):
 //   - 状态锁 mu 只用于检查状态、登记/释放 lease 与发布结果;任何
@@ -191,6 +196,61 @@ func (s *instanceState) publishReady() {
 		panic(fmt.Sprintf("maa: instance state publish from phase %d", s.phase))
 	}
 	s.phase = phaseReady
+}
+
+// publishHandle 在创建事务中登记 AsstCreateEx 返回的有效非零句柄:
+// CreateEx 调用前状态必须已建立(handle=0 构造),返回后由创建者把
+// 句柄写入唯一受门控的 handle 字段。只允许调用一次,重复登记或以 0
+// 登记即内部不变量破坏,panic(§3:0 无效,不解引用)。
+//
+// 允许的阶段是 initializing 与 faulted:创建期间的早到故障可能先于
+// CreateEx 返回进入 faulted(§7:回调在原生线程上并发准入),而回滚
+// 路径仍需要句柄执行一次 Stop 再一次 Destroy(§8.1:已创建 handle 后
+// 的失败执行同一销毁流程),因此 faulted 阶段照常登记。closing 及
+// 之后到达此处即内部不变量破坏,panic。锁序:创建流程在持有
+// Runtime 状态门(lifecycleGate.mu)之外调用本方法;本方法只取状态
+// 锁,不反向获取任何 Runtime 锁。
+func (s *instanceState) publishHandle(handle uintptr) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if handle == 0 {
+		panic("maa: instance handle published as 0")
+	}
+	if s.handle != 0 {
+		panic(fmt.Sprintf("maa: instance handle %#x published over existing handle %#x", handle, s.handle))
+	}
+	switch s.phase {
+	case phaseInitializing, phaseFaulted:
+		s.handle = handle
+	default:
+		panic(fmt.Sprintf("maa: instance handle published in phase %d", s.phase))
+	}
+}
+
+// tryPublishReady 在创建事务的最终发布点原子复核并发布 ready(§8
+// NewInstance 第 6 步:复核 Runtime 状态并发布 ready Instance;§7.1
+// 冻结:早到故障会使创建失败):仍在 initializing 时发布 ready 并返
+// 回 nil;已因早到故障进入 faulted 时返回该首因、不发布——发布与
+// 故障复核在同一状态锁段内完成,故障早于、晚于选项应用或恰在发布
+// 前到达都只能得到「不发布 + 按首因回滚」一种结论,不存在「已
+// faulted 仍 publishReady」的 panic 窗口。其余阶段到达此处即内部不
+// 变量破坏,panic。锁序:由 Runtime 状态门的发布决策持有
+// lifecycleGate.mu 时调用(Runtime 门 → 状态锁,无反向获取)。
+func (s *instanceState) tryPublishReady() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch s.phase {
+	case phaseInitializing:
+		s.phase = phaseReady
+		return nil
+	case phaseFaulted:
+		if s.firstFault == nil {
+			panic("maa: faulted instance state without a recorded first fault")
+		}
+		return s.firstFault
+	default:
+		panic(fmt.Sprintf("maa: instance state tries to publish from phase %d", s.phase))
+	}
 }
 
 // callLease 是一次已准入业务调用的在途凭证:准入在状态锁内完成,
