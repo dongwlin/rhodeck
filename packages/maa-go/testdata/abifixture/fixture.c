@@ -9,6 +9,10 @@
  *     不得混用;
  *   - Linux 上 ASSTAPI 与 ASST_CALL 均展开为空,导出直接写成普通
  *     C 函数;类型逐字取自头文件的 typedef;
+ *   - 锁定头三处零参声明为空参 () 形式(AsstCaller.h:63、134、136,
+ *     即 AsstCreate/AsstGetNullSize/AsstGetVersion);本夹具按 C 的
+ *     规范零参原型形式写为 (void) —— 对函数定义两者等价,导出符号
+ *     与调用约定不受影响;
  *   - 本夹具不调用、不依赖任何真实 MaaCore;全部行为来自本文件的
  *     已发表契约,语义确定、可审计;
  *   - 真实调用发生在 Go 侧独立子进程中(超时由父进程外部强制),
