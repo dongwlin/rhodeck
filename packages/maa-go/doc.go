@@ -18,6 +18,13 @@
 // 默认值,非 nil 表示完整显式配置,越界与跨字段矛盾返回带字段路径
 // 的 ErrInvalidInput,不静默截断或夹取。
 //
+// 实例与连接、任务输入的数据类型(InstanceConfig、InstanceOption、
+// ConnectConfig)已定义,对应的纯 Go 校验与快照辅助同样遵循 MAA-03
+// 冻结的语义(option key 非 0 且不重复、value 允许空串;ADBPath
+// 非空绝对路径、Address 非空、Config 允许空串并原样传空 C 字符串;
+// taskType 非空、params 为非空完整 JSON object);但这些类型尚未
+// 接入任何构造函数或 raw 调用。
+//
 // Instance、Operation、事件流与 Close 仍不存在,由 M3 承接;在它们
 // 被声明并验证之前,调用方不应假设这些 API 可用。公开面没有任何
 // 可创建半成品 Instance 的入口。
