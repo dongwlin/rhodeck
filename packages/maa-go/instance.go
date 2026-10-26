@@ -67,6 +67,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"unicode/utf8"
+	"unsafe"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
 )
@@ -236,8 +238,9 @@ func composeCloseError(fault, stopDiag error) error {
 //
 // 业务方法(连接、事件流与结果读取)由 MAA-23、24 接入;当前公开面
 // 为 Close(MAA-20)、同步任务/请求/查询方法(MAA-22:AppendTask、
-// SetTaskParams、Start、Stop、BackToHome、Running、Connected)与异
-// 步提交方法(MAA-23:Connect、Click、Screencap,返回 *Operation)。
+// SetTaskParams、Start、Stop、BackToHome、Running、Connected)、异
+// 步提交方法(MAA-23:Connect、Click、Screencap,返回 *Operation)
+// 与图像/UUID/任务列表读取(MAA-24:GetImagePNG、UUID、Tasks)。
 type Instance struct {
 	// inst 是私有单次关闭组件(MAA-20):持有共享状态、事件分发器、
 	// callback token 与 native 停止/销毁接缝,Close 委托它的唯一流程。
@@ -347,6 +350,20 @@ type instanceCaller interface {
 	// asyncScreencap 对应 AsstAsyncScreencap(handle, block):异步提
 	// 交截图,契约同 asyncConnect。
 	asyncScreencap(handle uintptr, block uint8) int32
+	// getImage 对应 AsstGetImage(handle, buff, buffSize):读取 Core
+	// 缓存图像的 PNG 编码,容量与返回值均为字节数。buff 指向实际分配
+	// 的无 Go 指针字节缓冲区(不以 nil/0 查询所需容量,§6.2),由调
+	// 用方保活至 raw 返回。调用契约:仅在调用 lease 已准入、raw 串行
+	// 门禁已进入后调用(扩容重试的多次调用同属一次准入)。
+	getImage(handle uintptr, buff unsafe.Pointer, buffSize uint64) uint64
+	// getUUID 对应 AsstGetUUID(handle, buff, buffSize):读取设备
+	// UUID,容量与返回值均为字节数,按返回长度读取、不依赖尾部 NUL。
+	// 调用契约同 getImage。
+	getUUID(handle uintptr, buff *byte, buffSize uint64) uint64
+	// getTasksList 对应 AsstGetTasksList(handle, buff, buffSize):读
+	// 取任务 ID 列表,容量与返回值均为 int32 元素数(不是字节数)。
+	// 调用契约同 getImage。
+	getTasksList(handle uintptr, buff *int32, buffSize uint64) uint64
 }
 
 // apiTableCaller 是 instanceCaller 的生产实现:转发 *native.APITable
@@ -383,6 +400,18 @@ func (c apiTableCaller) asyncClick(handle uintptr, x int32, y int32, block uint8
 
 func (c apiTableCaller) asyncScreencap(handle uintptr, block uint8) int32 {
 	return c.table.AsyncScreencap(handle, block)
+}
+
+func (c apiTableCaller) getImage(handle uintptr, buff unsafe.Pointer, buffSize uint64) uint64 {
+	return c.table.GetImage(handle, buff, buffSize)
+}
+
+func (c apiTableCaller) getUUID(handle uintptr, buff *byte, buffSize uint64) uint64 {
+	return c.table.GetUUID(handle, buff, buffSize)
+}
+
+func (c apiTableCaller) getTasksList(handle uintptr, buff *int32, buffSize uint64) uint64 {
+	return c.table.GetTasksList(handle, buff, buffSize)
 }
 
 // createInstance 是 NewInstance 的完整创建事务(§8 初始化第 2 阶段),
@@ -821,6 +850,149 @@ func (in *Instance) Screencap() (*Operation, error) {
 	return in.asyncCall(asyncWhatScreencap, func(handle uintptr) int32 {
 		return in.caller.asyncScreencap(handle, asyncBlockFalse)
 	})
+}
+
+// ---- 图像、UUID 与任务列表读取(MAA-24;绑定设计 §3、§5、§6、
+// §6.1、§6.2、§7)----
+//
+// 三个输出读取公开入口(GetImagePNG/UUID/Tasks)的公共纪律:
+//   - 与同步业务调用同一准入:先 admitCall 取得调用 lease,再进入独
+//     立的 raw 串行门禁;lease 覆盖探测 buffer 分配、raw 调用(含扩
+//     容重试的多次调用)、长度校验、内容校验与最终复制全过程(§7,
+//     任务执行步骤 1)。任何 native 调用不持状态锁;handle 只在
+//     lease 与门禁段内读取。
+//   - 复用 MAA-15 有界缓冲区辅助层(readOutputBytes/readOutputInt32s):
+//     每次探测分配实际非空的 Go buffer 并传真实容量,不以 nil/0 查
+//     询所需容量;返回值校验顺序固定 NullSize → 实际容量 → Go
+//     MaxInt → 转换/切片(§6.2)。哨兵值取 Open 时核验并保存的
+//     Runtime.nullSize,不硬编码。
+//   - 按接口单位计量:PNG 与 UUID 按字节,Tasks 按 int32 元素数(每
+//     元素 4 字节只用于分配前的 Go int 守卫,容量与返回值都不当作
+//     字节数,§6.2)。
+//   - raw 接线按 §6 保活本层分配的 buffer:runtime.KeepAlive 持有至
+//     raw 返回(buffer.go 契约:保活责任在 raw 接线方)。
+//   - 返回独立 Go 快照(§6.1):探测 buffer 不外泄,成功结果复制为
+//     调用者可长期持有、修改的独立数据;返回后原生内容改写或调用者
+//     修改切片都不影响已取得的快照与后续结果。
+//
+// 能力决策(MAA-03 冻结,§6):可选 BGR(AsstGetImageBgr)首期只解
+// 析符号并报告 capability(Runtime.Capabilities().ImageBgr),不公开
+// 读取方法、不调用、不分配生产 BGR buffer。任务验收条件中「可选
+// BGR 缺失时按能力返回 ErrUnsupported」由该冻结决策实现——不存在可
+// 绕过能力判断的公开 BGR 读取路径;未来公开 BGR 时须按 MAA-03 重新
+// 补齐生产容量契约后再按能力返回 ErrUnsupported。
+//
+// 三个接口都不是 nil/0 查询所需容量的协议(§6):未初始化、空
+// handle、容量不足均可能返回 NullSize;返回值大于实际容量是
+// ErrProtocol,立即终止、不扩容;合法 0 在实际非空 buffer 上返回空
+// 结果。耗尽返回可辨识的 ErrBufferLimit(诊断含接口、单位、尝试次
+// 数、最后容量、Max 与原始返回值,NullSize 原因不明)。
+
+// 读取接口名常量:三个读取接口在缓冲区探测诊断中的接口名(对应 C
+// 符号去掉 Asst 前缀,与 buffer_test.go 的用例命名一致)。
+const (
+	outputNameImage = "GetImage"
+	outputNameUUID  = "GetUUID"
+	outputNameTasks = "GetTasksList"
+)
+
+// GetImagePNG 读取 Core 缓存图像的 PNG 编码(AsstGetImage):返回的
+// 是最近一次采集图像的缓存结果——本方法不触发任何隐式截图,也不承
+// 诺缓存采集时间(PNG 本身不带采集时间,任务执行期间缓存仍可能更
+// 新,扩容重试也不固定同一张图像);需要新截图时,调用方必须先提交
+// Screencap 并等待其成功结果,再调用本方法读取(§6)。未连接设备时
+// 也可能合法返回 0 长度(空、非 nil 切片),binding 不将其伪造成截
+// 图成功或失败——截图进度只能经 Screencap 的 Operation 与事件流观
+// 察。返回独立 Go 快照,可长期持有、修改。
+//
+// 容量探测按 Limits.ImagePNG(字节)执行,返回错误语义:探测耗尽
+// 包装 ErrBufferLimit;原生返回值大于实际容量包装 ErrProtocol;生命
+// 周期拒绝(closing/faulted/closed)经错误链可辨。
+func (in *Instance) GetImagePNG() ([]byte, error) {
+	var png []byte
+	err := in.syncCall("GetImagePNG", func(handle uintptr) error {
+		var err error
+		png, err = readOutputBytes(outputNameImage, func(buf []byte) uint64 {
+			ret := in.caller.getImage(handle, unsafe.Pointer(&buf[0]), uint64(len(buf)))
+			// 本层分配的探测 buffer 持有至 raw 返回(§6:保活责任在
+			// raw 接线方);PNG/UUID/Tasks 的扩容重试同属一次 raw 门禁
+			// 段,每次调用各自保活。
+			runtime.KeepAlive(buf)
+			return ret
+		}, in.rt.nullSize, in.rt.limits.ImagePNG)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return png, nil
+}
+
+// UUID 读取设备 UUID(AsstGetUUID):按原生返回的长度读取并转换为
+// string——不寻找、不要求尾部 NUL,缓冲区容量内的其余内容一律丢弃,
+// 因此无尾部 NUL 仍能保留完整有效内容(§6.2;C 契约:AsstGetUUID
+// 不补 NUL)。转换前校验内容:含 NUL 字节或非法 UTF-8 为协议破坏,
+// 返回包装 ErrProtocol 的错误,不把矛盾证据伪装成成功。合法 0 长度
+// 返回空串。返回独立 Go 快照(string 按语言语义共享)。
+//
+// 容量探测按 Limits.UUID(字节)执行,错误语义同 GetImagePNG。
+func (in *Instance) UUID() (string, error) {
+	var uuid string
+	err := in.syncCall("UUID", func(handle uintptr) error {
+		raw, err := readOutputBytes(outputNameUUID, func(buf []byte) uint64 {
+			ret := in.caller.getUUID(handle, &buf[0], uint64(len(buf)))
+			runtime.KeepAlive(buf)
+			return ret
+		}, in.rt.nullSize, in.rt.limits.UUID)
+		if err != nil {
+			return err
+		}
+		// 内容校验(§6.2):只校验按返回长度读取的有效区间,不寻找
+		// 尾部 NUL;内容含 NUL 或非法 UTF-8 为 ErrProtocol。
+		if bytes.IndexByte(raw, 0x00) >= 0 {
+			return fmt.Errorf("maa: %s content contains a NUL byte: %w", outputNameUUID, native.ErrProtocol)
+		}
+		if !utf8.Valid(raw) {
+			return fmt.Errorf("maa: %s content is not valid UTF-8: %w", outputNameUUID, native.ErrProtocol)
+		}
+		uuid = string(raw)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return uuid, nil
+}
+
+// Tasks 读取实例任务列表(AsstGetTasksList):返回已入队任务的 ID
+// 列表——入队中的任务(含尚未 Start 的)也会出现,列表内容与元素
+// 顺序由 Core 决定,binding 不解释任务状态。容量与返回值均按 int32
+// 元素数处理、不当作字节数(§6.2);id 保留 int32 符号位转换为
+// TaskID。合法 0 长度返回空、非 nil 切片。返回独立 Go 快照,可长期
+// 持有、修改。
+//
+// 容量探测按 Limits.Tasks(元素)执行,错误语义同 GetImagePNG。
+func (in *Instance) Tasks() ([]TaskID, error) {
+	var tasks []TaskID
+	err := in.syncCall("Tasks", func(handle uintptr) error {
+		raw, err := readOutputInt32s(outputNameTasks, func(buf []int32) uint64 {
+			ret := in.caller.getTasksList(handle, &buf[0], uint64(len(buf)))
+			runtime.KeepAlive(buf)
+			return ret
+		}, in.rt.nullSize, in.rt.limits.Tasks)
+		if err != nil {
+			return err
+		}
+		tasks = make([]TaskID, len(raw))
+		for i, id := range raw {
+			tasks[i] = TaskID(id)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tasks, nil
 }
 
 // runtimeLogger 是 Runtime 全局日志(AsstLog:进程级,无 handle)的

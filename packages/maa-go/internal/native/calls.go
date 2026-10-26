@@ -1,18 +1,20 @@
 // 本文件是 APITable 的 raw 调用包装边界:为 Runtime 初始化(Open
 // 事务)所需的 6 个 raw 函数、实例创建(NewInstance 事务)所需的
-// 2 个 raw 函数、实例同步业务调用(MAA-22)所需的 8 个 raw 函数与
-// 异步提交(MAA-23)所需的 3 个 raw 函数提供直接转发的方法。函数
-// 指针与函数表仍不外泄——
-// APITable 只经公开层 Runtime 私有持有,本层方法不向公开层暴露任何
-// func 值;*byte 参数的编码(构造带 NUL 的 UTF-8 buffer 与保活)、
-// 返回值的解释与复制全部由公开层完成。raw 签名保持绑定设计 §3 冻
-// 结的 C 宽度,不做任何 Go 化改写。
+// 2 个 raw 函数、实例同步业务调用(MAA-22)所需的 8 个 raw 函数、
+// 异步提交(MAA-23)所需的 3 个 raw 函数与输出缓冲区读取(MAA-24)
+// 所需的 3 个 raw 函数提供直接转发的方法。函数指针与函数表仍不外
+// 泄——APITable 只经公开层 Runtime 私有持有,本层方法不向公开层暴
+// 露任何 func 值;*byte 参数的编码(构造带 NUL 的 UTF-8 buffer 与保
+// 活)、返回值的解释与复制全部由公开层完成。raw 签名保持绑定设计
+// §3 冻结的 C 宽度,不做任何 Go 化改写。
 //
 // 转发即全部语义:本层不重试、不解释返回值、不为 C void 函数
 // (SetConnectionExtras、Log)虚构成功码。api.go/symbols.go/
 // callback_types.go 及其静态测试保持冻结,不得因新增包装而改动。
 
 package native
+
+import "unsafe"
 
 // GetVersion 对应 AsstGetVersion():无参数,返回静态版本字符串的
 // 借用指针。原生内存由 Core 持有,调用方必须立即有界复制为 Go
@@ -144,3 +146,37 @@ func (t *APITable) BackToHome(handle uintptr) uint8 { return t.api.BackToHome(ha
 // 本包装同样无返回值——不得伪造成功,也不得把「调用已返回」解释成
 // 原生确认(AsstCaller.cpp 的实现只把文本交给内部日志器)。
 func (t *APITable) Log(level *byte, message *byte) { t.api.Log(level, message) }
+
+// GetImage 对应 AsstGetImage(handle, buff, buff_size):读取 Core 缓
+// 存图像的 PNG 编码。容量与返回值均为字节数;buff 必须指向实际分配
+// 的无 Go 指针字节缓冲区,仅本次调用使用,保活责任在调用方(§6:以
+// runtime.KeepAlive 持有至 raw 返回)。返回 NullSize 哨兵表示失败、
+// 0 是合法空结果(未连接设备时图像 getter 也可能合法返回 0),两者
+// 的解释权在调用方——公开层的有界缓冲区探测按 §6.2 固定顺序校验,
+// 不得先传 nil/0 查询所需容量。读取的是最近一次采集的缓存图像,本
+// 调用不触发任何截图,也不承诺缓存采集时间。
+//
+// 可选的 AsstGetImageBgr 首期不进入生产调用(§6:只解析符号并报告
+// capability,不公开读取方法、不调用、不分配生产 BGR buffer),因此
+// 本文件不提供 BGR 包装。
+func (t *APITable) GetImage(handle uintptr, buff unsafe.Pointer, buffSize uint64) uint64 {
+	return t.api.GetImage(handle, buff, buffSize)
+}
+
+// GetUUID 对应 AsstGetUUID(handle, buff, buff_size):读取设备 UUID。
+// 容量与返回值均为字节数,返回长度是有效内容的全部——不写尾部 NUL,
+// 调用方必须只按返回长度读取,不得在缓冲区内寻找或要求 NUL(§3:
+// 按返回长度读取,不依赖尾部 NUL)。NullSize 哨兵与合法 0 的解释权
+// 在调用方,契约同 GetImage。
+func (t *APITable) GetUUID(handle uintptr, buff *byte, buffSize uint64) uint64 {
+	return t.api.GetUUID(handle, buff, buffSize)
+}
+
+// GetTasksList 对应 AsstGetTasksList(handle, buff, buff_size):读取
+// 实例任务列表。容量与返回值均为 AsstTaskId 元素数——不是字节数、
+// 不做 ×4 换算,换算只发生在公开层分配前的 Go int 守卫(§6.2:每元
+// 素 4 字节为 MAA-03 冻结值)。NullSize 哨兵与合法 0 的解释权在调用
+// 方,契约同 GetImage。
+func (t *APITable) GetTasksList(handle uintptr, buff *int32, buffSize uint64) uint64 {
+	return t.api.GetTasksList(handle, buff, buffSize)
+}

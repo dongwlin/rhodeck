@@ -65,9 +65,22 @@
 // 有效。原始 JSON 不经 map[string]any 的 float64 往返,未知任务
 // 类型、未知字段、未知消息 ID 与超过 2^53 的整数按原文字节保留。
 //
-// Instance 的事件流与输出读取(Events/Done/Err/Fault/Diagnostics 与
-// 图像等 getter)由 MAA-24 接入;在它们被声明并验证之前,调用方不应
-// 假设这些 API 可用。
+// Instance 的图像、UUID 与任务列表读取已接入:GetImagePNG 读取 Core
+// 缓存图像的 PNG 编码——读取的是最近一次采集的缓存结果,不触发任何
+// 隐式截图,也不承诺缓存采集时间,需要新截图时调用方必须先提交
+// Screencap 并等待其成功结果再读取;UUID 按原生返回的长度读取并转
+// 换为 string,不寻找、不要求尾部 NUL,内容含 NUL 或非法 UTF-8 为
+// ErrProtocol;Tasks 返回已入队任务的 ID 列表,容量与返回值均按
+// int32 元素数处理。三者都复用有界输出缓冲区探测:每次调用分配实
+// 际非空 buffer 并传真实容量(不以 nil/0 查询所需容量),返回值校验
+// 顺序固定为 NullSize 哨兵 → 实际容量 → Go int 上限 → 转换/切片,
+// 耗尽返回可辨识的 ErrBufferLimit(NullSize 原因不明),原生返回值
+// 超过实际容量为 ErrProtocol;合法 0 长度返回空结果。返回的都是独
+// 立 Go 快照,可长期持有、修改,不影响后续调用。可选 BGR(=
+// AsstGetImageBgr)首期只报告能力(Runtime.Capabilities().ImageBgr),
+// 不公开读取方法、不调用、不分配生产 buffer。事件流公开面
+// (Events/Done/Err/Fault/Diagnostics)尚未接入,在它们被声明并验证
+// 之前,调用方不应假设这些 API 可用。
 //
 // # Open 的进程级契约
 //

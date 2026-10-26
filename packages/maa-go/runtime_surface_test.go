@@ -5,8 +5,10 @@
 // AppendTask/SetTaskParams/Start/Stop/BackToHome/Running/Connected,
 // 绑定设计 §3、§5)、MAA-23 交付异步提交与结果关联(Instance 的
 // Connect/Click/Screencap 与公开 Operation 的 ID/Wait,绑定设计 §5、
-// §7)时有意识地更新本守卫;后续里程碑交付新公开面时,同样必须有
-// 意识地更新。
+// §7)、MAA-24 交付图像/UUID/任务列表读取(Instance 的 GetImagePNG/
+// UUID/Tasks,绑定设计 §5、§6;可选 BGR 不公开读取方法,冻结集合
+// 因此不含任何 BGR 入口)时有意识地更新本守卫;后续里程碑交付新公
+// 开面时,同样必须有意识地更新。
 //
 // 断言:
 //   - *Runtime 的导出方法集恰为 {Version, Capabilities, NullSize,
@@ -14,8 +16,9 @@
 //     事务入口);
 //   - *Instance 的导出方法集恰为 {Close, AppendTask, SetTaskParams,
 //     Start, Stop, BackToHome, Running, Connected, Connect, Click,
-//     Screencap}(单次关闭的公开入口 + 同步任务/请求/查询方法 +
-//     异步提交;事件流与输出读取由 MAA-24 接入);
+//     Screencap, GetImagePNG, UUID, Tasks}(单次关闭的公开入口 + 同
+//     步任务/请求/查询方法 + 异步提交 + 输出读取;事件流公开面
+//     Events/Done/Err/Fault/Diagnostics 尚未接入);
 //   - *Operation 的导出方法集恰为 {ID, Wait}(关联键读取 + 可重复
 //     等待,MAA-23);
 //   - 除 *Runtime 的 NewInstance 与 *Instance 的 Close 外,不存在其
@@ -149,7 +152,8 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	}
 
 	// *Instance 的导出方法集恰为 {Close} + MAA-22 同步方法 + MAA-23
-	// 异步提交方法。
+	// 异步提交方法 + MAA-24 输出读取方法(不含任何 BGR 读取入口:可
+	// 选 BGR 首期只报告 capability,§6 冻结决策)。
 	wantInstance := map[string]bool{
 		"Close":         true,
 		"AppendTask":    true,
@@ -162,6 +166,9 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		"Connect":       true,
 		"Click":         true,
 		"Screencap":     true,
+		"GetImagePNG":   true,
+		"UUID":          true,
+		"Tasks":         true,
 	}
 	for m := range wantInstance {
 		if !instanceMethods[m] {
