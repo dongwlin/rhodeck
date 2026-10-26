@@ -208,9 +208,8 @@ func (d *eventDispatcher) admit(messageID MessageID, payloadLen int) (eventSlot,
 		// 减法形式检查字节预算:payloadLen ≤ callbackBytes ≤
 		// internalBytes 由 validateLimits 交叉校验保证,不减出下溢。
 		overflow = fmt.Errorf("maa: internal event queue is full: "+
-			"%d/%d bytes reserved, message id %d, payload %d bytes, "+
-			"Limits.InternalEvents %d: %w",
-			d.bytes, d.internalBytes, messageID, payloadLen, d.internalEvents, native.ErrEventOverflow)
+			"%d/%d bytes reserved, message id %d, payload %d bytes: %w",
+			d.bytes, d.internalBytes, messageID, payloadLen, native.ErrEventOverflow)
 	}
 	if overflow != nil {
 		d.mu.Unlock()
