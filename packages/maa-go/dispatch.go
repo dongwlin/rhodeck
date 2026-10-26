@@ -63,11 +63,15 @@ const asyncCallInfoMessageID = MessageID(4)
 // 仅当三个关联字段全部存在、类型正确、无重复 key 且 ID 在 int32
 // 范围内才构造;解析失败的原始消息不得调用结算通知(§7.1:不能将
 // 无法关联的完成信息视为成功)。What 允许是未知文本:未知 what 按
-// 原样交付,由结算方(MAA-19)决定是否可关联。
+// 原样交付,由结算方(MAA-19)决定是否可关联。Details 是 details
+// 值的原始字节(§5:AsyncResult 保留原始 details),逐字节保留值内
+// 部原文含内部空白、不经 map[string]any 往返;校验只针对顶层 object
+// 形状与 ret 字段,未知字段原样保留(§6.1)。
 type completionInfo struct {
-	ID   AsyncID
-	What string
-	OK   bool
+	ID      AsyncID
+	What    string
+	OK      bool
+	Details json.RawMessage
 }
 
 // queuedEvent 是内部队列持有的一条已复制消息:eventRecord 复用
@@ -538,7 +542,8 @@ func (d *eventDispatcher) reportProtocol(cause error, raw []byte) {
 // 的必要关联字段(§7.1:原始 JSON 不经 map[string]any 的 float64 往返,
 // 数字用 json.Number 并精确检查关联 ID 的 int32 范围):
 //   - 顶层必须是 JSON object;提取顶层 what(string)、
-//     async_call_id(int32 范围内的精确整数)与 details.ret(bool);
+//     async_call_id(int32 范围内的精确整数)与 details.ret(bool),
+//     并把 details 值的原始字节整体捕获进 completionInfo(§5);
 //   - 关联字段缺失、重复 key、越界或类型错误返回包装
 //     native.ErrProtocol 的错误(原文由调用方保留),不得视为成功;
 //   - 其余字段(uuid、details.cost/error、未来新增字段)按未知字段
@@ -613,18 +618,32 @@ func parseAsyncCallInfo(raw json.RawMessage) (completionInfo, error) {
 			if seenDetails {
 				return completionInfo{}, fmt.Errorf("maa: AsyncCallInfo message has duplicate top-level key %q: %w", key, native.ErrProtocol)
 			}
-			tok, err := dec.Token()
+			// 先整值捕获原始字节(§5:AsyncResult 保留原始 details):
+			// Decode 到 json.RawMessage 逐字节保留值的内部原文(含内部
+			// 空白),不经 map[string]any 的 float64 往返(§6.1)。
+			var rawDetails json.RawMessage
+			if err := dec.Decode(&rawDetails); err != nil {
+				// 上游 json.Valid 已保证可达,防御分支。
+				return completionInfo{}, fmt.Errorf("maa: AsyncCallInfo top-level %q is not decodable JSON (%v): %w", key, err, native.ErrProtocol)
+			}
+			// 既有校验复用:在新 decoder 上检查顶层 object 形状并精确
+			// 解析 ret,缺失/重复/类型错误与顶层非 object 的既有错误
+			// 语义全部保留(§7.1:只校验必要关联字段,不因未知字段拒
+			// 绝完成消息)。
+			inner := json.NewDecoder(bytes.NewReader(rawDetails))
+			tok, err := inner.Token()
 			if err != nil {
-				return completionInfo{}, fmt.Errorf("maa: AsyncCallInfo message object is truncated (%v): %w", err, native.ErrProtocol)
+				return completionInfo{}, fmt.Errorf("maa: AsyncCallInfo details object is truncated (%v): %w", err, native.ErrProtocol)
 			}
 			if delim, ok := tok.(json.Delim); !ok || delim != '{' {
 				return completionInfo{}, fmt.Errorf("maa: AsyncCallInfo top-level %q is %v, want an object: %w", key, tok, native.ErrProtocol)
 			}
-			ret, err := parseDetailsRet(dec)
+			ret, err := parseDetailsRet(inner)
 			if err != nil {
 				return completionInfo{}, err
 			}
 			info.OK = ret
+			info.Details = rawDetails
 			seenDetails = true
 		default:
 			// 未知字段原样保留:只消费其值,不解释、不故障(§7.1)。

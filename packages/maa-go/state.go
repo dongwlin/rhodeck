@@ -4,15 +4,23 @@
 // 实例阶段、唯一受门控的 handle、已准入调用与 callback 计数、
 // callback 准入门、首次故障、共享 closeDone 与最终错误存储,并据此
 // 提供调用 lease 准入/释放、独立 raw 串行门禁、关闭选主、在途调用
-// 清零等待、首次故障记录与终态发布原语,作为后续 callback 准入接线
-// (MAA-18)、pending Operation 表(MAA-19/23)与 Stop/Destroy 关闭
-// 流程(MAA-20)的共同入口。
+// 清零等待、首次故障记录与终态发布原语,作为 callback 准入接线
+// (MAA-18)、pending Operation 表(MAA-19;有界早到结果表仍归
+// MAA-23)与 Stop/Destroy 关闭流程(MAA-20)的共同入口。
 //
 // MAA-17 在同一状态门内增补故障通知与丢失诊断(§7、§7.1,全部在
 // 状态锁内线性化):一次性 faultDone 通知只由首次故障关闭,正常
 // 关闭不触发;丢失条数采用饱和 uint64 计数,不回绕;首次故障只
 // 保留有界元数据和至多 faultRawPrefixBytes 字节原文前缀(不是完整
 // Event,不积累错误列表)。
+//
+// MAA-19 在同一状态门内增补 pending Operation 表与统一结算(§7、
+// §7.1):表容量取 Open 时 validateLimits 已校验的 PendingOperations
+// 快照,信任不重验;完成结算、首因线性化扫描与关闭清空全部在状态
+// 锁内进行,保证任一线性化点上每条记录要么仍在表中、要么已完整结
+// 算——故障后到达的完成消息因此不能覆盖故障终态。operation 自身的
+// 终态存储与等待语义见 operation.go;同步清空由结算本身完成,不启
+// 动 goroutine、不轮询、无 reaper。
 //
 // 本单元只承载状态与基础 lease 原语:不接 CreateEx/NewInstance,不
 // 实现关闭流程本体,不接 callback 分发;公开面(导出符号)零变化。
@@ -80,9 +88,9 @@ const (
 
 // instanceState 是一个实例的唯一私有共享状态(§7:实例只维护一份
 // 私有生命周期状态,包含阶段、handle、已准入调用数、已准入
-// callback 数、首次故障与共享 closeDone;pending Operation 与早到
-// 结果表不在本单元,由 MAA-19/23 承接)。状态内含锁,只能经指针
-// 使用,不按值复制。
+// callback 数、pending Operation 表、首次故障与共享 closeDone;
+// 有界早到结果表不在本单元,由 MAA-23 承接)。状态内含锁,只能经
+// 指针使用,不按值复制。
 //
 // handle 是状态路径唯一受门控的实例句柄:不设第二份裸 handle,不
 // 提供绕过阶段检查的访问闭包或导出(§8)。业务路径只能经已准入
@@ -109,6 +117,18 @@ type instanceState struct {
 	// 退出。接入策略归 MAA-18,本单元只承载标志与计数。
 	callbackGateClosed bool
 	callbacks          uint64
+
+	// pending 是已接受、尚未最终结算的 Operation 表(§7:pending 在
+	// 提交进入 raw 串行门禁前预留,满时直接拒绝):键为提交返回的
+	// 异步 ID,准入与移除只在状态锁内进行,当前占用即 len(pending)。
+	// 记录的终态存储与等待语义见 operation.go;真实提交的准入与
+	// ID/what 一致性校验依赖提交高水位,归 MAA-23。
+	pending map[AsyncID]*operation
+	// pendingOperations 是表容量上限:只能取 Open 时 validateLimits
+	// 已校验并冻结的 Limits.PendingOperations 快照(§7.1:1–4,096),
+	// 信任不重验;超限拒绝本次提交并包装 native.ErrOperationLimit,
+	// 实例不因此故障。
+	pendingOperations uint64
 
 	// firstFault 是首次故障,sticky:保留首个,不覆盖(§7.1)。
 	firstFault error
@@ -140,15 +160,19 @@ type instanceState struct {
 // newInstanceState 构造实例共享状态:不依赖 NewInstance,供创建
 // 接线(MAA-20)与受控用例复用。handle 允许传 0(真实创建在
 // CreateEx 返回前尚未取得句柄)或非零占位值(受控用例构造);业务
-// 调用路径读取到 0 视为内部不变量破坏。初始阶段为 initializing,
-// 创建成功后经 publishReady 发布;closeDone 在构造时建好,保证并发
-// 关闭申请从构造起共享同一通道。
-func newInstanceState(handle uintptr) *instanceState {
+// 调用路径读取到 0 视为内部不变量破坏。pendingOperations 是 pending
+// Operation 表容量上限,只能取 Open 时 validateLimits 已校验并冻结
+// 的 Limits.PendingOperations 快照值,信任不重验(受控用例传充裕
+// 值)。初始阶段为 initializing,创建成功后经 publishReady 发布;
+// closeDone 在构造时建好,保证并发关闭申请从构造起共享同一通道。
+func newInstanceState(handle uintptr, pendingOperations uint64) *instanceState {
 	s := &instanceState{
-		phase:     phaseInitializing,
-		handle:    handle,
-		closeDone: make(chan struct{}),
-		faultDone: make(chan struct{}),
+		phase:             phaseInitializing,
+		handle:            handle,
+		pending:           make(map[AsyncID]*operation),
+		pendingOperations: pendingOperations,
+		closeDone:         make(chan struct{}),
+		faultDone:         make(chan struct{}),
 	}
 	s.callsDrained = sync.NewCond(&s.mu)
 	s.callbacksDrained = sync.NewCond(&s.mu)
@@ -335,23 +359,36 @@ func (s *instanceState) recordFault(cause error) {
 // prefix 允许为 nil;非 nil 时截取至多 faultRawPrefixBytes 字节并在
 // 首次故障时立即深拷贝,调用者返回后修改原切片不影响已保存副本。
 // 当本调用使 firstFault 从 nil 变为非 nil(即本调用是首次故障的
-// 线性化点)时,恰好关闭一次 faultDone;重复记录不重复关闭。
+// 线性化点)时,恰好关闭一次 faultDone;重复记录不重复关闭。同一
+// 线性化点将当时全部 pending Operation 统一结为该故障原因(§7.1;
+// 等待语义见 operation.go),故障后到达的完成消息因此不能覆盖故障
+// 终态;重复故障不重复扫描。
 func (s *instanceState) recordFaultWithDetail(cause error, prefix []byte) {
 	if cause == nil {
 		panic("maa: instance fault recorded without a cause")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	first := false
 	switch s.phase {
 	case phaseInitializing, phaseReady:
-		s.keepFirstFaultLocked(cause, prefix)
+		first = s.keepFirstFaultLocked(cause, prefix)
 		s.phase = phaseFaulted
 	case phaseFaulted, phaseClosing:
-		s.keepFirstFaultLocked(cause, prefix)
+		first = s.keepFirstFaultLocked(cause, prefix)
 	case phaseClosed:
 		panic(fmt.Sprintf("maa: instance fault recorded in phase %d", s.phase))
 	default:
 		panic(fmt.Sprintf("maa: instance state in unknown phase %d", s.phase))
+	}
+	if first {
+		// 首因线性化扫描(§7.1:立即将该时点尚未结算的 Operation 统
+		// 一结为该故障,清空表):扫描与完成结算同锁段串行化,故障
+		// 后的完成消息查不到记录,只能按未命中放弃。
+		for id, op := range s.pending {
+			delete(s.pending, id)
+			op.settleFault(cause)
+		}
 	}
 	// 首次故障通知(§7.1:独立于事件队列的一次性通知):恰在首次
 	// 故障的线性化点关闭,重复记录被 faultNotified 拦下,正常关闭
@@ -363,16 +400,19 @@ func (s *instanceState) recordFaultWithDetail(cause error, prefix []byte) {
 }
 
 // keepFirstFaultLocked 保留首个故障与其有界原文前缀;要求持有 mu。
-// sticky:已有首因时不做任何事(不覆盖错误、不覆盖前缀、不积累)。
-func (s *instanceState) keepFirstFaultLocked(cause error, prefix []byte) {
+// sticky:已有首因时不做任何事(不覆盖错误、不覆盖前缀、不积累)
+// 并返回 false;实际记录首因时返回 true,供调用方区分首次故障的线
+// 性化点。
+func (s *instanceState) keepFirstFaultLocked(cause error, prefix []byte) bool {
 	if s.firstFault != nil {
-		return
+		return false
 	}
 	if len(prefix) > faultRawPrefixBytes {
 		prefix = prefix[:faultRawPrefixBytes]
 	}
 	s.firstFault = cause
 	s.firstFaultPrefix = bytes.Clone(prefix)
+	return true
 }
 
 // publishFinalError 由关闭所有者在原生销毁与 callback 清理完成之后、
@@ -574,4 +614,91 @@ func (s *instanceState) waitCallbacksDrained() {
 		s.callbacksDrained.Wait()
 	}
 	s.mu.Unlock()
+}
+
+// admitPendingOperation 准入一条 pending Operation(MAA-19;§7:
+// pending 在提交进入 raw 串行门禁前预留,满时直接拒绝):ready 阶段
+// 在容量内创建 operation 插入表并返回;其余阶段拒绝本次提交,返回
+// 带 what 上下文文本、可经 errors.Is 判别的错误(风格对照 admitCall):
+//   - 容量满:包装 native.ErrOperationLimit,实例不因此故障,已接受
+//     的提交与其他资源不受影响(§7.1);
+//   - closing:包装 native.ErrClosing;
+//   - faulted:包装首次故障的原始错误——提交沿错误链可达真正的失败
+//     原因,与 admitCall 的 faulted 拒绝共享同一错误身份;
+//   - closed:包装 native.ErrClosed;
+//   - initializing:提交只存在于发布之后,到达此处即内部不变量破坏,
+//     panic。
+//
+// id 为 0 属编程错误(ids.go:0 是异步提交的失败值,不会作为已接受
+// 提交的 ID 准入),panic。what 目前只进入拒绝文本作诊断,真实提交
+// 的 ID/what 一致性校验依赖提交高水位,随公开提交路径归 MAA-23。
+func (s *instanceState) admitPendingOperation(id AsyncID, what string) (*operation, error) {
+	if id == 0 {
+		panic("maa: pending operation admitted with the zero async id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch s.phase {
+	case phaseReady:
+		if uint64(len(s.pending)) >= s.pendingOperations {
+			return nil, fmt.Errorf("maa: pending operation limit %d reached, %s rejected: %w",
+				s.pendingOperations, what, native.ErrOperationLimit)
+		}
+		op := newOperation(id)
+		s.pending[id] = op
+		return op, nil
+	case phaseClosing:
+		return nil, fmt.Errorf("maa: instance is closing, %s rejected: %w", what, native.ErrClosing)
+	case phaseFaulted:
+		if s.firstFault == nil {
+			panic("maa: faulted instance state without a recorded first fault")
+		}
+		return nil, fmt.Errorf("maa: %s rejected by instance fault: %w", what, s.firstFault)
+	case phaseClosed:
+		return nil, fmt.Errorf("maa: instance is closed, %s rejected: %w", what, native.ErrClosed)
+	default:
+		// initializing:业务提交只存在于发布之后;其余值不可达。
+		panic(fmt.Sprintf("maa: instance state admits a pending operation in phase %d", s.phase))
+	}
+}
+
+// settleCompletion 是事件分发器的完成结算接入(MAA-19;§7:最终结果
+// 由 AsyncCallInfo 的 async_call_id、what、details.ret 确认):按 ID
+// 查 pending 表,命中即移除记录(PendingOperations 容量就此回收)并
+// 单次结算 operation——成功写结果,ret=false 同时写结果与包装
+// native.ErrNativeRejected 的错误。将来作为 newEventDispatcher 的
+// settle 参数接线,仅由唯一 dispatcher goroutine 调用,无并发;与首
+// 因线性化扫描、关闭清空共用状态锁,保证任一线性化点上每条记录要么
+// 仍在表中、要么已完整结算(§7.1:故障后到达的完成消息不能覆盖故
+// 障终态)。未命中(未知或重复 ID)不操作、不故障、不计丢失:无高
+// 水位核对的未知/重复完成无法归因,其故障策略随提交路径归 MAA-23,
+// 本单元不做猜测。
+func (s *instanceState) settleCompletion(info completionInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	op, ok := s.pending[info.ID]
+	if !ok {
+		return
+	}
+	delete(s.pending, info.ID)
+	op.complete(newResultRecord(info.ID, info.What, info.OK, info.Details))
+}
+
+// settleRemainingPending 把 pending 表剩余记录全部以包装
+// native.ErrClosed 的错误结算一次并清空(§8 第 5 步:无 sticky fault
+// 时由统一 dispatcher 先处理已复制且可确认的结果,再结剩余项;调用
+// 时序归 MAA-20——必须在 dispatcher 排空之后,使剩余记录不含可确认
+// 完成)。仅 closing 阶段可调用,其他阶段到达此处即内部不变量破坏,
+// panic。表已空时为无害空操作;清空由结算本身完成,不启动 goroutine、
+// 不轮询。
+func (s *instanceState) settleRemainingPending() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.phase != phaseClosing {
+		panic(fmt.Sprintf("maa: remaining pending operations settled in phase %d", s.phase))
+	}
+	for id, op := range s.pending {
+		delete(s.pending, id)
+		op.settleClosed()
+	}
 }

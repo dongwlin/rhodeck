@@ -446,7 +446,7 @@ func TestCallbackDeliverAdmitOverflowContract(t *testing.T) {
 		entered <- struct{}{}
 		<-release
 	}
-	s := newInstanceState(0x0D17000)
+	s := newInstanceState(0x0D17000, 128)
 	s.publishReady()
 	d := newEventDispatcher(s, settle, b.callbackBytes, b.internalEvents, b.internalBytes, b.publicEvents, b.publicBytes)
 	d.start()
@@ -565,7 +565,7 @@ func TestCallbackDeliverEmptyDetails(t *testing.T) {
 // 先例):state 与 disp 均不得为 nil——准入与故障上报是核心语义,违反
 // 即编程错误 panic,不允许静默构造出不可用的接缝。
 func TestCallbackTargetNilArgumentsPanic(t *testing.T) {
-	st := newInstanceState(0x0C0A1)
+	st := newInstanceState(0x0C0A1, 128)
 	d := newEventDispatcher(st, nil, 1024, 64, 4096, 64, 4096)
 	assertPanics(t, "nil state 的 newCallbackTarget", func() {
 		newCallbackTarget(nil, d, 1024)
