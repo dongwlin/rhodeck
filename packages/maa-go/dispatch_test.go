@@ -375,6 +375,92 @@ func TestEventDispatchBoundedWhenConsumerStopsReading(t *testing.T) {
 	}
 }
 
+// TestEventDispatchLedgerReconcilesAfterConsumerReads 钉住 §7.1 公开
+// 账本对账:消费者中途读走已缓冲事件后,下次投递前按 FIFO 对账删除
+// 已确认接收的长度记录并扣减字节,公开预算得以回收续投;并钉住
+// PublicBytes 恰好装满允许、再加入才越界的边界。
+func TestEventDispatchLedgerReconcilesAfterConsumerReads(t *testing.T) {
+	t.Run("消费者读走后继续投递全部成功", func(t *testing.T) {
+		b := generousBudgets()
+		b.publicEvents = 2
+		d, s := newTestDispatcher(t, nil, b)
+		d.start()
+
+		// 前 2 条装满公开缓冲,随后被消费者读走。
+		for i := 0; i < 2; i++ {
+			enqueue(t, d, MessageID(240), []byte(fmt.Sprintf(`{"i":%d}`, i)))
+		}
+		for i := 0; i < 2; i++ {
+			ev := mustReadEvent(t, d.events())
+			if ev.Sequence != uint64(i+1) {
+				t.Fatalf("第 %d 条事件序号 = %d, want %d", i+1, ev.Sequence, i+1)
+			}
+		}
+		// 缓冲已空;账本仍保守计费这 2 条,直到下次投递前对账回收。
+		// 续投 2 条必须全部成功:对账删除最老 2 条长度记录并扣减字节。
+		for i := 2; i < 4; i++ {
+			enqueue(t, d, MessageID(240), []byte(fmt.Sprintf(`{"i":%d}`, i)))
+		}
+		closeAndDrain(t, d)
+
+		// 续投的 2 条全部进入缓冲且完好;全程无丢失、无故障。
+		for i := 2; i < 4; i++ {
+			ev := mustReadEvent(t, d.events())
+			if want := fmt.Sprintf(`{"i":%d}`, i); string(ev.JSON) != want {
+				t.Fatalf("续投事件原文 = %s, want %s", ev.JSON, want)
+			}
+			if ev.Sequence != uint64(i+1) {
+				t.Fatalf("续投事件序号 = %d, want %d", ev.Sequence, i+1)
+			}
+		}
+		if ev, ok := <-d.events(); ok {
+			t.Fatalf("排空后公开通道必须已关闭,却读到 %+v", ev)
+		}
+		if lost := s.currentLostEvents(); lost != 0 {
+			t.Errorf("丢失计数 = %d, want 0(读走后预算回收,续投不得丢失)", lost)
+		}
+		select {
+		case <-s.faultNotify():
+			t.Fatal("读走后续投不得触发溢出故障")
+		default:
+		}
+	})
+
+	t.Run("PublicBytes 恰好装满允许,再加入才越界", func(t *testing.T) {
+		b := generousBudgets()
+		b.publicBytes = 14 // 恰为 2 条 7 字节 payload 之和
+		d, s := newTestDispatcher(t, nil, b)
+		d.start()
+
+		// 前 2 条使账本计费恰好到达 PublicBytes:必须允许(边界在内,
+		// 检查为严格大于)。消费者停读。
+		for i := 0; i < 2; i++ {
+			enqueue(t, d, MessageID(241), []byte(`{"k":1}`))
+		}
+		// 第 3 条将使计费 21 字节越过 14:按字节判满拒绝,事件计数预算
+		// (64)远未触顶,越界确由字节触发。
+		enqueue(t, d, MessageID(241), []byte(`{"k":1}`))
+		closeAndDrain(t, d)
+
+		// 恰好装满的 2 条完好入缓冲(序号 1,2);只有越界的第 3 条丢失。
+		if n := len(d.events()); n != 2 {
+			t.Errorf("公开缓冲滞留事件 = %d, want 2(恰好达上限的两条都须被接受)", n)
+		}
+		for i := 0; i < 2; i++ {
+			ev := mustReadEvent(t, d.events())
+			if ev.Sequence != uint64(i+1) {
+				t.Fatalf("缓冲事件 %d 序号 = %d, want %d", i+1, ev.Sequence, i+1)
+			}
+		}
+		if lost := s.currentLostEvents(); lost != 1 {
+			t.Errorf("丢失计数 = %d, want 1(只有越界的第 3 条丢失)", lost)
+		}
+		if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
+			t.Errorf("currentFault() = %v, want 含 native.ErrEventOverflow", s.currentFault())
+		}
+	})
+}
+
 // TestInstanceFaultFirstOverflowStickyAndCallRejection 钉住验收条件
 // 「首次溢出保留 ErrEventOverflow 与丢失计数,新业务调用被拒绝」:
 // 公开缓冲溢出的首因沿错误链可达 native.ErrEventOverflow,faulted 后
@@ -609,6 +695,7 @@ func TestEventDispatchUnknownAndInvalidMessages(t *testing.T) {
 
 	t.Run("AsyncCallInfo 关联字段异常故障且绝不结算", func(t *testing.T) {
 		cases := []struct{ name, payload string }{
+			{"顶层不是 object", `["not","an","object"]`},
 			{"缺失 what", `{"async_call_id":1,"details":{"ret":true}}`},
 			{"缺失 async_call_id", `{"what":"w","details":{"ret":true}}`},
 			{"缺失 details", `{"what":"w","async_call_id":1}`},
@@ -994,6 +1081,41 @@ func TestEventDispatchLifecyclePanics(t *testing.T) {
 		// 分发器在空队列 + drain 请求下自行退出并关闭公开通道,无需再
 		// 排空(重复 drain 属契约违约)。
 	})
+}
+
+// TestEventDispatchSequenceExhaustionProtocolFault 白盒钉住序号耗尽
+// 守卫(§7.1:本地事件序号耗尽以 ErrProtocol 故障,不复用序号):
+// 把已分配序号直接推到回绕边界后再投一条,该条无法成为 Event,以
+// ErrProtocol 故障、计 1 条丢失、不投递、不结算。
+func TestEventDispatchSequenceExhaustionProtocolFault(t *testing.T) {
+	rec := newSettleRecorder(1)
+	d, s := newTestDispatcher(t, rec.record, generousBudgets())
+	d.start()
+
+	// 白盒注入:在分发器锁内把已分配序号推到 MaxUint64。
+	d.mu.Lock()
+	d.seq = math.MaxUint64
+	d.mu.Unlock()
+
+	payload := []byte(`{"what":"AsyncCallFinished","async_call_id":1,"details":{"ret":true}}`)
+	enqueue(t, d, asyncCallInfoMessageID, payload)
+	closeAndDrain(t, d)
+
+	// 序号耗尽的条目以 ErrProtocol 故障并计 1 条丢失。
+	if !errors.Is(s.currentFault(), native.ErrProtocol) {
+		t.Errorf("currentFault() = %v, want 含 native.ErrProtocol", s.currentFault())
+	}
+	if lost := s.currentLostEvents(); lost != 1 {
+		t.Errorf("丢失计数 = %d, want 1", lost)
+	}
+	// 不投递:通道已关闭且为空。
+	if ev, ok := <-d.events(); ok {
+		t.Fatalf("序号耗尽的条目不得投递,却读到 %+v", ev)
+	}
+	// 不结算:该条在任何关联步骤之前已被丢弃。
+	if got := rec.total(); got != 0 {
+		t.Errorf("结算通知被调用 %d 次, want 0(序号耗尽条目不结算)", got)
+	}
 }
 
 // TestEventDispatchConcurrentAdmitAndConsume 钉住验收条件「并发
