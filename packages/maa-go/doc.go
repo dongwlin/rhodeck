@@ -22,8 +22,21 @@
 // ConnectConfig)已定义,对应的纯 Go 校验与快照辅助同样遵循 MAA-03
 // 冻结的语义(option key 非 0 且不重复、value 允许空串;ADBPath
 // 非空绝对路径、Address 非空、Config 允许空串并原样传空 C 字符串;
-// taskType 非空、params 为非空完整 JSON object);但这些类型尚未
-// 接入任何构造函数或 raw 调用。
+// taskType 非空、params 为非空完整 JSON object);公开输出数据类型
+// Event(MessageID、原始 JSON、本地事件序号)与 AsyncResult(ID、
+// what、ret、原始 details)也已定义,内部记录持有独立的 JSON 缓冲区。
+//
+// 快照所有权边界(绑定设计 §6、§6.1):调用者在方法返回前不得并发
+// 修改输入;返回后可修改原配置或原 RawMessage(包括原地改写底层
+// 字节),不影响已冻结的快照。所有快照与输出副本都是独立的深拷贝:
+// Event、AsyncResult 与每次重复/并发取得的结果副本可安全长期持有、
+// 修改,不影响内部缓存、其他副本或之后的任何快照,实例关闭后仍然
+// 有效。原始 JSON 不经 map[string]any 的 float64 往返,未知任务
+// 类型、未知字段、未知消息 ID 与超过 2^53 的整数按原文字节保留。
+//
+// 上述实例、连接与任务输入类型尚未接入任何构造函数或 raw 调用;
+// Event/AsyncResult 的 callback 准入、分发器与 Wait 接线同样由 M3
+// 后续任务承接。
 //
 // Instance、Operation、事件流与 Close 仍不存在,由 M3 承接;在它们
 // 被声明并验证之前,调用方不应假设这些 API 可用。公开面没有任何
