@@ -107,13 +107,10 @@ func probeOutputBuffer[T any](
 			// NullSize 原因不明,可能为原生状态/参数拒绝或容量不足,
 			// 不把哨兵伪造成已确认容量不足。
 			if capacity >= limits.Max || uint64(attempts-1) >= uint64(limits.GrowthRetries) {
-				// 原始返回值:哨兵显示为 NullSize 字样,否则十进制;
-				// 不输出「所需容量」、不把哨兵转换为分配长度、不编造
-				// LastError。
-				retText := fmt.Sprintf("%d", ret)
-				if ret == nullSize {
-					retText = "NullSize"
-				}
+				// 原始返回值:耗尽分支只在哨兵路径可达,固定显示为
+				// NullSize 字样;不输出「所需容量」、不把哨兵转换为
+				// 分配长度、不编造 LastError。
+				retText := "NullSize"
 				return nil, fmt.Errorf("maa: %s output buffer probe exhausted after %d attempt(s): "+
 					"last capacity %d %s, Max %d, native return %s; "+
 					"the NullSize reason is unknown and may be a native state/parameter rejection or insufficient capacity: %w",
