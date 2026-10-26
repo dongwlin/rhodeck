@@ -55,8 +55,9 @@ type ConnectConfig struct {
 }
 
 // validateInstanceConfig 校验实例配置的内容与预算:key 不得为 0
-// (Invalid)或重复,value 允许空串;合计项数不超过 ConfigEntries,
-// 全部 value 文本字节合计不超过 ConfigBytes。失败返回带字段路径的
+// (Invalid)或重复,value 允许空串;全部 value 文本字节合计不超过
+// ConfigBytes,合计项数不超过 ConfigEntries(先字节合计、后条目,
+// 与 Runtime 配置预算的检查顺序一致)。失败返回带字段路径的
 // ErrInvalidInput。
 func validateInstanceConfig(cfg InstanceConfig, limits Limits) error {
 	seenKey := make(map[int32]bool, len(cfg.Options))
@@ -78,11 +79,13 @@ func validateInstanceConfig(cfg InstanceConfig, limits Limits) error {
 			return fmt.Errorf("maa: instance config text bytes total overflows uint64: %w", native.ErrInvalidInput)
 		}
 	}
-	if entries := uint64(len(cfg.Options)); entries > limits.ConfigEntries {
-		return fmt.Errorf("maa: instance config entries %d exceeds Limits.ConfigEntries %d: %w", entries, limits.ConfigEntries, native.ErrInvalidInput)
-	}
+	// 先字节合计、后条目:与 runtime.go validateConfigBudget 的
+	// 检查顺序一致,两处预算校验保持同一形状。
 	if total > limits.ConfigBytes {
 		return fmt.Errorf("maa: instance config text bytes total %d exceeds Limits.ConfigBytes %d: %w", total, limits.ConfigBytes, native.ErrInvalidInput)
+	}
+	if entries := uint64(len(cfg.Options)); entries > limits.ConfigEntries {
+		return fmt.Errorf("maa: instance config entries %d exceeds Limits.ConfigEntries %d: %w", entries, limits.ConfigEntries, native.ErrInvalidInput)
 	}
 	return nil
 }
