@@ -125,15 +125,42 @@ type instanceState struct {
 
 	// pending 是已接受、尚未最终结算的 Operation 表(§7:pending 在
 	// 提交进入 raw 串行门禁前预留,满时直接拒绝):键为提交返回的
-	// 异步 ID,准入与移除只在状态锁内进行,当前占用即 len(pending)。
-	// 记录的终态存储与等待语义见 operation.go;真实提交的准入与
-	// ID/what 一致性校验依赖提交高水位,归 MAA-23。
+	// 异步 ID,准入与移除只在状态锁内进行。当前占用 = len(pending) +
+	// pendingReserved(已预留、尚未登记的提交槽)。记录的终态存储与
+	// 等待语义见 operation.go。
 	pending map[AsyncID]*operation
 	// pendingOperations 是表容量上限:只能取 Open 时 validateLimits
 	// 已校验并冻结的 Limits.PendingOperations 快照(§7.1:1–4,096),
 	// 信任不重验;超限拒绝本次提交并包装 native.ErrOperationLimit,
 	// 实例不因此故障。
 	pendingOperations uint64
+	// pendingReserved 是已预留、尚未登记为 pending 表项的提交槽数
+	// (MAA-23 异步提交:预留发生在进入 raw 串行门禁之前,而登记键
+	// async ID 要到 raw 返回并校验后才存在,故预留以计数持有,登记
+	// 时转为 map 表项,失败时释放)。计入容量占用,保证「满时直接
+	// 拒绝,不调用 native」对门禁前排队中的提交同样成立。
+	pendingReserved uint64
+
+	// asyncWatermark 是已接受异步提交的高水位 ID(§7.1:binding 只接
+	// 受 1..MaxInt32 且严格大于上次已接受 ID 的 raw 返回值,维护一个
+	// 高水位而不保存无界的 completed-ID 集合):raw 返回值必须非负、
+	// 非零且严格大于本值,负值/零/复用/倒退均为 ErrProtocol;高水位
+	// 已达 MaxInt32 时在串行门禁内、进入下一次异步 raw 前直接故障。
+	// 不要求 ID 连续,也不要求完成消息按 ID 顺序到达。
+	asyncWatermark AsyncID
+
+	// 早到结果窗口与有界早到表(§7:raw 返回前可能已收到完成;§7.1:
+	// 同一时刻 raw 串行门禁内至多一个「提交已进入 raw、尚未接合返回
+	// ID」的窗口,故 EarlyResults 固定为 1,仅该窗口内允许临存一个未
+	// 知 ID 的完成结果;raw 返回后按 token、ID、预期 what 接合并立即
+	// 清空,不把残留留给未来提交)。earlyWindowOpen 只在 raw 门禁段
+	// 内置位,earlyResult 非 nil 表示窗口内已存有早到结果;earlyBytes
+	// 是早到结果原始 JSON 的字节上限,只能取 Open 时 validateLimits
+	// 已校验并冻结的 Limits.EarlyBytes 快照(§7.1:1–16,777,216,交叉
+	// 校验保证 CallbackBytes ≤ EarlyBytes),信任不重验。
+	earlyWindowOpen bool
+	earlyResult     *completionInfo
+	earlyBytes      uint64
 
 	// firstFault 是首次故障,sticky:保留首个,不覆盖(§7.1)。
 	firstFault error
@@ -166,16 +193,18 @@ type instanceState struct {
 // 接线(MAA-20)与受控用例复用。handle 允许传 0(真实创建在
 // CreateEx 返回前尚未取得句柄)或非零占位值(受控用例构造);业务
 // 调用路径读取到 0 视为内部不变量破坏。pendingOperations 是 pending
-// Operation 表容量上限,只能取 Open 时 validateLimits 已校验并冻结
-// 的 Limits.PendingOperations 快照值,信任不重验(受控用例传充裕
-// 值)。初始阶段为 initializing,创建成功后经 publishReady 发布;
-// closeDone 在构造时建好,保证并发关闭申请从构造起共享同一通道。
-func newInstanceState(handle uintptr, pendingOperations uint64) *instanceState {
+// Operation 表容量上限,earlyBytes 是早到结果窗口的字节上限,两者
+// 只能取 Open 时 validateLimits 已校验并冻结的 Limits 快照值,信任
+// 不重验(受控用例传充裕值)。初始阶段为 initializing,创建成功后
+// 经 publishReady 发布;closeDone 在构造时建好,保证并发关闭申请从
+// 构造起共享同一通道。
+func newInstanceState(handle uintptr, pendingOperations uint64, earlyBytes uint64) *instanceState {
 	s := &instanceState{
 		phase:             phaseInitializing,
 		handle:            handle,
 		pending:           make(map[AsyncID]*operation),
 		pendingOperations: pendingOperations,
+		earlyBytes:        earlyBytes,
 		closeDone:         make(chan struct{}),
 		faultDone:         make(chan struct{}),
 	}
@@ -429,6 +458,13 @@ func (s *instanceState) recordFaultWithDetail(cause error, prefix []byte) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.faultLocked(cause, prefix)
+}
+
+// faultLocked 是 recordFaultWithDetail 的锁内实现,供已在状态锁段内
+// 的调用方(MAA-23 的提交接合与完成关联)复用同一首因线性化语义;
+// 要求持有 mu。语义与锁序见 recordFaultWithDetail。
+func (s *instanceState) faultLocked(cause error, prefix []byte) {
 	first := false
 	switch s.phase {
 	case phaseInitializing, phaseReady:
@@ -443,8 +479,8 @@ func (s *instanceState) recordFaultWithDetail(cause error, prefix []byte) {
 	}
 	if first {
 		// 首因线性化扫描(§7.1:立即将该时点尚未结算的 Operation 统
-		// 一结为该故障,清空表):扫描与完成结算同锁段串行化,故障
-		// 后的完成消息查不到记录,只能按未命中放弃。
+		// 一结为该故障,清空表):扫描与完成结算同锁段串行化,故障后
+		// 的完成消息查不到记录,只能按未命中放弃。
 		for id, op := range s.pending {
 			delete(s.pending, id)
 			op.settleFault(cause)
@@ -676,10 +712,11 @@ func (s *instanceState) waitCallbacksDrained() {
 	s.mu.Unlock()
 }
 
-// admitPendingOperation 准入一条 pending Operation(MAA-19;§7:
-// pending 在提交进入 raw 串行门禁前预留,满时直接拒绝):ready 阶段
-// 在容量内创建 operation 插入表并返回;其余阶段拒绝本次提交,返回
-// 带 what 上下文文本、可经 errors.Is 判别的错误(风格对照 admitCall):
+// admitPendingOperation 准入一条已知 ID 的 pending Operation(MAA-19;
+// §7):ready 阶段在容量内创建 operation 插入表并返回;其余阶段拒绝
+// 本次提交,返回带 what 上下文文本、可经 errors.Is 判别的错误(风格
+// 对照 admitCall)。容量占用含 MAA-23 异步提交已预留、尚未登记的槽
+// 位(pendingReserved),与 reservePendingOperation 共用同一上限:
 //   - 容量满:包装 native.ErrOperationLimit,实例不因此故障,已接受
 //     的提交与其他资源不受影响(§7.1);
 //   - closing:包装 native.ErrClosing;
@@ -690,8 +727,9 @@ func (s *instanceState) waitCallbacksDrained() {
 //     panic。
 //
 // id 为 0 属编程错误(ids.go:0 是异步提交的失败值,不会作为已接受
-// 提交的 ID 准入),panic。what 目前只进入拒绝文本作诊断,真实提交
-// 的 ID/what 一致性校验依赖提交高水位,随公开提交路径归 MAA-23。
+// 提交的 ID 准入),panic。what 目前只进入拒绝文本作诊断。本入口供
+// 已知 ID 的直接准入(MAA-19 用例与受控场景)使用;公开异步提交的
+// 准入走 reservePendingOperation(raw 返回前 ID 未知,先预留后登记)。
 func (s *instanceState) admitPendingOperation(id AsyncID, what string) (*operation, error) {
 	if id == 0 {
 		panic("maa: pending operation admitted with the zero async id")
@@ -700,7 +738,7 @@ func (s *instanceState) admitPendingOperation(id AsyncID, what string) (*operati
 	defer s.mu.Unlock()
 	switch s.phase {
 	case phaseReady:
-		if uint64(len(s.pending)) >= s.pendingOperations {
+		if s.pendingOccupiedLocked() >= s.pendingOperations {
 			return nil, fmt.Errorf("maa: pending operation limit %d reached, %s rejected: %w",
 				s.pendingOperations, what, native.ErrOperationLimit)
 		}
@@ -722,26 +760,267 @@ func (s *instanceState) admitPendingOperation(id AsyncID, what string) (*operati
 	}
 }
 
-// settleCompletion 是事件分发器的完成结算接入(MAA-19;§7:最终结果
-// 由 AsyncCallInfo 的 async_call_id、what、details.ret 确认):按 ID
-// 查 pending 表,命中即移除记录(PendingOperations 容量就此回收)并
-// 单次结算 operation——成功写结果,ret=false 同时写结果与包装
-// native.ErrNativeRejected 的错误。将来作为 newEventDispatcher 的
-// settle 参数接线,仅由唯一 dispatcher goroutine 调用,无并发;与首
-// 因线性化扫描、关闭清空共用状态锁,保证任一线性化点上每条记录要么
-// 仍在表中、要么已完整结算(§7.1:故障后到达的完成消息不能覆盖故
-// 障终态)。未命中(未知或重复 ID)不操作、不故障、不计丢失:无高
-// 水位核对的未知/重复完成无法归因,其故障策略随提交路径归 MAA-23,
-// 本单元不做猜测。
+// pendingOccupiedLocked 返回 pending 表的当前容量占用:已登记表项数
+// 加上已预留、尚未登记的提交槽(MAA-23);要求持有 mu。
+func (s *instanceState) pendingOccupiedLocked() uint64 {
+	occ, ok := addChecked(uint64(len(s.pending)), s.pendingReserved)
+	if !ok {
+		// len(pending) ≤ PendingOperations ≤ 4,096 且预留同界,加法
+		// 不可能回绕;防御分支保持占用语义不被伪造。
+		panic("maa: pending occupancy accounting overflowed")
+	}
+	return occ
+}
+
+// settleCompletion 是事件分发器的完成结算与关联接入(MAA-19 结算、
+// MAA-23 关联;§7:最终结果由 AsyncCallInfo 的 async_call_id、what、
+// details.ret 确认;§7.1:回调先查 pending,不在 pending 且 ID 不高
+// 于高水位的完成是重复/旧结果,不允许放进 early 窗口)。仅由唯一
+// dispatcher goroutine 调用,与提交接合(finishAsyncRaw)、首因线性
+// 化扫描、关闭清空共用状态锁,保证任一线性化点上每条记录要么仍在
+// 表中、要么已完整结算。分支语义(全部在状态锁内线性化):
+//   - ID 命中 pending:移除记录(PendingOperations 容量就此回收)并
+//     单次结算 operation——成功写结果,ret=false 同时写结果与包装
+//     native.ErrNativeRejected 的错误(早到结果由提交接合方结算,
+//     见 finishAsyncRaw;两条路径经 pending 表互斥,恰一胜出);
+//   - 未命中且早到窗口开放:窗口内已存有早到结果时,第二个早到结果
+//     (含重复)为 ErrProtocol 故障;否则 ID 不高于高水位的重复/旧
+//     结果为 ErrProtocol 故障(不放进 early 窗口),未知 ID 临存进早
+//     到结果表——字节超 EarlyBytes 为 ErrEventOverflow 故障,不缓存;
+//   - 未命中且无窗口:重复/旧结果(ID ≤ 高水位)与无窗口的未知 ID
+//     均为 ErrProtocol 故障——已完成 ID 的重复回调不能伪造新的成功,
+//     无高水位归因的未知 ID 不能静默丢弃矛盾证据。
+//
+// 故障保留首因(sticky)并经首因线性化扫描立即结算全部未决记录;
+// 消息本身仍由 dispatcher 按公开预算交付,不在此处计丢失。what 不
+// 在本入口与表项比对:关联键是 token + ID,预期 what 的校验发生在
+// 早到接合(finishAsyncRaw)。
 func (s *instanceState) settleCompletion(info completionInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	op, ok := s.pending[info.ID]
-	if !ok {
+	if op, ok := s.pending[info.ID]; ok {
+		delete(s.pending, info.ID)
+		op.complete(newResultRecord(info.ID, info.What, info.OK, info.Details))
 		return
 	}
-	delete(s.pending, info.ID)
-	op.complete(newResultRecord(info.ID, info.What, info.OK, info.Details))
+	if s.earlyWindowOpen {
+		if s.earlyResult != nil {
+			s.faultLocked(fmt.Errorf("maa: a second early completion (id %d, what %q) arrived while "+
+				"the early-result window already holds id %d: %w",
+				info.ID, info.What, s.earlyResult.ID, native.ErrProtocol), nil)
+			return
+		}
+		if info.ID <= s.asyncWatermark {
+			s.faultLocked(fmt.Errorf("maa: a completion for already-accepted id %d (what %q) arrived "+
+				"again while a submission is inside the raw gate: %w", info.ID, info.What, native.ErrProtocol), nil)
+			return
+		}
+		if uint64(info.Bytes) > s.earlyBytes {
+			s.faultLocked(fmt.Errorf("maa: early completion (id %d) payload %d bytes exceed Limits.EarlyBytes %d: %w",
+				info.ID, info.Bytes, s.earlyBytes, native.ErrEventOverflow), nil)
+			return
+		}
+		stored := info
+		s.earlyResult = &stored
+		return
+	}
+	if info.ID <= s.asyncWatermark {
+		s.faultLocked(fmt.Errorf("maa: a duplicate completion for already-accepted id %d (what %q) "+
+			"arrived after settlement: %w", info.ID, info.What, native.ErrProtocol), nil)
+		return
+	}
+	s.faultLocked(fmt.Errorf("maa: a completion for unknown id %d (what %q) arrived with no early-result "+
+		"window open: %w", info.ID, info.What, native.ErrProtocol), nil)
+}
+
+// reservePendingOperation 为一次异步提交预留 pending 容量并登记未绑
+// 定 ID 的请求 Operation(MAA-23;§7:每次提交先建立 Go 请求/
+// Operation 状态再进入 raw;§7.1:pending 在调用进入 raw 串行门禁前
+// 预留,满时直接拒绝)。ready 阶段在容量内递增预留计数、创建未绑定
+// ID 的 operation 并返回;登记(finishAsyncRaw)把预留转为表项,失
+// 败路径的释放见 releasePendingReservation。其余阶段的拒绝语义与
+// admitPendingOperation 一致(closing/faulted/closed 各按哨兵拒绝,
+// initializing 为编程错误 panic);容量满返回包装
+// native.ErrOperationLimit 的错误,实例不因此故障。
+//
+// 返回的 operation 尚无关联 ID(公开面拿不到),ID 在 raw 返回并校
+// 验后由 finishAsyncRaw 恰一次绑定;调用方在预留与登记/释放之间不
+// 得把记录交给任何结算路径。
+func (s *instanceState) reservePendingOperation(what string) (*operation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch s.phase {
+	case phaseReady:
+		if s.pendingOccupiedLocked() >= s.pendingOperations {
+			return nil, fmt.Errorf("maa: pending operation limit %d reached, %s rejected: %w",
+				s.pendingOperations, what, native.ErrOperationLimit)
+		}
+		s.pendingReserved++
+		return newPendingOperation(), nil
+	case phaseClosing:
+		return nil, fmt.Errorf("maa: instance is closing, %s rejected: %w", what, native.ErrClosing)
+	case phaseFaulted:
+		if s.firstFault == nil {
+			panic("maa: faulted instance state without a recorded first fault")
+		}
+		return nil, fmt.Errorf("maa: %s rejected by instance fault: %w", what, s.firstFault)
+	case phaseClosed:
+		return nil, fmt.Errorf("maa: instance is closed, %s rejected: %w", what, native.ErrClosed)
+	default:
+		panic(fmt.Sprintf("maa: instance state reserves a pending operation in phase %d", s.phase))
+	}
+}
+
+// releasePendingReservation 释放一次已预留、尚未登记的提交槽(容量
+// 就此回收):提交被拒(高水位耗尽、ID 0、ID 非法、实例已故障)或
+// 不再登记时调用。未预留即释放或重复释放即内部不变量破坏,panic。
+func (s *instanceState) releasePendingReservation() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.releasePendingReservationLocked()
+}
+
+// releasePendingReservationLocked 是 releasePendingReservation 的锁内
+// 实现;要求持有 mu。
+func (s *instanceState) releasePendingReservationLocked() {
+	if s.pendingReserved == 0 {
+		panic("maa: pending reservation released more times than reserved")
+	}
+	s.pendingReserved--
+}
+
+// beginAsyncRaw 在 raw 串行门禁段内、进入异步 native 调用前执行
+// (MAA-23;§7.1:高水位已达 MaxInt32 时在串行门禁内、进入下一次异
+// 步 raw 前直接故障,禁止让原生计数回绕):
+//   - 高水位已达 MaxInt32:以 ErrProtocol 故障(原生计数耗尽,binding
+//     拒绝让 ID 回绕),返回错误——调用方不得进入 native,并回收预留;
+//   - 否则打开早到结果窗口:此后的完成消息在 raw 返回前按未知 ID 临
+//     存进有界早到表(settleCompletion),raw 返回后由 finishAsyncRaw
+//     接合并清空。
+//
+// 调用契约:调用方已持有 raw 串行门禁(窗口互斥由此保证,同刻至多
+// 一个窗口,EarlyResults 固定为 1)、已预留 pending 槽位且尚未释放;
+// 违反即接线层编程错误。窗口已开放到达此处同样为编程错误,panic。
+func (s *instanceState) beginAsyncRaw() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.earlyWindowOpen {
+		panic("maa: async raw window opened while another window is still open")
+	}
+	if s.asyncWatermark == math.MaxInt32 {
+		err := fmt.Errorf("maa: async call id high watermark reached MaxInt32, refusing to let the native counter wrap around: %w",
+			native.ErrProtocol)
+		s.faultLocked(err, nil)
+		return err
+	}
+	s.earlyWindowOpen = true
+	return nil
+}
+
+// finishAsyncRaw 在 raw 串行门禁段内、异步 native 调用返回后执行
+// 返回 ID 的校验、登记与早到接合(MAA-23;§7.1:binding 只接受
+// 1..MaxInt32 且严格大于上次已接受 ID 的 raw 返回值;提交 ID=0 立即
+// 释放本次预留并返回 ErrNativeRejected,若该窗口已有完成消息则为
+// ErrProtocol,不能丢弃矛盾证据;raw 返回后必须按 token、ID、预期
+// what 接合并立即清空)。无论结果如何,早到窗口一律关闭且早到表
+// 立即清空——不把残留留给未来提交。
+//
+// op 是 reservePendingOperation 登记的未绑定记录;expectedWhat 是本
+// 入口的预期完成 what(Connect/Click/Screencap,锁定 Core 的
+// Assistant::call_proc);id 是 raw 的返回值。分支语义:
+//   - 窗口未开放到达:编程错误,panic(与 beginAsyncRaw 同门禁段)。
+//   - id == 0:释放预留;窗口已有早到结果时为 ErrProtocol 故障(矛盾
+//     证据),否则返回包装 native.ErrNativeRejected 的提交错误;两种
+//     情况都不登记、不发布成功 Operation。
+//   - id < 0 或不严格大于高水位(复用/倒退):ErrProtocol 故障并释放
+//     预留。
+//   - 实例已故障(firstFault 非 nil):不再把记录插入 pending(§7.1:
+//     已经进入 raw 的动作不能撤销,返回后只补记返回 ID/诊断,不重新
+//     插入 pending 或复活终态),释放预留并返回携带该 ID 与首因的
+//     诊断错误;故障前已复制但尚未结算的早到结果不在此接合,窗口照
+//     常清空,原文已经由 dispatcher 按事件预算交付。
+//   - 登记冲突(ID 已在 pending 表):ErrProtocol 故障并释放预留
+//     (严格递增的高水位使该分支防御性可达)。
+//   - 正常登记:恰一次绑定 ID、预留转表项、高水位推进;窗口已有早
+//     到结果时按 token、ID、预期 what 接合——ID 或 what 不符为
+//     ErrProtocol 故障(首因扫描随即统一结算全部未决记录,含本条),
+//     匹配则立即单次结算本条并清空早到表,返回 nil 后公开 Operation
+//     已带完成终态。
+//
+// 返回 nil 表示提交已被接受且记录已登记(可能已由早到结果结算);调
+// 用方此后把 *Operation 交给公开面。返回非 nil 表示本次提交未登记
+// (预留已回收,记录作废),错误沿 errors.Is 可判别哨兵或首因。
+func (s *instanceState) finishAsyncRaw(op *operation, expectedWhat string, id int32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.earlyWindowOpen {
+		panic("maa: async raw finished without an open early-result window")
+	}
+	early := s.earlyResult
+	s.earlyResult = nil
+	s.earlyWindowOpen = false
+
+	switch {
+	case id == 0:
+		s.releasePendingReservationLocked()
+		if early != nil {
+			err := fmt.Errorf("maa: async submission (%s) returned 0 while the early-result window "+
+				"already holds a completion (id %d, what %q): %w", expectedWhat, early.ID, early.What, native.ErrProtocol)
+			s.faultLocked(err, nil)
+			return err
+		}
+		return fmt.Errorf("maa: async submission (%s) returned 0 (InvalidId), submission rejected: %w",
+			expectedWhat, native.ErrNativeRejected)
+	case id < 0:
+		s.releasePendingReservationLocked()
+		err := fmt.Errorf("maa: async submission (%s) returned negative id %d: %w",
+			expectedWhat, id, native.ErrProtocol)
+		s.faultLocked(err, nil)
+		return err
+	case AsyncID(id) <= s.asyncWatermark:
+		s.releasePendingReservationLocked()
+		err := fmt.Errorf("maa: async submission (%s) returned id %d, not greater than the accepted "+
+			"high watermark %d: %w", expectedWhat, id, s.asyncWatermark, native.ErrProtocol)
+		s.faultLocked(err, nil)
+		return err
+	}
+
+	if s.firstFault != nil {
+		// §7.1:故障后返回的提交不重新插入 pending 或复活终态;补记
+		// 返回 ID/诊断后放弃记录。
+		s.releasePendingReservationLocked()
+		return fmt.Errorf("maa: async submission (%s) returned id %d but the instance is already faulted: %w",
+			expectedWhat, id, s.firstFault)
+	}
+	if _, exists := s.pending[AsyncID(id)]; exists {
+		s.releasePendingReservationLocked()
+		err := fmt.Errorf("maa: async submission (%s) returned id %d which is already pending: %w",
+			expectedWhat, id, native.ErrProtocol)
+		s.faultLocked(err, nil)
+		return err
+	}
+	op.bindAsyncID(AsyncID(id))
+	s.releasePendingReservationLocked()
+	s.pending[AsyncID(id)] = op
+	s.asyncWatermark = AsyncID(id)
+
+	if early != nil {
+		if early.ID != AsyncID(id) {
+			err := fmt.Errorf("maa: the early completion (id %d, what %q) does not match the accepted "+
+				"submission (%s, id %d): %w", early.ID, early.What, expectedWhat, id, native.ErrProtocol)
+			s.faultLocked(err, nil)
+			return err
+		}
+		if early.What != expectedWhat {
+			err := fmt.Errorf("maa: the early completion (id %d) reports what %q, want %q: %w",
+				early.ID, early.What, expectedWhat, native.ErrProtocol)
+			s.faultLocked(err, nil)
+			return err
+		}
+		delete(s.pending, AsyncID(id))
+		op.complete(newResultRecord(early.ID, early.What, early.OK, early.Details))
+	}
+	return nil
 }
 
 // settleRemainingPending 把 pending 表剩余记录全部以包装

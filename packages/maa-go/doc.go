@@ -26,17 +26,23 @@
 // 拒绝、早到故障或发布被 closing 抢先都走统一单次关闭/回滚流程清理,
 // Runtime 终止使用,调用者拿不到半初始化实例。
 //
-// Instance 的公开面为同步生命周期与任务方法:Close 同步、幂等的单
-// 次关闭流程,返回后不再允许原生调用;AppendTask(taskType, params)
-// 原样透传未知任务类型与 JSON 字段并返回 TaskID(0 明确表示提交失
-// 败);SetTaskParams、Start、Stop、BackToHome 解释对应 C bool——
-// 返回 nil 只表示请求被 Core 接受,一律不赋予任务开始/停止/完成等
-// 执行语义(接受请求不等于任务执行完成,任务进度经事件流观察);
-// Running、Connected 的 false 是正常查询结果,不转换成错误,生命周
-// 期失败(closing/faulted/closed 的拒绝)单独经错误返回。实例关闭后
-// Runtime 进入终止使用状态,后续 Open/NewInstance 返回
-// ErrRuntimeTerminated——每进程单 Runtime、单活动实例,不在同进程
-// 重建实例或重试资源组合。
+// Instance 的公开面为同步生命周期、任务方法与异步提交:Close 同步、
+// 幂等的单次关闭流程,返回后不再允许原生调用;AppendTask(taskType,
+// params) 原样透传未知任务类型与 JSON 字段并返回 TaskID(0 明确表示
+// 提交失败);SetTaskParams、Start、Stop、BackToHome 解释对应
+// C bool——返回 nil 只表示请求被 Core 接受,一律不赋予任务开始/停
+// 止/完成等执行语义(接受请求不等于任务执行完成,任务进度经事件流
+// 观察);Running、Connected 的 false 是正常查询结果,不转换成错误。
+// Connect(ConnectConfig)、Click(x, y)、Screencap 以 block=false 异
+// 步提交设备动作并返回 *Operation:非零 ID 只表示提交被接受,最终结
+// 果由 AsyncCallInfo 按 async_call_id 关联确认后经 Operation.Wait 取
+// 得(可重复等待,取消只结束本次等待,不撤销已提交的原生动作);
+// 完成回调先于 raw 返回时按 token + ID + 预期 what 接合,不依赖消息
+// 到达顺序。未结清 Operation 数受 Limits.PendingOperations 约束,重
+// 复、冲突或无法解释的完成信息使实例故障(ErrProtocol),不伪造成
+// 功。实例关闭后 Runtime 进入终止使用状态,后续 Open/NewInstance 返
+// 回 ErrRuntimeTerminated——每进程单 Runtime、单活动实例,不在同进
+// 程重建实例或重试资源组合。
 //
 // Runtime.Log(level, message) 经 Core 全局日志接口(AsstLog,进程级、
 // 无 handle)写入一条日志:C void 函数,返回 nil 只表示调用已发出并
@@ -59,9 +65,9 @@
 // 有效。原始 JSON 不经 map[string]any 的 float64 往返,未知任务
 // 类型、未知字段、未知消息 ID 与超过 2^53 的整数按原文字节保留。
 //
-// Instance 的连接方法(Connect/Click/Screencap)、事件流与输出读取
-// 以及公开 Operation 由 MAA-23、24 接入;在它们被声明并验证之前,
-// 调用方不应假设这些 API 可用。
+// Instance 的事件流与输出读取(Events/Done/Err/Fault/Diagnostics 与
+// 图像等 getter)由 MAA-24 接入;在它们被声明并验证之前,调用方不应
+// 假设这些 API 可用。
 //
 // # Open 的进程级契约
 //

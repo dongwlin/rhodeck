@@ -37,7 +37,7 @@ import (
 // pending 表容量快照(受控用例自行给定,信任不重验)。
 func newReadyState(t *testing.T, handle uintptr, pendingOperations uint64) *instanceState {
 	t.Helper()
-	s := newInstanceState(handle, pendingOperations)
+	s := newInstanceState(handle, pendingOperations, 1_048_576)
 	s.publishReady()
 	return s
 }
@@ -694,7 +694,7 @@ func TestAdmitPendingOperationBoundaries(t *testing.T) {
 	t.Run("id 为 0 与 initializing 阶段准入 panic", func(t *testing.T) {
 		ready := newReadyState(t, 0x0A65, 8)
 		assertPanics(t, "id 为 0 的 pending 准入", func() { _, _ = ready.admitPendingOperation(0, "零 ID") })
-		initializing := newInstanceState(0x0A66, 8)
+		initializing := newInstanceState(0x0A66, 8, 1_048_576)
 		assertPanics(t, "initializing 阶段的 pending 准入", func() { _, _ = initializing.admitPendingOperation(1, "未发布实例") })
 	})
 }
@@ -842,7 +842,7 @@ func TestSettleRemainingPendingClosingSemantics(t *testing.T) {
 func newSettlementWiredDispatcher(t *testing.T, pendingOperations uint64) (*eventDispatcher, *instanceState) {
 	t.Helper()
 	b := generousBudgets()
-	s := newInstanceState(0x0D1900, pendingOperations)
+	s := newInstanceState(0x0D1900, pendingOperations, 1_048_576)
 	s.publishReady()
 	d := newEventDispatcher(s, s.settleCompletion, b.callbackBytes, b.internalEvents, b.internalBytes, b.publicEvents, b.publicBytes)
 	d.start()
@@ -925,9 +925,11 @@ func TestDispatcherWiringSettlesCompletion(t *testing.T) {
 		}
 	})
 
-	t.Run("未命中 ID 不结算不故障,事件照常投递", func(t *testing.T) {
-		// MAA-23 边界:本单元无提交高水位核对,未知 ID 的完成不归因、
-		// 不故障、不计丢失;真实完成随后照常结算。
+	t.Run("无窗口的未知 ID 完成为 ErrProtocol 故障,原文仍交付", func(t *testing.T) {
+		// MAA-23 已接提交高水位与关联语义(§7.1:无窗口的未知 ID 为
+		// ErrProtocol):不能归因的完成不得静默丢弃矛盾证据,以 ErrProtocol
+		// 故障保留首因;消息原文仍按公开预算交付,pending 记录由首因
+		// 线性化扫描统一结算,等待者见故障而非成功。
 		d, s := newSettlementWiredDispatcher(t, 16)
 		defer closeAndDrain(t, d)
 		id := AsyncID(100)
@@ -937,35 +939,28 @@ func TestDispatcherWiringSettlesCompletion(t *testing.T) {
 		enqueue(t, d, asyncCallInfoMessageID, unknown)
 		ev := mustReadEvent(t, d.events())
 		if string(ev.JSON) != string(unknown) {
-			t.Fatalf("未命中完成的事件原文 = %s, want %s", ev.JSON, unknown)
+			t.Fatalf("未知完成的事件原文 = %s, want %s", ev.JSON, unknown)
 		}
 
-		// 有界负面断言:operation 不得被未命中消息唤醒。
-		ctx, cancel := context.WithTimeout(context.Background(), notWithin)
-		defer cancel()
-		res, err := waitGuarded(t, op, ctx)
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("未命中完成不得结算 operation: (%+v, %v)", res, err)
+		// 故障即首因:错误链可达 ErrProtocol;记录被首因扫描统一结算,
+		// 等待取得首因而非成功。
+		res, err := waitGuarded(t, op, context.Background())
+		if !errors.Is(err, native.ErrProtocol) {
+			t.Fatalf("未知完成后的等待错误 = %v, want 沿首因链可达 ErrProtocol", err)
 		}
-		if n := pendingOccupancy(s); n != 1 {
-			t.Fatalf("未命中完成后占用 = %d, want 1(记录不得被动)", n)
+		if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
+			t.Fatalf("故障结算必须无结果: %+v", res)
+		}
+		if got := s.currentFault(); got == nil || !errors.Is(got, native.ErrProtocol) {
+			t.Fatalf("首因 = %v, want ErrProtocol", got)
 		}
 		select {
 		case <-s.faultNotify():
-			t.Fatal("未命中完成不得触发故障")
 		default:
+			t.Fatal("未知完成必须触发一次性故障通知")
 		}
-		if lost := s.currentLostEvents(); lost != 0 {
-			t.Errorf("未命中完成不得计丢失: %d", lost)
-		}
-
-		// 同一分发器上真实完成仍照常结算:边界不损伤正常路径。
-		real := asyncCallInfoPayload(id, "Screencap", `{"ret":true}`)
-		enqueue(t, d, asyncCallInfoMessageID, real)
-		mustReadEvent(t, d.events())
-		res2, err2 := waitGuarded(t, op, context.Background())
-		if err2 != nil || res2.ID != id || !res2.OK {
-			t.Fatalf("真实完成必须照常结算: (%+v, %v)", res2, err2)
+		if n := pendingOccupancy(s); n != 0 {
+			t.Fatalf("首因扫描后占用 = %d, want 0", n)
 		}
 	})
 }

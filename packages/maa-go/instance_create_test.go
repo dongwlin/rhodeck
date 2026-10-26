@@ -154,24 +154,64 @@ type fakeBoolCall struct {
 	handle uintptr
 }
 
-// fakeInstanceCaller 是同步业务调用的受控 fake native(对照
-// fakeInstanceCreator 先例):逐次记录全部业务调用(方法名、顺序、
-// handle 与解码参数),支持注入返回值(缺省全部成功)与动作
-// (onStart 在 start 返回前执行,供屏障注入)。不加载任何原生库。
+// fakeAsyncConnectCall 记录一次 AsyncConnect 调用:三个 *byte 参数
+// 解码为 C 字符串内容(逐字节还原)。
+type fakeAsyncConnectCall struct {
+	handle  uintptr
+	adbPath string
+	address string
+	config  string
+	block   uint8
+}
+
+// fakeAsyncClickCall 记录一次 AsyncClick 调用(坐标带符号原样保留)。
+type fakeAsyncClickCall struct {
+	handle uintptr
+	x      int32
+	y      int32
+	block  uint8
+}
+
+// fakeAsyncScreencapCall 记录一次 AsyncScreencap 调用。
+type fakeAsyncScreencapCall struct {
+	handle uintptr
+	block  uint8
+}
+
+// fakeAsyncCall 记录一次异步提交调用:name 是方法名,connect/click/
+// screencap 恰一者非 nil,block 记录原始实参(MAA-23 冻结
+// block=false)。
+type fakeAsyncCall struct {
+	name      string
+	connect   *fakeAsyncConnectCall
+	click     *fakeAsyncClickCall
+	screencap *fakeAsyncScreencapCall
+}
+
+// fakeInstanceCaller 是同步业务调用(MAA-22)与异步提交(MAA-23)的
+// 受控 fake native(对照 fakeInstanceCreator 先例):逐次记录全部业
+// 务调用(方法名、顺序、handle 与解码参数),支持注入返回值(缺省
+// 全部成功)与动作(onStart/onAsync* 在对应调用返回前执行,供早到
+// 完成投递与屏障注入)。不加载任何原生库。
 type fakeInstanceCaller struct {
-	mu             sync.Mutex
-	sequence       []string
-	appendCalls    []fakeAppendCall
-	setParamsCalls []fakeSetParamsCall
-	boolCalls      []fakeBoolCall
-	appendRet      int32
-	setParamsRet   uint8
-	boolRets       map[string]uint8
-	onStart        func(handle uintptr)
+	mu               sync.Mutex
+	sequence         []string
+	appendCalls      []fakeAppendCall
+	setParamsCalls   []fakeSetParamsCall
+	boolCalls        []fakeBoolCall
+	asyncCalls       []fakeAsyncCall
+	appendRet        int32
+	setParamsRet     uint8
+	boolRets         map[string]uint8
+	asyncRets        map[string]int32
+	onStart          func(handle uintptr)
+	onAsyncConnect   func(handle uintptr)
+	onAsyncClick     func(handle uintptr)
+	onAsyncScreencap func(handle uintptr)
 }
 
 // newFakeInstanceCaller 构造 fake caller:全部调用缺省成功(appendTask
-// 返回 1,其余 bool 类返回 1)。
+// 返回 1,其余 bool 类返回 1,三个异步提交返回 1)。
 func newFakeInstanceCaller() *fakeInstanceCaller {
 	return &fakeInstanceCaller{appendRet: 1, setParamsRet: 1}
 }
@@ -180,6 +220,15 @@ func newFakeInstanceCaller() *fakeInstanceCaller {
 // 要求持有 mu。
 func (f *fakeInstanceCaller) boolRetLocked(name string) uint8 {
 	if ret, ok := f.boolRets[name]; ok {
+		return ret
+	}
+	return 1
+}
+
+// asyncRetLocked 返回指定异步提交的注入返回值:未注入缺省 1(提交
+// 被接受)。
+func (f *fakeInstanceCaller) asyncRetLocked(name string) int32 {
+	if ret, ok := f.asyncRets[name]; ok {
 		return ret
 	}
 	return 1
@@ -246,6 +295,77 @@ func (f *fakeInstanceCaller) connected(handle uintptr) uint8 {
 	f.sequence = append(f.sequence, "connected")
 	f.boolCalls = append(f.boolCalls, fakeBoolCall{name: "connected", handle: handle})
 	return f.boolRetLocked("connected")
+}
+
+func (f *fakeInstanceCaller) asyncConnect(handle uintptr, adbPath *byte, address *byte, config *byte, block uint8) int32 {
+	f.mu.Lock()
+	f.sequence = append(f.sequence, "asyncConnect")
+	call := fakeAsyncCall{name: "asyncConnect", connect: &fakeAsyncConnectCall{
+		handle:  handle,
+		adbPath: cArgString(adbPath),
+		address: cArgString(address),
+		config:  cArgString(config),
+		block:   block,
+	}}
+	f.asyncCalls = append(f.asyncCalls, call)
+	ret := f.asyncRetLocked("asyncConnect")
+	hook := f.onAsyncConnect
+	f.mu.Unlock()
+	if hook != nil {
+		hook(handle)
+	}
+	return ret
+}
+
+func (f *fakeInstanceCaller) asyncClick(handle uintptr, x int32, y int32, block uint8) int32 {
+	f.mu.Lock()
+	f.sequence = append(f.sequence, "asyncClick")
+	call := fakeAsyncCall{name: "asyncClick", click: &fakeAsyncClickCall{handle: handle, x: x, y: y, block: block}}
+	f.asyncCalls = append(f.asyncCalls, call)
+	ret := f.asyncRetLocked("asyncClick")
+	hook := f.onAsyncClick
+	f.mu.Unlock()
+	if hook != nil {
+		hook(handle)
+	}
+	return ret
+}
+
+func (f *fakeInstanceCaller) asyncScreencap(handle uintptr, block uint8) int32 {
+	f.mu.Lock()
+	f.sequence = append(f.sequence, "asyncScreencap")
+	call := fakeAsyncCall{name: "asyncScreencap", screencap: &fakeAsyncScreencapCall{handle: handle, block: block}}
+	f.asyncCalls = append(f.asyncCalls, call)
+	ret := f.asyncRetLocked("asyncScreencap")
+	hook := f.onAsyncScreencap
+	f.mu.Unlock()
+	if hook != nil {
+		hook(handle)
+	}
+	return ret
+}
+
+// asyncRecord 返回第 i 次异步提交调用记录的快照。
+func (f *fakeInstanceCaller) asyncRecord(i int) fakeAsyncCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.asyncCalls[i]
+}
+
+// asyncRecordByName 返回第 i 次指定名称的异步提交调用记录。
+func (f *fakeInstanceCaller) asyncRecordByName(i int, name string) fakeAsyncCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.asyncCalls {
+		if c.name == name {
+			if n == i {
+				return c
+			}
+			n++
+		}
+	}
+	return fakeAsyncCall{}
 }
 
 // count 返回指定方法名的累计调用次数。
@@ -1038,7 +1158,7 @@ func TestInstanceCloseConcurrentTerminatesRuntime(t *testing.T) {
 // 的 token=0 分支逐步复现其机制。
 func TestRollbackCreationWithoutTokenTail(t *testing.T) {
 	b := generousBudgets()
-	s := newInstanceState(0, 128)
+	s := newInstanceState(0, 128, 1_048_576)
 	d := newEventDispatcher(s, s.settleCompletion, b.callbackBytes, b.internalEvents, b.internalBytes, b.publicEvents, b.publicBytes)
 	d.start()
 	gate := &lifecycleGate{state: lifecycleReady}

@@ -1,14 +1,14 @@
 // 本文件实现可重复等待且只能结算一次的私有 Operation 组件(MAA-19;
-// 绑定设计 §5、§6.1、§7、§7.1):每条已接受的异步提交对应一个
-// operation,持有一次性终态存储与完成通知,允许任意次(含并发)等
-// 待;完成消息、实例关闭与 sticky 首因三类原因经同一单次结算路径写
-// 入终态。公开面(导出符号)零变化:公开 Operation 类型待 MAA-23 接
-// 提交路径时再引入,本单元只交付私有组件与 state.go 的 pending 表
-// 结算入口。
+// 绑定设计 §5、§6.1、§7、§7.1)与公开 Operation 类型(MAA-23;绑定
+// 设计 §5):每条已接受的异步提交对应一个 operation,持有一次性终
+// 态存储与完成通知,允许任意次(含并发)等待;完成消息、实例关闭与
+// sticky 首因三类原因经同一单次结算路径写入终态。公开 Operation 是
+// 私有记录的公开句柄,只暴露 ID 与 Wait,不经它触达任何实例状态或
+// raw 函数。
 //
 // 所有权与容量契约(§7):operation 由实例 pending 表与调用者双方
-// 持有,调用者丢弃引用不影响实例关联;只有最终结算(完成结算、首
-// 因线性化扫描、关闭清空)把记录移出 pending 表并回收
+// 持有,调用者丢弃引用不影响实例关联;只有最终结算(完成结算、早到
+// 接合、首因线性化扫描、关闭清空)把记录移出 pending 表并回收
 // PendingOperations 容量,不启动逐操作轮询或 reaper;取消一次等待、
 // 丢弃引用都不提前释放槽位。已结算的 operation 自身继续保存结果,
 // 供此后任意次等待取得独立深拷贝(§6.1),实例关闭后副本仍有效。
@@ -43,12 +43,14 @@ import (
 // operation 是一次已接受异步提交的私有关联记录(§7:非零 async ID
 // 只证明提交成功,最终结果以 AsyncCallInfo 的 async_call_id 关联确
 // 认):done 从构造起即存在,只由唯一一次结算关闭;settled 防重复结
-// 算,只在持有 mu 时读写。零值不可用,只经 newOperation 构造,以指
-// 针使用,不按值复制。
+// 算,只在持有 mu 时读写。零值不可用,只经 newOperation(已知 ID)或
+// newPendingOperation + bindAsyncID(异步提交,raw 返回后绑定)构造,
+// 以指针使用,不按值复制。
 type operation struct {
-	// asyncID 是关联提交时的异步 ID,准入后不可变,已结算后保持可
-	// 读(§8.1:已接受 Operation 的 ID 保持可读)。准入契约保证非零
-	// (ids.go:0 是异步提交的失败值),它是公开 Operation.ID 的语义
+	// asyncID 是关联提交的异步 ID:构造(或 bindAsyncID)后不可变,
+	// 已结算后保持可读(§8.1:已接受 Operation 的 ID 保持可读)。
+	// newPendingOperation 构造的记录以 0 占位,绑定恰一次且必须非零
+	// (ids.go:0 是异步提交的失败值);它是公开 Operation.ID 的语义
 	// 基础。
 	asyncID AsyncID
 
@@ -67,14 +69,42 @@ type operation struct {
 	cause     error
 }
 
-// newOperation 构造一条 pending 记录:只建立终态存储与通知通道,不
-// 启动 goroutine;结算由 instanceState 的 pending 表入口驱动(MAA-23
-// 接公开提交路径)。
+// newOperation 构造一条已知 ID 的 pending 记录:只建立终态存储与通
+// 知通道,不启动 goroutine。公开异步提交(raw 返回前 ID 未知)的记
+// 录经 newPendingOperation 构造、bindAsyncID 绑定,见 MAA-23。
 func newOperation(id AsyncID) *operation {
+	op := newPendingOperation()
+	op.bindAsyncID(id)
+	return op
+}
+
+// newPendingOperation 构造一条未绑定 ID 的 pending 记录(MAA-23 异步
+// 提交路径;§7:每次提交先建立 Go 请求/Operation 状态,再进入 raw,
+// 而关联键 async ID 要到 raw 返回并校验后才存在):asyncID 以 0 占位,
+// 由 finishAsyncRaw 在 raw 返回、ID 校验通过后经 bindAsyncID 恰一次
+// 绑定。绑定前记录不进入 pending 表、不经任何结算路径、公开面不可
+// 达,0 占位不可观察。
+func newPendingOperation() *operation {
 	return &operation{
-		asyncID: id,
-		done:    make(chan struct{}),
+		done: make(chan struct{}),
 	}
+}
+
+// bindAsyncID 恰一次绑定关联提交的异步 ID:绑定后不可变,id 返回该
+// 值。id 为 0 或重复绑定即内部不变量破坏,panic(ids.go:0 是异步提交
+// 的失败值,不是合法的已接受 ID;操作数通道与终态存储在构造时已建
+// 好,绑定只补全关联键)。绑定发生在状态锁段内(登记与接合同锁),
+// 先于任何结算与公开面发布。
+func (op *operation) bindAsyncID(id AsyncID) {
+	if id == 0 {
+		panic("maa: operation bound with the zero async id")
+	}
+	op.mu.Lock()
+	defer op.mu.Unlock()
+	if op.asyncID != 0 {
+		panic(fmt.Sprintf("maa: operation bound twice (%d over %d)", id, op.asyncID))
+	}
+	op.asyncID = id
 }
 
 // id 返回关联提交的异步 ID。
@@ -91,8 +121,8 @@ func (op *operation) id() AsyncID {
 //     包装 native.ErrNativeRejected 的错误);关闭 (零值,包装
 //     native.ErrClosed 的错误);故障 (零值,首因原样)。
 //
-// ctx 不得为 nil(公开 Wait 负责把 Wait(nil) 转为 ErrInvalidInput,
-// 归 MAA-23)。每次调用(含并发重复等待)都经 resultRecord.snapshot
+// ctx 不得为 nil(公开 Operation.Wait 把 Wait(nil) 转为
+// ErrInvalidInput)。每次调用(含并发重复等待)都经 resultRecord.snapshot
 // 取得独立深拷贝,修改先前副本不影响缓存或其他等待者(§6.1)。
 func (op *operation) wait(ctx context.Context) (AsyncResult, error) {
 	select {
@@ -166,4 +196,48 @@ func (op *operation) settle(rec resultRecord, hasResult bool, cause error) {
 	op.hasResult = hasResult
 	op.cause = cause
 	close(op.done)
+}
+
+// ---- 公开 Operation(MAA-23;绑定设计 §5、§7、§8.1)----
+
+// Operation 是一次已接受异步提交(Connect/Click/Screencap)的公开句
+// 柄:非零 ID 只证明提交被 Core 接受(§7),最终结果以 AsyncCallInfo
+// 的 async_call_id 关联确认后保存在本对象内,允许任意次(含并发)
+// 等待。全部字段未导出,只能经提交方法的返回值使用,以指针持有,不
+// 按值复制;实例关闭后仍可等待并取得已保存终态的独立副本(§6.1)。
+//
+// 实例关闭或故障时尚未完成的提交由统一结算路径结为 ErrClosed 或首
+// 因(§8 第 5 步、§7.1),等待取得对应可辨识错误;等待取消只结束本
+// 次等待,不撤销已提交的原生动作,也不提前释放实例侧关联容量。
+type Operation struct {
+	// op 是私有关联记录:终态存储与通知通道的持有者。非 nil 由提交
+	// 路径保证(提交失败返回错误而不返回 Operation)。
+	op *operation
+}
+
+// ID 返回关联提交的异步 ID(非零):只证明提交被 Core 接受,不是任
+// 何执行成功的证明(§3:非零 ID 只表示提交被接受)。提交成功后 ID
+// 即确定且不可变,已结算后保持可读(§8.1)。
+func (o *Operation) ID() AsyncID {
+	return o.op.id()
+}
+
+// Wait 等待本次提交的最终结果并取得独立副本;可重复、可并发调用:
+//   - ctx 为 nil:返回包装 ErrInvalidInput 的错误(§8.1:Wait(nil)
+//     返回 ErrInvalidInput);
+//   - ctx 的取消/超时先于结算就绪:返回 (AsyncResult{}, ctx.Err())
+//     ——只结束本次等待,不改写操作终态、不撤销已提交的原生动作,
+//     之后仍可再次等待(§7、§8.1);
+//   - 已结算则按原因返回:完成成功 (结果副本, nil);完成失败
+//     (结果副本, 包装 ErrNativeRejected 的错误,OK=false 保留原生
+//     ret 语义);关闭 (零值,包装 ErrClosed 的错误);故障 (零值,
+//     实例首因)。
+//
+// 完成与取消竞争时已发布终态优先(§8.1)。每次调用都取得独立深拷
+// 贝:修改返回副本不影响缓存、其他等待者或之后的等待(§6.1)。
+func (o *Operation) Wait(ctx context.Context) (AsyncResult, error) {
+	if ctx == nil {
+		return AsyncResult{}, fmt.Errorf("maa: Operation.Wait requires a context, got nil: %w", native.ErrInvalidInput)
+	}
+	return o.op.wait(ctx)
 }

@@ -52,7 +52,7 @@ func generousBudgets() dispatchBudgets {
 // goroutine;是否 start 由用例自行决定(纯预算用例无需分发循环)。
 func newTestDispatcher(t *testing.T, settle func(completionInfo), b dispatchBudgets) (*eventDispatcher, *instanceState) {
 	t.Helper()
-	s := newInstanceState(0x0D17000, 128)
+	s := newInstanceState(0x0D17000, 128, 1_048_576)
 	s.publishReady()
 	d := newEventDispatcher(s, settle, b.callbackBytes, b.internalEvents, b.internalBytes, b.publicEvents, b.publicBytes)
 	return d, s
@@ -1251,7 +1251,7 @@ func TestEventDispatchConcurrentAdmitAndConsume(t *testing.T) {
 // 发。
 func TestLostEventsSaturatingAndFaultSnapshot(t *testing.T) {
 	t.Run("丢失计数饱和不回绕", func(t *testing.T) {
-		s := newInstanceState(0x0D01, 128)
+		s := newInstanceState(0x0D01, 128, 1_048_576)
 		s.recordLostEvents(math.MaxUint64 - 1)
 		s.recordLostEvents(1)
 		if got := s.currentLostEvents(); got != math.MaxUint64 {
@@ -1269,7 +1269,7 @@ func TestLostEventsSaturatingAndFaultSnapshot(t *testing.T) {
 	})
 
 	t.Run("前缀截取至多 4096 字节", func(t *testing.T) {
-		s := newInstanceState(0x0D02, 128)
+		s := newInstanceState(0x0D02, 128, 1_048_576)
 		s.publishReady()
 		prefix := make([]byte, faultRawPrefixBytes+904)
 		for i := range prefix {
@@ -1294,7 +1294,7 @@ func TestLostEventsSaturatingAndFaultSnapshot(t *testing.T) {
 	})
 
 	t.Run("重复故障不覆盖首因与前缀", func(t *testing.T) {
-		s := newInstanceState(0x0D03, 128)
+		s := newInstanceState(0x0D03, 128, 1_048_576)
 		s.publishReady()
 		first := fmt.Errorf("首因: %w", native.ErrEventOverflow)
 		firstPrefix := []byte("first-prefix")
@@ -1318,7 +1318,7 @@ func TestLostEventsSaturatingAndFaultSnapshot(t *testing.T) {
 	})
 
 	t.Run("前缀与快照都是深拷贝", func(t *testing.T) {
-		s := newInstanceState(0x0D04, 128)
+		s := newInstanceState(0x0D04, 128, 1_048_576)
 		s.publishReady()
 		prefix := bytes.Repeat([]byte{0xAB}, 64)
 		s.recordFaultWithDetail(fmt.Errorf("故障: %w", native.ErrProtocol), prefix)
@@ -1342,7 +1342,7 @@ func TestLostEventsSaturatingAndFaultSnapshot(t *testing.T) {
 	})
 
 	t.Run("无前缀故障快照 rawPrefix 为 nil", func(t *testing.T) {
-		s := newInstanceState(0x0D05, 128)
+		s := newInstanceState(0x0D05, 128, 1_048_576)
 		s.publishReady()
 		s.recordFault(fmt.Errorf("无前缀: %w", native.ErrEventOverflow))
 		if snap := s.faultDiagnostics(); snap.rawPrefix != nil {
@@ -1365,7 +1365,7 @@ func TestLostEventsSaturatingAndFaultSnapshot(t *testing.T) {
 		}
 		// 首次故障线性化时关闭一次;重复记录不重复关闭(重复 close 会
 		// panic,实现若有缺陷将以 panic 暴露)。
-		s := newInstanceState(0x0D07, 128)
+		s := newInstanceState(0x0D07, 128, 1_048_576)
 		s.publishReady()
 		s.recordFault(fmt.Errorf("第一次: %w", native.ErrProtocol))
 		select {

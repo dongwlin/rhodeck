@@ -3,17 +3,21 @@
 // 建接线(Runtime.NewInstance 与公开 Instance.Close,绑定设计 §5、
 // §8)、MAA-22 交付任务与同步实例方法(Runtime.Log 与 Instance 的
 // AppendTask/SetTaskParams/Start/Stop/BackToHome/Running/Connected,
-// 绑定设计 §3、§5)时有意识地更新本守卫;后续里程碑交付新公开面
-// 时,同样必须有意识地更新。
+// 绑定设计 §3、§5)、MAA-23 交付异步提交与结果关联(Instance 的
+// Connect/Click/Screencap 与公开 Operation 的 ID/Wait,绑定设计 §5、
+// §7)时有意识地更新本守卫;后续里程碑交付新公开面时,同样必须有
+// 意识地更新。
 //
 // 断言:
 //   - *Runtime 的导出方法集恰为 {Version, Capabilities, NullSize,
 //     Log, NewInstance}(只读元数据访问 + 全局日志 + 唯一的实例创建
 //     事务入口);
 //   - *Instance 的导出方法集恰为 {Close, AppendTask, SetTaskParams,
-//     Start, Stop, BackToHome, Running, Connected}(单次关闭的公开
-//     入口 + 同步任务/请求/查询方法;连接与事件流/输出读取由
-//     MAA-23、24 接入);
+//     Start, Stop, BackToHome, Running, Connected, Connect, Click,
+//     Screencap}(单次关闭的公开入口 + 同步任务/请求/查询方法 +
+//     异步提交;事件流与输出读取由 MAA-24 接入);
+//   - *Operation 的导出方法集恰为 {ID, Wait}(关联键读取 + 可重复
+//     等待,MAA-23);
 //   - 除 *Runtime 的 NewInstance 与 *Instance 的 Close 外,不存在其
 //     他名为 NewInstance/Close 的导出函数或方法;
 //   - 包级导出函数恰为 {Open}(唯一的进程初始化入口)。
@@ -58,9 +62,11 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 
 	runtimeMethods := map[string]bool{}
 	instanceMethods := map[string]bool{}
+	operationMethods := map[string]bool{}
 	packageFuncs := map[string]bool{}
 	seenRuntime := false
 	seenInstance := false
+	seenOperation := false
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -101,6 +107,12 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 						instanceMethods[fd.Name.Name] = true
 					}
 				}
+				if recv == "Operation" {
+					seenOperation = true
+					if ast.IsExported(fd.Name.Name) {
+						operationMethods[fd.Name.Name] = true
+					}
+				}
 				if ast.IsExported(fd.Name.Name) && (fd.Name.Name == "NewInstance" || fd.Name.Name == "Close") {
 					switch {
 					case recv == "Runtime" && fd.Name.Name == "NewInstance", recv == "Instance" && fd.Name.Name == "Close":
@@ -119,6 +131,9 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	if !seenInstance {
 		t.Fatal("未找到 Instance 类型的方法声明")
 	}
+	if !seenOperation {
+		t.Fatal("未找到 Operation 类型的方法声明")
+	}
 
 	// *Runtime 的导出方法集恰为冻结集合。
 	want := map[string]bool{"Version": true, "Capabilities": true, "NullSize": true, "Log": true, "NewInstance": true}
@@ -133,7 +148,8 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		}
 	}
 
-	// *Instance 的导出方法集恰为 {Close} + MAA-22 同步方法。
+	// *Instance 的导出方法集恰为 {Close} + MAA-22 同步方法 + MAA-23
+	// 异步提交方法。
 	wantInstance := map[string]bool{
 		"Close":         true,
 		"AppendTask":    true,
@@ -143,6 +159,9 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		"BackToHome":    true,
 		"Running":       true,
 		"Connected":     true,
+		"Connect":       true,
+		"Click":         true,
+		"Screencap":     true,
 	}
 	for m := range wantInstance {
 		if !instanceMethods[m] {
@@ -152,6 +171,19 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	for m := range instanceMethods {
 		if !wantInstance[m] {
 			t.Errorf("*Instance 出现冻结集合之外的导出方法 %s", m)
+		}
+	}
+
+	// *Operation 的导出方法集恰为 {ID, Wait}(MAA-23)。
+	wantOperation := map[string]bool{"ID": true, "Wait": true}
+	for m := range wantOperation {
+		if !operationMethods[m] {
+			t.Errorf("*Operation 缺少冻结的导出方法 %s", m)
+		}
+	}
+	for m := range operationMethods {
+		if !wantOperation[m] {
+			t.Errorf("*Operation 出现冻结集合之外的导出方法 %s", m)
 		}
 	}
 

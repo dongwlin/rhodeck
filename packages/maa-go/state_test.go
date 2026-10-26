@@ -93,7 +93,7 @@ func finishClose(t *testing.T, s *instanceState, finalErr error) {
 // → closed,正常关闭最终错误为 nil)。
 func newClosedState(t *testing.T, handle uintptr) *instanceState {
 	t.Helper()
-	s := newInstanceState(handle, 128)
+	s := newInstanceState(handle, 128, 1_048_576)
 	s.publishReady()
 	mustElectClose(t, s)
 	finishClose(t, s, nil)
@@ -129,7 +129,7 @@ func releaseAndAssertDrained(t *testing.T, s *instanceState, l callLease) {
 // 这些阶段照常释放、计数归零。
 func TestInstanceStateRejectsCallsByPhase(t *testing.T) {
 	t.Run("closing 拒绝并包装 ErrClosing", func(t *testing.T) {
-		s := newInstanceState(0x1001, 128)
+		s := newInstanceState(0x1001, 128, 1_048_576)
 		s.publishReady()
 		inflight := mustAdmit(t, s, "先行准入")
 		mustElectClose(t, s)
@@ -156,7 +156,7 @@ func TestInstanceStateRejectsCallsByPhase(t *testing.T) {
 	})
 
 	t.Run("faulted 拒绝并沿错误链到达首因", func(t *testing.T) {
-		s := newInstanceState(0x1002, 128)
+		s := newInstanceState(0x1002, 128, 1_048_576)
 		s.publishReady()
 		inflight := mustAdmit(t, s, "先行准入")
 		cause := fmt.Errorf("事件队列溢出被包装: %w", native.ErrEventOverflow)
@@ -182,7 +182,7 @@ func TestInstanceStateRejectsCallsByPhase(t *testing.T) {
 	})
 
 	t.Run("closed 拒绝并包装 ErrClosed", func(t *testing.T) {
-		s := newInstanceState(0x1003, 128)
+		s := newInstanceState(0x1003, 128, 1_048_576)
 		s.publishReady()
 		// 先行准入的 lease 在整个关闭过程中持有,直到 closed 之后
 		// 才释放:钉住「已准入 lease 在 closed 阶段仍可正常释放」。
@@ -216,7 +216,7 @@ func TestInstanceStateRejectsCallsByPhase(t *testing.T) {
 // waitCallsDrained 必须阻塞;在途计数含排队者;A、B 依次完成并释放
 // 后等待才收敛。
 func TestCloseWaitsForCallsQueuedBeforeRawGate(t *testing.T) {
-	s := newInstanceState(0x2A00, 128)
+	s := newInstanceState(0x2A00, 128, 1_048_576)
 	s.publishReady()
 
 	// A:已准入并进入 raw 段(占据门禁)。
@@ -292,7 +292,7 @@ func TestCloseWaitsForCallsQueuedBeforeRawGate(t *testing.T) {
 // 内完成需要状态锁的操作;实现若在 raw 段或等待清零期间持有状态锁,
 // 本用例必然超时失败。限时只作防挂死兜底,信号经 channel 传递。
 func TestStateLockNotHeldAcrossRawSection(t *testing.T) {
-	s := newInstanceState(0x5EED, 128)
+	s := newInstanceState(0x5EED, 128, 1_048_576)
 	s.publishReady()
 	leaseA := mustAdmit(t, s, "raw 段调用")
 	s.raw.enter()
@@ -360,7 +360,7 @@ func TestStateLockNotHeldAcrossRawSection(t *testing.T) {
 // 享同一已关闭的 closeDone;closed 后的幂等申请仍不为所有者。
 func TestConcurrentElectCloseSingleOwner(t *testing.T) {
 	t.Run("ready 并发申请恰一所有者共享终态", func(t *testing.T) {
-		s := newInstanceState(0x2001, 128)
+		s := newInstanceState(0x2001, 128, 1_048_576)
 		s.publishReady()
 		closeCh := s.done()
 
@@ -437,7 +437,7 @@ func TestConcurrentElectCloseSingleOwner(t *testing.T) {
 	})
 
 	t.Run("faulted 并发申请恰一所有者共享首因终态", func(t *testing.T) {
-		s := newInstanceState(0x2002, 128)
+		s := newInstanceState(0x2002, 128, 1_048_576)
 		s.publishReady()
 		cause := fmt.Errorf("事件溢出: %w", native.ErrEventOverflow)
 		s.recordFault(cause)
@@ -490,7 +490,7 @@ func TestConcurrentElectCloseSingleOwner(t *testing.T) {
 // finalErr 一经设置不再被后续发布覆盖,观察者经 waitClose 取得首次
 // 发布的那一份。
 func TestPublishFinalErrorFirstWriteWins(t *testing.T) {
-	s := newInstanceState(0x2100, 128)
+	s := newInstanceState(0x2100, 128, 1_048_576)
 	s.publishReady()
 	mustElectClose(t, s)
 
@@ -518,7 +518,7 @@ func TestPublishFinalErrorFirstWriteWins(t *testing.T) {
 func TestInstanceStateSingleGatedHandle(t *testing.T) {
 	t.Run("handle 全程唯一且凭 lease 读取", func(t *testing.T) {
 		const h = uintptr(0x3001)
-		s := newInstanceState(h, 128)
+		s := newInstanceState(h, 128, 1_048_576)
 		if got := stateHandle(s); got != h {
 			t.Fatalf("构造后 handle = %#x, want %#x", got, h)
 		}
@@ -542,7 +542,7 @@ func TestInstanceStateSingleGatedHandle(t *testing.T) {
 
 	t.Run("closeHandle 仅在调用清零后可取", func(t *testing.T) {
 		const h = uintptr(0x3002)
-		s := newInstanceState(h, 128)
+		s := newInstanceState(h, 128, 1_048_576)
 		s.publishReady()
 		l := mustAdmit(t, s, "占用在途")
 		mustElectClose(t, s)
@@ -561,7 +561,7 @@ func TestInstanceStateSingleGatedHandle(t *testing.T) {
 	})
 
 	t.Run("CreateEx=0 路径 handle=0 无关闭句柄", func(t *testing.T) {
-		s := newInstanceState(0, 128)
+		s := newInstanceState(0, 128, 1_048_576)
 		s.publishReady()
 		l := mustAdmit(t, s, "零句柄实例的调用")
 		// 0 无效、不解引用:业务路径读到 0 即内部不变量破坏。
@@ -586,7 +586,7 @@ func TestInstanceStateSingleGatedHandle(t *testing.T) {
 // closed 后再有故障源是内部不变量破坏;无因故障不被接受。
 func TestRecordFaultStickySemantics(t *testing.T) {
 	t.Run("两次故障保留首个", func(t *testing.T) {
-		s := newInstanceState(0x4001, 128)
+		s := newInstanceState(0x4001, 128, 1_048_576)
 		s.publishReady()
 		first := fmt.Errorf("首个故障: %w", native.ErrProtocol)
 		second := fmt.Errorf("第二个故障: %w", native.ErrEventOverflow)
@@ -609,7 +609,7 @@ func TestRecordFaultStickySemantics(t *testing.T) {
 	})
 
 	t.Run("closing 期间只记因不改阶段", func(t *testing.T) {
-		s := newInstanceState(0x4002, 128)
+		s := newInstanceState(0x4002, 128, 1_048_576)
 		s.publishReady()
 		inflight := mustAdmit(t, s, "先行准入")
 		mustElectClose(t, s)
@@ -642,7 +642,7 @@ func TestRecordFaultStickySemantics(t *testing.T) {
 	})
 
 	t.Run("无因故障 panic", func(t *testing.T) {
-		s := newInstanceState(0x4004, 128)
+		s := newInstanceState(0x4004, 128, 1_048_576)
 		s.publishReady()
 		assertPanics(t, "cause 为 nil 的 recordFault", func() { s.recordFault(nil) })
 	})
@@ -654,30 +654,30 @@ func TestRecordFaultStickySemantics(t *testing.T) {
 // 到达守卫分支。
 func TestInstanceStateIllegalTransitionsPanic(t *testing.T) {
 	t.Run("initializing admitCall panic", func(t *testing.T) {
-		s := newInstanceState(0x5001, 128)
+		s := newInstanceState(0x5001, 128, 1_048_576)
 		assertPanics(t, "initializing 阶段 admitCall", func() { _, _ = s.admitCall("未发布实例") })
 	})
 
 	t.Run("initializing electClose panic", func(t *testing.T) {
-		s := newInstanceState(0x5002, 128)
+		s := newInstanceState(0x5002, 128, 1_048_576)
 		assertPanics(t, "initializing 阶段 electClose", func() { _ = s.electClose() })
 	})
 
 	t.Run("publishReady 重复发布 panic", func(t *testing.T) {
-		s := newInstanceState(0x5003, 128)
+		s := newInstanceState(0x5003, 128, 1_048_576)
 		s.publishReady()
 		assertPanics(t, "ready 后 publishReady", func() { s.publishReady() })
 	})
 
 	t.Run("closing 后 publishReady panic", func(t *testing.T) {
-		s := newInstanceState(0x5004, 128)
+		s := newInstanceState(0x5004, 128, 1_048_576)
 		s.publishReady()
 		mustElectClose(t, s)
 		assertPanics(t, "closing 后 publishReady", func() { s.publishReady() })
 	})
 
 	t.Run("ready 阶段发布最终错误 panic", func(t *testing.T) {
-		s := newInstanceState(0x5005, 128)
+		s := newInstanceState(0x5005, 128, 1_048_576)
 		s.publishReady()
 		assertPanics(t, "ready 阶段 publishFinalError", func() { s.publishFinalError(nil) })
 	})
@@ -693,7 +693,7 @@ func TestInstanceStateIllegalTransitionsPanic(t *testing.T) {
 	})
 
 	t.Run("faulted 无首因 admitCall panic", func(t *testing.T) {
-		s := newInstanceState(0x5008, 128)
+		s := newInstanceState(0x5008, 128, 1_048_576)
 		s.publishReady()
 		// 白盒:直接置位阶段,模拟不变量已被破坏的内部状态。
 		s.mu.Lock()
@@ -703,7 +703,7 @@ func TestInstanceStateIllegalTransitionsPanic(t *testing.T) {
 	})
 
 	t.Run("未知阶段 recordFault panic", func(t *testing.T) {
-		s := newInstanceState(0x5009, 128)
+		s := newInstanceState(0x5009, 128, 1_048_576)
 		s.publishReady()
 		s.mu.Lock()
 		s.phase = instancePhase(200)
@@ -718,7 +718,7 @@ func TestInstanceStateIllegalTransitionsPanic(t *testing.T) {
 // publishClosed 前必须已关门且已准入 callback 清空。
 func TestCallbackGateBasics(t *testing.T) {
 	t.Run("门开准入且 closing 仍开放,关门后拒绝", func(t *testing.T) {
-		s := newInstanceState(0x6001, 128)
+		s := newInstanceState(0x6001, 128, 1_048_576)
 		s.publishReady()
 		l1, ok := s.admitCallback()
 		if !ok {
@@ -743,14 +743,14 @@ func TestCallbackGateBasics(t *testing.T) {
 	})
 
 	t.Run("重复关门 panic", func(t *testing.T) {
-		s := newInstanceState(0x6002, 128)
+		s := newInstanceState(0x6002, 128, 1_048_576)
 		s.publishReady()
 		s.closeCallbackGate()
 		assertPanics(t, "重复 closeCallbackGate", func() { s.closeCallbackGate() })
 	})
 
 	t.Run("waitCallbacksDrained 等已准入 callback 退出", func(t *testing.T) {
-		s := newInstanceState(0x6003, 128)
+		s := newInstanceState(0x6003, 128, 1_048_576)
 		s.publishReady()
 		l, ok := s.admitCallback()
 		if !ok {
@@ -778,7 +778,7 @@ func TestCallbackGateBasics(t *testing.T) {
 	})
 
 	t.Run("publishClosed 前必须关门且清空", func(t *testing.T) {
-		s := newInstanceState(0x6004, 128)
+		s := newInstanceState(0x6004, 128, 1_048_576)
 		s.publishReady()
 		mustElectClose(t, s)
 

@@ -235,8 +235,9 @@ func composeCloseError(fault, stopDiag error) error {
 // 者无法从公开面获得本类型——不存在可获得的半初始化实例(§8)。
 //
 // 业务方法(连接、事件流与结果读取)由 MAA-23、24 接入;当前公开面
-// 为 Close(MAA-20)与同步任务/请求/查询方法(MAA-22:AppendTask、
-// SetTaskParams、Start、Stop、BackToHome、Running、Connected)。
+// 为 Close(MAA-20)、同步任务/请求/查询方法(MAA-22:AppendTask、
+// SetTaskParams、Start、Stop、BackToHome、Running、Connected)与异
+// 步提交方法(MAA-23:Connect、Click、Screencap,返回 *Operation)。
 type Instance struct {
 	// inst 是私有单次关闭组件(MAA-20):持有共享状态、事件分发器、
 	// callback token 与 native 停止/销毁接缝,Close 委托它的唯一流程。
@@ -334,6 +335,18 @@ type instanceCaller interface {
 	// connected 对应 AsstConnected(handle):返回 0(false)是正常查
 	// 询结果,不是错误。
 	connected(handle uintptr) uint8
+	// asyncConnect 对应 AsstAsyncConnect(handle, adbPath, address,
+	// config, block):异步提交连接,block 由公开层固定传 0;返回
+	// 0(InvalidId)表示提交失败,非零是关联键 async ID。调用契约:
+	// 仅在调用 lease 已准入、raw 串行门禁已进入、早到结果窗口已打开
+	// 后调用一次。
+	asyncConnect(handle uintptr, adbPath *byte, address *byte, config *byte, block uint8) int32
+	// asyncClick 对应 AsstAsyncClick(handle, x, y, block):异步提交
+	// 点击,契约同 asyncConnect。
+	asyncClick(handle uintptr, x int32, y int32, block uint8) int32
+	// asyncScreencap 对应 AsstAsyncScreencap(handle, block):异步提
+	// 交截图,契约同 asyncConnect。
+	asyncScreencap(handle uintptr, block uint8) int32
 }
 
 // apiTableCaller 是 instanceCaller 的生产实现:转发 *native.APITable
@@ -359,6 +372,18 @@ func (c apiTableCaller) backToHome(handle uintptr) uint8 { return c.table.BackTo
 func (c apiTableCaller) running(handle uintptr) uint8 { return c.table.Running(handle) }
 
 func (c apiTableCaller) connected(handle uintptr) uint8 { return c.table.Connected(handle) }
+
+func (c apiTableCaller) asyncConnect(handle uintptr, adbPath *byte, address *byte, config *byte, block uint8) int32 {
+	return c.table.AsyncConnect(handle, adbPath, address, config, block)
+}
+
+func (c apiTableCaller) asyncClick(handle uintptr, x int32, y int32, block uint8) int32 {
+	return c.table.AsyncClick(handle, x, y, block)
+}
+
+func (c apiTableCaller) asyncScreencap(handle uintptr, block uint8) int32 {
+	return c.table.AsyncScreencap(handle, block)
+}
 
 // createInstance 是 NewInstance 的完整创建事务(§8 初始化第 2 阶段),
 // 执行顺序严格按绑定设计:
@@ -404,7 +429,7 @@ func createInstance(rt *Runtime, cfg InstanceConfig, creator instanceCreator, cl
 	//    取得句柄),启动分发循环,构造 callback 准入接缝并登记 token
 	//    (§8 NewInstance 第 3 步;callback 门从构造起开放,早到消息
 	//    照常准入入队)。
-	s := newInstanceState(0, rt.limits.PendingOperations)
+	s := newInstanceState(0, rt.limits.PendingOperations, rt.limits.EarlyBytes)
 	d := newEventDispatcher(s, s.settleCompletion,
 		rt.limits.CallbackBytes, rt.limits.InternalEvents, rt.limits.InternalBytes,
 		rt.limits.PublicEvents, rt.limits.PublicBytes)
@@ -668,6 +693,134 @@ func (in *Instance) Running() (bool, error) {
 // Running。
 func (in *Instance) Connected() (bool, error) {
 	return in.queryCall("Connected", in.caller.connected)
+}
+
+// ---- 异步提交与结果关联(MAA-23;绑定设计 §3、§5、§7、§7.1)----
+//
+// 三个异步公开入口的公共纪律(§7 提交纪律、§5.1 输入限制):
+//   - 纯 Go 输入校验与快照先行(对照同步入口先例):失败返回
+//     ErrInvalidInput,不触碰生命周期门、不占在途计数、不占 pending;
+//   - 随后 admitCall 取得调用 lease(生命周期准入,覆盖排队、native
+//     调用与结果接合全过程),再在 raw 串行门禁之前预留 pending 容量
+//     并登记未绑定 ID 的请求 Operation(§7.1:pending 在调用进入 raw
+//     串行门禁前预留,满时直接拒绝且不调用 native);
+//   - 进入 raw 串行门禁后、native 调用前打开早到结果窗口(§7.1:仅
+//     在「已进入 raw、尚未接合返回 ID」窗口内允许临存一个未知 ID 的
+//     完成结果,EarlyResults 固定为 1),随后以 block=false 调用
+//     native(§7:公共异步方法统一用 block=false,避免把 block 的完
+//     成标记当成成功);
+//   - raw 返回后在调用 lease 内完成返回 ID 校验与登记
+//     (finishAsyncRaw):ID 0 是明确的提交错误并回收预留;负值/复用
+//     /倒退为 ErrProtocol 故障;登记后按 token、ID、预期 what 接合早
+//     到结果,统一 dispatcher 结算晚到结果并回收 pending 引用;
+//   - 任何 native 调用都不持有状态锁;handle 只在 lease 与门禁段内
+//     读取。
+//
+// 预期 what 冻结自锁定 Core 的 Assistant::call_proc(Assistant.cpp):
+// 异步项执行后以 AsyncCallInfo(message=4)回报 what=Connect/Click/
+// Screencap、async_call_id 与 details.ret;早到接合按该预期校验,
+// 不符为 ErrProtocol。
+
+// asyncBlockFalse 是三个异步 raw 入口统一使用的 block 取值(§7 冻结:
+// 公共异步方法统一用 block=false)。
+const asyncBlockFalse = uint8(0)
+
+// 异步入口的预期完成 what(§7.1:raw 返回后按 token、ID、预期 what
+// 接合;值冻结自 Assistant.cpp call_proc)。
+const (
+	asyncWhatConnect   = "Connect"
+	asyncWhatClick     = "Click"
+	asyncWhatScreencap = "Screencap"
+)
+
+// asyncCall 执行一次异步提交的公共骨架:生命周期准入 → pending 预留
+// → raw 门禁段内(高水位耗尽检查 → 开窗 → block=false native 调用
+// → 返回 ID 校验、登记与早到接合)。提交被接受时返回包装已登记记录
+// 的公开 *Operation(可能已由早到结果结算);被拒时回收预留、作废
+// 记录并返回错误,公开面拿不到半成品 Operation。
+func (in *Instance) asyncCall(what string, call func(handle uintptr) int32) (*Operation, error) {
+	lease, err := in.inst.state.admitCall(what)
+	if err != nil {
+		return nil, err
+	}
+	defer lease.release()
+	// pending 预留(raw 门禁前;§7.1):满时直接拒绝,不调用 native,
+	// 实例不因此故障。预留与登记/释放一一对应,以下任何返回路径都
+	// 已在状态锁内回收预留或转为登记。
+	op, err := in.inst.state.reservePendingOperation(what)
+	if err != nil {
+		return nil, err
+	}
+	in.inst.state.raw.enter()
+	_, joinErr := func() (int32, error) {
+		defer in.inst.state.raw.exit()
+		// 高水位耗尽检查 + 打开早到窗口(§7.1:门禁内、进入 raw 前)。
+		if err := in.inst.state.beginAsyncRaw(); err != nil {
+			return 0, err
+		}
+		id := call(lease.handle())
+		// 返回 ID 校验、登记与早到接合(§7.1):失败路径在状态锁内
+		// 回收预留并作废记录。
+		return id, in.inst.state.finishAsyncRaw(op, what, id)
+	}()
+	if joinErr != nil {
+		return nil, joinErr
+	}
+	return &Operation{op: op}, nil
+}
+
+// Connect 异步提交设备连接(AsstAsyncConnect,block=false):返回的
+// *Operation 持有关联键 async ID,连接的最终结果(成功与否、耗时等
+// details)由 AsyncCallInfo 按该 ID 关联确认后经 Wait 取得——非零 ID
+// 只表示提交被接受,不是连接已建立的证明(§7)。ADBPath/Address/
+// Config 的输入校验与快照语义同同步入口(§5.1:路径非空绝对、
+// Address 非空、Config 允许空串并原样传空 C 字符串);快照只持有到
+// raw 返回(锁定 Core 在入队前复制连接参数,Assistant.cpp
+// async_connect),方法返回后即可修改原输入。
+//
+// 错误语义:输入校验失败包装 ErrInvalidInput 且不进入 native;容量
+// 满包装 ErrOperationLimit(不调用 native,实例不故障);生命周期
+// 拒绝经错误链可辨(ErrClosing/首因/ErrClosed);raw 返回 0 包装
+// ErrNativeRejected(明确的提交失败,已回收预留);ID 复用/倒退或
+// 与早到结果矛盾等协议破坏包装 ErrProtocol 并使实例故障。
+func (in *Instance) Connect(cfg ConnectConfig) (*Operation, error) {
+	snap, err := snapshotConnectInput(cfg, in.rt.limits)
+	if err != nil {
+		return nil, err
+	}
+	return in.asyncCall(asyncWhatConnect, func(handle uintptr) int32 {
+		adb, adbBuf := cString(snap.adbPath)
+		addr, addrBuf := cString(snap.address)
+		conf, confBuf := cString(snap.config)
+		id := in.caller.asyncConnect(handle, adb, addr, conf, asyncBlockFalse)
+		// 带 NUL 的 C buffer 持有至 raw 返回(§6:调用期保活;连接参
+		// 数由 Core 在入队前复制,无需存活到完成)。
+		runtime.KeepAlive(adbBuf)
+		runtime.KeepAlive(addrBuf)
+		runtime.KeepAlive(confBuf)
+		return id
+	})
+}
+
+// Click 异步提交一次点击(AsstAsyncClick,block=false):x/y 带符号
+// 原样透传,返回的 *Operation 语义同 Connect——最终结果经 Wait 取得,
+// 非零 ID 只表示提交被接受(§7)。错误语义同 Connect(无输入校验
+// 步骤)。
+func (in *Instance) Click(x, y int32) (*Operation, error) {
+	return in.asyncCall(asyncWhatClick, func(handle uintptr) int32 {
+		return in.caller.asyncClick(handle, x, y, asyncBlockFalse)
+	})
+}
+
+// Screencap 异步提交一次截图(AsstAsyncScreencap,block=false):返
+// 回的 *Operation 语义同 Connect——提交被接受只表示采集请求已入队,
+// 结果经 Wait 确认后另以图像读取接口取缓存图像(§6:获取新截图需先
+// 等待 Screencap 的成功结果,再取 PNG;读取接口由后续任务接入)。
+// 错误语义同 Connect。
+func (in *Instance) Screencap() (*Operation, error) {
+	return in.asyncCall(asyncWhatScreencap, func(handle uintptr) int32 {
+		return in.caller.asyncScreencap(handle, asyncBlockFalse)
+	})
 }
 
 // runtimeLogger 是 Runtime 全局日志(AsstLog:进程级,无 handle)的

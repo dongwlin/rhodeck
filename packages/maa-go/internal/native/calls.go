@@ -1,7 +1,8 @@
 // 本文件是 APITable 的 raw 调用包装边界:为 Runtime 初始化(Open
 // 事务)所需的 6 个 raw 函数、实例创建(NewInstance 事务)所需的
-// 2 个 raw 函数与实例同步业务调用(MAA-22)所需的 8 个 raw 函数提供
-// 直接转发的方法。函数指针与函数表仍不外泄——
+// 2 个 raw 函数、实例同步业务调用(MAA-22)所需的 8 个 raw 函数与
+// 异步提交(MAA-23)所需的 3 个 raw 函数提供直接转发的方法。函数
+// 指针与函数表仍不外泄——
 // APITable 只经公开层 Runtime 私有持有,本层方法不向公开层暴露任何
 // func 值;*byte 参数的编码(构造带 NUL 的 UTF-8 buffer 与保活)、
 // 返回值的解释与复制全部由公开层完成。raw 签名保持绑定设计 §3 冻
@@ -76,6 +77,33 @@ func (t *APITable) CreateEx(callback uintptr, customArg uintptr) uintptr {
 // 用(§8 NewInstance)。
 func (t *APITable) SetInstanceOption(handle uintptr, key int32, value *byte) uint8 {
 	return t.api.SetInstanceOption(handle, key, value)
+}
+
+// AsyncConnect 对应 AsstAsyncConnect(handle, adb_path, address,
+// config, block):异步提交设备连接。返回值是 AsstAsyncCallId
+// (int32):0(InvalidId)表示提交失败;非零只证明提交已被 Core 接受
+// 入队,最终结果以 AsyncCallInfo(async_call_id=该 ID)关联确认
+// (AsstCaller.h:91–96),解释权在调用方。block 参数由公开层固定传 0
+// (§7:公共异步方法统一用 block=false,避免把 block 的完成标记当成
+// 成功);adb_path/address/config 指向的 buffer 只需存活到本调用返回
+// (锁定 Core 在入队前把连接参数复制到 std::string,Assistant.cpp
+// async_connect)。
+func (t *APITable) AsyncConnect(handle uintptr, adbPath *byte, address *byte, config *byte, block uint8) int32 {
+	return t.api.AsyncConnect(handle, adbPath, address, config, block)
+}
+
+// AsyncClick 对应 AsstAsyncClick(handle, x, y, block):异步提交一次
+// 点击,x/y 带符号原样透传。返回值语义同 AsyncConnect
+// (AsstCaller.h:127);block 参数由公开层固定传 0。
+func (t *APITable) AsyncClick(handle uintptr, x int32, y int32, block uint8) int32 {
+	return t.api.AsyncClick(handle, x, y, block)
+}
+
+// AsyncScreencap 对应 AsstAsyncScreencap(handle, block):异步提交
+// 一次截图,结果(缓存图像)另经 GetImage 读取。返回值语义同
+// AsyncConnect(AsstCaller.h:128);block 参数由公开层固定传 0。
+func (t *APITable) AsyncScreencap(handle uintptr, block uint8) int32 {
+	return t.api.AsyncScreencap(handle, block)
 }
 
 // AppendTask 对应 AsstAppendTask(handle, type, params):向实例任务

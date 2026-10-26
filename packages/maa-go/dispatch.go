@@ -64,15 +64,18 @@ const asyncCallInfoMessageID = MessageID(4)
 // 仅当三个关联字段全部存在、类型正确、无重复 key 且 ID 在 int32
 // 范围内才构造;解析失败的原始消息不得调用结算通知(§7.1:不能将
 // 无法关联的完成信息视为成功)。What 允许是未知文本:未知 what 按
-// 原样交付,由结算方(MAA-19)决定是否可关联。Details 是 details
-// 值的原始字节(§5:AsyncResult 保留原始 details),逐字节保留值内
-// 部原文含内部空白、不经 map[string]any 往返;校验只针对顶层 object
-// 形状与 ret 字段,未知字段原样保留(§6.1)。
+// 原样交付,由结算方决定是否可关联。Details 是 details 值的原始字节
+// (§5:AsyncResult 保留原始 details),逐字节保留值内部原文含内部
+// 空白、不经 map[string]any 往返;校验只针对顶层 object 形状与 ret
+// 字段,未知字段原样保留(§6.1)。Bytes 是整条消息 payload 的字节
+// 数,供早到结果表核对 EarlyBytes 预算(§7.1);直接构造的
+// completionInfo(受控用例)Bytes 为 0,只在真实解析路径有意义。
 type completionInfo struct {
 	ID      AsyncID
 	What    string
 	OK      bool
 	Details json.RawMessage
+	Bytes   int
 }
 
 // queuedEvent 是内部队列持有的一条已复制消息:eventRecord 复用
@@ -731,6 +734,7 @@ func parseAsyncCallInfo(raw json.RawMessage) (completionInfo, error) {
 	case !seenDetails:
 		return completionInfo{}, fmt.Errorf("maa: AsyncCallInfo message is missing required top-level key %q: %w", "details", native.ErrProtocol)
 	}
+	info.Bytes = len(raw)
 	return info, nil
 }
 

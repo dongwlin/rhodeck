@@ -127,7 +127,7 @@ func newCloseRig(t *testing.T, handle uintptr, b dispatchBudgets) *closeRig {
 // (如在可确认结算处设屏障以确定性冻结关闭流程)。
 func newCloseRigWithSettle(t *testing.T, handle uintptr, b dispatchBudgets, settle func(completionInfo)) *closeRig {
 	t.Helper()
-	s := newInstanceState(handle, 128)
+	s := newInstanceState(handle, 128, 1_048_576)
 	s.publishReady()
 	if settle == nil {
 		settle = s.settleCompletion
@@ -214,7 +214,7 @@ func assertClosedChannels(t *testing.T, rig *closeRig) {
 // 先例);合法组合构造成功。
 func TestNewInstanceContract(t *testing.T) {
 	b := generousBudgets()
-	s := newInstanceState(0xC000, 128)
+	s := newInstanceState(0xC000, 128, 1_048_576)
 	s.publishReady()
 	d := newEventDispatcher(s, s.settleCompletion, b.callbackBytes, b.internalEvents, b.internalBytes, b.publicEvents, b.publicBytes)
 	d.start()
