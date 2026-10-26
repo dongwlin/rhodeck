@@ -8,6 +8,12 @@
 // (MAA-18)、pending Operation 表(MAA-19/23)与 Stop/Destroy 关闭
 // 流程(MAA-20)的共同入口。
 //
+// MAA-17 在同一状态门内增补故障通知与丢失诊断(§7、§7.1,全部在
+// 状态锁内线性化):一次性 faultDone 通知只由首次故障关闭,正常
+// 关闭不触发;丢失条数采用饱和 uint64 计数,不回绕;首次故障只
+// 保留有界元数据和至多 faultRawPrefixBytes 字节原文前缀(不是完整
+// Event,不积累错误列表)。
+//
 // 本单元只承载状态与基础 lease 原语:不接 CreateEx/NewInstance,不
 // 实现关闭流程本体,不接 callback 分发;公开面(导出符号)零变化。
 //
@@ -35,11 +41,18 @@
 package maa
 
 import (
+	"bytes"
 	"fmt"
+	"math"
 	"sync"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
 )
+
+// faultRawPrefixBytes 是首次故障保留的原文前缀字节上限(§7.1 冻结:
+// 首次故障及停止诊断只保留有界元数据和至多 4,096 字节原文前缀,
+// 不是完整 Event,不积累错误列表)。
+const faultRawPrefixBytes = 4096
 
 // instancePhase 是实例私有生命周期的阶段(§8:状态变化为
 // initializing → ready → closing → closed,异常路径可进入 faulted
@@ -99,6 +112,19 @@ type instanceState struct {
 
 	// firstFault 是首次故障,sticky:保留首个,不覆盖(§7.1)。
 	firstFault error
+	// firstFaultPrefix 是首次故障的有界原文前缀:只在首因线性化时
+	// 深拷贝至多 faultRawPrefixBytes 字节,后续故障不覆盖、不积累
+	// (§7.1:不是完整 Event,不积累错误列表)。
+	firstFaultPrefix []byte
+	// lostEvents 是饱和丢失计数(§7.1:丢失条数采用饱和 uint64 计数,
+	// 不回绕;关闭完成前可能增加,观察 Done 后稳定)。
+	lostEvents uint64
+	// faultDone 从构造起即存在,只由首次故障在状态门内线性化关闭
+	// 一次(§7.1:首次故障关闭独立的一次性 Fault 通知,绝不依赖
+	// Events 还有空间;正常关闭不触发)。faultNotified 是防重复关闭
+	// 的哨兵,只在持有 mu 时读写。
+	faultDone     chan struct{}
+	faultNotified bool
 	// finalErr 是关闭所有者发布的不可变最终错误;所有关闭申请共享
 	// 同一存储(§8:并发 Close 共享同一 closeDone 和最终错误)。
 	finalErr error
@@ -122,6 +148,7 @@ func newInstanceState(handle uintptr) *instanceState {
 		phase:     phaseInitializing,
 		handle:    handle,
 		closeDone: make(chan struct{}),
+		faultDone: make(chan struct{}),
 	}
 	s.callsDrained = sync.NewCond(&s.mu)
 	s.callbacksDrained = sync.NewCond(&s.mu)
@@ -287,13 +314,29 @@ func (s *instanceState) closeHandle() (uintptr, bool) {
 }
 
 // recordFault 在状态锁内线性化记录首次故障(§7.1:保留首个 fault,
-// 拒绝新业务调用):ready/initializing 阶段随即进入 faulted,此后
-// admitCall 一律拒绝,已准入 lease 照常释放;closing 阶段阶段不变,
-// 故障仅作为首因记录,随 publishFinalError 进入最终错误;faulted
-// 重复记录保留首个,不覆盖;closed 到达此处即内部不变量破坏(关闭
-// 完成后不应再有故障源),panic。cause 不得为 nil:故障必须携带可
-// 判别的原始错误,不接受无因故障。
+// 拒绝新业务调用),无原文前缀;带前缀的记录经 recordFaultWithDetail。
 func (s *instanceState) recordFault(cause error) {
+	s.recordFaultWithDetail(cause, nil)
+}
+
+// recordFaultWithDetail 在状态锁内线性化记录首次故障并可选保留一段
+// 有界原文前缀(§7.1:保留首个 fault,拒绝新业务调用;首次故障只
+// 保留有界元数据和至多 faultRawPrefixBytes 字节原文前缀):
+//
+//   - ready/initializing 阶段随即进入 faulted,此后 admitCall 一律
+//     拒绝,已准入 lease 照常释放;
+//   - closing 阶段阶段不变,故障仅作为首因记录,随 publishFinalError
+//     进入最终错误;
+//   - faulted 重复记录保留首个,不覆盖首因、不覆盖前缀、不积累;
+//   - closed 到达此处即内部不变量破坏(关闭完成后不应再有故障源),
+//     panic。
+//
+// cause 不得为 nil:故障必须携带可判别的原始错误,不接受无因故障。
+// prefix 允许为 nil;非 nil 时截取至多 faultRawPrefixBytes 字节并在
+// 首次故障时立即深拷贝,调用者返回后修改原切片不影响已保存副本。
+// 当本调用使 firstFault 从 nil 变为非 nil(即本调用是首次故障的
+// 线性化点)时,恰好关闭一次 faultDone;重复记录不重复关闭。
+func (s *instanceState) recordFaultWithDetail(cause error, prefix []byte) {
 	if cause == nil {
 		panic("maa: instance fault recorded without a cause")
 	}
@@ -301,19 +344,35 @@ func (s *instanceState) recordFault(cause error) {
 	defer s.mu.Unlock()
 	switch s.phase {
 	case phaseInitializing, phaseReady:
-		if s.firstFault == nil {
-			s.firstFault = cause
-		}
+		s.keepFirstFaultLocked(cause, prefix)
 		s.phase = phaseFaulted
 	case phaseFaulted, phaseClosing:
-		if s.firstFault == nil {
-			s.firstFault = cause
-		}
+		s.keepFirstFaultLocked(cause, prefix)
 	case phaseClosed:
 		panic(fmt.Sprintf("maa: instance fault recorded in phase %d", s.phase))
 	default:
 		panic(fmt.Sprintf("maa: instance state in unknown phase %d", s.phase))
 	}
+	// 首次故障通知(§7.1:独立于事件队列的一次性通知):恰在首次
+	// 故障的线性化点关闭,重复记录被 faultNotified 拦下,正常关闭
+	// 永不触发。
+	if !s.faultNotified {
+		s.faultNotified = true
+		close(s.faultDone)
+	}
+}
+
+// keepFirstFaultLocked 保留首个故障与其有界原文前缀;要求持有 mu。
+// sticky:已有首因时不做任何事(不覆盖错误、不覆盖前缀、不积累)。
+func (s *instanceState) keepFirstFaultLocked(cause error, prefix []byte) {
+	if s.firstFault != nil {
+		return
+	}
+	if len(prefix) > faultRawPrefixBytes {
+		prefix = prefix[:faultRawPrefixBytes]
+	}
+	s.firstFault = cause
+	s.firstFaultPrefix = bytes.Clone(prefix)
 }
 
 // publishFinalError 由关闭所有者在原生销毁与 callback 清理完成之后、
@@ -395,6 +454,58 @@ func (s *instanceState) currentFault() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.firstFault
+}
+
+// faultNotify 返回一次性故障通知的只读视图:首次故障线性化时关闭
+// 一次(§7.1:通知独立于事件队列,绝不依赖 Events 还有空间;观察者
+// 可同时选择 done()——Done 仍只表示关闭完成),正常关闭不触发。
+// 通道字段构造后不再改变,读取无需状态锁。
+func (s *instanceState) faultNotify() <-chan struct{} {
+	return s.faultDone
+}
+
+// recordLostEvents 把 n 条丢失事件计入饱和丢失计数(§7.1:丢失条数
+// 采用饱和 uint64 计数):相加将回绕时夹到 math.MaxUint64,不回绕。
+// 纯诊断计数,不参与阶段迁移,可在任何未关闭阶段调用。
+func (s *instanceState) recordLostEvents(n uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	total, ok := addChecked(s.lostEvents, n)
+	if !ok {
+		total = math.MaxUint64
+	}
+	s.lostEvents = total
+}
+
+// currentLostEvents 返回当前丢失计数(只读诊断)。
+func (s *instanceState) currentLostEvents() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lostEvents
+}
+
+// faultSnapshot 是首次故障的有界诊断快照(§7.1:Diagnostics 返回
+// 丢失条数、首错和停止诊断的深副本):lostEvents 是饱和丢失计数,
+// firstFault 是首因(可能尚为 nil),rawPrefix 是首因原文前缀的
+// 独立深拷贝(至多 faultRawPrefixBytes 字节;未保留前缀时为 nil)。
+// 修改副本不影响状态内的原值。
+type faultSnapshot struct {
+	lostEvents uint64
+	firstFault error
+	rawPrefix  []byte
+}
+
+// faultDiagnostics 返回故障诊断的深拷贝快照:丢失计数、首因与原文
+// 前缀各自独立复制,供后续公开 Diagnostics 接线与用例消费;数据
+// 读取与复制在状态锁内完成,关闭完成前内容仍可能增加。
+func (s *instanceState) faultDiagnostics() faultSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return faultSnapshot{
+		lostEvents: s.lostEvents,
+		firstFault: s.firstFault,
+		rawPrefix:  bytes.Clone(s.firstFaultPrefix),
+	}
 }
 
 // callbackLease 是一条已准入 callback 的在途凭证(§4:查到 token
