@@ -7,13 +7,15 @@
 // Connect/Click/Screencap 与公开 Operation 的 ID/Wait,绑定设计 §5、
 // §7)、MAA-24 交付图像/UUID/任务列表读取(Instance 的 GetImagePNG/
 // UUID/Tasks,绑定设计 §5、§6;可选 BGR 不公开读取方法,冻结集合
-// 因此不含任何 BGR 入口)时有意识地更新本守卫;后续里程碑交付新公
-// 开面时,同样必须有意识地更新。
+// 因此不含任何 BGR 入口)、MAA-25 交付 Runtime.Close(关闭创建准入、
+// 等待创建 lease、活动实例唯一关闭与终止使用,绑定设计 §5、§8)时
+// 有意识地更新本守卫;后续里程碑交付新公开面时,同样必须有意识地
+// 更新。
 //
 // 断言:
 //   - *Runtime 的导出方法集恰为 {Version, Capabilities, NullSize,
-//     Log, NewInstance}(只读元数据访问 + 全局日志 + 唯一的实例创建
-//     事务入口);
+//     Log, NewInstance, Close}(只读元数据访问 + 全局日志 + 唯一的
+//     实例创建事务入口 + 幂等的绑定使用关闭);
 //   - *Instance 的导出方法集恰为 {Close, AppendTask, SetTaskParams,
 //     Start, Stop, BackToHome, Running, Connected, Connect, Click,
 //     Screencap, GetImagePNG, UUID, Tasks}(单次关闭的公开入口 + 同
@@ -21,8 +23,8 @@
 //     Events/Done/Err/Fault/Diagnostics 尚未接入);
 //   - *Operation 的导出方法集恰为 {ID, Wait}(关联键读取 + 可重复
 //     等待,MAA-23);
-//   - 除 *Runtime 的 NewInstance 与 *Instance 的 Close 外,不存在其
-//     他名为 NewInstance/Close 的导出函数或方法;
+//   - 除 *Runtime 的 NewInstance/Close 与 *Instance 的 Close 外,不
+//     存在其他名为 NewInstance/Close 的导出函数或方法;
 //   - 包级导出函数恰为 {Open}(唯一的进程初始化入口)。
 
 package maa
@@ -118,8 +120,10 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 				}
 				if ast.IsExported(fd.Name.Name) && (fd.Name.Name == "NewInstance" || fd.Name.Name == "Close") {
 					switch {
-					case recv == "Runtime" && fd.Name.Name == "NewInstance", recv == "Instance" && fd.Name.Name == "Close":
-						// MAA-21 交付的两个生命周期入口。
+					case recv == "Runtime" && fd.Name.Name == "NewInstance",
+						recv == "Instance" && fd.Name.Name == "Close",
+						recv == "Runtime" && fd.Name.Name == "Close":
+						// MAA-21/25 交付的三个生命周期入口。
 					default:
 						t.Errorf("类型 %s 的导出方法 %q 不在生命周期入口冻结集合内", recv, fd.Name.Name)
 					}
@@ -138,8 +142,8 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		t.Fatal("未找到 Operation 类型的方法声明")
 	}
 
-	// *Runtime 的导出方法集恰为冻结集合。
-	want := map[string]bool{"Version": true, "Capabilities": true, "NullSize": true, "Log": true, "NewInstance": true}
+	// *Runtime 的导出方法集恰为冻结集合(MAA-25 加入 Close)。
+	want := map[string]bool{"Version": true, "Capabilities": true, "NullSize": true, "Log": true, "NewInstance": true, "Close": true}
 	for m := range want {
 		if !runtimeMethods[m] {
 			t.Errorf("*Runtime 缺少冻结的导出方法 %s", m)

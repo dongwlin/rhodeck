@@ -21,8 +21,14 @@
 // 实例创建(MAA-21,§8 初始化第 2 阶段)在同一状态门内预留唯一实
 // 例名额并登记创建 lease:每 Runtime 至多一个实例,名额预占后的创建
 // 失败或实例关闭都使 Runtime 进入终止使用状态,不允许同进程重建实
-// 例或重试资源组合;Runtime.Close 的创建准入与完整等待归 MAA-25,
-// 本文件交付预留/复核接口(closeCreationAdmission/waitCreationLease)。
+// 例或重试资源组合。
+//
+// Runtime.Close(MAA-25,§8 Close 契约)在同一状态门内先关闭创建准
+// 入(beginRuntimeClose),再等待已登记创建 lease——未发布实例的统一
+// 回滚由创建者完成,Close 不重复 Destroy——然后把已发布活动实例交给
+// 唯一关闭者(与 Instance.Close 同一单次关闭流程),最后终止进程级
+// 使用状态。closeCreationAdmission/waitCreationLease 保留为门的最小
+// 预留/复核接口(门契约用例与手动准入注入使用)。
 
 package maa
 
@@ -404,7 +410,7 @@ func snapshotConfig(cfg RuntimeConfig) (configSnapshot, error) {
 // reserved 已预占(初始化进行中)、ready 已发布活动 Runtime、
 // terminated 使用权已终止。状态迁移:idle→reserved→ready 与
 // reserved→terminated(Open 事务);ready→terminated(实例关闭、
-// 创建失败回滚,MAA-21);Runtime.Close 的关闭迁移归 MAA-25。
+// 创建失败回滚、Runtime.Close,MAA-21/25)。
 type lifecycleState uint8
 
 const (
@@ -431,8 +437,14 @@ const (
 // lifecycleGate 是进程级单 Runtime 生命周期门:串行化全部 Open 的
 // 预占,保证并发 Open 至多一个进入原生初始化;记录原生加载开始后
 // 的首个失败原因,terminated 之后供后续 Open 诊断。MAA-21 在同一状
-// 态门内承载唯一实例名额与创建 lease:Runtime.Close(先关闭创建准
-// 入,再等待创建 lease)的完整流程归 MAA-25,本门交付预留/复核接口。
+// 态门内承载唯一实例名额与创建 lease;MAA-25 的 Runtime.Close 经
+// beginRuntimeClose(关闭创建准入并快照)与 runtimeCloseResult(终
+// 止后的稳定最终结果)在同一门内收束关闭与创建竞争。
+//
+// ready Runtime 发布之后的 terminate 只来自实例关闭、创建失败回滚与
+// Runtime.Close,三者携带同一份关闭/回滚最终错误(§8:多次 Close
+// 返回同一终态)——因此 firstErr 在该阶段即稳定最终结果,正常关闭
+// 保持 nil。
 //
 // 锁序:lifecycleGate.mu → instanceState.mu(publishInstance 持门锁
 // 调用状态锁内发布);不存在反向获取——实例状态的方法绝不获取本门。
@@ -574,7 +586,9 @@ func (g *lifecycleGate) releaseCreationLease() {
 // waitCreationLease 等待已登记的创建 lease 释放(§8:Runtime.Close 先
 // 关闭创建准入,再等待已登记的创建 lease,不能因尚无 ready Instance
 // 而提前完成):创建事务结束(发布或回滚完成)后返回。尚未预留名额
-// 时立即返回(无可等待的 lease);完整 Runtime.Close 集成归 MAA-25。
+// 时立即返回(无可等待的 lease);Runtime.Close 经 beginRuntimeClose
+// 的同锁段快照取 lease 通道后自行等待,本方法保留为最小接口(门契约
+// 用例的防挂死等待使用)。
 func (g *lifecycleGate) waitCreationLease() {
 	g.mu.Lock()
 	ch := g.creationDone
@@ -584,12 +598,42 @@ func (g *lifecycleGate) waitCreationLease() {
 	}
 }
 
+// beginRuntimeClose 是 Runtime.Close 的第一步(§8:Runtime.Close 先
+// 关闭创建准入):在同一状态门锁段内置位创建准入关闭标志并快照当前
+// 活动实例与创建 lease 通道。原子性保证:标志置位后 reserveInstance
+// 与 publishInstance 一律被拒,快照之后不会再出现新的创建 lease、也
+// 不会有实例再发布为 active——快照结果即「需要收尾的实例」的最终集
+// 合;之后 activeInstance 只会被 terminate 清空(并发关闭者已代为终
+// 结,快照到的指针仍可安全幂等关闭)。返回的 lease 可能为 nil(从未
+// 登记创建事务)或已关闭(事务已收尾),两种情况下等待都立即返回。
+func (g *lifecycleGate) beginRuntimeClose() (*instance, <-chan struct{}) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.closeRequested = true
+	return g.activeInstance, g.creationDone
+}
+
+// runtimeCloseResult 返回生命周期已终止时的稳定最终结果,未终止时
+// 第二返回值为 false。依据见 lifecycleGate 文档:ready Runtime 发布
+// 之后的 terminate 只携带同一份关闭/回滚最终错误,firstErr 因此即
+// 多次/并发 Close 共享的稳定终态(§8:多次 Close 返回同一终态),
+// 正常关闭为 nil。要求在等待创建 lease 结束之后调用:创建回滚先
+// terminate 再释放 lease(Runtime.Close 不得在回滚完成前返回)。
+func (g *lifecycleGate) runtimeCloseResult() (error, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state != lifecycleTerminated {
+		return nil, false
+	}
+	return g.firstErr, true
+}
+
 // closeCreationAdmission 关闭创建准入(§8:Runtime.Close 先关闭创建准
 // 入):此后 reserveInstance 与 publishInstance 一律拒绝,正在进行的
 // 创建事务不受影响、由创建者自行完成(发布或回滚)。返回本次调用是
-// 否为首个请求(后续调用幂等返回 false);Runtime.Close 的完整流程
-// (等待 lease、关闭活动实例、终止使用)归 MAA-25,本方法只承载创
-// 建准入标志。
+// 否为首个请求(后续调用幂等返回 false)。Runtime.Close 使用合并了
+// 快照的 beginRuntimeClose;本方法保留为最小准入接口(门契约用例与
+// 手动准入注入使用)。
 func (g *lifecycleGate) closeCreationAdmission() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -930,4 +974,52 @@ func (rt *Runtime) NewInstance(cfg InstanceConfig) (*Instance, error) {
 		apiTableCreator{table: rt.table},
 		apiTableCloser{table: rt.table},
 		apiTableCaller{table: rt.table})
+}
+
+// Close 同步完成本 Runtime 绑定使用的关闭(§5、§8):幂等,不卸载原
+// 生库,不重置进程级状态——恢复仍只能来自退出并启动新 worker 进程。
+// 顺序固定按 §8 Close 契约:
+//
+//  1. 关闭创建准入(Runtime 状态门内):此后 reserveInstance 与
+//     publishInstance 一律被拒,进行中的创建事务不被打断;
+//  2. 等待已登记的创建 lease:没有 ready 实例时同样检查 initializing
+//     实例——未发布的创建实例由创建者完成统一回滚(已取得 handle:
+//     一次 Stop 一次 Destroy;CreateEx=0:只清理 Go 桥接状态)并释放
+//     lease,回滚完成之前 Close 不返回,也不重复 Destroy(§8:由创
+//     建者完成同一单次关闭/回滚流程,Close 等待该流程);
+//  3. 复核生命周期状态:等待期间创建回滚或并发的 Instance.Close 可
+//     能已终止使用,其存储的最终结果即本次 Close 的稳定最终结果;
+//  4. 已发布的活动实例交给唯一关闭者:委托与 Instance.Close 同一单
+//     次关闭流程(§8.1 复用边界,不建立第二套 Stop/Destroy 所有者),
+//     并发的 Instance.Close 共享同一 closeDone 与最终错误;
+//  5. 终止进程级使用状态:后续 Open 与 NewInstance 一律返回包装
+//     ErrRuntimeTerminated 的错误(§8:一个实例关闭后 Runtime 进入
+//     终止态,不再允许 NewInstance/LoadResource)。
+//
+// 多次或并发的 Runtime.Close 与 Instance.Close 收到同一稳定最终结果
+// (§8:多次 Close 返回同一终态);终止后的重复 Close 直接返回已存
+// 储结果,不再进入 native。Close 不接受强制回收超时,也不承诺在
+// native 卡住时返回(§8:由 control 对 worker 执行有期限的退出监督)。
+func (rt *Runtime) Close() error {
+	// 1. 关闭创建准入并快照(同一状态门锁段,§8 第 1 步的创建准入侧)。
+	active, lease := rt.gate.beginRuntimeClose()
+	// 2. 等待已登记创建 lease(§8:不能因尚无 ready Instance 而提前
+	//    完成;lease 为 nil 或已关闭时立即返回)。
+	if lease != nil {
+		<-lease
+	}
+	// 3. 复核:终止后的 firstErr 即关闭/回滚的稳定最终结果。
+	if err, terminated := rt.gate.runtimeCloseResult(); terminated {
+		return err
+	}
+	// 4. 活动实例交给唯一关闭者(§8.1:Runtime.Close 委托同一流程,
+	//    不重复 Destroy;并发 Instance.Close 共享同一 closeDone)。
+	var err error
+	if active != nil {
+		err = active.close()
+	}
+	// 5. 终止使用(terminate 保留首个原因;并发终止者携带同一最终结
+	//    果,不互相覆盖)。
+	rt.gate.terminate(err)
+	return err
 }

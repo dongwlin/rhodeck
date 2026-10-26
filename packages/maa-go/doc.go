@@ -26,6 +26,17 @@
 // 拒绝、早到故障或发布被 closing 抢先都走统一单次关闭/回滚流程清理,
 // Runtime 终止使用,调用者拿不到半初始化实例。
 //
+// Runtime.Close 同步完成绑定使用的关闭(幂等,不卸载原生库):先关
+// 闭创建准入(此后 NewInstance 在预留处返回 ErrClosing;终止使用后
+// 返回包装 ErrRuntimeTerminated 的错误),再等待已登记的创建
+// lease——没有 ready 实例时同样检查 initializing 实例,未发布的创
+// 建实例由创建者完成统一回滚并释放 lease,回滚完成之前 Close 不返回、
+// 也不重复 Destroy;已发布的活动实例交给唯一关闭者(与 Instance.
+// Close 同一单次关闭流程)。多次或并发的 Runtime.Close 与 Instance.
+// Close 收到同一稳定最终结果,终止后的重复关闭不再进入 native;Close
+// 后进程进入终止使用状态,后续 Open 与 NewInstance 返回包装
+// ErrRuntimeTerminated 的错误。
+//
 // Instance 的公开面为同步生命周期、任务方法与异步提交:Close 同步、
 // 幂等的单次关闭流程,返回后不再允许原生调用;AppendTask(taskType,
 // params) 原样透传未知任务类型与 JSON 字段并返回 TaskID(0 明确表示
@@ -104,9 +115,14 @@
 //   - 初始化步骤顺序:Version 复制与 NullSize 核验 → 用户目录 →
 //     静态选项(先于资源加载)→ 资源根(按配置顺序)→ 连接 extras
 //     (按配置顺序);extras 为 C void 调用,不伪造原生成功码。
+//   - Runtime.Close 终止使用:先关闭创建准入,再等待创建 lease 与未
+//     发布实例的统一回滚,已发布实例交给唯一关闭者,最后进程级生命
+//     周期进入 terminated;多次/并发 Close 共享同一最终结果,重复关
+//     闭不再进入 native。原生库保持加载到进程退出,Close 不卸载。
 //
 // Runtime 经 Open 返回的指针使用:零值不可用,不按值复制。元数据
-// 方法并发安全;Open 并发安全(由生命周期门串行化预占)。
+// 方法并发安全;Open 并发安全(由生命周期门串行化预占);Close 并
+// 发安全(并发申请共享同一关闭结果)。
 //
 // 依赖方向固定且单向:公开层 → internal/native → purego / 系统 loader
 // → MaaCore。internal/native 不向公开层导出 raw 函数类型、handle、
