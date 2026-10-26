@@ -295,12 +295,15 @@ func TestRealNativeSelectionBaseline(t *testing.T) {
 		}
 		want := realNativeNames(t)
 		// 平台条件文件按目标切换:linux 不含 loader_other.go,windows
-		// 不含 loader_linux.go(独立期望,不复用选择逻辑)。
+		// 不含 loader_linux.go 与 callback_linux.go(callback trampoline
+		// 是 //go:build linux 的 Linux 专属 Unix 适配,Windows 适配由
+		// 后续平台扩展任务交付;独立期望,不复用选择逻辑)。
 		switch goos {
 		case "linux":
 			want = withoutName(want, "loader_other.go")
 		case "windows":
 			want = withoutName(want, "loader_linux.go")
+			want = withoutName(want, "callback_linux.go")
 		}
 		if strings.Join(report.Go.Files, ",") != strings.Join(want, ",") {
 			t.Errorf("%s selected files = %v, want %v", goos, report.Go.Files, want)
