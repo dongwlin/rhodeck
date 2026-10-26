@@ -398,6 +398,11 @@ func TestCallbackRegistryInFlightDeliverySurvivesUnregister(t *testing.T) {
 	}
 
 	token := mustRegister(t, paused)
+	// 失败路径兜底:正常序列在用例中段已显式注销;Once 保证清理不双
+	// 重移除,失败时不把泄漏的注册条目带到同包后续用例。
+	var unregistered sync.Once
+	doUnregister := func() { unregistered.Do(func() { UnregisterCallbackTarget(token) }) }
+	t.Cleanup(doUnregister)
 	buf := []byte(`{"inflight":1}`)
 	details = &buf[0]
 	go dispatchCallback(msg, details, token)
@@ -407,7 +412,7 @@ func TestCallbackRegistryInFlightDeliverySurvivesUnregister(t *testing.T) {
 	// 程,§8 第 4 步的前置由准入门与退空承载),必须立即返回。
 	removed := make(chan struct{})
 	go func() {
-		UnregisterCallbackTarget(token)
+		doUnregister()
 		close(removed)
 	}()
 	select {

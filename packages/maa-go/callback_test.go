@@ -229,11 +229,15 @@ func TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain(t *testing.T) {
 		s.waitCallbacksDrained()
 		close(drained)
 	}()
+	// 负面断言:先等满观察窗,再在检查点确认等待仍未收敛——提前收敛
+	// (缺陷)发生在窗口内任意时刻都会被确定性观察到,避免 select 双就
+	// 绪时随机选择漏报「提前收敛」这一被测缺陷本身。
+	<-time.After(notWithin)
 	select {
 	case <-drained:
 		target.disp.mu.Unlock()
 		t.Fatal("已准入 callback 未结束时 waitCallbacksDrained 提前返回:关闭等待漏计在途 callback")
-	case <-time.After(notWithin):
+	default:
 	}
 
 	// 放行 admit:复制、入队、退出 lease,关闭等待随之收敛。
