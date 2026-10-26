@@ -38,7 +38,7 @@
 //	    "resource_root": "/abs/unpacked-root",  // 其下含 resource/ 的解包根
 //	    "user_dir":      "/abs/writable-dir"    // 可写用户目录
 //	  },
-//	  "output_dir": "/abs/evidence-dir",   // 测试输出位置：必须存在的目录，必须位于仓库外
+//	  "output_dir": "/abs/evidence-dir",   // 测试输出位置：必须存在的目录，且必须位于仓库外（入口拒绝仓库内路径）
 //	  "permissions": {                     // 许可范围：三者皆无则拒绝执行
 //	    "connect":   true,                 // 连接场景许可
 //	    "screencap": true,                 // 截图场景许可
@@ -51,7 +51,10 @@
 // 配置规则：未知字段、尾随数据、缺任何必需字段、路径缺失/非绝对、
 // 许可范围全空、允许清单条目缺 task_type 或 params 非完整 JSON
 // object、task_type 重复，一律以带字段路径的 *deviceAcceptanceRefusal
-// 拒绝。识别清单为空且 connect/screencap 已许可时配置有效——此时仍
+// 拒绝。配置文件与 output_dir 必须位于仓库（Go 模块根）之外，入口在
+// 读取/校验时强制拒绝仓库内路径——这不只是纪律声明，内含设备私有地
+// 址的配置与伴随私有内容的证据输出都不能有被 git add 收入的可能。
+// 识别清单为空且 connect/screencap 已许可时配置有效——此时仍
 // 可显式验收连接/截图；空清单下任何任务提交都被 admitTask 在原生调
 // 用前拒绝。允许清单是精确匹配：task_type 逐字节相等，params 按解码
 // 值深度相等（键序与空白不敏感，数值按字面形式精确比较——"1" 与
@@ -70,11 +73,12 @@
 //
 // # 证据去敏
 //
-// 真实配置文件、输出目录必须位于仓库外；设备地址等私有信息只存在于
-// 执行者的本地配置中。m4WriteScenarioEvidence 只写入场景名与显式给
-// 出的元数据字段，且每个字段值先经 m4RedactEvidence 把设备地址替换为
-// 占位符——只有去敏后的元数据与断言结论可以抄录进 ops；设备地址、凭
-// 据、截图与原始运行日志一律不提交。本文件源码中出现的 127.0.0.1:5555
+// 真实配置文件、输出目录必须位于仓库外，入口校验强制拒绝仓库内路径
+// （TestM4DeviceConfigRefusesRepoInsidePaths）；设备地址等私有信息只
+// 存在于执行者的本地配置中。m4WriteScenarioEvidence 只写入场景名与显
+// 示给出的元数据字段，且每个字段值先经 m4RedactEvidence 把设备地址替
+// 换为占位符——只有去敏后的元数据与断言结论可以抄录进 ops；设备地址、
+// 凭据、截图与原始运行日志一律不提交。本文件源码中出现的 127.0.0.1:5555
 // 是回环占位地址（文档通用示例，非私有设备）；预检用的库路径指向存
 // 在但非 ELF 的占位文件，任何过早的原生加载都会大声失败而非静默通过。
 //
@@ -89,7 +93,9 @@
 //     头的门契约。
 //   - 「缺显式启用、设备选择或许可范围时拒绝执行；识别清单为空时仍
 //     能显式验证连接/截图」：TestM4DeviceConfigRefusals（逐字段拒绝
-//     矩阵 + 空清单正例）与 TestM4DeviceEntryRefusesInChildProcess
+//     矩阵 + 空清单正例 + 许可门负向断言——仅识别清单许可的配置下
+//     requireConnectPermission/requireScreencapPermission 必须拒绝，
+//     门被改成恒放行即失败）与 TestM4DeviceEntryRefusesInChildProcess
 //     （子进程端到端：配置缺陷 → 拒绝退出，绝不触及原生库）。
 //   - 「未列入精确允许清单的任务在原生调用前被拒绝，无猜测设备和自
 //     动选择识别任务」：TestM4DeviceTaskAllowanceGate（未列类型/参数
@@ -104,7 +110,9 @@
 //   - 「私有地址、凭据、截图和原始运行数据不会进入 ops 提交」：
 //     TestM4DeviceEntrySmokeRunWithEmptyRecognitionList（有效配置 +
 //     空识别清单端到端走通入口；证据文件经写入器去敏——原始地址传入
-//     后文件中只有占位符；stdout 与证据文件断言无地址）+ 本文件头去
+//     后文件中只有占位符；stdout 与证据文件断言无地址）+
+//     TestM4DeviceConfigRefusesRepoInsidePaths（仓库内 output_dir/配
+//     置文件路径被校验强制拒绝，仓库边界不只是纪律声明）+ 本文件头去
 //     敏纪律与提交边界。
 //
 // # 运行说明
@@ -113,7 +121,8 @@
 //
 //	CGO_ENABLED=0 go test ./packages/maa-go/ -run 'TestM4Device' -count=1 -v
 //
-// 显式设备验收（MAA-29/30 场景执行时的入口用法；配置与输出在仓库外）：
+// 显式设备验收（MAA-29/30 场景执行时的入口用法；配置与输出必须在仓
+// 库外，入口拒绝仓库内路径）：
 //
 //	MAA_M4_DEVICE_CONFIG=/absolute/path/device-acceptance.json \
 //	  CGO_ENABLED=0 go test ./packages/maa-go/ -run 'TestM4DeviceEntry' -count=1 -v
@@ -287,10 +296,18 @@ func requireM4DeviceAcceptance(t *testing.T) *deviceAcceptanceConfig {
 }
 
 // loadM4DeviceConfig 读取并校验显式配置：任何失败（文件不可读、JSON
-// 非法、未知字段、尾随数据、缺参、越界）都返回 *deviceAcceptanceRefusal。
-// 校验为纯 Go：只读文件与 os.Stat，不构造 Runtime、不加载库、不触达
-// 设备——拒绝必然发生在任何原生调用之前。
+// 非法、未知字段、尾随数据、缺参、越界、位于仓库内）都返回
+// *deviceAcceptanceRefusal。校验为纯 Go：只读文件与 os.Stat，不构造
+// Runtime、不加载库、不触达设备——拒绝必然发生在任何原生调用之前。
+// 配置文件本身必须位于仓库外（内含设备私有地址，绝不入库），入口在
+// 读取之前先做仓库边界拒绝。
 func loadM4DeviceConfig(path string) (*deviceAcceptanceConfig, error) {
+	if !filepath.IsAbs(path) {
+		return nil, m4Refuse("config_file", "显式配置路径必须是绝对路径, got %q", path)
+	}
+	if err := m4RequireOutsideModuleRoot("config_file", path); err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, m4Refuse("config_file", "显式配置必须经 %s 提供且可读: %v", m4ConfigEnv, err)
@@ -344,8 +361,12 @@ func m4ValidateDeviceConfig(cfg *deviceAcceptanceConfig) error {
 	if err := m4RequireAbsExisting("core.user_dir", cfg.Core.UserDir, true); err != nil {
 		return err
 	}
-	// 测试输出位置：存在的目录（执行者必须把它放在仓库外）。
+	// 测试输出位置：存在的目录，且必须位于仓库外（校验强制，防执行者
+	// 误配仓库内路径后证据文件被 git add 收入提交）。
 	if err := m4RequireAbsExisting("output_dir", cfg.OutputDir, true); err != nil {
+		return err
+	}
+	if err := m4RequireOutsideModuleRoot("output_dir", cfg.OutputDir); err != nil {
 		return err
 	}
 	// 许可范围：三者皆无 = 未提供许可范围，拒绝执行。
@@ -414,6 +435,46 @@ func m4RequireExistingPath(field, value string, wantDir bool) error {
 	}
 	if info.IsDir() != wantDir {
 		return m4Refuse(field, "路径类型不符 (isDir=%v, wantDir=%v)", info.IsDir(), wantDir)
+	}
+	return nil
+}
+
+// m4ModuleRoot 从当前运行目录（go test 的运行目录是包源码目录）向上
+// 寻找包含 go.mod 的目录作为 Go 模块根（= 仓库根）；找不到时返回空
+// 串。子进程继承父进程工作目录，父子进程得到同一模块根。
+func m4ModuleRoot() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// m4RequireOutsideModuleRoot 拒绝位于 Go 模块根（仓库根）之内的路径：
+// 设备验收的配置文件与证据输出内含/伴随执行者私有数据，绝不能被
+// git add 收入提交，因此仓库边界由校验强制而非仅靠纪律声明。无法定
+// 位模块根（非模块布局运行）时不猜测、不拒绝。判定为词法相对路径
+// 检查，不解析符号链接。
+func m4RequireOutsideModuleRoot(field, path string) error {
+	root := m4ModuleRoot()
+	if root == "" {
+		return nil
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return m4Refuse(field, "路径 %q 无法相对模块根 %s 解析: %v", path, root, err)
+	}
+	if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return m4Refuse(field, "路径 %q 位于仓库（模块根 %s）之内：设备验收的配置与证据输出必须位于仓库外", path, root)
 	}
 	return nil
 }
@@ -774,6 +835,70 @@ func TestM4DeviceConfigRefusals(t *testing.T) {
 	if _, err := loadM4DeviceConfig(recogPath); err != nil {
 		t.Fatalf("仅识别清单许可的配置被拒绝: %v", err)
 	}
+	// 负向断言：同一份仅识别清单许可的配置下，连接与截图许可门必须
+	// 拒绝——未授权场景在发起任何原生连接/截图调用之前被拒（门的拒绝
+	// 分支可证伪：门被改成恒放行时本断言失败）。
+	if err := recogOnly.requireConnectPermission(); err == nil {
+		t.Fatalf("仅识别清单许可的配置必须被连接许可门拒绝（未授予 connect 不得放行）")
+	} else {
+		var r *deviceAcceptanceRefusal
+		if !errors.As(err, &r) || r.Field != "permissions.connect" {
+			t.Fatalf("连接许可门的拒绝错误类型/字段不符: %v", err)
+		}
+	}
+	if err := recogOnly.requireScreencapPermission(); err == nil {
+		t.Fatalf("仅识别清单许可的配置必须被截图许可门拒绝（未授予 screencap 不得放行）")
+	} else {
+		var r *deviceAcceptanceRefusal
+		if !errors.As(err, &r) || r.Field != "permissions.screencap" {
+			t.Fatalf("截图许可门的拒绝错误类型/字段不符: %v", err)
+		}
+	}
+}
+
+// TestM4DeviceConfigRefusesRepoInsidePaths 验收仓库边界拒绝由校验强制
+// 而非仅纪律声明（审查第 1 轮发现 2）：output_dir 指向仓库内已存在的
+// 目录（包源码目录本身）→ 以 output_dir 拒绝；配置文件路径位于仓库内
+// → 在读取之前以 config_file 拒绝（路径不存在也可判定）；相对配置路
+// 径同样在 config_file 拒绝。无法定位模块根的运行环境跳过（不猜测、
+// 不误伤）。本用例只做加载校验，不在仓库内写任何文件。
+func TestM4DeviceConfigRefusesRepoInsidePaths(t *testing.T) {
+	root := m4ModuleRoot()
+	if root == "" {
+		t.Skip("无法定位模块根（运行目录祖先链上无 go.mod），仓库边界检查不可用；跳过不计为通过")
+	}
+	dir := m4PrepareProbeTree(t)
+
+	// output_dir 指向仓库内已存在的目录：存在性预检通过后仍必须被仓库
+	// 边界拒绝——去敏只保护地址字段，证据文件本身可能含执行者私有内容。
+	cfg := m4ValidProbeBaseConfig(dir)
+	cfg.OutputDir = filepath.Join(root, "packages", "maa-go")
+	_, err := loadM4DeviceConfig(m4WriteConfigFile(t, dir, "inside-output.json", &cfg))
+	if err == nil {
+		t.Fatalf("仓库内 output_dir 必须被拒绝")
+	}
+	var r *deviceAcceptanceRefusal
+	if !errors.As(err, &r) || r.Field != "output_dir" || !strings.Contains(r.Reason, "仓库") {
+		t.Fatalf("仓库内 output_dir 的拒绝不符（want output_dir + 仓库原因）: %v", err)
+	}
+
+	// 配置文件位于仓库内：拒绝发生在读取之前（路径不存在也可判定）。
+	_, err = loadM4DeviceConfig(filepath.Join(root, "packages", "maa-go", "m4-no-such-in-repo-config.json"))
+	if err == nil {
+		t.Fatalf("仓库内配置文件路径必须被拒绝（配置内含设备私有地址）")
+	}
+	if !errors.As(err, &r) || r.Field != "config_file" || !strings.Contains(r.Reason, "仓库") {
+		t.Fatalf("仓库内配置文件的拒绝不符: %v", err)
+	}
+
+	// 相对配置路径：同样在 config_file 处拒绝（显式配置要求绝对路径）。
+	_, err = loadM4DeviceConfig("relative-config.json")
+	if err == nil {
+		t.Fatalf("相对配置路径必须被拒绝")
+	}
+	if !errors.As(err, &r) || r.Field != "config_file" {
+		t.Fatalf("相对配置路径的拒绝不符: %v", err)
+	}
 }
 
 // TestM4DeviceTaskAllowanceGate 验收识别任务的精确准入与拒绝机制：未
@@ -875,26 +1000,28 @@ func TestM4DeviceEntryRefusesInChildProcess(t *testing.T) {
 		return m4WriteConfigFile(t, dir, name, &cfg)
 	}
 	cases := []struct {
-		name      string
-		configDir string // 配置路径所在目录；空串表示指向不存在的文件
-		mutate    func(*deviceAcceptanceConfig)
-		wantField string
+		name       string
+		configPath string // 非空表示直接使用该绝对路径（不生成配置文件）；空串表示生成有效配置再按 mutate 变异
+		mutate     func(*deviceAcceptanceConfig)
+		wantField  string
 	}{
-		{"missing-config-file", "", nil, "config_file"},
-		{"not-enabled", dir, func(c *deviceAcceptanceConfig) { c.Enable = false }, "enable"},
-		{"missing-device-address", dir, func(c *deviceAcceptanceConfig) { c.Device.Address = "" }, "device.address"},
-		{"no-permission-scope", dir, func(c *deviceAcceptanceConfig) {
+		// 绝对路径但文件不存在（tempdir 在仓库外）：拒绝原因是不可读，
+		// 不是相对路径或仓库边界。
+		{"missing-config-file", filepath.Join(dir, "no-such-config.json"), nil, "config_file"},
+		{"not-enabled", "", func(c *deviceAcceptanceConfig) { c.Enable = false }, "enable"},
+		{"missing-device-address", "", func(c *deviceAcceptanceConfig) { c.Device.Address = "" }, "device.address"},
+		{"no-permission-scope", "", func(c *deviceAcceptanceConfig) {
 			c.Perms.Connect = false
 			c.Perms.Screencap = false
 			c.Perms.Tasks = nil
 		}, "permissions"},
-		{"missing-library", dir, func(c *deviceAcceptanceConfig) {
+		{"missing-library", "", func(c *deviceAcceptanceConfig) {
 			c.Core.LibraryPath = filepath.Join(dir, "no-such-lib.so")
 		}, "core.library_path"},
 	}
 	for _, tc := range cases {
-		configPath := filepath.Join(tc.configDir, tc.name+".json")
-		if tc.configDir != "" {
+		configPath := tc.configPath
+		if configPath == "" {
 			configPath = build(tc.name+".json", tc.mutate)
 		}
 		out := runM4DeviceScenario(t, m4ProbeChildTimeout, m4ModeRefuseProbe, map[string]string{
