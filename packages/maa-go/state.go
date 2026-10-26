@@ -893,7 +893,9 @@ func (s *instanceState) releasePendingReservationLocked() {
 // (MAA-23;§7.1:高水位已达 MaxInt32 时在串行门禁内、进入下一次异
 // 步 raw 前直接故障,禁止让原生计数回绕):
 //   - 高水位已达 MaxInt32:以 ErrProtocol 故障(原生计数耗尽,binding
-//     拒绝让 ID 回绕),返回错误——调用方不得进入 native,并回收预留;
+//     拒绝让 ID 回绕),在状态锁内回收本次预留并返回错误——调用方不
+//     得进入 native,记录作废(§7.1:每份预留在拒绝/结算竞争中只回收
+//     一次,与 finishAsyncRaw 的失败路径同一纪律);
 //   - 否则打开早到结果窗口:此后的完成消息在 raw 返回前按未知 ID 临
 //     存进有界早到表(settleCompletion),raw 返回后由 finishAsyncRaw
 //     接合并清空。
@@ -911,6 +913,7 @@ func (s *instanceState) beginAsyncRaw() error {
 		err := fmt.Errorf("maa: async call id high watermark reached MaxInt32, refusing to let the native counter wrap around: %w",
 			native.ErrProtocol)
 		s.faultLocked(err, nil)
+		s.releasePendingReservationLocked()
 		return err
 	}
 	s.earlyWindowOpen = true

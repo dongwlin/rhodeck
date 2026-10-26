@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -263,21 +264,30 @@ func TestAsyncEarlyJoinByIDAndExpectedWhat(t *testing.T) {
 	}
 
 	// 早到 what 与预期不符:ErrProtocol 故障,不伪造成功(§7.1:
-	// ID/what 不符)。
+	// ID/what 不符)。fake 返回与早到结果相同的 ID(2):raw 返回后
+	// join 的 ID 检查通过,故障精确来自预期 what 比对分支,而非相邻
+	// 的高水位或 join ID 分支。
+	rig.caller.asyncRets = map[string]int32{"asyncConnect": 2}
 	rig.caller.onAsyncConnect = func(uintptr) {
 		deliverAsyncInfo(t, token, 2, "Click", `{"ret":true}`)
 		waitUntil(t, "不匹配早到结果已临存", func() bool {
 			v := earlyWindowOf(s)
-			return v.open && v.has && v.id == 2
+			return v.open && v.has && v.id == 2 && v.what == "Click"
 		})
 	}
 	if op2, err := inst.Connect(connectInput); err == nil {
 		t.Fatalf("早到 what 不符时 Connect = (%+v, nil), want 协议故障", op2)
 	} else if !errors.Is(err, native.ErrProtocol) {
 		t.Fatalf("早到 what 不符的错误 = %v, want errors.Is ErrProtocol", err)
+	} else if !strings.Contains(err.Error(), `reports what "Click", want "Connect"`) {
+		t.Fatalf("早到 what 不符的错误未指明 what 比对:\n%s", err.Error())
 	}
-	if got := s.currentFault(); got == nil || !errors.Is(got, native.ErrProtocol) {
-		t.Errorf("首因 = %v, want ErrProtocol", got)
+	if got := s.currentFault(); got == nil || !errors.Is(got, native.ErrProtocol) ||
+		!strings.Contains(got.Error(), `reports what "Click", want "Connect"`) {
+		t.Errorf("首因 = %v, want 来自预期 what 比对分支的 ErrProtocol", got)
+	}
+	if n := pendingOccupancy(s); n != 0 {
+		t.Errorf("故障扫描后 pending 占用 = %d, want 0", n)
 	}
 }
 
@@ -473,8 +483,18 @@ func TestAsyncProtocolViolationsFaultInstance(t *testing.T) {
 			waitUntil(t, "第一个早到结果已临存", func() bool {
 				return earlyWindowOf(s).has
 			})
-			// 第二个早到结果(含重复):ErrProtocol 故障。
+			// 第二个早到结果(含重复):ErrProtocol 故障。故障必须先
+			// 于 raw 返回发生(分支隔离:settleCompletion 的第二早到
+			// 分支,而非 finishAsyncRaw 的接合不匹配分支),且首因文本
+			// 指明第二早到,不得以覆盖缓存代替故障。
 			deliverAsyncInfo(t, token, 4, "Click", `{"ret":true}`)
+			waitUntil(t, "第二个早到结果已在窗口内触发首因", func() bool {
+				f := s.currentFault()
+				return f != nil && strings.Contains(f.Error(), "second early completion")
+			})
+			if v := earlyWindowOf(s); !v.has || v.id != 3 {
+				t.Errorf("第二早到故障后窗口内容被改写: %+v, want 首条早到(id 3)原样保留作矛盾证据", v)
+			}
 		}
 
 		op, err := inst.Connect(connectInput)
@@ -484,8 +504,9 @@ func TestAsyncProtocolViolationsFaultInstance(t *testing.T) {
 		if !errors.Is(err, native.ErrProtocol) {
 			t.Fatalf("错误 = %v, want errors.Is ErrProtocol", err)
 		}
-		if got := s.currentFault(); got == nil || !errors.Is(got, native.ErrProtocol) {
-			t.Errorf("首因 = %v, want ErrProtocol", got)
+		if got := s.currentFault(); got == nil || !errors.Is(got, native.ErrProtocol) ||
+			!strings.Contains(got.Error(), "second early completion") {
+			t.Errorf("首因 = %v, want 来自第二早到分支的 ErrProtocol", got)
 		}
 		if n := pendingOccupancy(s); n != 0 {
 			t.Errorf("故障扫描后 pending 占用 = %d, want 0", n)
@@ -659,8 +680,13 @@ func TestPendingReservationAccounting(t *testing.T) {
 		assertPanics(t, "initializing 阶段预留", func() { _, _ = initializing.reservePendingOperation("未发布") })
 	})
 
-	t.Run("高水位 MaxInt32 在门禁内、进入 raw 前故障", func(t *testing.T) {
+	t.Run("高水位 MaxInt32 在门禁内、进入 raw 前故障并回收预留", func(t *testing.T) {
 		s := newReadyState(t, 0xF156, 8)
+		// 先预留一次:耗尽故障路径必须回收该预留(§7.1:每份预留在
+		// 拒绝/结算竞争中只回收一次),否则计数永久滞留。
+		if _, err := s.reservePendingOperation("耗尽前的预留"); err != nil {
+			t.Fatalf("reservePendingOperation = %v, want nil", err)
+		}
 		s.mu.Lock()
 		s.asyncWatermark = math.MaxInt32
 		s.mu.Unlock()
@@ -673,6 +699,9 @@ func TestPendingReservationAccounting(t *testing.T) {
 		}
 		if got := s.currentFault(); got == nil || !errors.Is(got, native.ErrProtocol) {
 			t.Errorf("首因 = %v, want ErrProtocol", got)
+		}
+		if n := pendingReservedOf(s); n != 0 {
+			t.Errorf("耗尽故障后 pendingReserved = %d, want 0(预留已回收,不得滞留)", n)
 		}
 	})
 }
