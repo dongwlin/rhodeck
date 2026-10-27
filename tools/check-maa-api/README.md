@@ -16,14 +16,16 @@ pointee 的 const 语义,含 void* 的三种上下文许可与 callback 平台�
 ## 使用方式
 
 ```sh
+# 仓库内已校验的锁定输入（CI 与离线默认路径）
 check-maa-api --profile maa-v6.20.1 --goos linux   --goarch amd64 \
-  --c-input /path/to/maa-c-input --go-root /path/to/rhodeck
+  --c-input tools/check-maa-api/testdata/locked --go-root .
 check-maa-api --profile maa-v6.20.1 --goos windows --goarch amd64 \
-  --c-input /path/to/maa-c-input --go-root /path/to/rhodeck
+  --c-input tools/check-maa-api/testdata/locked --go-root .
 ```
 
 在仓库根可直接 `go run ./tools/check-maa-api …` 或
-`go build -o check-maa-api ./tools/check-maa-api`。
+`go build -o check-maa-api ./tools/check-maa-api`。`--c-input` 也可以
+指向任意已校验的独立输入目录（见下文"开发输入"）。
 
 | flag | 必需 | 说明 |
 |---|---|---|
@@ -152,10 +154,13 @@ tag `v6.20.1`,commit `d94dd007aca3b519395fb1f0aee26c7bd5ba5d5f`。
 
 工具不内置 C 头,也不依赖任何本机绝对路径;`--c-input` 指向的目录须
 含 `inputs.json`(schema_version=1,profile/source 标识与锁定常量一致)
-及其相对路径文件。开发时可用两种来源:
+及其相对路径文件。开发时可用三种来源:
 
-1. 已校验的独立输入归档(如 ops 的 maa02-abi 目录)经显式路径传入;
-2. 从锁定发行包自建:MAA v6.20.1 linux 发行包归档根的
+1. 仓库内已校验的锁定输入 `tools/check-maa-api/testdata/locked`
+   (推荐,CI 与离线运行使用;来源、摘要与许可见该目录 README);
+2. 任意已校验的独立输入目录经显式路径传入(目录须满足同一清单与
+   摘要约定);
+3. 从锁定发行包自建:MAA v6.20.1 linux 发行包归档根的
    `AsstCaller.h`/`AsstPort.h`/`AsstCallerExtra.h` 三个成员解包到
    `<dir>/upstream/` 下,按上表核对 size/SHA-256 后写出 `inputs.json`
    (集成测试 `realinput_linux_test.go` 即按此流程从
@@ -234,5 +239,7 @@ Go/C 两侧过错方定位、callback 平台适配、C callback 变体的 c-synt
 口反例集(counterexample_cli_test.go,含 C 提取、输入摘要、覆盖/
 关系、精确排除与实验发现、宽度/指针/次序、callback、文件选择正确
 副本不掩盖、独立性)、真实发行包头的两目标端到端正例与 signatures
-段确定性(归档缺失时 SKIP 并写明受阻原因,受阻不是通过)。全部测试
-`CGO_ENABLED=0` 可跑,无网络与绝对路径依赖。
+段确定性(归档缺失时 SKIP 并写明受阻原因,受阻不是通过)。仓库内
+`testdata/locked` 的 `TestVendoredLockedInputRun` 不依赖发行包缓存,
+对两个目标执行完整命令入口并核对策略计数,使离线与 CI 环境也能跑
+真实锁定头比对。全部测试 `CGO_ENABLED=0` 可跑,无网络与绝对路径依赖。

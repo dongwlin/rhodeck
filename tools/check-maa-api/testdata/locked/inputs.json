@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "profile_id": "maa-v6.20.1",
+  "source": {
+    "repository": "https://github.com/MaaAssistantArknights/MaaAssistantArknights",
+    "tag": "v6.20.1",
+    "commit": "d94dd007aca3b519395fb1f0aee26c7bd5ba5d5f"
+  },
+  "files": [
+    {
+      "archive_path": "upstream/AsstCaller.h",
+      "source_path": "include/AsstCaller.h",
+      "size_bytes": 5413,
+      "sha256": "8f1245d55198364bc15beaa2ff91456c747e258beb7a7547f80751563f8c94b7",
+      "purpose": "checker_input",
+      "release_path": "AsstCaller.h"
+    },
+    {
+      "archive_path": "upstream/AsstPort.h",
+      "source_path": "include/AsstPort.h",
+      "size_bytes": 1087,
+      "sha256": "1c99ea5ceb121e323fefbd4116e344efa73640b719474b738aad1b15b6de4a64",
+      "purpose": "checker_input",
+      "release_path": "AsstPort.h"
+    },
+    {
+      "archive_path": "upstream/AsstCallerExtra.h",
+      "source_path": "include/AsstCallerExtra.h",
+      "size_bytes": 1312,
+      "sha256": "9229054cf8cd6a36eb4ae59e4927fb3e16de89800bf922f96b67d0c672450737",
+      "purpose": "checker_input",
+      "release_path": "AsstCallerExtra.h"
+    },
+    {
+      "archive_path": "upstream/LICENSE",
+      "source_path": "LICENSE",
+      "size_bytes": 34523,
+      "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
+      "purpose": "upstream_license"
+    }
+  ]
+}
