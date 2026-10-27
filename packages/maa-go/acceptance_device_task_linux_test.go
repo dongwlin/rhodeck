@@ -40,7 +40,10 @@
 //     务自行从游戏内画面导航到仓库页；场景在 AppendTask 之前截取一次前置
 //     画面 PNG 落盘到 output_dir，供执行者人工核对——场景不解析画面内容、
 //     不自动导航；执行者核对发现设备不在游戏内画面时停止运行任务场景
-//     （任务文件执行步骤 2：条件不满足则停止）。
+//     （任务文件执行步骤 2：条件不满足则停止）。判据要点：游戏进程在前台
+//     不等于游戏内画面——仅启动应用后停在游戏标题画面（START 按钮、版本
+//     号与城市介绍轮播）时，进入游戏需要点击开始，属未授权交互，此时必须
+//     停止，不得由场景点击或导航；标题/登录/更新确认画面均不满足前置条件。
 //   - 终态：任务最终成功 = AllTasksCompleted(3) 且顶层 finished_tasks 含
 //     本任务 TaskID（Assistant.cpp:700-702），TaskChainCompleted(10002)
 //     （Assistant.cpp:677-682，仅任务链 ret=true 时发出）与 DepotInfo
@@ -129,7 +132,8 @@
 // 运行顺序（执行步骤 2 的前置画面核对）：
 //
 //  1. 先运行 TestM4DeviceDepotPreconditionScenario，人工查看 output_dir 中
-//     的前置画面 PNG，确认设备处于游戏内画面；
+//     的前置画面 PNG，确认设备处于游戏内画面（标题/登录/更新确认画面不
+//     算）；
 //  2. 确认后再运行 TestM4DeviceDepotScenario 与 TestM4DeviceDepotStopScenario。
 package maa
 
