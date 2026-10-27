@@ -382,9 +382,6 @@ func firstLookPath(names ...string) string {
 func coreTarballSHA256() (string, bool) {
 	path := os.Getenv("MAA_M1_TARBALL")
 	if path == "" {
-		path = os.Getenv("CHECK_MAA_API_TARBALL")
-	}
-	if path == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", false
