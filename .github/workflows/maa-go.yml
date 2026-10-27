@@ -1,0 +1,62 @@
+name: maa-go
+
+# Layered verification for the maa-go binding on Linux amd64.
+#
+# CI intentionally runs only layers that need no MaaCore release artifact and
+# no device: static declaration checks, Go/fake-native tests, loader/ABI/
+# callback fixtures, device gate/refusal tests, the CGO_ENABLED=0 build/vet,
+# and gofmt. The real-MaaCore (`core`) and explicit-device (`device`) layers
+# are local-only and are never claimed by this workflow. A skip or missing
+# toolchain in a selected layer is UNVERIFIED and fails the job (exit 2).
+"on":
+  push:
+    paths:
+      - "packages/maa-go/**"
+      - "tools/check-maa-api/**"
+      - "tools/maa-go-check/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/maa-go.yml"
+  pull_request:
+    paths:
+      - "packages/maa-go/**"
+      - "tools/check-maa-api/**"
+      - "tools/maa-go-check/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/maa-go.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: layered check (CGO_ENABLED=0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+          cache: true
+      - name: Install C toolchain for fixtures
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Run layered checks
+        run: go run ./tools/maa-go-check --layers ci
+
+  race:
+    name: race detector (CGO_ENABLED=1, separate from production build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+          cache: true
+      - name: Install C toolchain for fixtures
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Run race layer
+        run: go run ./tools/maa-go-check --layers race
