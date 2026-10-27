@@ -145,7 +145,8 @@ MAA_M4_DEVICE_CONFIG=/absolute/path/device-acceptance.json \
 # 全部层；任何缺少资源/授权/工具链的层都会使整体非零退出，而不是被算作通过
 go run ./tools/maa-go-check --layers all
 
-# race 使用 -race 与 CGO_ENABLED=1，单独记录，不代表生产构建需要 cgo
+# race 使用 -race 与 CGO_ENABLED=1，只跑 Go 并发/单元测试
+# （-skip M1/M3 与 TestM4Device 真实验收；core/device 层单独覆盖）
 go run ./tools/maa-go-check --layers race
 ```
 
@@ -155,7 +156,11 @@ go run ./tools/maa-go-check --layers race
 构建后的二进制，因此保留 2/1 的区分。
 
 CI 工作流 `.github/workflows/maa-go.yml` 只运行 `ci` 与 `race` 两层；它
-不运行 `core`/`device`，也不把任何跳过算作通过。
+不运行 `core`/`device`，也不把任何跳过算作通过。`race` 层以 `-skip`
+排除 M1/M3 与 TestM4Device（真实核心/设备），被排除的测试不会出现在
+`go test -json` 的 skip 事件中、因此不计入 `Skipped`；详情与 JSON 的
+`skip_filter` 会写明排除模式，真实核心/设备由 `core`/`device` 层单独
+覆盖。
 
 状态含义：`PASS` 表示该层所有检查实际执行并通过；`PASS (expected skips)`
 表示该层只有明确声明的预期跳过（例如设备门默认关闭），跳过的测试
@@ -167,8 +172,9 @@ CI 工作流 `.github/workflows/maa-go.yml` 只运行 `ci` 与 `race` 两层；�
 分层不能互相借结论：静态 checker 只证明声明层；loader fixture 只证明
 装载/解析/注册，空导出绝不可调用；ABI/callback fixture 只证明手写 C
 签名与调用约定；真实库测试证明锁定 MaaCore 的初始化/生命周期；设备
-测试证明指定设备与许可范围内的连接/截图/识别。任何一层没有运行，都
-不能由另一层替代。
+测试证明指定设备与许可范围内的连接/截图/识别；`race` 层只跑 Go 并发/
+单元测试（`-skip` M1/M3 与 TestM4Device），不证明真实核心/设备。任何
+一层没有运行，都不能由另一层替代。
 
 ## 设备验收事实
 

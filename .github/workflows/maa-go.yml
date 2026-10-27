@@ -9,6 +9,10 @@ name: maa-go
 # are local-only and are never claimed by this workflow. A skip or missing
 # toolchain in a selected layer is UNVERIFIED (binary exit 2); a real failure
 # is exit 1. Either fails the job.
+#
+# The race layer uses -race and CGO_ENABLED=1 but skips real-core/device
+# acceptance (TestM1|TestM3|TestM4Device); those remain local-only and are
+# covered by the core/device layers.
 "on":
   push:
     paths:
@@ -50,7 +54,7 @@ jobs:
         run: /tmp/maa-go-check --layers ci
 
   race:
-    name: race detector (CGO_ENABLED=1, separate from production build)
+    name: race detector on Go unit tests (real-core/device acceptance excluded)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
