@@ -159,10 +159,11 @@
 //   - 「TaskID、原始事件与任务终态可关联；未知字段、大整数和未知消息 ID
 //     未被绑定层丢弃或改写」：TaskChainStart/Completed/AllTasksCompleted
 //     的 taskid 与 AppendTask 返回的 TaskID 逐一相等、finished_tasks 精确
-//     等于 [该 ID]；每条事件 JSON 完整可解析且含绑定层未建模的 uuid 字段
-//     （未建模字段保留，值不打印——设备 uuid 属私有信息）；params 大整数
-//     探针被 Core 接受；场景不假设事件集合封闭——未知 MessageID 只计数
-//     不失败（绑定层逐字节保留由 dispatch_test.go 钉住）。
+//     等于 [该 ID]；每条事件 JSON 完整可解析，除 Destroyed（Core 以字面
+//     "{}" 发出，Assistant.cpp:161，本身无 uuid）外均含绑定层未建模的
+//     uuid 字段（未建模字段保留，值不打印——设备 uuid 属私有信息）；
+//     params 大整数探针被 Core 接受；场景不假设事件集合封闭——未知
+//     MessageID 只计数不失败（绑定层逐字节保留由 dispatch_test.go 钉住）。
 //   - 「同一未关闭实例可按场景执行多轮许可任务，不通过同进程销毁重建模
 //     拟复用」：成功场景在同一实例上连续两轮任务，两轮之间不 Close、不
 //     NewInstance；TaskID 递增且每轮终态独立关联。
@@ -280,6 +281,7 @@ const (
 // 是手动停止),两者不可互换——停止场景的收敛只认 10004。
 const (
 	m4tAllTasksCompletedMessageID  = MessageID(3)
+	m4tDestroyedMessageID          = MessageID(5)
 	m4tTaskChainErrorMessageID     = MessageID(10000)
 	m4tTaskChainStartMessageID     = MessageID(10001)
 	m4tTaskChainCompletedMessageID = MessageID(10002)
@@ -383,14 +385,16 @@ type m4tTaskEventCounts struct {
 }
 
 // m4tClassifyTaskEvents 对全部事件做 well-formed 断言与分类计数:每条事件
-// 必须完整可解析且含未建模的 uuid 字段(未知字段保留的场景层证据);未知消
-// 息 ID 只计数不失败。
+// 必须完整可解析;除 Destroyed 外必须含未建模的 uuid 字段(未知字段保留的
+// 场景层证据)——Destroyed 由 Core 以字面 "{}" 发出(Assistant.cpp:161
+// m_callback(AsstMsg::Destroyed, "{}", ...)),uuid 无从保留,绑定层原样交
+// 付空对象即正确;未知消息 ID 只计数不失败。
 func m4tClassifyTaskEvents(t *testing.T, evs []Event) m4tTaskEventCounts {
 	t.Helper()
 	var counts m4tTaskEventCounts
 	for _, ev := range evs {
 		msg := m4tParseMessage(t, ev)
-		if !msg.UUIDPresent {
+		if ev.MessageID != m4tDestroyedMessageID && !msg.UUIDPresent {
 			t.Fatalf("事件缺少 uuid 字段 (msg=%d seq=%d): 绑定层不得丢弃未建模字段", ev.MessageID, ev.Sequence)
 		}
 		counts.WellFormedChecked++
@@ -1162,6 +1166,7 @@ func TestM4DeviceDepotEntryScenario(t *testing.T) {
 		t.Fatalf("depot-entry-scenario 子进程 stdout 元数据复验失败(与子进程内断言独立):\n%v\n%s",
 			err, m4RenderScenarioDiagnostics(m4tModeEntry, out))
 	}
+	fields["scenario_exit_code"] = strconv.Itoa(out.exitCode)
 	m4WriteRedactedEvidence(t, cfg, m4tModeEntry, m4tEntryEvidenceFields(fields))
 }
 
@@ -1193,6 +1198,7 @@ func TestM4DeviceDepotPreconditionScenario(t *testing.T) {
 		t.Fatalf("depot-precondition-scenario 子进程 stdout 元数据复验失败(与子进程内断言独立):\n%v\n%s",
 			err, m4RenderScenarioDiagnostics(m4tModePrecondition, out))
 	}
+	fields["scenario_exit_code"] = strconv.Itoa(out.exitCode)
 	m4WriteRedactedEvidence(t, cfg, m4tModePrecondition, m4tEvidenceFields(fields))
 }
 
@@ -1227,6 +1233,7 @@ func TestM4DeviceDepotScenario(t *testing.T) {
 		t.Fatalf("depot-success-scenario 子进程 stdout 元数据复验失败(与子进程内断言独立):\n%v\n%s",
 			err, m4RenderScenarioDiagnostics(m4tModeSuccess, out))
 	}
+	fields["scenario_exit_code"] = strconv.Itoa(out.exitCode)
 	m4WriteRedactedEvidence(t, cfg, m4tModeSuccess, m4tEvidenceFields(fields))
 }
 
@@ -1261,6 +1268,7 @@ func TestM4DeviceDepotStopScenario(t *testing.T) {
 		t.Fatalf("depot-stop-scenario 子进程 stdout 元数据复验失败(与子进程内断言独立):\n%v\n%s",
 			err, m4RenderScenarioDiagnostics(m4tModeStop, out))
 	}
+	fields["scenario_exit_code"] = strconv.Itoa(out.exitCode)
 	m4WriteRedactedEvidence(t, cfg, m4tModeStop, m4tEvidenceFields(fields))
 }
 
@@ -1474,6 +1482,8 @@ func m4tEvidenceFields(marker map[string]string) map[string]string {
 	fields["png_cache_note"] = "前置画面 PNG 在该次 Screencap 成功后读取,属缓存读取(binding 不承诺新鲜度);场景未在读取之外提交新采集(async_call_events=2)"
 	fields["task_type"] = m4tTaskType
 	fields["task_params_literal"] = m4tTaskParamsLiteral
+	fields["async_result_what"] = fmt.Sprintf("connect_id=%s what=%s ret=true; screencap_id=%s what=%s ret=true",
+		marker["connect_id"], asyncWhatConnect, marker["screencap_id"], asyncWhatScreencap)
 	fields["task_allowance_note"] = "允许清单登记 Depot 与入口步骤 StartUp;admitTask 在任何原生任务调用前拒绝未列任务"
 	fields["bigint_probe"] = "params 含未知字段 maa30_probe_bigint=9007199254740993(>2^53):允许清单按 json.Number 字面形式精确匹配,Core 接受并完成任务;逐字节透传白箱断言见 instance_sync_test.go(MAA-22)"
 	fields["non_consumption_basis"] = "DepotTask=DepotBegin(navigate)+DepotRecognitionTask(recognize);device actions=get_image/swipe(DepotSlowlySwipeToTheRight)/click-all-tab(DepotAllTab) only;no resource-consuming action;locked commit d94dd007: Assistant.cpp:337, DepotTask.cpp:7-18, DepotRecognitionTask.cpp"
@@ -1495,6 +1505,10 @@ func m4tEntryEvidenceFields(marker map[string]string) map[string]string {
 	fields["png_cache_note"] = "入口前/入口后 PNG 各在对应 Screencap 成功后读取,属缓存读取(binding 不承诺新鲜度);两次采集均由子进程事件断言(async_call_events=3)"
 	fields["entry_task_type"] = m4tEntryTaskType
 	fields["entry_task_params_literal"] = m4tEntryTaskParamsLiteral
+	fields["async_result_what"] = fmt.Sprintf("connect_id=%s what=%s ret=true; screencap_before_id=%s what=%s ret=true; screencap_after_id=%s what=%s ret=true",
+		marker["connect_id"], asyncWhatConnect,
+		marker["screencap_before_id"], asyncWhatScreencap,
+		marker["screencap_after_id"], asyncWhatScreencap)
 	fields["entry_allowance_note"] = "允许清单登记入口步骤 StartUp;admitTask 在任何原生任务调用前拒绝未列任务"
 	fields["entry_existence_basis"] = "locked commit d94dd007: StartUpTask.h:11 TaskType=StartUp, Assistant.cpp:324 append_task branch, tasks.json:920 StartUp pipeline + StartUpBegin/StartUpThemes/GameStart"
 	fields["entry_non_consumption_basis"] = "StartUpTask=StartGameTaskPlugin(ctrler()->start_game -> am start -n package/com.u8.sdk.U8UnityContext)+ProcessTask(title START/login/loading/announcement confirm); no sanity/item/recruit/gacha/purchase action; locked commit d94dd007: StartUpTask.cpp, StartGameTaskPlugin.cpp, AdbController.cpp:424-440"
@@ -1524,4 +1538,32 @@ func TestM4tAwaitTerminalCoreMessageOrder(t *testing.T) {
 	}
 	close(ch)
 	m4tAwaitTerminal(t, m4tEventReaderFrom(ch), 5*time.Second, "回归", m4tTaskType, 7)
+}
+
+// TestM4tClassifyTaskEventsDestroyedWithoutUUID 是无设备回归(默认运行):锁定
+// Core 以字面 "{}" 发出 Destroyed(Assistant.cpp:161 m_callback(AsstMsg::
+// Destroyed, "{}", ...)),没有 uuid 可取——分类必须接受空对象,不得把它当
+// 成「绑定层丢弃未建模字段」。其余事件缺 uuid 仍是失败(该否定分支由设备场
+// 景在真实事件流上覆盖);未知消息 ID 只计数不失败。
+func TestM4tClassifyTaskEventsDestroyedWithoutUUID(t *testing.T) {
+	evs := []Event{
+		{MessageID: m4tTaskChainStartMessageID, JSON: json.RawMessage(`{"taskchain":"Depot","taskid":3,"uuid":"synthetic-test-value"}`)},
+		{MessageID: m4tSubTaskExtraInfoMessageID, JSON: json.RawMessage(`{"taskchain":"Depot","taskid":3,"what":"DepotInfo","details":{"done":true,"data":"{}"},"uuid":"synthetic-test-value"}`)},
+		{MessageID: m4tTaskChainCompletedMessageID, JSON: json.RawMessage(`{"taskchain":"Depot","taskid":3,"uuid":"synthetic-test-value"}`)},
+		{MessageID: m4tAllTasksCompletedMessageID, JSON: json.RawMessage(`{"taskchain":"Depot","taskid":3,"finished_tasks":[3],"uuid":"synthetic-test-value"}`)},
+		{MessageID: m4tDestroyedMessageID, JSON: json.RawMessage(`{}`)},
+		{MessageID: MessageID(12345), JSON: json.RawMessage(`{"uuid":"synthetic-test-value","future_field":1}`)},
+	}
+	counts := m4tClassifyTaskEvents(t, evs)
+	if counts.WellFormedChecked != len(evs) {
+		t.Fatalf("WellFormedChecked = %d, want %d(每条事件都必须完整可解析)", counts.WellFormedChecked, len(evs))
+	}
+	if counts.TaskChainStart != 1 || counts.TaskChainCompleted != 1 || counts.AllTasksCompleted != 1 {
+		t.Fatalf("终态计数 = start:%d completed:%d all:%d, want 各 1 条",
+			counts.TaskChainStart, counts.TaskChainCompleted, counts.AllTasksCompleted)
+	}
+	if counts.DepotInfoDone != 1 || counts.TaskChainError != 0 || counts.UnknownMessageIDs != 1 {
+		t.Fatalf("计数 = depot_done:%d error:%d unknown:%d, want 1/0/1(Destroyed 豁免 uuid 不影响分类)",
+			counts.DepotInfoDone, counts.TaskChainError, counts.UnknownMessageIDs)
+	}
 }
