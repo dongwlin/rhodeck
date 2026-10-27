@@ -28,7 +28,7 @@
 //     （Swipe，纯界面浏览滚动）、点击「全部」标签页（DepotAllTab，
 //     ClickSelf）——没有理智/物品/招募/寻访/购买等资源消耗动作；滑动与
 //     标签页点击只改变界面浏览状态，不消耗任何游戏内资源。
-//   - 参数：DepotTask 未覆写 set_params（InterfaceTask.h:18 默认接受任意
+//   - 参数：DepotTask 未覆写 set_params（InterfaceTask.h:14 默认接受任意
 //     JSON object），Assistant.cpp:354 只读取 "enable"。本场景登记
 //     {"enable":true,"maa30_probe_bigint":9007199254740993}——其中
 //     maa30_probe_bigint 是 Core 保留不解释的未知字段大整数探针
