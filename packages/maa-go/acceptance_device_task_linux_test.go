@@ -120,8 +120,10 @@
 //     终态关联），随后空闲 Stop 受理与 Running 收敛，Close 与 Runtime 终
 //     止——多轮复用是同一存活实例，不通过同进程销毁重建模拟（§8）。
 //   - depot-stop-scenario（停止场景）：任务链开始（TaskChainStart）后按场
-//     景约定请求一次 Stop，核对受理（nil）与收敛（TaskChainStopped +
-//     Running=false），并断言被中断的任务不产生 AllTasksCompleted/
+//     景约定请求一次 Stop，核对受理（nil）与收敛（TaskChainStopped 的
+//     taskchain=Depot 且 taskid=本轮 TaskID，连同 Running=false——Core 复
+//     用 TaskChainStart 的 callback_json 发出停止消息，Assistant.cpp:
+//     582-586、677-694），并断言被中断的任务不产生 AllTasksCompleted/
 //     TaskChainCompleted/done=true 识别结果（中断不被记为成功或已取消；
 //     本场景不重试、不重播原任务）。
 //
@@ -169,7 +171,8 @@
 //     NewInstance；TaskID 递增且每轮终态独立关联。
 //   - 「关闭与正常退出通过；故障/中断不被记为成功或已取消，未自动重试」：
 //     每场景 Instance.Close/Runtime.Close 返回 nil、子进程退出 0 且 OK 标
-//     记经父进程独立复验；停止场景断言被中断任务无成功终态消息；失败/
+//     记经父进程独立复验；停止场景断言 TaskChainStopped 的 taskid 等于本轮
+//     TaskID 且被中断任务无成功终态消息；失败/
 //     超时由 MAA-28 执行器归类为 failed/timeout-unknown（无 cancelled 分
 //     类），单次运行不自动重试。
 //
@@ -788,9 +791,12 @@ func m4tRequireTaskOutcome(t *testing.T, evs []Event, ids []TaskID) m4tTaskEvent
 // m4tRequireStoppedOutcome 是停止场景的终局事件断言(执行步骤 4、验收条件
 // 5):被中断的任务不结算为成功——无 AllTasksCompleted/TaskChainCompleted
 // /TaskChainError/done=true 识别结果,停止以 TaskChainStopped 收敛
-// (taskchain=Depot;stop 清空队列后 working_proc 不再发 AllTasksCompleted,
-// Assistant.cpp:685-698)。返回分类计数供 OK 标记记录。
-func m4tRequireStoppedOutcome(t *testing.T, evs []Event, id TaskID) m4tTaskEventCounts {
+// (taskchain=Depot 且 taskid=本轮 TaskID;stop 清空队列后 working_proc 不再
+// 发 AllTasksCompleted,Assistant.cpp:685-698)。停止消息复用
+// TaskChainStart 的 callback_json(Assistant.cpp:582-586 构造 taskchain 与
+// taskid,677-694、711-712 发出),因此 taskid 可关联本轮入队 ID。返回分类
+// 计数与观测到的停止消息 taskid 供 OK 标记记录。
+func m4tRequireStoppedOutcome(t *testing.T, evs []Event, id TaskID) (m4tTaskEventCounts, int64) {
 	t.Helper()
 	counts := m4tClassifyTaskEvents(t, evs)
 	if counts.TaskChainStart != 1 {
@@ -805,10 +811,15 @@ func m4tRequireStoppedOutcome(t *testing.T, evs []Event, id TaskID) m4tTaskEvent
 	if counts.TaskChainStopped < 1 {
 		t.Fatalf("Stop 受理后 %d 条 TaskChainStopped (%s): 停止状态未收敛", counts.TaskChainStopped, m4tRenderTaskEvents(evs))
 	}
-	for _, ev := range m4tTaskEventsOf(evs, m4tTaskChainStoppedMessageID) {
+	var stoppedTaskID int64
+	for i, ev := range m4tTaskEventsOf(evs, m4tTaskChainStoppedMessageID) {
 		msg := m4tParseMessage(t, ev)
-		if msg.TaskChain != m4tTaskType {
-			t.Fatalf("TaskChainStopped.taskchain = %q, want %q", msg.TaskChain, m4tTaskType)
+		if msg.TaskChain != m4tTaskType || msg.TaskID != int64(id) {
+			t.Fatalf("TaskChainStopped 关联不符: taskchain=%q taskid=%d, want taskchain=%q taskid=%d (停止消息必须关联本轮 TaskID)",
+				msg.TaskChain, msg.TaskID, m4tTaskType, id)
+		}
+		if i == 0 {
+			stoppedTaskID = msg.TaskID
 		}
 	}
 	if counts.AllTasksCompleted != 0 {
@@ -824,7 +835,7 @@ func m4tRequireStoppedOutcome(t *testing.T, evs []Event, id TaskID) m4tTaskEvent
 	if counts.DepotInfoDone != 0 {
 		t.Fatalf("被中断的任务产生 %d 条 done=true 的 DepotInfo: 中断不得记为识别成功", counts.DepotInfoDone)
 	}
-	return counts
+	return counts, stoppedTaskID
 }
 
 // m4tRequireEntryOutcome 是入口步骤的终局事件断言(任务文件执行步骤 1–3):
@@ -1102,13 +1113,15 @@ func runM4tStopChild(t *testing.T) {
 	if err := inst.Stop(); err != nil {
 		t.Fatalf("Stop = %v, want nil (C bool=true 受理)", err)
 	}
-	// 收敛双证:TaskChainStopped(taskchain=Depot) + Running=false。
-	reader.waitFor(t, m4tStopWait, "TaskChainStopped", func(ev Event) bool {
+	// 收敛双证:TaskChainStopped(taskchain=Depot 且 taskid=本轮 TaskID) +
+	// Running=false。停止消息的 taskid 必须与本轮 TaskID 关联(验收条件 3);
+	// 只比对 taskchain 不足以证明终止的是本轮任务。
+	reader.waitFor(t, m4tStopWait, fmt.Sprintf("TaskChainStopped (taskid=%d)", id), func(ev Event) bool {
 		if ev.MessageID != m4tTaskChainStoppedMessageID {
 			return false
 		}
 		var m m4tTaskMessage
-		return json.Unmarshal(ev.JSON, &m) == nil && m.TaskChain == m4tTaskType
+		return json.Unmarshal(ev.JSON, &m) == nil && m.TaskChain == m4tTaskType && m.TaskID == int64(id)
 	})
 	m4tWaitRunningFalse(t, inst, m4tStopWait)
 
@@ -1120,7 +1133,7 @@ func runM4tStopChild(t *testing.T) {
 		connRes.ID: asyncWhatConnect,
 		capRes.ID:  asyncWhatScreencap,
 	})
-	counts := m4tRequireStoppedOutcome(t, evs, id)
+	counts, stoppedTaskID := m4tRequireStoppedOutcome(t, evs, id)
 
 	if err := rt.Close(); err != nil {
 		t.Fatalf("Runtime.Close = %v, want nil", err)
@@ -1128,10 +1141,10 @@ func runM4tStopChild(t *testing.T) {
 	if _, err := rt.NewInstance(InstanceConfig{}); !errors.Is(err, ErrRuntimeTerminated) {
 		t.Fatalf("Runtime 终止后的 NewInstance 错误 = %v, want errors.Is ErrRuntimeTerminated", err)
 	}
-	fmt.Printf("%s version=%s connect_id=%d screencap_id=%d task_id=%d tasks_query=true start_accepted=true stop_accepted=true running_after_stop=false task_chain_start=%d task_chain_completed=%d all_tasks_completed=%d task_chain_error=%d task_chain_stopped=%d async_call_events=2 unknown_messages=%d events_total=%d png_bytes=%d png_w=%d png_h=%d\n",
+	fmt.Printf("%s version=%s connect_id=%d screencap_id=%d task_id=%d tasks_query=true start_accepted=true stop_accepted=true running_after_stop=false task_chain_start=%d task_chain_completed=%d all_tasks_completed=%d task_chain_error=%d task_chain_stopped=%d task_chain_stopped_taskid=%d async_call_events=2 unknown_messages=%d events_total=%d png_bytes=%d png_w=%d png_h=%d\n",
 		m4tStopOKMarker, rt.Version(), connRes.ID, capRes.ID, id,
 		counts.TaskChainStart, counts.TaskChainCompleted, counts.AllTasksCompleted,
-		counts.TaskChainError, counts.TaskChainStopped,
+		counts.TaskChainError, counts.TaskChainStopped, stoppedTaskID,
 		counts.UnknownMessageIDs, len(evs), n, w, h)
 }
 
@@ -1427,7 +1440,8 @@ func verifyM4tSuccessMetadata(stdout string) (map[string]string, error) {
 
 // verifyM4tStopMetadata 父侧复验停止场景 OK 标记:固定字段(受理/收敛/无成
 // 功终态/停止消息至少一条)、AsyncID 与 TaskID 各自非零(同命名空间内互
-// 异)、PNG 元数据为正。
+// 异)、停止消息 taskid 与本轮 TaskID 一致(验收条件 3;父侧独立于子进程断
+// 言复核)、PNG 元数据为正。
 func verifyM4tStopMetadata(stdout string) (map[string]string, error) {
 	fields, err := m4ParseMarkerFields(stdout, m4tStopOKMarker)
 	if err != nil {
@@ -1457,6 +1471,20 @@ func verifyM4tStopMetadata(stdout string) (map[string]string, error) {
 	}
 	if err := m4tRequireIDs(fields, "task_id"); err != nil {
 		return fields, err
+	}
+	// 停止终态必须关联本轮 TaskID:task_chain_stopped_taskid 是子进程从
+	// TaskChainStopped 事件读出的 taskid,父侧复核它非零且等于 task_id——
+	// 只核对 taskchain 无法证明终止的是本轮任务。
+	stoppedTaskID, err := strconv.ParseInt(fields["task_chain_stopped_taskid"], 10, 64)
+	if err != nil || stoppedTaskID == 0 {
+		return fields, fmt.Errorf("OK 标记字段 task_chain_stopped_taskid = %q, want 非零整数", fields["task_chain_stopped_taskid"])
+	}
+	taskID, err := strconv.ParseInt(fields["task_id"], 10, 64)
+	if err != nil || taskID == 0 {
+		return fields, fmt.Errorf("OK 标记字段 task_id = %q, want 非零整数", fields["task_id"])
+	}
+	if stoppedTaskID != taskID {
+		return fields, fmt.Errorf("TaskChainStopped.taskid = %d 与本轮 task_id = %d 不一致: 停止终态必须关联本轮 TaskID", stoppedTaskID, taskID)
 	}
 	if stopped, err := strconv.Atoi(fields["task_chain_stopped"]); err != nil || stopped < 1 {
 		return fields, fmt.Errorf("OK 标记字段 task_chain_stopped = %q, want >=1 (停止必须以 TaskChainStopped 收敛)", fields["task_chain_stopped"])
@@ -1489,7 +1517,7 @@ func m4tEvidenceFields(marker map[string]string) map[string]string {
 	fields["bigint_probe"] = "params 含未知字段 maa30_probe_bigint=9007199254740993(>2^53):允许清单按 json.Number 字面形式精确匹配,Core 接受并完成任务;逐字节透传白箱断言见 instance_sync_test.go(MAA-22)"
 	fields["non_consumption_basis"] = "DepotTask=DepotBegin(navigate)+DepotRecognitionTask(recognize);device actions=get_image/swipe(DepotSlowlySwipeToTheRight)/click-all-tab(DepotAllTab) only;no resource-consuming action;locked commit d94dd007: Assistant.cpp:337, DepotTask.cpp:7-18, DepotRecognitionTask.cpp"
 	fields["precondition_note"] = "前置画面 PNG 落盘 output_dir 由执行者人工核对;场景不解析画面内容、不自动导航"
-	fields["terminal_state_basis"] = "success=AllTasksCompleted(3).finished_tasks+TaskChainCompleted(10002)+DepotInfo(20003).done=true;stop=TaskChainStopped(10004);AsstMsg IDs frozen from AsstMsg.h@d94dd007"
+	fields["terminal_state_basis"] = "success=AllTasksCompleted(3).finished_tasks+TaskChainCompleted(10002)+DepotInfo(20003).done=true;stop=TaskChainStopped(10004).taskid=本轮 TaskID+Running=false;AsstMsg IDs frozen from AsstMsg.h@d94dd007"
 	fields["multi_round_note"] = "成功场景为同一未关闭实例连续两轮任务,无任何 Close/NewInstance(§8 多轮复用契约)"
 	return fields
 }
@@ -1566,5 +1594,22 @@ func TestM4tClassifyTaskEventsDestroyedWithoutUUID(t *testing.T) {
 	if counts.DepotInfoDone != 1 || counts.TaskChainError != 0 || counts.UnknownMessageIDs != 1 {
 		t.Fatalf("计数 = depot_done:%d error:%d unknown:%d, want 1/0/1(Destroyed 豁免 uuid 不影响分类)",
 			counts.DepotInfoDone, counts.TaskChainError, counts.UnknownMessageIDs)
+	}
+}
+
+// TestM4tStopMetadataRequiresTaskIDAssociation 是无设备回归(默认运行):停止
+// 场景的父侧复验必须把 TaskChainStopped 的 taskid 与本轮 task_id 关联——只
+// 比对 taskchain 无法证明终止的是本轮任务(验收条件 3)。合成标记行覆盖一致、
+// 不一致与缺失字段三种情况。
+func TestM4tStopMetadataRequiresTaskIDAssociation(t *testing.T) {
+	base := m4tStopOKMarker + " version=v6.20.1 connect_id=1 screencap_id=2 task_id=1 tasks_query=true start_accepted=true stop_accepted=true running_after_stop=false task_chain_start=1 task_chain_completed=0 all_tasks_completed=0 task_chain_error=0 task_chain_stopped=1 async_call_events=2 unknown_messages=0 events_total=13 png_bytes=100 png_w=1280 png_h=720"
+	if _, err := verifyM4tStopMetadata(base + " task_chain_stopped_taskid=1"); err != nil {
+		t.Fatalf("task_chain_stopped_taskid 与 task_id 一致时复验失败: %v", err)
+	}
+	if _, err := verifyM4tStopMetadata(base + " task_chain_stopped_taskid=2"); err == nil {
+		t.Fatalf("task_chain_stopped_taskid=2 与 task_id=1 不一致,复验必须拒绝")
+	}
+	if _, err := verifyM4tStopMetadata(base); err == nil {
+		t.Fatalf("缺少 task_chain_stopped_taskid 字段,复验必须拒绝")
 	}
 }
