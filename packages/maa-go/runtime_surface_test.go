@@ -1,31 +1,5 @@
-// 本文件是公开面的静态守卫(仿 rawfunc_surface_test.go 风格):把
-// 当前里程碑冻结的公开 API 表面钉死为 AST 断言。MAA-21 交付实例创
-// 建接线(Runtime.NewInstance 与公开 Instance.Close,绑定设计 §5、
-// §8)、MAA-22 交付任务与同步实例方法(Runtime.Log 与 Instance 的
-// AppendTask/SetTaskParams/Start/Stop/BackToHome/Running/Connected,
-// 绑定设计 §3、§5)、MAA-23 交付异步提交与结果关联(Instance 的
-// Connect/Click/Screencap 与公开 Operation 的 ID/Wait,绑定设计 §5、
-// §7)、MAA-24 交付图像/UUID/任务列表读取(Instance 的 GetImagePNG/
-// UUID/Tasks,绑定设计 §5、§6;可选 BGR 不公开读取方法,冻结集合
-// 因此不含任何 BGR 入口)、MAA-25 交付 Runtime.Close(关闭创建准入、
-// 等待创建 lease、活动实例唯一关闭与终止使用,绑定设计 §5、§8)时
-// 有意识地更新本守卫;后续里程碑交付新公开面时,同样必须有意识地
-// 更新。
-//
-// 断言:
-//   - *Runtime 的导出方法集恰为 {Version, Capabilities, NullSize,
-//     Log, NewInstance, Close}(只读元数据访问 + 全局日志 + 唯一的
-//     实例创建事务入口 + 幂等的绑定使用关闭);
-//   - *Instance 的导出方法集恰为 {Close, AppendTask, SetTaskParams,
-//     Start, Stop, BackToHome, Running, Connected, Connect, Click,
-//     Screencap, GetImagePNG, UUID, Tasks}(单次关闭的公开入口 + 同
-//     步任务/请求/查询方法 + 异步提交 + 输出读取;事件流公开面
-//     Events/Done/Err/Fault/Diagnostics 尚未接入);
-//   - *Operation 的导出方法集恰为 {ID, Wait}(关联键读取 + 可重复
-//     等待,MAA-23);
-//   - 除 *Runtime 的 NewInstance/Close 与 *Instance 的 Close 外,不
-//     存在其他名为 NewInstance/Close 的导出函数或方法;
-//   - 包级导出函数恰为 {Open}(唯一的进程初始化入口)。
+// 本文件是公开面的静态守卫:把当前公开 API 表面钉死为 AST 断言,新增或
+// 删除导出符号都必须有意识地更新本守卫。
 
 package maa
 
@@ -123,7 +97,7 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 					case recv == "Runtime" && fd.Name.Name == "NewInstance",
 						recv == "Instance" && fd.Name.Name == "Close",
 						recv == "Runtime" && fd.Name.Name == "Close":
-						// MAA-21/25 交付的三个生命周期入口。
+						//  交付的三个生命周期入口。
 					default:
 						t.Errorf("类型 %s 的导出方法 %q 不在生命周期入口冻结集合内", recv, fd.Name.Name)
 					}
@@ -142,7 +116,7 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		t.Fatal("未找到 Operation 类型的方法声明")
 	}
 
-	// *Runtime 的导出方法集恰为冻结集合(MAA-25 加入 Close)。
+	// *Runtime 的导出方法集恰为冻结集合(加入 Close)。
 	want := map[string]bool{"Version": true, "Capabilities": true, "NullSize": true, "Log": true, "NewInstance": true, "Close": true}
 	for m := range want {
 		if !runtimeMethods[m] {
@@ -155,9 +129,9 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		}
 	}
 
-	// *Instance 的导出方法集恰为 {Close} + MAA-22 同步方法 + MAA-23
-	// 异步提交方法 + MAA-24 输出读取方法(不含任何 BGR 读取入口:可
-	// 选 BGR 首期只报告 capability,§6 冻结决策)。
+	// *Instance 的导出方法集恰为 {Close} + 同步方法 +
+	// 异步提交方法 + 输出读取方法(不含任何 BGR 读取入口:可
+	// 选 BGR 首期只报告 capability, 冻结决策)。
 	wantInstance := map[string]bool{
 		"Close":         true,
 		"AppendTask":    true,
@@ -185,7 +159,7 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		}
 	}
 
-	// *Operation 的导出方法集恰为 {ID, Wait}(MAA-23)。
+	// *Operation 的导出方法集恰为 {ID, Wait}()。
 	wantOperation := map[string]bool{"ID": true, "Wait": true}
 	for m := range wantOperation {
 		if !operationMethods[m] {

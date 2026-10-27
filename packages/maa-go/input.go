@@ -1,18 +1,15 @@
-// 本文件定义实例配置与连接、任务输入的公开数据类型,以及对应的
-// 纯 Go 校验与快照辅助(绑定设计 §5、§5.1、§6.1)。校验与复制
-// 复用 snapshot.go 的共享辅助层,不另立一套逻辑。
+// 本文件定义实例配置与连接、任务输入的公开数据类型,以及对应的纯 Go
+// 校验与快照辅助。校验与复制复用 snapshot.go 的共享辅助层,不另立一套
+// 逻辑。
 //
-// 本单元只定义与校验/复制:这些类型尚未接入任何构造函数或 raw
-// 调用,公开面仍然没有可创建半成品 Instance 的入口(NewInstance/
-// Connect/AppendTask 由 M3 后续任务承接);接线时实例在预留生命
-// 周期名额之前构造快照,方法输入在 raw 调用前经 cString 构造带
-// NUL 的 C buffer 并持有至 raw 返回及结果登记完成。
+// 实例在预留生命周期名额之前构造快照;方法输入在 raw 调用前经 cString
+// 构造带 NUL 的 C buffer 并持有至 raw 返回及结果登记完成。
 //
-// 预算契约(MAA-03 冻结,§5.1):配置预算(ConfigEntries/
-// ConfigBytes)分别用于 Open 与 NewInstance 的快照;方法输入
-// (taskType + params、ADBPath + Address + Config)先逐项校验
-// 单字符串/单份 JSON 预算,再用检查溢出的加法累计核对 ConfigBytes。
-// 终止 NUL 的额外每串 1 字节不计入本预算,由分配方在分配前另行检查。
+// 预算契约:配置预算(ConfigEntries/ConfigBytes)分别用于 Open 与
+// NewInstance 的快照;方法输入(taskType + params、ADBPath + Address +
+// Config)先逐项校验单字符串/单份 JSON 预算,再用检查溢出的加法累计核对
+// ConfigBytes。终止 NUL 的额外每串 1 字节不计入本预算,由分配方在分配
+// 前另行检查。
 
 package maa
 
@@ -34,7 +31,7 @@ type InstanceOption struct {
 	Value string
 }
 
-// InstanceConfig 是实例创建的输入:有序实例选项(绑定设计 §5.1:
+// InstanceConfig 是实例创建的输入:有序实例选项(
 // InstanceConfig 只有有序 Options,不覆盖 Runtime 的限制)。
 // 全部内容在校验通过后被深拷贝冻结为 instanceConfigSnapshot;
 // 调用者在创建方法返回前不得并发修改输入,返回后可修改原配置,
@@ -47,7 +44,7 @@ type InstanceConfig struct {
 // (非空绝对路径,不做 shell 展开、不做存在性检查),Address 是
 // 连接地址(非空),Config 是连接 profile 字符串——允许空串并
 // 原样传空 C 字符串,由锁定 Core 选择 General;它不是 JSON,
-// 也不传 nil(绑定设计 §5.1)。
+// 也不传 nil()。
 type ConnectConfig struct {
 	ADBPath string
 	Address string
@@ -181,7 +178,7 @@ func validateTaskInput(taskType string, params json.RawMessage, limits Limits) e
 // taskInputSnapshot 是校验通过后冻结的任务输入:taskType 为只读
 // string,params 为逐字节 clone 的独立副本——提交方法返回后,
 // 调用者可原地改写原 RawMessage 而不影响快照,不要求保持输入到
-// Wait 完成(绑定设计 §6.1)。
+// Wait 完成。
 type taskInputSnapshot struct {
 	taskType string
 	params   json.RawMessage

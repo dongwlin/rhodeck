@@ -83,7 +83,7 @@ func (f *fakeSession) capabilities() native.Capabilities {
 	return f.caps
 }
 
-// table 返回 nil:假会话不持有 raw 表,本里程碑的用例不触达 raw 调用。
+// table 返回 nil:假会话不持有 raw 表,本用例的用例不触达 raw 调用。
 func (f *fakeSession) table() *native.APITable { return nil }
 
 func (f *fakeSession) version() *byte {
@@ -92,7 +92,7 @@ func (f *fakeSession) version() *byte {
 		return nil
 	}
 	// 假 buffer 始终分配满扫描上限(versionBytesLimit+1 字节):真实
-	// Core 的版本指针指向 .rodata,字符串之后仍有可读数据,冻结契约
+	// Core 的版本指针指向.rodata,字符串之后仍有可读数据,冻结契约
 	// 允许 readVersion 的扫描跨出字符串本身;Go 堆上按实际文本长度
 	// 分配的短 buffer 无法诚实地模拟该契约,且会在 -race(checkptr)
 	// 下被误判为跨分配。零值填充即合法的 NUL 终止。
@@ -330,14 +330,14 @@ func TestOpenSessionStepsAndMetadata(t *testing.T) {
 }
 
 // TestOpenAcceptsVersionAtScanWindowBoundary 验证 Version 扫描窗的
-// 恰达边界接受侧(MAA-03 冻结向量 C13 的本层运行部分):Version 恰
+// 恰达边界接受侧(冻结向量 C13 的本层运行部分):Version 恰
 // 为 4,096 字节、NUL 落在扫描窗(4,097 字节)末端时被接受,复制结果
 // 逐字节正确。fake 假 buffer 恒分配满 4,097 字节(见 fakeSession.version
 // 的注释),4,096 字节文本经 versionText 注入后 NUL 恰在窗口末字节;
 // 若扫描窗被缩短到 4,096 字节,本用例将因界内无 NUL 而失败。「窗口
 // 内无 NUL → ErrProtocol」的拒绝侧见 TestOpenStepFailuresTerminateLifecycle
 // 的「version 界内无 NUL」。C13 的完整验收(含真实库行为)归属
-// MAA-08/12/14,本用例不宣称已完成 C13。
+// 本用例不宣称已完成 C13。
 func TestOpenAcceptsVersionAtScanWindowBoundary(t *testing.T) {
 	sess := newValidFakeSession()
 	env := &fakeEnv{session: sess}

@@ -1,8 +1,8 @@
-// goselect.go 按 §9.1.1 冻结规则选择真实参与目标构建的 Go 源文件:
+// goselect.go 按冻结规则选择真实参与目标构建的 Go 源文件:
 // Go 输入固定为 --go-root/packages/maa-go/internal/native,按目标
 // GOOS/GOARCH、CGO_ENABLED=0 与工具链 release tags 处理文件名后缀、
 // go:build 与旧式 build 行,排除 _test.go 与 _/. 前缀文件;不接受
-// 任何自定义 tags。§3.1 的三个共用声明文件(api.go、symbols.go、
+// 任何自定义 tags。 的三个共用声明文件(api.go、symbols.go、
 // callback_types.go)必须无条件参与:文件缺失、被约束隐藏(存在于
 // 目录但未入选)或自带 build 约束注释均失败。选择失败以 input 类
 // 诊断报告,共用文件自带约束以 go-syntax 类诊断报告。
@@ -23,7 +23,7 @@ import (
 // goNativeRelPath 是冻结的 Go 输入相对路径(相对 --go-root)。
 const goNativeRelPath = "packages/maa-go/internal/native"
 
-// sharedDeclFiles 是 §3.1 冻结的三个共用声明文件;不得带任何 build
+// sharedDeclFiles 是冻结的三个共用声明文件;不得带任何 build
 // 约束,必须参与所有目标的选择。
 var sharedDeclFiles = []string{"api.go", "symbols.go", "callback_types.go"}
 
@@ -118,7 +118,7 @@ func SelectGoFiles(goRoot string, target Target) (*GoSelection, []Diagnostic) {
 		case err != nil || st.IsDir():
 			return fail(Diagnostic{Category: CatInput, File: full, Symbol: name,
 				Expected: "existing shared declaration file", Actual: "missing",
-				Message: "frozen shared declaration file (§3.1) is missing"})
+				Message: "frozen shared declaration file is missing"})
 		case !sel.contains(name):
 			return fail(Diagnostic{Category: CatInput, File: full, Symbol: name,
 				Expected: "selected for the target build", Actual: "hidden by build constraints",

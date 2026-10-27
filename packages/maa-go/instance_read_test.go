@@ -1,31 +1,6 @@
-// 本文件是图像、UUID 与任务列表读取的受控用例(MAA-24;绑定设计
-// §5、§6、§6.1、§6.2、§7):白盒同包验证公开读取入口的行为契约——
-// 三类 API 每次探测都收到实际非空 buffer、容量按接口自身单位传递
-// (PNG/UUID 字节、Tasks int32 元素),UUID 只按返回长度读取、不寻找
-// 或要求尾部 NUL,NullSize 扩容耗尽/超长返回/合法 0 的错误与空结果
-// 语义,原生内容返回后改写与调用者修改切片都不影响已取得的独立 Go
-// 快照,PNG 读取不触发隐式截图且扩容重试不发布首次旧内容(不承诺
-// 同一帧),全部读取经过同一调用 lease 与 raw 串行门禁、关闭等待覆
-// 盖在途读取,closing/faulted/closed 后不绕过状态调用。
-//
-// 验收条件「可选 BGR 缺失时按能力返回 ErrUnsupported」由 MAA-03 冻
-// 结的能力决策实现(绑定设计 §6:可选 AsstGetImageBgr 首期只解析符
-// 号并报告 capability,不公开读取方法、不调用、不分配生产 BGR
-// buffer)——不存在可绕过能力判断的公开 BGR 读取路径,公开面冻结集
-// 合不含任何 BGR 入口由 runtime_surface_test.go 钉死;未来公开 BGR
-// 时须按 MAA-03 重新补齐生产容量契约后再按能力返回 ErrUnsupported。
-//
-// native 读取以 fakeInstanceCaller 的 image/uuid/tasks respond 脚本
-// 注入(instance_create_test.go 的接缝先例):脚本在 fake 锁外收到
-// 调用记录(buffer 首地址与容量),写入内容并返回原生返回值;返回
-// 后经 overwriteOutput 改写 fake 记录的原生 buffer 模拟 Core 更新缓
-// 存。全部用例以受控屏障(channel/轮询等待)确定性同步,不加载任何
-// 原生库、不触达 loader/真实 API 表,CGO_ENABLED=0 可跑;防挂死只用
-// hangGuard 兜底,不作同步手段。
-//
-// maa→native 的 token 注册表是进程级共享状态:本文件用例互不并行
-// (不调 t.Parallel);成功创建的实例由用例显式 Close 或经 rig.cleanup
-// 兜底收尾,不留悬挂 goroutine 与未注销 token 影响 -race。
+// 本文件是图像、UUID 与任务列表读取的受控用例:验证实际非空 buffer、
+// 按接口单位传容量、NullSize 与合法 0 语义、快照独立性、无隐式截图,
+// 以及读取路径的调用准入与关闭等待。
 
 package maa
 
@@ -40,7 +15,7 @@ import (
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
 )
 
-// newReadRig 构造收紧 Limits 的受控读取用例环境(复用 MAA-23 的
+// newReadRig 构造收紧 Limits 的受控读取用例环境(复用
 // newAsyncRig fake-caller 生产创建接线):PNG Initial=8 字节/Max=64/
 // 重试 4,UUID Initial=16 字节/Max=64/重试 4,Tasks Initial=4 元素/
 // Max=16 元素/重试 4——容量探测序列在断言中逐项可见,读取哨兵取
@@ -55,7 +30,7 @@ func newReadRig(t *testing.T, handle uintptr) (*Instance, *createRig) {
 	return inst, rig
 }
 
-// TestReadEntriesProbeWithNonEmptyBuffers 钉住验收条件「三类 API 均
+// TestReadEntriesProbeWithNonEmptyBuffers 验证「三类 API 均
 // 使用实际非空 buffer,不以 nil/0 查询所需容量」与「Tasks 的容量和
 // 返回值均按 int32 元素数处理,不当作字节数」:每个接口首次探测收到
 // 的容量恰为该接口 Limits.Initial(按各自单位),handle 来自已准入
@@ -135,7 +110,7 @@ func TestReadEntriesProbeWithNonEmptyBuffers(t *testing.T) {
 	})
 }
 
-// TestUUIDReadsOnlyReturnLength 钉住验收条件「UUID 只读取返回长度,
+// TestUUIDReadsOnlyReturnLength 验证「UUID 只读取返回长度,
 // 无尾部 NUL 仍能保留完整有效内容」:fake 在应答内容之后把剩余容量
 // 全部毒化且不写任何 NUL——binding 若在缓冲区内寻找 NUL 或按容量读
 // 取,毒化字节即出现在结果中;ret==容量边界同样逐字成功。
@@ -177,10 +152,10 @@ func TestUUIDReadsOnlyReturnLength(t *testing.T) {
 	})
 }
 
-// TestUUIDContentValidation 钉住 §6.2「内容含 NUL 或非法 UTF-8 为
+// TestUUIDContentValidation 钉住 「内容含 NUL 或非法 UTF-8 为
 // ErrProtocol」:按返回长度读取的有效区间里出现实际 NUL 或非法
 // UTF-8 都是协议破坏,返回包装 ErrProtocol 的错误、不把矛盾证据伪
-// 造成功;该破坏是本次调用的诊断错误(与 MAA-15 冻结的探测层错误语
+// 造成功;该破坏是本次调用的诊断错误(与冻结的探测层错误语
 // 义一致),不使实例故障、不进入 native 重试。
 func TestUUIDContentValidation(t *testing.T) {
 	cases := []struct {
@@ -220,7 +195,7 @@ func TestUUIDContentValidation(t *testing.T) {
 	}
 }
 
-// TestReadEntriesNullSizeExhaustion 钉住验收条件「NullSize 与扩容耗
+// TestReadEntriesNullSizeExhaustion 验证「NullSize 与扩容耗
 // 尽返回明确错误」:原生恒返哨兵时按 next=min(Max, 2*current) 探测,
 // 已达 Max 即停(不消耗剩余重试),返回包装 ErrBufferLimit 的诊断,
 // 文本含接口名、单位与 NullSize 字样且不把哨兵转换为分配长度;三个
@@ -316,7 +291,7 @@ func readVia(inst *Instance, what string) error {
 	}
 }
 
-// TestReadEntriesRejectsOvercapacityReturn 钉住验收条件「超长返回明
+// TestReadEntriesRejectsOvercapacityReturn 验证「超长返回明
 // 确错误」:原生返回值大于实际容量按 ErrProtocol 立即终止、不扩容
 // (恰一次调用),不进入 ErrBufferLimit 的扩容路径。
 func TestReadEntriesRejectsOvercapacityReturn(t *testing.T) {
@@ -349,7 +324,7 @@ func TestReadEntriesRejectsOvercapacityReturn(t *testing.T) {
 	}
 }
 
-// TestReadEntriesLegalZeroLength 钉住验收条件「合法 0 长度可正常返
+// TestReadEntriesLegalZeroLength 验证「合法 0 长度可正常返
 // 回」:原生返回 0 在实际非空 buffer 上得到空结果——PNG/Tasks 为非
 // nil 空切片、UUID 为空串,恰一次调用、不触发扩容;未连接设备时图
 // 像 getter 也可能合法返回 0,binding 不将其伪造成截图成功或失败。
@@ -395,12 +370,12 @@ func TestReadEntriesLegalZeroLength(t *testing.T) {
 	})
 }
 
-// TestGetImagePNGDoesNotScreencapOrPinFrame 钉住验收条件「读取 PNG
+// TestGetImagePNGDoesNotScreencapOrPinFrame 验证「读取 PNG
 // 不触发隐式截图,也不承诺缓存采集时间」:读取只触达 getImage 一个
 // 原生入口(fake 全调用序列无 asyncScreencap);扩容重试期间缓存可
 // 能更新,第一次探测(旧帧)返回哨兵、第二次探测(新帧)返回有效
 // 数据时,结果只含最后一次有效区间——binding 不发布首次旧内容、不
-// 承诺重试固定同一帧(MAA-03 冻结向量 B08 的 MAA-24 部分)。
+// 承诺重试固定同一帧(冻结向量 B08 的部分)。
 func TestGetImagePNGDoesNotScreencapOrPinFrame(t *testing.T) {
 	const handle = uintptr(0x1A60)
 	inst, rig := newReadRig(t, handle)
@@ -442,7 +417,7 @@ func TestGetImagePNGDoesNotScreencapOrPinFrame(t *testing.T) {
 	}
 }
 
-// TestReadSnapshotsSurviveNativeAndCallerWrites 钉住验收条件「返回后
+// TestReadSnapshotsSurviveNativeAndCallerWrites 验证「返回后
 // 原生内容改变或调用者修改切片,不影响已取得的 Go 快照或后续结果」:
 // fake 经记录的 buffer 地址在调用返回后全容量改写原生内容(模拟
 // Core 更新缓存),已取得的快照不变;调用者原地改写返回值,后续读取

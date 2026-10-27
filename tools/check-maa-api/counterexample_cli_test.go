@@ -1,4 +1,4 @@
-// counterexample_cli_test.go 把绑定设计 §9.1.2 反例目录中尚未达到完整
+// counterexample_cli_test.go 把反例目录中尚未达到完整
 // 命令入口层的向量补齐为 Run() 级端到端反例,按目录类别以子测试归组:
 // C 输入变体经测试 profile 注册表为改写后的文件计算独立摘要注册合成
 // profile(生产注册表不动)后走完整 CLI 路径,Go 变体经复制后的真实

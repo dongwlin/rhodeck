@@ -1,20 +1,6 @@
-// 本文件是任务与同步实例方法的受控用例(MAA-22;绑定设计 §3、§5、
-// §6、§7):白盒同包验证公开同步入口的行为契约——AppendTask 原样透
-// 传未知任务类型与 JSON 字段、TaskID 0 明确表示提交失败;SetTaskParams
-// /Start/Stop/BackToHome 的 nil 只表示请求被接受,不赋予任务执行语
-// 义;Running/Connected 的正常 false 与生命周期错误分离;内嵌 NUL、
-// 非法 JSON 等输入在 raw 前失败且无原生副作用;Log 等 void 入口只有
-// 输入或生命周期错误;全部实例原生入口经过同一 lease 与同一 raw 串
-// 行门禁,closing/faulted/closed 后不绕过状态调用,关闭等待覆盖门禁
-// 前排队的同步调用。native 业务调用以 fakeInstanceCaller 注入
-// (instance_create_test.go 的接缝先例),fake closer/creator 复用既有
-// 注入路径。全部用例以受控屏障(channel/轮询等待)确定性同步,不加
-// 载任何原生库、不触达 loader/真实 API 表,CGO_ENABLED=0 可跑;防挂
-// 死只用 hangGuard 兜底,不作同步手段。
-//
-// maa→native 的 token 注册表是进程级共享状态:本文件用例互不并行
-// (不调 t.Parallel);成功创建的实例由用例显式 Close 或经 rig.cleanup
-// 兜底收尾,不留悬挂 goroutine 与未注销 token 影响 -race。
+// 本文件是任务与同步实例方法的受控用例:验证 AppendTask 原样透传、
+// TaskID 0 语义、SetTaskParams/Start/Stop/BackToHome 的 bool 契约、
+// Running/Connected 查询,以及输入与生命周期拒绝路径。
 
 package maa
 
@@ -45,7 +31,7 @@ func newSyncRig(t *testing.T, handle uintptr) (*Instance, *createRig) {
 	return inst, rig
 }
 
-// TestAppendTaskPassesUnknownTypeAndJSONVerbatim 钉住验收条件「
+// TestAppendTaskPassesUnknownTypeAndJSONVerbatim 验证「
 // AppendTask 保留未知任务类型与 JSON 字段,TaskID 0 明确表示提交失
 // 败」:未知任务类型与含未知字段、超过 2^53 的整数、\u0000 转义的
 // params 按原文字节透传(解码回的 C 字符串与输入逐字节一致,证明不
@@ -101,11 +87,11 @@ func TestAppendTaskPassesUnknownTypeAndJSONVerbatim(t *testing.T) {
 	}
 }
 
-// TestAcceptedRequestsAreNotTaskCompletion 钉住验收条件「SetTaskParams
-// 、Start 等接受请求不会被包装成任务已完成」:C bool=true 的请求类
+// TestAcceptedRequestsAreNotTaskCompletion 验证「SetTaskParams
+// Start 等接受请求不会被包装成任务已完成」:C bool=true 的请求类
 // 入口返回恰为 nil(nil 只表示请求被接受,执行语义归事件流,见各方
 // 法注释);C bool=false 包装 ErrNativeRejected。SetTaskParams 的 id
-// 保留 int32 符号位原样透传(§3)。
+// 保留 int32 符号位原样透传。
 func TestAcceptedRequestsAreNotTaskCompletion(t *testing.T) {
 	const handle = uintptr(0xE200)
 	inst, rig := newSyncRig(t, handle)
@@ -173,7 +159,7 @@ func TestAcceptedRequestsAreNotTaskCompletion(t *testing.T) {
 	})
 }
 
-// TestRunningConnectedFalseIsNotAnError 钉住验收条件前半「Running/
+// TestRunningConnectedFalseIsNotAnError 验证前半「Running/
 // Connected 返回 false 时无额外错误」:false 是正常查询结果,不转换
 // 成错误;true 原样返回。
 func TestRunningConnectedFalseIsNotAnError(t *testing.T) {
@@ -206,7 +192,7 @@ func TestRunningConnectedFalseIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestSyncEntriesRejectByLifecycle 钉住验收条件后半「生命周期失败仍
+// TestSyncEntriesRejectByLifecycle 验证后半「生命周期失败仍
 // 可单独识别」与执行步骤「closing/faulted 后的拒绝行为」:closed 阶
 // 段全部入口包装 ErrClosed 且无原生副作用;faulted 阶段包装首因(错
 // 误链可达原生哨兵),关闭仍可完成;closing 阶段(关闭流程执行中)
@@ -251,7 +237,7 @@ func TestSyncEntriesRejectByLifecycle(t *testing.T) {
 		if got := rig.caller.total(); got != 0 {
 			t.Errorf("faulted 后业务调用次数 = %d, want 0(不绕过状态调用)", got)
 		}
-		// faulted 后关闭仍可完成(§8:异常路径进入 faulted 后关闭)。
+		// faulted 后关闭仍可完成(异常路径进入 faulted 后关闭)。
 		if err := inst.Close(); !errors.Is(err, cause) {
 			t.Errorf("faulted 后 Close = %v, want 首因", err)
 		}
@@ -288,7 +274,7 @@ func TestSyncEntriesRejectByLifecycle(t *testing.T) {
 	})
 }
 
-// TestInvalidInputFailsBeforeNative 钉住验收条件「内嵌 NUL、非法
+// TestInvalidInputFailsBeforeNative 验证「内嵌 NUL、非法
 // JSON 或非法输入在 raw 前失败,不发生原生副作用」:全部输入校验失
 // 败包装 ErrInvalidInput 且业务 fake 与日志 fake 的调用次数为 0——
 // 校验先于生命周期门与 raw 门禁,不进入 native。
@@ -345,7 +331,7 @@ func TestInvalidInputFailsBeforeNative(t *testing.T) {
 	}
 }
 
-// TestLogReturnsOnlyInputOrLifecycleErrors 钉住验收条件「Log 等 void
+// TestLogReturnsOnlyInputOrLifecycleErrors 验证「Log 等 void
 // 函数只返回输入或生命周期错误,不伪造原生成功确认」:合法输入返回
 // nil——nil 只表示调用已发出并返回,不构成原生确认(C void 无成功
 // 码);非法输入在 native 前失败;Runtime 终止后返回包装
@@ -451,7 +437,7 @@ func (l *fakeRuntimeLogger) record(i int) fakeLogCall {
 	return l.calls[i]
 }
 
-// TestSyncEntriesShareSingleRawGate 钉住验收条件「所有实例原生入口
+// TestSyncEntriesShareSingleRawGate 验证「所有实例原生入口
 // 经过同一 lease 和串行门禁」:Start 占据 raw 串行门禁并在 fake 内
 // 挂起时,已准入的 AppendTask 在同一门禁前排队,不得并发进入原生;
 // Start 放行后 AppendTask 才进入。负面断言以「B 已准入(在途计数
@@ -507,8 +493,8 @@ func TestSyncEntriesShareSingleRawGate(t *testing.T) {
 	}
 }
 
-// TestCloseWaitsQueuedSyncEntries 钉住验收条件「closing/faulted 后不
-// 会绕过状态调用」的关闭侧契约(§8 第 2 步、§9.1 验收向量):已准入
+// TestCloseWaitsQueuedSyncEntries 验证「closing/faulted 后不
+// 会绕过状态调用」的关闭侧契约(第 2 步、 验收向量):已准入
 // 但尚在 raw 门禁前排队的同步调用被关闭等待覆盖——执行中的 Start 与
 // 排队中的 AppendTask 都在途时,Stop/Destroy 不得发生;两者退出后关
 // 闭才前进到一次 Stop、一次 Destroy;先于关闭准入的排队调用照常完

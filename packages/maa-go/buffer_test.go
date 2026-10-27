@@ -1,10 +1,6 @@
-// 本文件是有界输出缓冲区读取辅助的纯 Go 用例(MAA-15):对私有的
-// readOutputBytes/readOutputInt32s 白盒验证 MAA-03 冻结(绑定设计
-// §6.2)的容量探测语义——每次探测分配实际非空 buffer、NullSize
-// 哨兵在任何转换之前识别、固定校验顺序、next = min(Max, 2*current)
-// 的有界扩容、重试/Max 双停止条件、耗尽诊断要素,以及字节与 int32
-// 元素两种单位互不混用。read 边界用可注入闭包模拟原生返回,不加载
-// 任何原生库、不触碰 loader/Runtime,CGO_ENABLED=0 可跑。
+// 本文件是有界输出缓冲区读取辅助的纯 Go 用例:白盒验证
+// readOutputBytes/readOutputInt32s 的容量探测、NullSize 识别、固定校验
+// 顺序、有界扩容、耗尽诊断,以及字节与 int32 元素两种单位互不混用。
 
 package maa
 
@@ -27,14 +23,14 @@ type probeLog[T any] struct {
 }
 
 // logRead 把记录器接入 read 闭包:每次调用先断言收到的 buffer 实际
-// 非空——钉住 §6.2「每次探测分配实际非空 buffer,不用 nil/0 查询
+// 非空——钉住 「每次探测分配实际非空 buffer,不用 nil/0 查询
 // 容量,不对空切片取首元素地址」;再把返回值交给 respond 脚本决定。
 func logRead[T any](t *testing.T, log *probeLog[T], respond func(buf []T) uint64) func(buf []T) uint64 {
 	t.Helper()
 	return func(buf []T) uint64 {
 		log.calls++
 		if len(buf) == 0 {
-			t.Error("read 收到空 buffer(len=0):违反 §6.2 非空探测 buffer 契约")
+			t.Error("read 收到空 buffer(len=0):违反非空探测 buffer 契约")
 			return 0
 		}
 		log.caps = append(log.caps, len(buf))
@@ -49,7 +45,7 @@ func sentinelRead[T any](t *testing.T, log *probeLog[T], nullSize uint64) func(b
 	return logRead(t, log, func(buf []T) uint64 { return nullSize })
 }
 
-// assertCaps 断言记录到的探测容量序列逐项相等,用于钉住 §6.2 的
+// assertCaps 断言记录到的探测容量序列逐项相等,用于钉住的
 // next = min(Max, 2*current) 扩容路径与各停止条件的调用次数。
 func assertCaps[T any](t *testing.T, log *probeLog[T], want []int) {
 	t.Helper()
@@ -58,7 +54,7 @@ func assertCaps[T any](t *testing.T, log *probeLog[T], want []int) {
 	}
 }
 
-// TestReadOutputBytesReturnsIndependentCopy 钉住 §6.1 所有权边界:
+// TestReadOutputBytesReturnsIndependentCopy 钉住所有权边界:
 // 成功返回是探测 buffer 有效区间的独立副本——内容逐字节相等、改写
 // 返回值不影响下一次调用、返回值首元素地址不与任何一次探测 buffer
 // 重合。
@@ -80,7 +76,7 @@ func TestReadOutputBytesReturnsIndependentCopy(t *testing.T) {
 		t.Fatalf("返回内容 = %q, want 逐字节相等的已知内容", got)
 	}
 	if &got[0] == log.firsts[0] {
-		t.Fatal("返回值与探测 buffer 共享首元素地址:§6.1 要求返回前复制为独立 Go 数据")
+		t.Fatal("返回值与探测 buffer 共享首元素地址:返回前必须复制为独立 Go 数据")
 	}
 
 	// 改写返回值后再调一次:第二次结果必须仍是 read 写入的已知
@@ -101,7 +97,7 @@ func TestReadOutputBytesReturnsIndependentCopy(t *testing.T) {
 	assertCaps(t, &log, []int{8, 8})
 }
 
-// TestReadOutputBytesBoundaryAndZeroLength 钉住 §6.2 的两个合法返回
+// TestReadOutputBytesBoundaryAndZeroLength 钉住的两个合法返回
 // 值边界:ret == capacity 恰好成功(不误判超容量);合法 0 在实际
 // 非空 buffer 上返回非 nil 空切片且恰调用一次。
 func TestReadOutputBytesBoundaryAndZeroLength(t *testing.T) {
@@ -124,7 +120,7 @@ func TestReadOutputBytesBoundaryAndZeroLength(t *testing.T) {
 	})
 
 	t.Run("合法 0 返回非 nil 空切片", func(t *testing.T) {
-		// 验收条件「合法的 0 长度在实际非空 buffer 上返回空内容」:
+		// 契约「合法的 0 长度在实际非空 buffer 上返回空内容」:
 		// buffer 非空已由 logRead 在 read 内断言,此处钉住结果端。
 		var log probeLog[byte]
 		read := logRead(t, &log, func(buf []byte) uint64 { return 0 })
@@ -144,7 +140,7 @@ func TestReadOutputBytesBoundaryAndZeroLength(t *testing.T) {
 	})
 }
 
-// TestReadOutputBytesGrowthDoublesThenClampsToMax 钉住 §6.2 扩容
+// TestReadOutputBytesGrowthDoublesThenClampsToMax 钉住扩容
 // 路径:只有 NullSize 触发下一次探测,next = min(Max, 2*current)——
 // 正常翻倍;current > Max/2 时先用除法判断再直接夹到 Max。
 func TestReadOutputBytesGrowthDoublesThenClampsToMax(t *testing.T) {
@@ -190,8 +186,8 @@ func TestReadOutputBytesGrowthDoublesThenClampsToMax(t *testing.T) {
 	})
 }
 
-// TestReadOutputBytesStopsAtRetryAndMaxLimits 钉住 §6.2 的两个停止
-// 条件与调用计数语义(任务验收条件「达到最大容量或重试上限后停止,
+// TestReadOutputBytesStopsAtRetryAndMaxLimits 钉住的两个停止
+// 条件与调用计数语义(契约「达到最大容量或重试上限后停止,
 // 不出现无限分配或重试」):GrowthRetries 是首次调用之后至多追加的
 // 调用数,总调用数 ≤ 1 + GrowthRetries;已达 Max 即停,不消耗剩余
 // 重试;Initial==Max 与 GrowthRetries==0 都只调用一次。
@@ -244,7 +240,7 @@ func TestReadOutputBytesStopsAtRetryAndMaxLimits(t *testing.T) {
 	})
 }
 
-// TestReadOutputBytesNullSizeCheckedBeforeConversion 钉住验收条件
+// TestReadOutputBytesNullSizeCheckedBeforeConversion 验证
 // 「NullSize 在整数转换与分配计算前识别,不触发巨大分配或切片越界」:
 // nullSize=math.MaxUint64 远大于任何真实容量,若实现先做容量比较会
 // 误报 ErrProtocol 甚至切片越界;契约要求哨兵判断在任何 int 转换
@@ -265,7 +261,7 @@ func TestReadOutputBytesNullSizeCheckedBeforeConversion(t *testing.T) {
 	assertCaps(t, &log, []int{8, 16})
 }
 
-// TestReadOutputBytesRejectsOverCapacityReturn 钉住验收条件「返回
+// TestReadOutputBytesRejectsOverCapacityReturn 验证「返回
 // 长度大于容量……返回诊断错误」:ret > capacity 按 ErrProtocol 立即
 // 终止、不扩容——协议破坏后恰一次调用。
 func TestReadOutputBytesRejectsOverCapacityReturn(t *testing.T) {
@@ -281,7 +277,7 @@ func TestReadOutputBytesRejectsOverCapacityReturn(t *testing.T) {
 	}
 }
 
-// TestReadOutputBytesExhaustionDiagnostics 钉住 §6.2 耗尽诊断要素:
+// TestReadOutputBytesExhaustionDiagnostics 钉住耗尽诊断要素:
 // 接口名、单位、尝试次数、最后容量、Max、原始返回值显示为 NullSize
 // 字样,以及「NullSize 原因不明,可能为原生状态/参数拒绝或容量不足」
 // 的固定语义;并且不把哨兵转换为十进制分配长度;两个接口的单位文本
@@ -334,7 +330,7 @@ func TestReadOutputBytesExhaustionDiagnostics(t *testing.T) {
 	})
 }
 
-// TestReadOutputInt32sMeasuresInElements 钉住验收条件「任务列表按
+// TestReadOutputInt32sMeasuresInElements 验证「任务列表按
 // 元素计量,字节接口按字节计量,互不混用」,并给出元素侧的成功边界
 // 镜像:read 收到恰为元素容量的 []int32、按元素写入与返回;
 // ret==元素容量与合法 0 与字节侧一一对应。
@@ -389,8 +385,8 @@ func TestReadOutputInt32sMeasuresInElements(t *testing.T) {
 	})
 }
 
-// TestReadOutputGuardsGoIntBeforeAllocation 钉住验收条件「返回长度
-// ……超出 Go int 上限时返回诊断错误」与 §6.2 的「任务分配还先检查
+// TestReadOutputGuardsGoIntBeforeAllocation 验证「返回长度
+// ……超出 Go int 上限时返回诊断错误」与的「任务分配还先检查
 // capacity*4 <= MaxInt」:Go int 守卫在分配之前,注入超大 limits 也
 // 绝不真的分配、read 一次都不被调用——守卫若失效,下面的分配会
 // 瞬间耗尽内存,本用例必然失败。
@@ -420,8 +416,8 @@ func TestReadOutputGuardsGoIntBeforeAllocation(t *testing.T) {
 	})
 }
 
-// TestReadOutputRejectsInvalidLimits 钉住 §6.2 前置守卫:Initial==0
-// 或 Initial>Max 属内部不变量被破坏(Open 已按 §5.1 校验 Limits),
+// TestReadOutputRejectsInvalidLimits 钉住前置守卫:Initial==0
+// 或 Initial>Max 属内部不变量被破坏(Open 已按校验 Limits),
 // 按 ErrProtocol 处理,不夹取、不静默截断,read 绝不被调用。
 func TestReadOutputRejectsInvalidLimits(t *testing.T) {
 	t.Run("Initial==0", func(t *testing.T) {
@@ -450,7 +446,7 @@ func TestReadOutputRejectsInvalidLimits(t *testing.T) {
 }
 
 // TestReadOutputCustomNullSizeIsParameterNotConstant 钉住哨兵是调用
-// 方传入的参数、本层不硬编码哨兵值(buffer.go 契约;§6.2 的锁定
+// 方传入的参数、本层不硬编码哨兵值(buffer.go 契约; 的锁定
 // profile 哨兵在 Open 时核验后保存):非默认的小哨兵值同样触发
 // NullSize 路径,而返回 0 仍为合法空结果。
 func TestReadOutputCustomNullSizeIsParameterNotConstant(t *testing.T) {

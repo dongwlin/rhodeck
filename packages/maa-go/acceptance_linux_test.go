@@ -1,20 +1,8 @@
 //go:build linux
 
-// 本文件是 MAA-08 的真实库链路验收(M1 阶段退出条件):从锁定的发行
-// 包缓存流式解包,经公开 Open 在子进程中完成真实 libMaaCore.so 的
-// 加载与元数据读取,并验收缺库失败的生命周期语义与执行器的超时语义。
-//
-// 子进程方案的理由:进程级生命周期门(processLifecycle)预占即不可
-// 回头,同进程失败后拒绝再次 Open,恢复只能来自退出并启动新进程——
-// 测试不得为可重复性清空或重置该全局门,因此失败语义的端到端验收
-// 必须借助新进程。通用子进程执行器尚未建立(MAA-11),本文件直接以
-// go test 自身二进制重执行子进程(os/exec + os.Args[0]),不形成对
-// 其他任务的依赖;子进程在 TestMain 中按环境变量分派后 os.Exit,
-// 不进入测试框架,不改变既有用例的可见行为。
-//
-// 真实库链路只触达 Open 内部完成的调用(GetVersion/GetNullSize/
-// SetUserDir/SetStaticOption/LoadResource/SetConnectionExtras),
-// 不创建实例、不连设备;Capabilities 只读取并记录,不硬断言能力位。
+// 本文件验证真实 MaaCore 的加载与元数据读取:从锁定发行包缓存流式解包,
+// 在子进程中经公开 Open 完成 libMaaCore.so 加载、Version/NullSize 读取,
+// 并验证缺库失败的生命周期语义与执行器超时语义。
 package maa
 
 import (
@@ -41,7 +29,7 @@ import (
 	"time"
 )
 
-// 锁定基线(MAA-01 证据冻结):发行包、libMaaCore.so 与
+// 锁定基线(证据冻结):发行包、libMaaCore.so 与
 // resource/version.json 的 SHA256,以及 Core 预期版本字符串。任何
 // 一项不符都是测试失败(锁定基线被破坏),不是 skip。
 const (
@@ -55,17 +43,17 @@ const (
 
 // 子进程分派与资源传递的环境变量。
 const (
-	childModeEnv      = "MAA_M1_CHILD_MODE"     // 子进程模式标记;缺省即父进程,照常执行测试框架
-	childModeSuccess  = "success"               // 真实库成功路径:公开 Open → 元数据断言 → 打印 capabilities
-	childModeMissing  = "missing-lib"           // 缺库失败路径:errors.As 命中 LibraryLoadError → 同进程再 Open 得 terminated
-	childModeHang     = "hang"                  // 挂起模式:长时间 sleep,供父进程验收超时终止语义
-	libPathEnv        = "MAA_M1_LIB_PATH"       // 解包出的 libMaaCore.so 绝对路径
-	resourceRootEnv   = "MAA_M1_RESOURCE_ROOT"  // 解包根目录绝对路径(其下含 resource/)
-	userDirEnv        = "MAA_M1_USER_DIR"       // 子进程专用的可写用户目录绝对路径
-	tarballOverrideEv = "MAA_M1_TARBALL"        // 测试专用:覆盖锁定发行包缓存路径
-	successMarker     = "MAA_M1_SUCCESS"        // success 子进程的 stdout 成功标记
-	missingOKMarker   = "MAA_M1_MISSING_LIB_OK" // missing-lib 子进程的 stdout 成功标记
-	hangMarker        = "MAA_M1_HANG"           // hang 子进程的 stdout 启动标记
+	childModeEnv      = "MAA_CORE_CHILD_MODE"     // 子进程模式标记;缺省即父进程,照常执行测试框架
+	childModeSuccess  = "success"                 // 真实库成功路径:公开 Open → 元数据断言 → 打印 capabilities
+	childModeMissing  = "missing-lib"             // 缺库失败路径:errors.As 命中 LibraryLoadError → 同进程再 Open 得 terminated
+	childModeHang     = "hang"                    // 挂起模式:长时间 sleep,供父进程验收超时终止语义
+	libPathEnv        = "MAA_CORE_LIB_PATH"       // 解包出的 libMaaCore.so 绝对路径
+	resourceRootEnv   = "MAA_CORE_RESOURCE_ROOT"  // 解包根目录绝对路径(其下含 resource/)
+	userDirEnv        = "MAA_CORE_USER_DIR"       // 子进程专用的可写用户目录绝对路径
+	tarballOverrideEv = "MAA_CORE_TARBALL"        // 测试专用:覆盖锁定发行包缓存路径
+	successMarker     = "MAA_CORE_SUCCESS"        // success 子进程的 stdout 成功标记
+	missingOKMarker   = "MAA_CORE_MISSING_LIB_OK" // missing-lib 子进程的 stdout 成功标记
+	hangMarker        = "MAA_CORE_HANG"           // hang 子进程的 stdout 启动标记
 )
 
 // errTarballMissing 表示锁定发行包缓存缺失:真实库验收受阻,计为
@@ -286,7 +274,7 @@ func lockedMemberWanted(name string) bool {
 	return strings.HasPrefix(name, "resource/")
 }
 
-// safeJoin 把 tar 成员名安全地拼接进 root:拒绝绝对路径与任何 ..
+// safeJoin 把 tar 成员名安全地拼接进 root:拒绝绝对路径与任何..
 // 分量,防止路径穿越逃出解包目录。
 func safeJoin(root, name string) (string, error) {
 	if !filepath.IsAbs(name) && !strings.HasPrefix(name, "..") && !strings.Contains(name, "/../") {
@@ -344,12 +332,12 @@ type childOutcome struct {
 	exitCode int   // 正常退出时的退出码;被信号杀死时无意义
 }
 
-// runM1Child 以 go test 自身二进制重执行一个子进程:子进程经
+// runCoreOpenChild 以 go test 自身二进制重执行一个子进程:子进程经
 // childModeEnv 在 TestMain 分派,不进入测试框架。超时经
 // exec.CommandContext 外部强制(超时杀死是明确的失败,不是通过);
 // WaitDelay 防止孙进程持有输出管道导致 Wait 挂起。不重试、不
 // recover:执行结果原样交回调用方判定。
-func runM1Child(t *testing.T, timeout time.Duration, mode string, extraEnv map[string]string) childOutcome {
+func runCoreOpenChild(t *testing.T, timeout time.Duration, mode string, extraEnv map[string]string) childOutcome {
 	t.Helper()
 	exe, err := filepath.Abs(os.Args[0])
 	if err != nil {
@@ -385,7 +373,7 @@ func runM1Child(t *testing.T, timeout time.Duration, mode string, extraEnv map[s
 
 // childEnviron 构造子进程环境:父进程环境剥离动态链接器注入变量
 // (LD_LIBRARY_PATH/LD_PRELOAD/LD_AUDIT)后原样继承,再附上模式标记。
-// MAA-01 的锁定策略是不依赖任何 LD_* 配置——libMaaCore.so 的依赖只经
+// 锁定策略是不依赖任何 LD_* 配置——libMaaCore.so 的依赖只经
 // $ORIGIN RUNPATH 与系统默认路径解析;父进程环境残留这些变量(如指向
 // 其他 MAA 安装的 LD_LIBRARY_PATH)会把子进程的依赖解析带离锁定策略,
 // 故三种模式的子进程一律在无 LD_* 注入的环境下验收,其余变量不受影响。
@@ -460,19 +448,19 @@ func successMetadataLine(stdout string) (string, bool) {
 	return "", false
 }
 
-// TestM1RealLibraryOpenSucceedsInFreshProcess 验收真实库成功路径:
+// TestRealCoreOpenSucceedsInFreshProcess 验收真实库成功路径:
 // 在全新子进程中经公开 Open 加载锁定的 libMaaCore.so 并完成初始化,
 // 断言 Version 与 NullSize 符合锁定 profile,打印 Capabilities 实际
 // 值供父进程记录(不硬断言具体能力位)。随后再启动一次新的 success
 // 子进程且同样成功——与 missing-lib 模式共同证明:同进程失败后拒绝
 // 再次 Open,恢复只能来自新进程。退出码非 0、被信号杀死、超时都
 // 是本测试的明确失败,不重试。
-func TestM1RealLibraryOpenSucceedsInFreshProcess(t *testing.T) {
+func TestRealCoreOpenSucceedsInFreshProcess(t *testing.T) {
 	libPath, resourceRoot := requireUnpackedResources(t)
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		userDir := t.TempDir() // 每次子进程独立的可写用户目录
-		out := runM1Child(t, successChildTimeout, childModeSuccess, map[string]string{
+		out := runCoreOpenChild(t, successChildTimeout, childModeSuccess, map[string]string{
 			libPathEnv:      libPath,
 			resourceRootEnv: resourceRoot,
 			userDirEnv:      userDir,
@@ -496,7 +484,7 @@ func TestM1RealLibraryOpenSucceedsInFreshProcess(t *testing.T) {
 	}
 }
 
-// TestM1RealLibraryMissingLibTerminatesProcessLifecycle 验收缺库失败
+// TestRealCoreMissingLibTerminatesProcessLifecycle 验收缺库失败
 // 路径:子进程内以不存在的绝对路径调用公开 Open,断言
 //   - 错误可 errors.As 命中 *LibraryLoadError(原始错误直接返回,
 //     不包 ErrRuntimeTerminated);
@@ -504,8 +492,8 @@ func TestM1RealLibraryOpenSucceedsInFreshProcess(t *testing.T) {
 //     (生命周期已烧毁,拒绝重试)。
 //
 // 两条断言都通过子进程才退出 0;父进程断言其退出 0。
-func TestM1RealLibraryMissingLibTerminatesProcessLifecycle(t *testing.T) {
-	out := runM1Child(t, missingChildTimeout, childModeMissing, nil)
+func TestRealCoreMissingLibTerminatesProcessLifecycle(t *testing.T) {
+	out := runCoreOpenChild(t, missingChildTimeout, childModeMissing, nil)
 	if out.err != nil {
 		t.Fatalf("missing-lib 子进程失败(其内部断言未全部通过):\n%s",
 			childDiagnostics(childModeMissing, out))
@@ -517,12 +505,12 @@ func TestM1RealLibraryMissingLibTerminatesProcessLifecycle(t *testing.T) {
 	t.Logf("missing-lib 子进程内部断言全部通过:\n%s", out.stdout)
 }
 
-// TestM1RealLibraryTimeoutKillReportedAsFailure 验收执行器的超时
+// TestRealCoreTimeoutKillReportedAsFailure 验收执行器的超时
 // 语义:挂起子进程(长时间 sleep)在短超时后被杀死,执行器必须把
 // 「被超时杀死」报告为失败并保留可辨识诊断——超时不是通过,也不得
 // recover 后继续或自动重试。本测试断言该机制工作,测试本身通过。
-func TestM1RealLibraryTimeoutKillReportedAsFailure(t *testing.T) {
-	out := runM1Child(t, hangChildTimeout, childModeHang, nil)
+func TestRealCoreTimeoutKillReportedAsFailure(t *testing.T) {
+	out := runCoreOpenChild(t, hangChildTimeout, childModeHang, nil)
 	if out.err == nil {
 		t.Fatalf("挂起子进程在 %s 超时后必须被报告为失败,实际退出码 0:\n%s",
 			hangChildTimeout, childDiagnostics(childModeHang, out))

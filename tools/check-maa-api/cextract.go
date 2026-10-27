@@ -389,7 +389,7 @@ func (p *cparser) processCallbackTypedef(item []token, line int, plat string) *D
 		return p.diag(line, "AsstApiCallback", frozenCallbackReadable, canon,
 			"callback typedef does not match the locked spelling")
 	}
-	// 形状固定:typedef void ( ASST_CALL * AsstApiCallback ) ( params )
+	// 形状固定:typedef void (ASST_CALL * AsstApiCallback) (params)
 	closeIdx := -1
 	for i := 3; i < len(item); i++ {
 		if item[i].is(")") {
@@ -627,7 +627,7 @@ func (p *cparser) processGetVersion(item []token, line int, plat string) *Diagno
 		return p.diag(line, "AsstGetVersion", frozenGetVersionReadable, canon,
 			"ASSTAPI_PORT is only accepted for the frozen AsstGetVersion spelling")
 	}
-	// token 形状固定:[ASSTAPI_PORT, const, char, *, ASST_CALL, AsstGetVersion, (, )]
+	// token 形状固定:[ASSTAPI_PORT, const, char, *, ASST_CALL, AsstGetVersion, ()]
 	if len(item) != 8 {
 		return p.diag(line, "AsstGetVersion", frozenGetVersionReadable, canon,
 			"malformed AsstGetVersion declaration")

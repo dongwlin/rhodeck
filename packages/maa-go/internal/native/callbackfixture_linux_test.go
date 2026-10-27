@@ -1,52 +1,7 @@
 //go:build linux
 
-// 本文件是 MAA-13 的独立原生线程 callback fixture 验证:以独立手写 C
-// 夹具(testdata/callbackfixture/fixture.c,回调指针类型与锁定的
-// AsstCaller.h:53 AsstApiCallback 一致)在 pthread 启动并 join 的原生
-// 线程上调用生产 trampoline,验证 Unix 无返回 Go callback 的参数往
-// 返、整数 token、回调窗口内的 details 读取与 panic 边界,为 M3 的
-// 关闭与创建接线(MAA-20/21)提供可信 callback 层依据。捕获处理器
-// 经生产 token 注册表(callback_registry.go)安装在本文件选定的固
-// 定 token 常量上,直接锻炼 dispatchCallback 的查表分发路径。
-//
-// 与既有检查的关系(分开报告,不得混用统计):
-//   - 静态 API checker(MAA-09/10)只核对声明一致性;
-//   - loader fixture(MAA_M2_LOADER_FIXTURE_*)只证明装载链路;
-//   - 数值/缓冲区 fixture(MAA_M2_ABI_FIXTURE_*,MAA-12)只证明
-//     Go→C 方向的真实调用;
-//   - 本文件以 MAA_M2_CALLBACK_* 标记报告 C→Go 方向的原生线程回调
-//     结果,命名空间独立、单独统计。
-//
-// 三组用例各自在独立子进程中执行(internal/ffitest,复用包内唯一
-// TestMain 的分派与 abifixture 的 2 分钟外部强制超时常量;崩溃/超时
-// /死锁判失败),子进程内 NewLoader().Open → Lookup cbfx 导出 →
-// purego.RegisterFunc 本地绑定 → 向 token 注册表安装捕获处理器 →
-// 经原生线程触发回调 → 断言,全部通过后打印标记行;父进程不信任
-// 「退出 0」,逐字段复验标记行(纵深防御)。分组:
-//   - roundtrip(MAA_M2_CALLBACK_ROUNDTRIP_OK):3 个并发原生线程各带
-//     不同负 msg(含 MinInt32)、不同非零整数 token、不同 details,
-//     回调参数逐项精确往返;trampoline 地址 1000 次重复获取保持同一
-//     (每进程恰好一个,数量不随获取次数增长);
-//   - snapshot(MAA_M2_CALLBACK_SNAPSHOT_OK):callback 返回后原生立即
-//     整体改写 details 缓冲,捕获处理器在回调窗口内读取 *byte 复制
-//     的快照逐字节保留原始内容——未知字段(futureField 嵌套对象/
-//     数组)与超大整数(>2^53)逐字符保留,json.Number 抽查证明不经
-//     float64 往返(回调窗口内的复制是原始字节复制,本身不做任何
-//     JSON 解析);
-//   - panic(MAA_M2_CALLBACK_PANIC_FAULT_OK):注册的捕获处理器内 Go
-//     panic(该处理器无内层 recover,panic 越过不 recover 的
-//     dispatchCallback)被 nativeCallback 顶栏 recover 为可见故障记
-//     录;C 线程存活并正常 join、fixture 导出正常返回。不宣称
-//     recover 原生崩溃(SIGSEGV 等)或 C++ 异常——那类失败由
-//     ffitest 表现为可见的进程失败。
-//
-// token 纪律:全部用例的 custom_arg 都是本文件内选定的非零整数常量,
-// 全程不把任何 Go 对象地址交给原生侧。
-//
-// 夹具构建入口 buildCallbackFixture 照 MAA-11/12 先例(cc/gcc 回退,
-// 无编译器 Skipf——跳过不是通过),额外带 -pthread;源码路径、编译
-// 器、工具链与命令行经 t.Logf 记录。夹具语义契约全文见 fixture.c
-// 文件头,两侧独立维护,改动必须同步。
+// 本文件以独立手写 C 夹具验证原生线程 callback:覆盖 Unix 无返回回调的
+// 参数往返、整数 token、details 读取与 panic 边界。
 
 package native
 
@@ -78,13 +33,13 @@ const (
 	callbackFixtureModeSnapshot  = "callbackfixture-snapshot"
 	callbackFixtureModePanic     = "callbackfixture-panic"
 
-	// callbackFixtureSOEnv 向子进程传递夹具 .so 的绝对路径;子进程先
+	// callbackFixtureSOEnv 向子进程传递夹具.so 的绝对路径;子进程先
 	// 断言其为绝对路径,与 loader 只接受绝对路径的冻结策略一致。
-	callbackFixtureSOEnv = "MAA_M2_CALLBACK_FIXTURE_SO"
+	callbackFixtureSOEnv = "MAA_CALLBACK_FIXTURE_SO"
 
 	// callbackFixtureSrcRel 是夹具源码相对包目录的路径:夹具按任务
-	// 规定独立放在 maa-go 包根的 testdata/callbackfixture/(与 MAA-11
-	// 的 loaderfixture、MAA-12 的 abifixture 分目录),go test 的工作
+	// 规定独立放在 maa-go 包根的 testdata/callbackfixture/(与
+	// 的 loaderfixture、 abifixture 分目录),go test 的工作
 	// 目录是 internal/native 包源码目录,testdata/ 下的文件不参与 Go
 	// 构建。
 	callbackFixtureSrcRel = "../../testdata/callbackfixture/fixture.c"
@@ -92,11 +47,11 @@ const (
 	// callbackFixtureSOName 是编译产物文件名。
 	callbackFixtureSOName = "libcallbackfixture.so"
 
-	// 三个标记独立命名空间:与 checker、MAA_M2_LOADER_FIXTURE_*、
-	// MAA_M2_ABI_FIXTURE_* 明确分开、单独统计报告。
-	roundtripOKMarker  = "MAA_M2_CALLBACK_ROUNDTRIP_OK"
-	snapshotOKMarker   = "MAA_M2_CALLBACK_SNAPSHOT_OK"
-	panicFaultOKMarker = "MAA_M2_CALLBACK_PANIC_FAULT_OK"
+	// 三个标记独立命名空间:与 checker、MAA_LOADER_FIXTURE_*、
+	// MAA_ABI_FIXTURE_* 明确分开、单独统计报告。
+	roundtripOKMarker  = "MAA_CALLBACK_ROUNDTRIP_OK"
+	snapshotOKMarker   = "MAA_CALLBACK_SNAPSHOT_OK"
+	panicFaultOKMarker = "MAA_CALLBACK_PANIC_FAULT_OK"
 )
 
 // 夹具契约常量(与 fixture.c 文件头的已发表契约一一对应;两侧独立
@@ -147,8 +102,8 @@ func init() {
 	ffitest.Register(callbackFixtureModePanic, runCallbackFixturePanicChild)
 }
 
-// buildCallbackFixture 编译独立原生线程 callback 夹具,返回 .so 绝对
-// 路径。编译器发现与失败语义照 MAA-11/12 先例:依次 exec.LookPath 查
+// buildCallbackFixture 编译独立原生线程 callback 夹具,返回.so 绝对
+// 路径。编译器发现与失败语义照既有先例:依次 exec.LookPath 查
 // 找 cc、gcc;两者都缺失时 Skipf——夹具构建受阻属于测试环境受限,计
 // 为 SKIP(跳过不是通过),真实回调验证未执行,不冒充本平台通过。
 // 编译进 t.TempDir(),输出 libcallbackfixture.so,额外带 -pthread(线
@@ -195,7 +150,7 @@ func buildCallbackFixture(t *testing.T) string {
 
 // == 子进程辅助 ==
 
-// cbFixtureOpenChild 在子进程内装载夹具:断言 .so 路径为绝对路径并
+// cbFixtureOpenChild 在子进程内装载夹具:断言.so 路径为绝对路径并
 // 经生产 NewLoader().Open 打开,失败时向 stderr 打印诊断并返回
 // ok=false(子进程将以非零退出码失败)。cbfx_* 导出不是 Asst 符号,
 // 不做 ResolveAndRegister,由各用例 Lookup 后本地绑定。
@@ -535,11 +490,11 @@ func runCallbackFixturePanicChild() int {
 
 // == 父进程用例:每组独立子进程,复验标记行与关键字段 ==
 
-// TestM2CallbackNativeThreadRoundtrip 验证独立原生线程进入 Unix 无返
+// TestCallbackFixtureNativeThreadRoundtrip 验证独立原生线程进入 Unix 无返
 // 回 Go callback:负消息 ID(含 MinInt32)、details 全文与非零整数
 // token 精确对应,多线程多 token 多消息;trampoline 地址 1000 次重复
 // 获取保持同一。父进程独立复验标记行关键字段(纵深防御)。
-func TestM2CallbackNativeThreadRoundtrip(t *testing.T) {
+func TestCallbackFixtureNativeThreadRoundtrip(t *testing.T) {
 	soPath := buildCallbackFixture(t)
 
 	out := ffitest.Run(t, ffitest.Options{
@@ -573,10 +528,10 @@ func TestM2CallbackNativeThreadRoundtrip(t *testing.T) {
 	t.Logf("roundtrip 子进程原生线程回调验证通过(3 线程、负 msg 含 MinInt32、整数 token 往返、trampoline 稳定):%s", line)
 }
 
-// TestM2CallbackSnapshotBeforeNativeRewrite 验证 details 即时复制:
+// TestCallbackFixtureSnapshotBeforeNativeRewrite 验证 details 即时复制:
 // 原生在 callback 返回后整体改写缓冲,Go 快照保留原文、未知字段与超
 // 大整数逐字符保留。父进程独立复验标记行关键字段。
-func TestM2CallbackSnapshotBeforeNativeRewrite(t *testing.T) {
+func TestCallbackFixtureSnapshotBeforeNativeRewrite(t *testing.T) {
 	soPath := buildCallbackFixture(t)
 
 	out := ffitest.Run(t, ffitest.Options{
@@ -608,10 +563,10 @@ func TestM2CallbackSnapshotBeforeNativeRewrite(t *testing.T) {
 	t.Logf("snapshot 子进程即时复制验证通过(返回后改写不影响快照、未知字段与大整数逐字符保留):%s", line)
 }
 
-// TestM2CallbackPanicContainedAtBoundary 验证 panic 边界:callback 内
+// TestCallbackFixturePanicContainedAtBoundary 验证 panic 边界:callback 内
 // Go panic 不越过 native 边界,C 线程存活并正常 join、fixture 导出
 // 正常返回,故障记录内容可见。不宣称 recover 原生崩溃或 C++ 异常。
-func TestM2CallbackPanicContainedAtBoundary(t *testing.T) {
+func TestCallbackFixturePanicContainedAtBoundary(t *testing.T) {
 	soPath := buildCallbackFixture(t)
 
 	out := ffitest.Run(t, ffitest.Options{

@@ -1,23 +1,6 @@
-// 本文件是异步提交与结果关联的受控用例(MAA-23;绑定设计 §5、§7、
-// §7.1):白盒同包验证公开异步入口的提交与关联契约——Connect/Click/
-// Screencap 以 block=false 触达三个异步 raw 入口,非零 ID 只表示提交
-// 被接受;完成回调先于 raw 返回时按 token + ID + 预期 what 接合,晚
-// 到结果由统一 dispatcher 结算,不依赖消息到达顺序;ID 0 是明确的提
-// 交错误并回收预留,不发布成功 Operation;pending/early 表受冻结容
-// 量限制,重复或不可解释的完成信息以 ErrProtocol 故障,不伪造成功;
-// Wait 取消与调用者丢弃不提前回收容量,晚到结果仍结算一次;关闭与
-// 最终结果竞争时只结算一次,Operation 完成不依赖外部读取 Events。
-// native 异步提交以 fakeInstanceCaller 的 async* 方法注入
-// (instance_create_test.go 的接缝先例),完成消息经真实 token 注册
-// 表查表投递(LookupCallbackDelivery → target.deliver),早到时序以
-// onAsync* 钩子在 raw 调用内确定性放置。全部用例以受控屏障
-// (channel/轮询等待)确定性同步,不加载任何原生库、不触达 loader/
-// 真实 API 表,CGO_ENABLED=0 可跑;防挂死只用 hangGuard 兜底,不作
-// 同步手段。
-//
-// maa→native 的 token 注册表是进程级共享状态:本文件用例互不并行
-// (不调 t.Parallel);成功创建的实例由用例显式 Close 或经 rig.cleanup
-// 兜底收尾,不留悬挂 goroutine 与未注销 token 影响 -race。
+// 本文件是异步提交与结果关联的受控用例:验证 Connect/Click/Screencap
+// 的提交与关联、早到/晚到完成、ID 0 拒绝、容量限制、Wait 取消,以及
+// 关闭与故障下的终态。
 
 package maa
 
@@ -129,7 +112,7 @@ func waitOperationGuarded(t *testing.T, op *Operation, ctx context.Context) (Asy
 // connectInput 是异步用例的合法连接输入(Config 允许空串)。
 var connectInput = ConnectConfig{ADBPath: "/usr/bin/adb", Address: "127.0.0.1:5555", Config: ""}
 
-// TestAsyncEntriesForwardBlockFalseAndAcceptedID 钉住验收条件「三个
+// TestAsyncEntriesForwardBlockFalseAndAcceptedID 验证「三个
 // 异步 raw 入口均传 block=false,非零 ID 只表示提交被接受」:三个入
 // 口的 fake 记录 block 均为 0、handle 来自已准入 lease,连接参数逐字
 // 节透传(空 Config 解码为空串而非 nil);非零 ID 返回 (op, nil) 且
@@ -218,7 +201,7 @@ func watermarkOfState(s *instanceState) AsyncID {
 	return s.asyncWatermark
 }
 
-// TestAsyncEarlyJoinByIDAndExpectedWhat 钉住验收条件「完成回调先于
+// TestAsyncEarlyJoinByIDAndExpectedWhat 验证「完成回调先于
 // raw 返回时能按 token + ID 关联,不依赖消息到达顺序」:完成消息在
 // raw 调用内投递并临存进早到窗口(白盒确认),raw 返回后按 ID 与预
 // 期 what 接合——Connect 返回时 Operation 已带完成终态,等待立即返
@@ -263,7 +246,7 @@ func TestAsyncEarlyJoinByIDAndExpectedWhat(t *testing.T) {
 		t.Errorf("提交高水位 = %d, want 1", got)
 	}
 
-	// 早到 what 与预期不符:ErrProtocol 故障,不伪造成功(§7.1:
+	// 早到 what 与预期不符:ErrProtocol 故障,不伪造成功(
 	// ID/what 不符)。fake 返回与早到结果相同的 ID(2):raw 返回后
 	// join 的 ID 检查通过,故障精确来自预期 what 比对分支,而非相邻
 	// 的高水位或 join ID 分支。
@@ -291,7 +274,7 @@ func TestAsyncEarlyJoinByIDAndExpectedWhat(t *testing.T) {
 	}
 }
 
-// TestAsyncCompletionArrivalOrders 钉住验收条件「不依赖消息到达顺
+// TestAsyncCompletionArrivalOrders 验证「不依赖消息到达顺
 // 序」:旧提交的完成在新提交的 raw 窗口内到达(pending 命中,窗口不
 // 受影响)、新提交自身的早到接合、以及完成消息晚于 raw 返回到达,三
 // 种时序混排都按 ID 关联到正确请求,且不要求完成消息按 ID 顺序到达。
@@ -389,7 +372,7 @@ func TestAsyncCompletionArrivalOrders(t *testing.T) {
 	})
 }
 
-// TestAsyncZeroIDReclaimsReservation 钉住验收条件「ID 0 返回明确提交
+// TestAsyncZeroIDReclaimsReservation 验证「ID 0 返回明确提交
 // 错误并回收本次预留,不发布成功 Operation」:raw 返回 0 时得到包装
 // ErrNativeRejected 的提交错误,预留计数与 pending 表回收,实例不因
 // 此故障;窗口内已有早到结果时,矛盾证据以 ErrProtocol 故障保留,不
@@ -467,7 +450,7 @@ func TestAsyncZeroIDReclaimsReservation(t *testing.T) {
 
 // errTheAsyncSubmissionRemoved 占位:已移除的辅助哨兵。
 
-// TestAsyncProtocolViolationsFaultInstance 钉住验收条件「pending/
+// TestAsyncProtocolViolationsFaultInstance 验证「pending/
 // early 表受冻结容量限制,重复或不可解释结果不能无限缓存或伪造成
 // 功」:早到窗口的第二个结果(含重复)为 ErrProtocol 故障;ID 复用/
 // 倒退与负值 ID 为 ErrProtocol 故障;已接受 ID 的重复完成不能伪造新
@@ -590,7 +573,7 @@ func TestAsyncProtocolViolationsFaultInstance(t *testing.T) {
 	})
 }
 
-// TestAsyncPendingLimitReclaimsAndRejects 钉住验收条件「pending 表受
+// TestAsyncPendingLimitReclaimsAndRejects 验证「pending 表受
 // 冻结容量限制」:未结清 Operation 数达上限时,新提交在进入 raw 前
 // 被拒(ErrOperationLimit,无原生副作用,实例不故障);晚到完成结算
 // 回收容量后,提交恢复接受。
@@ -682,7 +665,7 @@ func TestPendingReservationAccounting(t *testing.T) {
 
 	t.Run("高水位 MaxInt32 在门禁内、进入 raw 前故障并回收预留", func(t *testing.T) {
 		s := newReadyState(t, 0xF156, 8)
-		// 先预留一次:耗尽故障路径必须回收该预留(§7.1:每份预留在
+		// 先预留一次:耗尽故障路径必须回收该预留(每份预留在
 		// 拒绝/结算竞争中只回收一次),否则计数永久滞留。
 		if _, err := s.reservePendingOperation("耗尽前的预留"); err != nil {
 			t.Fatalf("reservePendingOperation = %v, want nil", err)
@@ -706,7 +689,7 @@ func TestPendingReservationAccounting(t *testing.T) {
 	})
 }
 
-// TestAsyncWaitCancellationAndLateSettlement 钉住验收条件「Wait 被
+// TestAsyncWaitCancellationAndLateSettlement 验证「Wait 被
 // 取消或调用者丢弃 Operation 后,晚到结果仍结算一次并回收关联容
 // 量」:取消只结束本次等待、不回收容量;晚到完成结算恰一次(重复完
 // 成触发协议故障而非二次结算);丢弃调用者引用不影响实例关联;晚到
@@ -783,7 +766,7 @@ func TestAsyncWaitCancellationAndLateSettlement(t *testing.T) {
 	})
 }
 
-// TestAsyncCloseRacesSettleOnce 钉住验收条件「关闭与最终结果竞争时
+// TestAsyncCloseRacesSettleOnce 验证「关闭与最终结果竞争时
 // 只结算一次,Operation 完成不依赖外部读取 Events」:关闭期间到达的
 // 完成结算真实结果且不被剩余清空改写;无完成的提交在关闭尾段以
 // ErrClosed 结算恰一次;raw 段内的提交被关闭等待、照常登记;用例全
@@ -822,7 +805,7 @@ func TestAsyncCloseRacesSettleOnce(t *testing.T) {
 		case <-time.After(hangGuard):
 			t.Fatal("Close 未在防挂死上限内完成")
 		}
-		// 关闭尾段不得改写已结算的真实结果(§8 第 5 步:先确认结果,
+		// 关闭尾段不得改写已结算的真实结果(第 5 步:先确认结果,
 		// 再结剩余;剩余为空)。
 		res, err = waitOperationGuarded(t, op, context.Background())
 		if err != nil || res.ID != 1 || !res.OK {
@@ -855,7 +838,7 @@ func TestAsyncCloseRacesSettleOnce(t *testing.T) {
 			t.Fatalf("关闭结算必须无结果: %+v", res)
 		}
 		if got := op.ID(); got != 1 {
-			t.Errorf("已接受 Operation 的 ID 关闭后 = %d, want 保持可读 1(§8.1)", got)
+			t.Errorf("已接受 Operation 的 ID 关闭后 = %d, want 保持可读 1", got)
 		}
 		if n := pendingOccupancy(s); n != 0 {
 			t.Errorf("关闭清空后占用 = %d, want 0", n)
@@ -885,7 +868,7 @@ func TestAsyncCloseRacesSettleOnce(t *testing.T) {
 		go func() { closeErr <- inst.Close() }()
 		waitUntil(t, "close 完成选主转入 closing", func() bool { return s.currentPhase() == phaseClosing })
 		close(release)
-		// 提交已在 raw 段内:关闭等待其退出,提交照常登记(§8 第 2 步:
+		// 提交已在 raw 段内:关闭等待其退出,提交照常登记(第 2 步:
 		// 关闭等待含 raw 返回后的登记/复制),不被关闭撤销。
 		op := <-opCh
 		if op == nil {
@@ -913,7 +896,7 @@ func TestAsyncCloseRacesSettleOnce(t *testing.T) {
 	})
 }
 
-// TestAsyncSubmissionAfterFaultDoesNotRevivePending 钉住 §7.1「已经
+// TestAsyncSubmissionAfterFaultDoesNotRevivePending 钉住 「已经
 // 进入 raw 的动作不能撤销,返回后只补记返回 ID/诊断,不重新插入
 // pending 或复活终态」:raw 段内实例故障时,提交完成 raw 后不登记、
 // 预留回收,返回沿错误链可达首因的诊断错误;公开面拿不到未登记的

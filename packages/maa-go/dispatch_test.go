@@ -1,13 +1,6 @@
-// 本文件是有界事件分发器与故障诊断的受控用例(MAA-17):白盒同包
-// 验证绑定设计 §7、§7.1、§8.1 的分发契约——内部队列与公开缓冲各自
-// 计入预算且越界明确报告溢出故障、消费者完全停读时入口与分发器都
-// 不无限阻塞且故障通知独立可观察、首次溢出 sticky 保留并拒绝新业务
-// 调用、未知消息/未知字段/非法 UTF-8/JSON 与关联字段异常的原文保留
-// 与结算纪律、排空不等待外部消费者且不静默丢弃完成信息,以及 slot
-// 原语、饱和丢失计数与首因前缀的深拷贝纪律。全部用例以受控屏障
-// (channel/WaitGroup/一次性阻塞结算)确定性同步,不加载任何原生库、
-// 不触达 loader/Runtime,CGO_ENABLED=0 可跑;防挂死只作兜底,不作
-// 同步手段。
+// 本文件是有界事件分发器与故障诊断的受控用例:验证预算隔离、消费者停读
+// 时的非阻塞行为、溢出故障与丢失计数、未知消息的原文保留、排空与结算
+// 纪律,以及 slot 原语和首因前缀的深拷贝。
 
 package maa
 
@@ -24,7 +17,7 @@ import (
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
 )
 
-// dispatchBudgets 是事件分发器的五项预算(MAA-03 冻结的字段集合):
+// dispatchBudgets 是事件分发器的五项预算(冻结的字段集合):
 // 仅供用例逐项收紧单一预算,其余保持互不设限。
 type dispatchBudgets struct {
 	callbackBytes  uint64
@@ -109,7 +102,7 @@ func mustDrain(t *testing.T, d *eventDispatcher) {
 	}
 }
 
-// closeAndDrain 走「关门 → 排空」的标准收尾顺序(§8 第 4、5 步):
+// closeAndDrain 走「关门 → 排空」的标准收尾顺序(第 4、5 步):
 // 供正向路径用例终结分发循环;drain 的前置契约(已关门)由该顺序满足。
 func closeAndDrain(t *testing.T, d *eventDispatcher) {
 	t.Helper()
@@ -167,7 +160,7 @@ func assertOverflowClass(t *testing.T, err error) {
 	}
 }
 
-// TestEventDispatchBudgetOverflowReportsFault 钉住验收条件「内部队列
+// TestEventDispatchBudgetOverflowReportsFault 验证「内部队列
 // 和公开缓冲均计入预算,事件数或总字节数越界会明确报告故障」:单条
 // CallbackBytes、内部事件计数、内部字节、公开缓冲计数与公开字节五
 // 个预算各自独立越界(子用例互不混用),每次越界都以
@@ -324,7 +317,7 @@ func TestEventDispatchBudgetOverflowReportsFault(t *testing.T) {
 	})
 }
 
-// TestEventDispatchBoundedWhenConsumerStopsReading 钉住验收条件「外
+// TestEventDispatchBoundedWhenConsumerStopsReading 验证「外
 // 部完全停读 Events 时,事件入口不无限阻塞,故障通知仍可观察」:消费
 // 者从不读取,入口持续 admit+commit 远超公开预算的消息量,主
 // goroutine 不阻塞;一次性故障通知独立于事件队列关闭;丢失计数增加;
@@ -375,7 +368,7 @@ func TestEventDispatchBoundedWhenConsumerStopsReading(t *testing.T) {
 	}
 }
 
-// TestEventDispatchLedgerReconcilesAfterConsumerReads 钉住 §7.1 公开
+// TestEventDispatchLedgerReconcilesAfterConsumerReads 钉住公开
 // 账本对账:消费者中途读走已缓冲事件后,下次投递前按 FIFO 对账删除
 // 已确认接收的长度记录并扣减字节,公开预算得以回收续投;并钉住
 // PublicBytes 恰好装满允许、再加入才越界的边界。
@@ -461,7 +454,7 @@ func TestEventDispatchLedgerReconcilesAfterConsumerReads(t *testing.T) {
 	})
 }
 
-// TestInstanceFaultFirstOverflowStickyAndCallRejection 钉住验收条件
+// TestInstanceFaultFirstOverflowStickyAndCallRejection 验证
 // 「首次溢出保留 ErrEventOverflow 与丢失计数,新业务调用被拒绝」:
 // 公开缓冲溢出的首因沿错误链可达 native.ErrEventOverflow,faulted 后
 // admitCall 拒绝并共享同一错误身份,重复故障只累计丢失、首因与已保
@@ -559,7 +552,7 @@ func TestInstanceFaultFirstOverflowStickyAndCallRejection(t *testing.T) {
 	})
 }
 
-// TestEventDispatchUnknownAndInvalidMessages 钉住验收条件「未知消息
+// TestEventDispatchUnknownAndInvalidMessages 验证「未知消息
 // 及字段可观察;非法 JSON 保留原文,不能将无法关联的完成信息视为成
 // 功」:未知 MessageID/未知 what/未知字段按原样逐字节交付且不故障;
 // 非法 UTF-8/JSON 以 ErrProtocol 故障、保留至多 4096 字节原文前缀且
@@ -839,7 +832,7 @@ func TestEventDispatchUnknownAndInvalidMessages(t *testing.T) {
 	})
 }
 
-// TestEventDispatchDrainAndTerminate 钉住验收条件「dispatcher 的排空
+// TestEventDispatchDrainAndTerminate 验证「dispatcher 的排空
 // 与终止不等待外部消费者,也不静默丢弃完成信息后宣称结果完整」:
 // closeIntake+drain 在消费者停读时有限步完成,已缓冲事件关闭后仍可
 // 消费;排空期间已排队的合法完成先结算再尝试投递,投不出的计丢失并
@@ -924,7 +917,7 @@ func TestEventDispatchDrainAndTerminate(t *testing.T) {
 	})
 }
 
-// TestEventDispatchSlotDiscipline 钉住 slot 原语纪律(MAA-17 文件头
+// TestEventDispatchSlotDiscipline 钉住 slot 原语纪律(文件头
 // panic 边界):commit/abort 各只能结算一次、零值不可用、commit 长度
 // 必须与预留一致;abort 精确退还计数与字节预算;序号单调且从 1 开始。
 func TestEventDispatchSlotDiscipline(t *testing.T) {
@@ -1078,7 +1071,7 @@ func TestEventDispatchLifecyclePanics(t *testing.T) {
 		d.closeIntake()
 		d.requestDrain()
 		assertPanics(t, "drain 请求后 commit", func() { slot.commit([]byte("ok")) })
-		// 空队列 + drain 请求:发送者已停在停止点等待释放(§8 第 5 步,
+		// 空队列 + drain 请求:发送者已停在停止点等待释放(第 5 步,
 		// Events 的关闭由通道所有者在终态发布后触发);经 closeEvents
 		// 关闭公开通道并等待退出,不留悬挂 goroutine。
 		d.closeEvents()
@@ -1086,7 +1079,7 @@ func TestEventDispatchLifecyclePanics(t *testing.T) {
 }
 
 // TestEventDispatchStopPointAndRelease 白盒钉住发送者停止点与 Events
-// 关闭的拆分契约(§8 第 5 步、§8.1:发送者停止是 Events 关闭的前置,
+// 关闭的拆分契约(第 5 步、:发送者停止是 Events 关闭的前置,
 // Events 的关闭由通道所有者在终态发布后触发):requestDrain 后
 // waitProcessed 到达停止点,此刻 Events 仍开放;closeEvents 触发关闭
 // 并等待退出;未 requestDrain 即等待/释放与重复释放均按编程错误
@@ -1113,7 +1106,7 @@ func TestEventDispatchStopPointAndRelease(t *testing.T) {
 			if ok {
 				t.Error("无缓冲事件时不应收到事件")
 			} else {
-				t.Error("closeEvents 之前 Events 不得被关闭(§8 第 5 步:先发布终态,再关闭 Events)")
+				t.Error("closeEvents 之前 Events 不得被关闭(关闭顺序:先发布终态,再关闭 Events)")
 			}
 		default:
 		}
@@ -1136,7 +1129,7 @@ func TestEventDispatchStopPointAndRelease(t *testing.T) {
 }
 
 // TestEventDispatchSequenceExhaustionProtocolFault 白盒钉住序号耗尽
-// 守卫(§7.1:本地事件序号耗尽以 ErrProtocol 故障,不复用序号):
+// 守卫(本地事件序号耗尽以 ErrProtocol 故障,不复用序号):
 // 把已分配序号直接推到回绕边界后再投一条,该条无法成为 Event,以
 // ErrProtocol 故障、计 1 条丢失、不投递、不结算。
 func TestEventDispatchSequenceExhaustionProtocolFault(t *testing.T) {
@@ -1170,7 +1163,7 @@ func TestEventDispatchSequenceExhaustionProtocolFault(t *testing.T) {
 	}
 }
 
-// TestEventDispatchConcurrentAdmitAndConsume 钉住验收条件「并发
+// TestEventDispatchConcurrentAdmitAndConsume 验证「并发
 // admit/消费在 -race 下干净」:8 个 goroutine 并发 admit+commit 400
 // 条消息,消费者循环读取直到通道关闭;充足预算下全部消息恰好交付
 // 一次、序号唯一、无故障、无丢失。
@@ -1244,8 +1237,8 @@ func TestEventDispatchConcurrentAdmitAndConsume(t *testing.T) {
 	}
 }
 
-// TestLostEventsSaturatingAndFaultSnapshot 钉住 MAA-17 在实例状态上
-// 增补的故障通知与丢失诊断(§7.1):丢失计数饱和不回绕、首因原文前
+// TestLostEventsSaturatingAndFaultSnapshot 钉住在实例状态上
+// 增补的故障通知与丢失诊断:丢失计数饱和不回绕、首因原文前
 // 缀截取至多 4096 字节且深拷贝隔离、重复故障不覆盖首因、诊断快照为
 // 独立深拷贝、一次性故障通知恰在首次故障线性化时关闭且正常关闭不触
 // 发。

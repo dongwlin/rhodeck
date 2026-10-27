@@ -1,21 +1,19 @@
-// 本文件是唯一定义的 raw API 表类型:api struct 保存 MaaCore 首期
-// 26 个 R/O raw 函数字段,每次加载构造自己的临时表,发布后只读;
-// 不采用可被外部复制的包级全局函数变量,raw 函数与函数表不向公开
-// 层导出。
+// 本文件是唯一定义的 raw API 表类型:api struct 保存 MaaCore 首期 26 个
+// R/O raw 函数字段,每次加载构造自己的临时表,发布后只读;不采用可被
+// 外部复制的包级全局函数变量,raw 函数与函数表不向公开层导出。
 //
-// 字段名 = C 符号去掉 Asst 前缀(如 AsstGetUUID → GetUUID);字段
-// 类型严格按绑定设计 §3 冻结的 C 宽度取用——AsstBool→uint8、
-// AsstId/AsstOptionKey→int32、AsstSize→uint64、handle/callback
-// 地址/customArg token/hwnd→uintptr、UTF-8 字符串与 UUID 缓冲区
-// →*byte、任务列表→*int32。unsafe.Pointer 仅允许 GetImage 与
-// GetImageBgr 的 buff 参数(C void* 图像缓冲区),其余指针不因此
-// 取得映射许可;C void 返回(Destroy、SetConnectionExtras、Log)
-// 写成无结果列表,不虚构成功码。
+// 字段名 = C 符号去掉 Asst 前缀(如 AsstGetUUID → GetUUID);字段类型
+// 严格按冻结的 C 宽度取用——AsstBool→uint8、AsstId/AsstOptionKey→int32、
+// AsstSize→uint64、handle/callback 地址/customArg token/hwnd→uintptr、
+// UTF-8 字符串与 UUID 缓冲区→*byte、任务列表→*int32。unsafe.Pointer 仅
+// 允许 GetImage 与 GetImageBgr 的 buff 参数(C void* 图像缓冲区),其余
+// 指针不因此取得映射许可;C void 返回(Destroy、SetConnectionExtras、
+// Log)写成无结果列表,不虚构成功码。
 //
 // 本文件无平台条件:26 个字段共同声明于所有平台,Windows 特有的
-// AsyncAttachWindow 由 symbols.go 的 windowsOnly 条目标注适用
-// 范围,非 Windows 平台不查找该符号。声明形式由
-// symbols_static_test.go 以 AST 断言逐字钉死。
+// AsyncAttachWindow 由 symbols.go 的 windowsOnly 条目标注适用范围,
+// 非 Windows 平台不查找该符号。声明形式由 symbols_static_test.go 以 AST
+// 断言逐字钉死。
 
 package native
 

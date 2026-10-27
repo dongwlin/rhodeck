@@ -1,21 +1,5 @@
-// 本文件是声明式符号表的 AST 静态自检:把绑定设计 §3.1 冻结的
-// 声明形式钉死为可执行断言,形式漂移即测试失败。检查对象是包目录
-// 内的 api.go、symbols.go 与 callback_types.go(测试运行目录即包
-// 目录,以 os.Getwd 定位),经 go/parser(ParseComments)解析后
-// 逐项核对:
-//
-//   - 三文件均无任何形式的构建约束注释:设计要求三文件不带平台
-//     条件,平台差异只由 symbolSpec 的 Platform 条目表达;
-//   - 顶层声明逐一对照白名单,白名单之外的任何顶层声明即失败;
-//   - 受限规范化器把每个函数类型渲染为规范签名文本,与手写内联的
-//     独立期望表逐字比对——期望表不从被检查的 Go 表生成,自定义
-//     别名、伪造/重命名 unsafe、匿名参数、变参、具名返回值与多
-//     返回值在规范化器或白名单处直接失败;
-//   - symbolSpecs 的冻结形式(单 return 字面量、四具名 key、
-//     &table.<字段> 目标、无任何调用)、exclusions 的 4 条排除、
-//     两个策略/平台 const 块与两个 callback 签名分别核验;
-//   - register.go 中能力置位 switch 的 case 集合与期望表的 optional
-//     条目交叉钉死,新增 optional 符号漏改置位逻辑即测试失败。
+// 本文件是声明式符号表的 AST 静态自检:钉死 api.go、symbols.go 与
+// callback_types.go 的声明形式,形式漂移即失败。
 
 package native
 
@@ -32,7 +16,7 @@ import (
 
 // expectedAPIFields 是手写内联的独立期望表:字段名、完整签名、
 // R/O 策略与适用平台,顺序即 api 字段与 symbolSpecs 条目的冻结
-// 顺序,数据来源为绑定设计 §3 的逐符号矩阵,不从被检查的 Go 表
+// 顺序,数据来源为的逐符号矩阵,不从被检查的 Go 表
 // 生成。签名文本经 canonicalizeSigText 解析后走与被检文件相同的
 // 规范化器,避免手写字符串因空格差异误判。
 var expectedAPIFields = []struct {
@@ -70,7 +54,7 @@ var expectedAPIFields = []struct {
 }
 
 // expectedExclusions 是手写内联的排除期望表:恰好 4 条,名称集合
-// 与顺序、来源头均冻结自设计 §3.0,不得新增或改绑。
+// 与顺序、来源头均冻结自,不得新增或改绑。
 var expectedExclusions = []struct {
 	name   string
 	header string

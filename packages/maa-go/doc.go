@@ -5,8 +5,8 @@
 // 测试 fixture(模拟原生库的 C 代码)与 race 检查(-race 需要 cgo
 // 运行时),不是生产构建或运行依赖。
 //
-// 首期实测平台为 Linux amd64/glibc。其他平台的支持状态不因交叉编译
-// 或声明层检查而成立;本包不承诺任何未经验证的平台。首版支持声明、
+// 已验证平台为 Linux amd64/glibc。其他平台的支持状态不因交叉编译
+// 或声明层检查而成立;本包不承诺任何未经验证的平台。支持声明、
 // 已知限制与版本升级复验步骤见仓库 packages/maa-go/README.md。
 //
 // # 已交付的公开面
@@ -15,7 +15,7 @@
 // 提供只读元数据 Version、Capabilities、NullSize——全部读取初始化时
 // 复制的不可变数据,绝不触发任何原生调用。配置与输入限制类型
 // (RuntimeConfig、Limits、StaticOption、ConnectionExtra、BufferLimits)
-// 的单位、默认值与校验语义由 MAA-03 冻结:Limits == nil 使用整套
+// 的单位、默认值与校验语义已冻结:Limits == nil 使用整套
 // 默认值,非 nil 表示完整显式配置,越界与跨字段矛盾返回带字段路径
 // 的 ErrInvalidInput,不静默截断或夹取。
 //
@@ -64,14 +64,14 @@
 // 生命周期终止。
 //
 // 实例与连接、任务输入的数据类型(InstanceConfig、InstanceOption、
-// ConnectConfig)已定义,对应的纯 Go 校验与快照辅助同样遵循 MAA-03
+// ConnectConfig)已定义,对应的纯 Go 校验与快照辅助同样遵循
 // 冻结的语义(option key 非 0 且不重复、value 允许空串;ADBPath
 // 非空绝对路径、Address 非空、Config 允许空串并原样传空 C 字符串;
 // taskType 非空、params 为非空完整 JSON object);公开输出数据类型
 // Event(MessageID、原始 JSON、本地事件序号)与 AsyncResult(ID、
 // what、ret、原始 details)也已定义,内部记录持有独立的 JSON 缓冲区。
 //
-// 快照所有权边界(绑定设计 §6、§6.1):调用者在方法返回前不得并发
+// 快照所有权边界:调用者在方法返回前不得并发
 // 修改输入;返回后可修改原配置或原 RawMessage(包括原地改写底层
 // 字节),不影响已冻结的快照。所有快照与输出副本都是独立的深拷贝:
 // Event、AsyncResult 与每次重复/并发取得的结果副本可安全长期持有、
@@ -177,7 +177,7 @@
 //
 // 生产绑定可以 CGO_ENABLED=0 构建,但这不是 MaaCore 无原生依赖的
 // 声明:运行时仍需匹配的 libMaaCore.so、发行包根目录同放的 8 个捆绑
-// 依赖 .so(DT_RUNPATH=$ORIGIN)、resource/ 资源根、可写用户目录与
+// 依赖.so(DT_RUNPATH=$ORIGIN)、resource/ 资源根、可写用户目录与
 // ADB;MaaCore 及其系统依赖(本基线 glibc)仍由系统 loader 加载。不
 // 保证 musl、静态单文件、无系统动态库或 Wails desktop 免 cgo;这些
 // 组合需要各自验收。原生库与资源不随本包分发。首期只实测

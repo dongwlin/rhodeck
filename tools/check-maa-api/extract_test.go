@@ -1,7 +1,7 @@
 // extract_test.go 覆盖受限 C 提取:真实形状正例(Port 全部宏与条件、
 // typedef 链、函数指针、GetVersion 拼写、deprecated 注释、Windows
 // enum、Extra 结构体)、Linux/Windows 两种目标的不同解析结果、
-// ASST_WITH_EXTRA_CALLERS 0/1 两种发现,以及设计 §9.1.2 的 C 提取
+// ASST_WITH_EXTRA_CALLERS 0/1 两种发现,以及的 C 提取
 // 失败向量。全部 fixture 为 testdata 下的合成头文件,自包含。
 
 package main
@@ -349,7 +349,7 @@ func TestPassZeroAndHostileEnv(t *testing.T) {
 	}
 }
 
-// TestExtractFailures 是设计 §9.1.2 的 C 提取失败向量:每条都必须以
+// TestExtractFailures 是的 C 提取失败向量:每条都必须以
 // c-syntax 诊断失败,且诊断指向期望符号。
 func TestExtractFailures(t *testing.T) {
 	cases := []struct {

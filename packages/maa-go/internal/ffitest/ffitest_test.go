@@ -1,4 +1,4 @@
-// ffitest 包的自验证测试:执行器必须先用自身用例验证(MAA-11 步骤 1
+// ffitest 包的自验证测试:执行器必须先用自身用例验证(步骤 1
 // 的验收),覆盖成功路径(含每用例新进程)、异常退出、超时终止、
 // 未知模式与 ExtraEnv 传递,以及 Register/Timeout 的契约类断言。信号
 // 死亡用例在 ffitest_unix_test.go(SIGKILL 自杀仅 unix 信号模型可

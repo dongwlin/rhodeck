@@ -15,7 +15,7 @@ import (
 
 // TestLockedPolicyExpectations 钉死冻结期望表的全部 30 项:23 项
 // required+allPlatforms、2 项 optional+allPlatforms、1 项
-// optional+windowsOnly、4 项 excluded,逐项与设计 §3 冻结矩阵一致。
+// optional+windowsOnly、4 项 excluded,逐项与冻结矩阵一致。
 func TestLockedPolicyExpectations(t *testing.T) {
 	want := map[string]Expectation{
 		// required + allPlatforms(23)。

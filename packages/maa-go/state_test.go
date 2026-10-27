@@ -1,12 +1,5 @@
-// 本文件是实例共享状态与调用准入原语的受控用例(MAA-16):白盒同包
-// 验证绑定设计 §7、§8 的并发契约——closing/faulted/closed 拒绝新业
-// 务调用而已准入 lease 照常释放、raw 门禁前排队的调用已计入在途计数
-// 且关闭等待不漏掉它们、状态锁只用于检查与发布(raw 段与等待清零期
-// 间不持锁)、并发关闭申请恰一所有者并共享同一 closeDone 与最终错
-// 误、状态路径只保留一个受门控的 handle,以及 sticky 首因、非法迁
-// 移 panic 与 callback 准入门的基础语义。全部用例以受控屏障
-// (channel/WaitGroup/原子变量)确定性同步,不加载任何原生库、不触
-// 达 loader/Runtime,CGO_ENABLED=0 可跑。
+// 本文件是实例共享状态与调用准入原语的受控用例:验证阶段迁移、lease
+// 准入/释放、raw 门禁、关闭选主、sticky 首因与非法迁移 panic。
 
 package maa
 
@@ -101,7 +94,7 @@ func newClosedState(t *testing.T, handle uintptr) *instanceState {
 }
 
 // releaseAndAssertDrained 释放在途 lease 并确认:release 在任何阶段
-// 都正常,释放后已准入调用归零、关闭等待收敛(§7.1:已准入调用在
+// 都正常,释放后已准入调用归零、关闭等待收敛(已准入调用在
 // 任何阶段都必须能正常退出,否则关闭等待无法收敛)。
 func releaseAndAssertDrained(t *testing.T, s *instanceState, l callLease) {
 	t.Helper()
@@ -121,7 +114,7 @@ func releaseAndAssertDrained(t *testing.T, s *instanceState, l callLease) {
 	}
 }
 
-// TestInstanceStateRejectsCallsByPhase 钉住验收条件「closing、
+// TestInstanceStateRejectsCallsByPhase 验证「closing、
 // faulted、closed 状态拒绝新业务调用,已准入调用仍可正常释放
 // lease」:各阶段逐一断言 admitCall 的错误类别(closing 包装
 // native.ErrClosing,closed 包装 native.ErrClosed,faulted 沿错误链
@@ -209,7 +202,7 @@ func TestInstanceStateRejectsCallsByPhase(t *testing.T) {
 	})
 }
 
-// TestCloseWaitsForCallsQueuedBeforeRawGate 钉住验收条件「在 raw 门
+// TestCloseWaitsForCallsQueuedBeforeRawGate 验证「在 raw 门
 // 禁前排队的调用已计入在途数量,关闭等待不会漏掉它」:调用 A 先准入
 // 并占据 raw 段,调用 B 已准入(持有 lease、计入在途)但在门禁前排
 // 队——A 全程占据门禁,B 必然尚未进入 raw 段。此时 electClose +
@@ -286,7 +279,7 @@ func TestCloseWaitsForCallsQueuedBeforeRawGate(t *testing.T) {
 	}
 }
 
-// TestStateLockNotHeldAcrossRawSection 钉住验收条件「状态锁只用于
+// TestStateLockNotHeldAcrossRawSection 验证「状态锁只用于
 // 检查与发布;可控 raw 调用期间不持状态锁」:在受控 raw 段(持
 // lease、持门禁)内部与关闭等待阻塞期间,另一 goroutine 都能在限时
 // 内完成需要状态锁的操作;实现若在 raw 段或等待清零期间持有状态锁,
@@ -317,7 +310,7 @@ func TestStateLockNotHeldAcrossRawSection(t *testing.T) {
 		close(drained)
 	}()
 
-	// 等待清零期间(§8 第 2 步绝不持状态锁):拒绝新调用的
+	// 等待清零期间(第 2 步绝不持状态锁):拒绝新调用的
 	// admitCall 与阶段读取都必须能完成。
 	probe := make(chan error, 1)
 	go func() {
@@ -353,7 +346,7 @@ func TestStateLockNotHeldAcrossRawSection(t *testing.T) {
 	}
 }
 
-// TestConcurrentElectCloseSingleOwner 钉住验收条件「多个关闭申请只
+// TestConcurrentElectCloseSingleOwner 验证「多个关闭申请只
 // 选出一个所有者,并共享同一 closeDone 和最终错误存储」:N 个
 // goroutine 并发 electClose 恰一胜出;所有者发布终态后,全部失败者
 // 经 waitClose 取得同一份最终错误(同一错误值、同一底层哨兵),并共
@@ -510,7 +503,7 @@ func TestPublishFinalErrorFirstWriteWins(t *testing.T) {
 	}
 }
 
-// TestInstanceStateSingleGatedHandle 钉住验收条件「状态路径只保留
+// TestInstanceStateSingleGatedHandle 验证「状态路径只保留
 // 一个受门控的 handle,不向外暴露可绕过生命周期的引用」:业务路径只
 // 能凭已准入 lease 读取 handle;closeHandle 仅在调用清零后可取,
 // CreateEx=0 路径(handle=0)无关闭句柄;状态内唯一 handle 字段在
@@ -581,7 +574,7 @@ func TestInstanceStateSingleGatedHandle(t *testing.T) {
 	})
 }
 
-// TestRecordFaultStickySemantics 钉住首次故障的 sticky 语义(§7.1):
+// TestRecordFaultStickySemantics 钉住首次故障的 sticky 语义:
 // 两次故障只保留首个;closing 期间 recordFault 只记因不改阶段;
 // closed 后再有故障源是内部不变量破坏;无因故障不被接受。
 func TestRecordFaultStickySemantics(t *testing.T) {
@@ -712,8 +705,8 @@ func TestInstanceStateIllegalTransitionsPanic(t *testing.T) {
 	})
 }
 
-// TestCallbackGateBasics 钉住 callback 准入门的基础语义(§4、§7;
-// 接线归 MAA-18):门开时准入、closing 阶段仍开放;关门后一律拒绝;
+// TestCallbackGateBasics 钉住 callback 准入门的基础语义(
+// 接线归本层):门开时准入、closing 阶段仍开放;关门后一律拒绝;
 // 关门至多一次;waitCallbacksDrained 等已准入 callback 退出;
 // publishClosed 前必须已关门且已准入 callback 清空。
 func TestCallbackGateBasics(t *testing.T) {

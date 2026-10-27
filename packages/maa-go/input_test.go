@@ -1,9 +1,5 @@
-// 本文件是实例配置与连接、任务输入的校验/快照用例(MAA-14):纯
-// Go 验证,不依赖 MaaCore、设备或业务任务模型。直接对私有的
-// validate*/snapshotInstanceConfig/snapshotConnectInput/
-// snapshotTaskInput 白盒验证错误分类、字段路径与快照深拷贝;快照
-// 语义与既有 Runtime 配置快照(TestSnapshotDeepCopiesConfig)一致,
-// 共用 snapshot.go 的同一套辅助。
+// 本文件是实例配置与连接、任务输入的校验/快照用例:白盒验证错误分类、
+// 字段路径、预算边界与深拷贝语义,不依赖 MaaCore 或设备。
 
 package maa
 

@@ -1,4 +1,4 @@
-// goextract_test.go 用合成 native 包校验 §3.1 冻结形式的 Go 提取:
+// goextract_test.go 用合成 native 包校验冻结形式的 Go 提取:
 // 正例记录字段/条目/排除/callback 及来源位置;形式、词表、遮蔽、
 // 重复声明等失败向量均以 go-syntax 类诊断失败并指向声明位置。
 
@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// syntheticNativeDir 是符合 §3.1 冻结形式的最小 native 包:四个 raw
+// syntheticNativeDir 是符合冻结形式的最小 native 包:四个 raw
 // 字段、四条符号条目、一条排除与两个 callback 类型。
 var syntheticNativeDir = map[string]string{
 	"api.go": `package native

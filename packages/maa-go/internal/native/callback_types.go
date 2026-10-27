@@ -3,7 +3,7 @@
 // 状态;Windows purego 路径的适配签名返回 uintptr,实际 trampoline
 // 的函数体必须显式返回常量 0。
 //
-// 实际 trampoline 由 MAA-13 以唯一具名 nativeCallback 经
+// 实际 trampoline 由本层以唯一具名 nativeCallback 经
 // purego.NewCallback 接入;本文件只提供可静态核验的声明,两个
 // 类型都不带平台条件——callback 的平台差异由装配层处理,声明层
 // 共同保留。签名形式由 symbols_static_test.go 钉死。

@@ -1,32 +1,6 @@
-// 本文件是 Runtime.Close 与创建/关闭竞争的受控用例(MAA-25;绑定设计
-// §5、§8、§8.1、§9.1.1):白盒同包验证完整 Runtime.Close 集成——创建
-// 准入关闭后预留与发布都被拒、未发布实例回滚完成之前 Close 不返回
-// (无 ready 实例时同样检查 initializing 实例)、CreateEx=0 只清理
-// Go 桥接状态不对 0 handle 销毁、已取得 handle 的发布被抢先路径
-// Destroy 恰好一次且不遗留 token/handle、已发布实例由唯一关闭者关闭
-// 且并发的 Runtime.Close/Instance.Close 共享同一稳定最终结果、终止后
-// 的重复关闭不再进入 native,以及 Close 后 NewInstance/Open 遵守终
-// 止使用契约而预占前的纯 Go 配置错误不消耗生命周期。native 创建/关
-// 闭以 fakeInstanceCreator/fakeInstanceCloser 注入(对照
-// instance_create_test.go 的先例),用 on* 动作钩子在 CreateEx 返回
-// 前、返回后(选项应用中)与回滚收尾处确定性调度竞争。全部用例以受
-// 控屏障(channel/轮询等待)同步,不加载任何原生库、不触达 loader/
-// 真实 API 表,CGO_ENABLED=0 可跑;防挂死只用 hangGuard 兜底,不作
-// 同步手段。
-//
-// 「不持锁进入 native」检查(§8 交付物):TestRuntimeCloseNative-
-// WithoutHeldLocks 在 Runtime.Close 驱动的 native stop 挂起期间,以
-// 必须限时完成的生命周期门锁、实例状态锁与 callback 准入投递探针记
-// 录检查——实现若持任一锁跨 native 调用,探针即超时失败。
-//
-// 选项失败与早到故障(无 Close 竞争)的 Destroy 恰好一次路径由
-// MAA-21 的 TestNewInstanceOptionFailureRollsBackSingleClose 与
-// TestNewInstanceEarlyFaultFailsCreation 钉死;本文件覆盖它们与
-// Runtime.Close 竞争的叠加形态(发布被抢先 × 早到故障)。
-//
-// maa→native 的 token 注册表是进程级共享状态:本文件用例互不并行
-// (不调 t.Parallel);实例经 rig.track 登记由 cleanup 兜底 Close,
-// 不留悬挂 goroutine 与未注销 token 影响 -race。
+// 本文件是 Runtime.Close 与创建/关闭竞争的受控用例:验证创建准入关闭、
+// 未发布实例回滚等待、唯一 Destroy、并发关闭的稳定结果,以及终止后的
+// Open/NewInstance 行为。
 
 package maa
 
@@ -87,7 +61,7 @@ func assertNoStopDestroy(t *testing.T, closer *fakeInstanceCloser, what string) 
 }
 
 // assertSingleStopDestroy 断言恰一次 Stop、一次 Destroy 且顺序固定,
-// Destroy 收到给定 handle(§8.1:一次 Stop 再一次 Destroy)。
+// Destroy 收到给定 handle(一次 Stop 再一次 Destroy)。
 func assertSingleStopDestroy(t *testing.T, closer *fakeInstanceCloser, handle uintptr) {
 	t.Helper()
 	if seq := closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
@@ -100,7 +74,7 @@ func assertSingleStopDestroy(t *testing.T, closer *fakeInstanceCloser, handle ui
 
 // TestRuntimeCloseWithoutInstanceTerminatesLifecycle 钉住无任何实例时
 // 的 Close 契约:无 ready 实例也无创建 lease 时 Close 仍完整终止使用
-// (§8:不能因尚无 ready Instance 而提前完成——本例无实例可等,直接
+// (不能因尚无 ready Instance 而提前完成——本例无实例可等,直接
 // 终止),不进入 native;重复 Close 取得同一稳定结果(nil)且不再进
 // 入 native;同门 Open 被终止使用契约拒绝且不进入原生加载。
 func TestRuntimeCloseWithoutInstanceTerminatesLifecycle(t *testing.T) {
@@ -119,7 +93,7 @@ func TestRuntimeCloseWithoutInstanceTerminatesLifecycle(t *testing.T) {
 	}
 	assertNoStopDestroy(t, rig.closer, "重复关闭")
 
-	// 终止使用契约:同门 Open 一律拒绝,不进入原生加载(§8)。
+	// 终止使用契约:同门 Open 一律拒绝,不进入原生加载。
 	env := &fakeEnv{session: newValidFakeSession()}
 	if _, err := open(validRuntimeConfig(), env, rig.gate); !errors.Is(err, native.ErrRuntimeTerminated) {
 		t.Errorf("终止后 Open = %v, want errors.Is native.ErrRuntimeTerminated", err)
@@ -129,7 +103,7 @@ func TestRuntimeCloseWithoutInstanceTerminatesLifecycle(t *testing.T) {
 	}
 }
 
-// TestRuntimeCloseWaitsUnpublishedRollback 钉住验收条件「未发布实例
+// TestRuntimeCloseWaitsUnpublishedRollback 验证「未发布实例
 // 完成回滚之前 Runtime.Close 不返回」与调度点竞争:创建事务进行中
 // (lease 已登记)时,Close 关闭创建准入并等待 lease——创建者在发布
 // 处被拒(ErrClosing),完成统一回滚(一次 Stop 一次 Destroy、token
@@ -143,7 +117,7 @@ func TestRuntimeCloseWaitsUnpublishedRollback(t *testing.T) {
 		entered := make(chan struct{})
 		release := make(chan struct{})
 		rig.creator.onCreateEx = func(_, _ uintptr) {
-			close(entered) // 此刻 lease 必已登记(CreateEx 先于发布,§8)
+			close(entered) // 此刻 lease 必已登记(CreateEx 先于发布)
 			<-release
 		}
 
@@ -168,7 +142,7 @@ func TestRuntimeCloseWaitsUnpublishedRollback(t *testing.T) {
 		assertRuntimeCloseNotReturned(t, closeErr, "创建事务挂起期间")
 		assertNoStopDestroy(t, rig.closer, "创建事务挂起期间")
 
-		// 窗口内的新创建:预留处被拒 ErrClosing,不触达 CreateEx(§8:
+		// 窗口内的新创建:预留处被拒 ErrClosing,不触达 CreateEx(
 		// Runtime.Close 期间创建者不得再发布实例;准入检查先于名额检查)。
 		lateErr := make(chan error, 1)
 		go func() {
@@ -240,7 +214,7 @@ func TestRuntimeCloseWaitsUnpublishedRollback(t *testing.T) {
 			t.Errorf("Runtime.Close = %v, want 与创建者同一存储值 %v", closeResult, creatorResult)
 		}
 
-		// §8 步骤顺序:选项应用先于发布复核——中途关闭不中断剩余选项。
+		//  步骤顺序:选项应用先于发布复核——中途关闭不中断剩余选项。
 		if got := rig.creator.optionCount(); got != 2 {
 			t.Errorf("选项调用次数 = %d, want 2", got)
 		}
@@ -287,7 +261,7 @@ func TestRuntimeCloseWaitsUnpublishedRollback(t *testing.T) {
 			t.Errorf("Runtime.Close = %v, want 与创建者同一存储值 %v", closeResult, creatorResult)
 		}
 
-		// §8.1:CreateEx=0 的路径不调用 Stop/Destroy(不对 0 handle 销
+		// CreateEx=0 的路径不调用 Stop/Destroy(不对 0 handle 销
 		// 毁);Go 桥接状态(token/门/分发循环)照常清理。
 		assertNoStopDestroy(t, rig.closer, "CreateEx=0 路径")
 		assertTokenGone(t, rig.creator.exToken(0))
@@ -327,7 +301,7 @@ func TestRuntimeCloseWaitsUnpublishedRollback(t *testing.T) {
 
 		close(release)
 		creatorResult := waitErr(t, creationErr, "创建事务收尾")
-		// 发布被抢先返回 ErrClosing,但早到故障是主因(§8.1:已有的首
+		// 发布被抢先返回 ErrClosing,但早到故障是主因(已有的首
 		// 次故障/创建失败是主因):错误身份为 ErrEventOverflow 且不再可
 		// 辨 ErrClosing。
 		if !errors.Is(creatorResult, native.ErrEventOverflow) {
@@ -403,7 +377,7 @@ func TestRuntimeCloseClosesActiveInstanceOnce(t *testing.T) {
 
 // TestRuntimeCloseSharesStableFaultedResult 钉住非 nil 最终结果的共享
 // 纪律:Stop 拒绝(ErrNativeRejected 诊断)成为最终错误时,并发与重
-// 复的 Runtime.Close/Instance.Close 取得同一存储值(§8.1:多次 Close
+// 复的 Runtime.Close/Instance.Close 取得同一存储值(多次 Close
 // 返回同一终态),销毁仍恰好一次。
 func TestRuntimeCloseSharesStableFaultedResult(t *testing.T) {
 	const handle = uintptr(0xEC01)
@@ -441,7 +415,7 @@ func TestRuntimeCloseSharesStableFaultedResult(t *testing.T) {
 }
 
 // TestRuntimeCloseNativeWithoutHeldLocks 记录「不持锁进入 native」检
-// 查(§8 交付物;对照 TestInstanceCloseSyncCallbackDuringNativeCalls
+// 查(交付物;对照 TestInstanceCloseSyncCallbackDuringNativeCalls
 // 先例):Runtime.Close 驱动的 native stop 挂起期间,生命周期门锁、
 // 实例状态锁与 callback 准入投递都能限时完成——实现若持任一锁跨
 // native 调用,对应探针即超时失败。
@@ -489,7 +463,7 @@ func TestRuntimeCloseNativeWithoutHeldLocks(t *testing.T) {
 		t.Fatal("native stop 期间状态锁操作未完成:实现疑似持状态锁跨 native 调用")
 	}
 
-	// 探针三:callback 准入 + 入队(closing 阶段门仍开放,§7)必须能
+	// 探针三:callback 准入 + 入队(closing 阶段门仍开放)必须能
 	// 完成——注册表、callback 门与分发器锁均不跨 native 持有。
 	delivered := make(chan struct{})
 	go func() {
@@ -519,7 +493,7 @@ func TestRuntimeCloseNativeWithoutHeldLocks(t *testing.T) {
 	assertSingleStopDestroy(t, rig.closer, handle)
 }
 
-// TestRuntimeCloseTerminatedUseContract 钉住验收条件「Close 后
+// TestRuntimeCloseTerminatedUseContract 验证「Close 后
 // NewInstance/Open 遵守终止使用契约;预占前的纯 Go 配置错误不消耗生
 // 命周期」:创建前纯 Go 校验失败返回 ErrInvalidInput 且门原样保留
 // (ready、未请求关闭),修正前的失败不妨碍随后 Close 正常终止使用;

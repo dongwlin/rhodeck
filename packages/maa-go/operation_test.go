@@ -1,21 +1,5 @@
-// 本文件是 Operation 结算与等待的受控用例(MAA-19):白盒同包验证
-// 绑定设计 §5、§6.1、§7、§7.1、§8 的结算契约——完成、关闭与故障三
-// 类原因经同一单次结算路径竞争时先到者胜且所有等待者观察同一终态、
-// 三类错误语义互可辨识、Wait 取消只结束本次等待且已发布终态优先、
-// 等待快照相互独立、丢弃调用者引用不影响实例关联且容量由结算统一
-// 回收、pending 表准入边界与首因线性化扫描,以及 dispatcher 结算接
-// 线(先结算后投递)与重复结算 panic 纪律。
-//
-// 结构性说明(验收 5「不启动逐操作轮询」):经代码审查确认,
-// operation.go 的 newOperation 只建立终态存储与通知通道,不构造任
-// 何 goroutine;instanceState 的结算入口(settleCompletion、首因线
-// 性化扫描、settleRemainingPending)全部在状态锁内同步完成移除与
-// 回收,不存在逐操作轮询、定时器或 reaper。本文件不再做运行时
-// goroutine 计数断言。
-//
-// 全部用例以受控屏障(channel/WaitGroup/原子变量)确定性同步,不
-// 加载任何原生库,CGO_ENABLED=0 可跑;防挂死只作兜底,不作同步手
-// 段;「不会发生」类断言使用有界观察窗。
+// 本文件是 Operation 结算与等待的受控用例:验证三类终态的单次结算、
+// 错误语义、Wait 取消、快照独立性、pending 容量回收与首因线性化。
 
 package maa
 
@@ -91,7 +75,7 @@ func asyncCallInfoPayload(id AsyncID, what, details string) []byte {
 	return []byte(fmt.Sprintf(`{"what":%q,"async_call_id":%d,"details":%s}`, what, int32(id), details))
 }
 
-// TestOperationSettlesExactlyOnceUnderRaces 钉住验收条件 1「多个完
+// TestOperationSettlesExactlyOnceUnderRaces 验证 1「多个完
 // 成或关闭/故障竞争只能结算一次,所有等待者观察同一终态」:并发等
 // 待者全部取得同一份终态;完成结算、关闭清空与首因线性化扫描三方
 // 竞争时每个 operation 恰好取得一种终态,先结算者胜,后到的结算入
@@ -285,11 +269,11 @@ func TestOperationSettlesExactlyOnceUnderRaces(t *testing.T) {
 	})
 }
 
-// TestOperationTerminalErrorSemantics 钉住验收条件 2「ret=false 返
+// TestOperationTerminalErrorSemantics 验证 2「ret=false 返
 // 回原生结果与可辨识失败错误,关闭和事件丢失保持不同错误语义」:
 // 完成失败同时给出完好快照与包装 ErrNativeRejected 的错误;关闭结
 // 算包装 ErrClosed 且无结果;故障结算原样返回首因;三类错误交叉
-// errors.Is 互不可混淆。已结算后 ID 保持可读(§8.1)。
+// errors.Is 互不可混淆。已结算后 ID 保持可读。
 func TestOperationTerminalErrorSemantics(t *testing.T) {
 	const (
 		id      = AsyncID(601)
@@ -308,7 +292,7 @@ func TestOperationTerminalErrorSemantics(t *testing.T) {
 		if !errors.Is(err, native.ErrNativeRejected) {
 			t.Errorf("errors.Is(err, native.ErrNativeRejected) = false; err = %v", err)
 		}
-		// 结果与可辨识失败错误同时给出,快照字段完好(§5:不在 OK
+		// 结果与可辨识失败错误同时给出,快照字段完好(不在 OK
 		// 字段编造结构化原因)。
 		if res.ID != id || res.What != what || res.OK || string(res.Details) != details {
 			t.Fatalf("ret=false 的结果 = %+v, want 字段完好的失败结果", res)
@@ -391,10 +375,10 @@ func TestOperationTerminalErrorSemantics(t *testing.T) {
 	})
 }
 
-// TestOperationWaitCancellation 钉住验收条件 3「一次 Wait 取消后仍
+// TestOperationWaitCancellation 验证 3「一次 Wait 取消后仍
 // 可再次等待并取得后续真实结果」:取消/超时只结束本次等待,返回
 // ctx.Err() 与零值结果,不改写终态、不提前回收 pending 记录;终态
-// 已发布时与取消竞争,已发布终态优先(§8.1)。
+// 已发布时与取消竞争,已发布终态优先。
 func TestOperationWaitCancellation(t *testing.T) {
 	t.Run("已取消 context 返回 Canceled 且不改写终态、不回收槽位", func(t *testing.T) {
 		s := newReadyState(t, 0x0A31, 8)
@@ -475,7 +459,7 @@ func TestOperationWaitCancellation(t *testing.T) {
 	})
 }
 
-// TestOperationWaitSnapshotIndependence 钉住验收条件 4「修改某次
+// TestOperationWaitSnapshotIndependence 验证 4「修改某次
 // Wait 返回的 JSON 不改变缓存或其他等待者结果」:每次等待经快照取
 // 得独立深拷贝,原地改写先前副本不影响缓存、其他副本与之后的任何
 // 等待;多次等待互不共享底层数组(交叉改写验证)。
@@ -554,7 +538,7 @@ func TestOperationWaitSnapshotIndependence(t *testing.T) {
 	})
 }
 
-// TestPendingOperationOwnershipAndReclaim 钉住验收条件 5「调用者丢
+// TestPendingOperationOwnershipAndReclaim 验证 5「调用者丢
 // 弃 Operation 不影响实例持有的关联;容量由最终结算统一回收,不启
 // 动逐操作轮询」:白盒确认记录仍由实例 pending 表持有,经
 // settleCompletion 结算后移出表、容量回收可再 admit;取消一次等待
@@ -605,7 +589,7 @@ func TestPendingOperationOwnershipAndReclaim(t *testing.T) {
 	})
 }
 
-// TestAdmitPendingOperationBoundaries 钉住验收条件 6「容量边界与准
+// TestAdmitPendingOperationBoundaries 验证 6「容量边界与准
 // 入阶段拒绝」:pending 表填满后 admit 返回包装 ErrOperationLimit
 // 的错误且实例不故障(阶段仍 ready、无首因、故障通知不触发),被拒
 // 的准入不占容量,结算释放后可再 admit;closing/faulted/closed 阶段
@@ -699,7 +683,7 @@ func TestAdmitPendingOperationBoundaries(t *testing.T) {
 	})
 }
 
-// TestFirstFaultLinearizesPendingOperations 钉住 §7.1 首次故障线性
+// TestFirstFaultLinearizesPendingOperations 钉住首次故障线性
 // 化扫描(验收 7):有 pending 时 recordFault 在状态门内立即将全部
 // 未决 Operation 统一结为首因;故障前已结算的成功不改写;故障后到
 // 达的完成消息查不到记录,不能覆盖故障终态;重复故障不重复扫描、
@@ -710,7 +694,7 @@ func TestFirstFaultLinearizesPendingOperations(t *testing.T) {
 		op1 := mustAdmitPending(t, s, AsyncID(11), "未决 1")
 		op2 := mustAdmitPending(t, s, AsyncID(12), "未决 2")
 		op3 := mustAdmitPending(t, s, AsyncID(13), "未决 3")
-		// 故障前先结算 op2:已结算的成功不得被故障改写(§7.1)。
+		// 故障前先结算 op2:已结算的成功不得被故障改写。
 		s.settleCompletion(completionInfo{ID: 12, What: "先到成功", OK: true, Details: json.RawMessage(`{"ret":true}`)})
 
 		cause := fmt.Errorf("事件队列溢出: %w", native.ErrEventOverflow)
@@ -788,7 +772,7 @@ func TestFirstFaultLinearizesPendingOperations(t *testing.T) {
 	})
 }
 
-// TestSettleRemainingPendingClosingSemantics 钉住验收条件 8:closing
+// TestSettleRemainingPendingClosingSemantics 验证 8:closing
 // 阶段把剩余 pending 全部以 ErrClosed 结算一次并清空,表已空时为无
 // 害空操作;非 closing 阶段调用按编程错误 panic。
 func TestSettleRemainingPendingClosingSemantics(t *testing.T) {
@@ -836,7 +820,7 @@ func TestSettleRemainingPendingClosingSemantics(t *testing.T) {
 	})
 }
 
-// newSettlementWiredDispatcher 构造 MAA-19 真实接线的事件分发器:
+// newSettlementWiredDispatcher 构造真实接线的事件分发器:
 // settle 接 instanceState.settleCompletion,预算取互不设限的基线并
 // 已 start。返回的分发器由用例负责 closeAndDrain 收尾。
 func newSettlementWiredDispatcher(t *testing.T, pendingOperations uint64) (*eventDispatcher, *instanceState) {
@@ -849,11 +833,11 @@ func newSettlementWiredDispatcher(t *testing.T, pendingOperations uint64) (*even
 	return d, s
 }
 
-// TestDispatcherWiringSettlesCompletion 钉住验收条件 9(dispatcher
+// TestDispatcherWiringSettlesCompletion 验证 9(dispatcher
 // 集成):newEventDispatcher 接 instanceState.settleCompletion 后,
 // 合法 AsyncCallInfo 先结算再投递,公开事件可读时等待立即取得终态,
 // details 子对象逐字节保留(含内部空白);ret=false 结算为原生失
-// 败;未命中 ID 不结算、不故障,事件照常投递(MAA-23 边界:本单元
+// 败;未命中 ID 不结算、不故障,事件照常投递(边界:本层
 // 无提交高水位核对,未知/重复完成不归因、不猜测、不计丢失)。
 func TestDispatcherWiringSettlesCompletion(t *testing.T) {
 	t.Run("合法完成先结算后投递,details 原文逐字节保留", func(t *testing.T) {
@@ -869,7 +853,7 @@ func TestDispatcherWiringSettlesCompletion(t *testing.T) {
 		if string(ev.JSON) != string(payload) {
 			t.Fatalf("公开事件原文 = %s, want 逐字节保留的 %s", ev.JSON, payload)
 		}
-		// 先结算后投递(§8 第 5 步):公开事件可读时,等待必须立即取
+		// 先结算后投递(第 5 步):公开事件可读时,等待必须立即取
 		// 得终态,不得再有任何延迟。
 		res, err := waitGuarded(t, op, context.Background())
 		if err != nil {
@@ -926,7 +910,7 @@ func TestDispatcherWiringSettlesCompletion(t *testing.T) {
 	})
 
 	t.Run("无窗口的未知 ID 完成为 ErrProtocol 故障,原文仍交付", func(t *testing.T) {
-		// MAA-23 已接提交高水位与关联语义(§7.1:无窗口的未知 ID 为
+		//  已接提交高水位与关联语义(无窗口的未知 ID 为
 		// ErrProtocol):不能归因的完成不得静默丢弃矛盾证据,以 ErrProtocol
 		// 故障保留首因;消息原文仍按公开预算交付,pending 记录由首因
 		// 线性化扫描统一结算,等待者见故障而非成功。
@@ -965,7 +949,7 @@ func TestDispatcherWiringSettlesCompletion(t *testing.T) {
 	})
 }
 
-// TestOperationSettlementPanicDiscipline 钉住验收条件 10(panic 纪
+// TestOperationSettlementPanicDiscipline 验证 10(panic 纪
 // 律):operation 恰一次结算,任何形式(完成/关闭/故障)的重复结算
 // 都是内部不变量破坏,panic;无因故障结算 panic;nil 与零值
 // operation 不可用,结算/等待按实现契约 panic。

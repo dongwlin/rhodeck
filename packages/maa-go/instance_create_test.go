@@ -1,27 +1,6 @@
-// 本文件是实例创建事务与统一失败回滚的受控用例(MAA-21;绑定设计
-// §4、§8):白盒同包验证 NewInstance 的完整创建事务——预占前纯 Go
-// 校验失败不消耗 Runtime、唯一实例名额与创建 lease、token/callback
-// 门/事件队列先于 CreateEx 可用且早到消息不遗失、CreateEx=0 不调用
-// 无效 handle、取得 handle 后选项失败与早到故障走单次关闭、ready 发
-// 布与 Runtime 状态复核在同一状态门内(已 closing 时由创建者完成回
-// 滚再释放 lease),以及失败后不保留活动 token、Runtime 终止使用不
-// 允许同进程重建。native 创建以 fakeInstanceCreator 注入(对照
-// instance_test.go 的 fakeInstanceCloser 先例),早到消息经真实
-// token 注册表查表投递(LookupCallbackDelivery → target.deliver),
-// 钉住 §4「注册表、事件队列先于 CreateEx 建立」的时序。全部用例以
-// 受控屏障(channel/轮询等待)确定性同步,不加载任何原生库、不触达
-// loader/真实 API 表,CGO_ENABLED=0 可跑;防挂死只用 hangGuard 兜底,
-// 不作同步手段。
-//
-// maa→native 的 token 注册表是进程级共享状态:本文件用例互不并行
-// (不调 t.Parallel);成功创建的实例由用例显式 Close 或经 rig.cleanup
-// 兜底收尾,不留悬挂 goroutine 与未注销 token 影响 -race。
-//
-// 早到故障的时序边界:发布点(publishInstance 内 tryPublishReady 的
-// 状态锁段)是创建期故障与业务期故障的线性化边界——发布前到达的早
-// 到故障使创建失败并回滚,发布后到达的故障进入已发布实例的业务期
-// 故障路径(§7.1),两者由同一状态锁保证互斥,不存在「已 faulted 仍
-// 发布」的窗口。
+// 本文件是实例创建事务与统一失败回滚的受控用例:验证预占前校验、唯一
+// 实例名额与创建 lease、token/callback 门初始化、CreateEx=0、选项失败
+// 回滚、ready 发布与 Runtime 关闭竞争。
 
 package maa
 
@@ -180,7 +159,7 @@ type fakeAsyncScreencapCall struct {
 }
 
 // fakeAsyncCall 记录一次异步提交调用:name 是方法名,connect/click/
-// screencap 恰一者非 nil,block 记录原始实参(MAA-23 冻结
+// screencap 恰一者非 nil,block 记录原始实参(冻结
 // block=false)。
 type fakeAsyncCall struct {
 	name      string
@@ -189,8 +168,8 @@ type fakeAsyncCall struct {
 	screencap *fakeAsyncScreencapCall
 }
 
-// fakeInstanceCaller 是同步业务调用(MAA-22)、异步提交(MAA-23)与
-// 输出缓冲区读取(MAA-24)的受控 fake native(对照 fakeInstanceCreator
+// fakeInstanceCaller 是同步业务调用、异步提交与
+// 输出缓冲区读取的受控 fake native(对照 fakeInstanceCreator
 // 先例):逐次记录全部业务调用(方法名、顺序、handle 与解码参数),
 // 支持注入返回值(缺省全部成功)与动作(onStart/onAsync* 在对应调用
 // 返回前执行,供早到完成投递与屏障注入;image/uuid/tasks 三类读取经
@@ -374,7 +353,7 @@ func (f *fakeInstanceCaller) asyncRecordByName(i int, name string) fakeAsyncCall
 	return fakeAsyncCall{}
 }
 
-// fakeOutputCall 记录一次输出缓冲区读取调用(MAA-24 的 getImage/
+// fakeOutputCall 记录一次输出缓冲区读取调用(getImage/
 // getUUID/getTasksList 三类共用):handle 是收到的实例句柄,buffPtr
 // 是 buffer 首地址(以 unsafe.Pointer 记录,GC 据此保活目标内存——
 // 供调用返回后改写原生内容、验证 Go 快照独立性),buffSize 是收到
@@ -396,7 +375,7 @@ const (
 
 // outputByteBuffer 把字节接口(PNG/UUID)调用记录的 buffer 还原为
 // 字节切片:指针为空或容量为零即 binding 违反「实际非空 buffer」契
-// 约(§6.2),按编程错误 panic 暴露,不以 0 容量静默继续。
+// 约,按编程错误 panic 暴露,不以 0 容量静默继续。
 func outputByteBuffer(call fakeOutputCall) []byte {
 	if call.buffPtr == nil || call.buffSize == 0 {
 		panic(fmt.Sprintf("fake: %s received an empty output buffer (nil=%v, size=%d)", call.name, call.buffPtr == nil, call.buffSize))
@@ -701,7 +680,7 @@ func waitLeaseReleased(t *testing.T, g *lifecycleGate) {
 }
 
 // assertTokenGone 以「重复注销按注册表契约 panic」正向证明 token 已
-// 由流程移除,失败后的活动 token 不被保留(§4:token 永不复用)。
+// 由流程移除,失败后的活动 token 不被保留(token 永不复用)。
 func assertTokenGone(t *testing.T, token uintptr) {
 	t.Helper()
 	assertPanics(t, "token 已移除后重复注销", func() {
@@ -736,7 +715,7 @@ func assertRuntimeTerminated(t *testing.T, rt *Runtime, gate *lifecycleGate, fir
 }
 
 // TestNewInstanceGateReservationContract 钉住预留/复核接口自身契约
-// (§8:预留与复核在 Runtime 同一状态门内):非 ready 拒绝预留;预留
+// (预留与复核在 Runtime 同一状态门内):非 ready 拒绝预留;预留
 // 幂等拒绝第二次;发布只在 creating 名额上进行,slot 不符即编程错误
 // panic;创建准入关闭后预留与发布都被拒;lease 未预留即释放或重复
 // 释放是编程错误 panic;无可等待 lease 的等待立即返回。
@@ -805,7 +784,7 @@ func TestNewInstanceGateReservationContract(t *testing.T) {
 	})
 }
 
-// TestNewInstanceValidationFailureDoesNotReserve 钉住验收条件 1 前半
+// TestNewInstanceValidationFailureDoesNotReserve 验证 1 前半
 // 「预占前纯 Go 校验失败不消耗 Runtime」:实例配置校验发生在触碰生
 // 命周期门之前,失败返回带字段路径的 ErrInvalidInput,名额、lease
 // 与生命周期门原样保留,修正输入后同门仍可成功创建。
@@ -846,7 +825,7 @@ func TestNewInstanceValidationFailureDoesNotReserve(t *testing.T) {
 // TestNewInstanceSuccessPublishesReady 钉住成功路径:CreateEx 收到进
 // 程唯一 trampoline 与已登记 token,实例选项按序应用(含空 value 编
 // 码为空 C 字符串),ready 发布、名额转 active、创建 lease 释放;唯
-// 一名额已占用时再次创建被拒(同进程不重建实例,§8);实例关闭后
+// 一名额已占用时再次创建被拒(同进程不重建实例);实例关闭后
 // Runtime 终止使用且 Stop/Destroy 恰好一次。
 func TestNewInstanceSuccessPublishesReady(t *testing.T) {
 	const handle = uintptr(0xCB00)
@@ -860,7 +839,7 @@ func TestNewInstanceSuccessPublishesReady(t *testing.T) {
 	rig.track(inst)
 	token := rig.creator.exToken(0)
 
-	// CreateEx 参数:进程唯一 trampoline + 已登记 token(§4)。
+	// CreateEx 参数:进程唯一 trampoline + 已登记 token()。
 	if got := rig.creator.exCallback(0); got != native.CallbackTrampoline() {
 		t.Errorf("CreateEx callback = %#x, want 进程唯一 trampoline %#x", got, native.CallbackTrampoline())
 	}
@@ -877,7 +856,7 @@ func TestNewInstanceSuccessPublishesReady(t *testing.T) {
 		}
 	}
 	// ready 发布与名额状态:状态 ready、句柄已登记、名额 active、活
-	// 动实例已登记、创建 lease 已释放(§8 NewInstance 第 6、7 步)。
+	// 动实例已登记、创建 lease 已释放(NewInstance 第 6、7 步)。
 	if got := inst.inst.state.currentPhase(); got != phaseReady {
 		t.Errorf("实例阶段 = %d, want ready", got)
 	}
@@ -889,7 +868,7 @@ func TestNewInstanceSuccessPublishesReady(t *testing.T) {
 	}
 	waitLeaseReleased(t, rig.gate)
 
-	// 唯一名额已占用:再次创建被拒(§8:首期单活动实例)。
+	// 唯一名额已占用:再次创建被拒(首期单活动实例)。
 	if _, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, InstanceConfig{}); !errors.Is(err, native.ErrRuntimeInUse) {
 		t.Errorf("名额占用后再次创建 = %v, want errors.Is native.ErrRuntimeInUse", err)
 	}
@@ -898,7 +877,7 @@ func TestNewInstanceSuccessPublishesReady(t *testing.T) {
 	}
 
 	// 公开 Close:单次关闭流程,Stop/Destroy 恰好一次,Runtime 终止
-	// 使用(§8:一个实例关闭后 Runtime 进入终止态)。
+	// 使用(一个实例关闭后 Runtime 进入终止态)。
 	if err := inst.Close(); err != nil {
 		t.Fatalf("Close = %v, want nil", err)
 	}
@@ -916,7 +895,7 @@ func TestNewInstanceSuccessPublishesReady(t *testing.T) {
 	assertRuntimeTerminated(t, rig.rt, rig.gate, "")
 }
 
-// TestNewInstanceEarlyMessagesDuringCreateEx 钉住验收条件 2「CreateEx
+// TestNewInstanceEarlyMessagesDuringCreateEx 验证 2「CreateEx
 // 调用前 token、callback 门和队列已可用,早到消息不会遗失状态」:
 // CreateEx 期间与选项应用期间经真实注册表查表投递的早到消息照常准
 // 入入队,发布后在公开事件缓冲按序可读——查表未命中即证明 token 未
@@ -975,7 +954,7 @@ func TestNewInstanceEarlyMessagesDuringCreateEx(t *testing.T) {
 	assertTokenGone(t, token)
 }
 
-// TestNewInstanceCreateExZeroRollback 钉住验收条件 3「CreateEx 返回 0
+// TestNewInstanceCreateExZeroRollback 验证 3「CreateEx 返回 0
 // 时关闭临时 callback 准入、等待在途回调并移除 token,不调用无效
 // handle」:零 handle 回滚不执行 Stop/Destroy,关门、退空、移除
 // token、排空与终态发布照常,Runtime 终止使用。
@@ -993,7 +972,7 @@ func TestNewInstanceCreateExZeroRollback(t *testing.T) {
 			t.Errorf("错误应含 %q:\n%s", want, err.Error())
 		}
 	}
-	// 不调用无效 handle(§8.1:CreateEx=0 的路径不调用 Stop/Destroy)。
+	// 不调用无效 handle(CreateEx=0 的路径不调用 Stop/Destroy)。
 	if got := rig.closer.count("stop"); got != 0 {
 		t.Errorf("CreateEx=0 路径的 Stop 次数 = %d, want 0", got)
 	}
@@ -1001,7 +980,7 @@ func TestNewInstanceCreateExZeroRollback(t *testing.T) {
 		t.Errorf("CreateEx=0 路径的 Destroy 次数 = %d, want 0", got)
 	}
 	// 临时 callback 准入已关闭、token 已移除、分发循环已收敛、终态已
-	// 发布(§8:清理临时 token 和 Go 状态)。
+	// 发布(清理临时 token 和 Go 状态)。
 	token := rig.creator.exToken(0)
 	assertTokenGone(t, token)
 	if got := rig.creator.optionCount(); got != 0 {
@@ -1011,10 +990,10 @@ func TestNewInstanceCreateExZeroRollback(t *testing.T) {
 	assertRuntimeTerminated(t, rig.rt, rig.gate, "AsstCreateEx")
 }
 
-// TestNewInstanceOptionFailureRollsBackSingleClose 钉住验收条件 4 前
+// TestNewInstanceOptionFailureRollsBackSingleClose 验证 4 前
 // 半「取得 handle 后选项失败走单次关闭,不向调用者返回半初始化
 // Instance」:首个原生拒绝即停止按序应用,回滚执行一次 Stop、一次
-// Destroy(§8.1:已创建 handle 后失败执行同一销毁流程),错误保留选
+// Destroy(已创建 handle 后失败执行同一销毁流程),错误保留选
 // 项失败主因,Runtime 终止使用。
 func TestNewInstanceOptionFailureRollsBackSingleClose(t *testing.T) {
 	const handle = uintptr(0xCD00)
@@ -1053,7 +1032,7 @@ func TestNewInstanceOptionFailureRollsBackSingleClose(t *testing.T) {
 	assertRuntimeTerminated(t, rig.rt, rig.gate, "SetInstanceOption")
 }
 
-// TestNewInstanceEarlyFaultFailsCreation 钉住验收条件 4 后半「早到故
+// TestNewInstanceEarlyFaultFailsCreation 验证 4 后半「早到故
 // 障走单次关闭,不向调用者返回半初始化 Instance」:CreateEx 期间与
 // 选项应用期间到达的早到故障(有界扫描溢出,ErrEventOverflow 链)使
 // 发布被拒,回滚执行一次 Stop、一次 Destroy,错误为首因,丢失计数与
@@ -1077,7 +1056,7 @@ func TestNewInstanceEarlyFaultFailsCreation(t *testing.T) {
 		if !errors.Is(err, native.ErrEventOverflow) {
 			t.Fatalf("err = %v, want errors.Is native.ErrEventOverflow", err)
 		}
-		// 单次关闭照常执行(§8:callback 已可接收,早到故障会使创建失
+		// 单次关闭照常执行(callback 已可接收,早到故障会使创建失
 		// 败并按既定规则清理)。
 		if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
 			t.Fatalf("native 调用序列 = %v, want [stop destroy]", seq)
@@ -1116,7 +1095,7 @@ func TestNewInstanceEarlyFaultFailsCreation(t *testing.T) {
 		if !errors.Is(err, native.ErrEventOverflow) {
 			t.Fatalf("err = %v, want errors.Is native.ErrEventOverflow", err)
 		}
-		// 中途故障不中断剩余选项的应用(§8 步骤顺序:应用选项 → 复核
+		// 中途故障不中断剩余选项的应用(步骤顺序:应用选项 → 复核
 		// 发布),发布点原子复核拦下故障。
 		if got := rig.creator.optionCount(); got != 2 {
 			t.Errorf("选项调用次数 = %d, want 2", got)
@@ -1130,7 +1109,7 @@ func TestNewInstanceEarlyFaultFailsCreation(t *testing.T) {
 	})
 }
 
-// TestNewInstancePublishRejectedByRuntimeClose 钉住验收条件 5「ready
+// TestNewInstancePublishRejectedByRuntimeClose 验证 5「ready
 // 发布与 Runtime 状态复核在同一状态门内,已 closing 时由创建者完成回
 // 滚再释放 lease」:创建准入关闭后完成的创建事务不发布实例,创建者
 // 执行一次 Stop、一次 Destroy 后才释放 lease(lease 释放时回滚已完
@@ -1154,7 +1133,7 @@ func TestNewInstancePublishRejectedByRuntimeClose(t *testing.T) {
 	}()
 	<-entered
 
-	// Runtime.Close 侧(创建准入关闭,MAA-25 接入完整等待):创建准
+	// Runtime.Close 侧(创建准入关闭, 接入完整等待):创建准
 	// 入关闭后,正在进行的创建事务不被打断,发布将被拒绝。
 	if !rig.gate.closeCreationAdmission() {
 		t.Fatal("首个创建准入关闭申请必须生效")

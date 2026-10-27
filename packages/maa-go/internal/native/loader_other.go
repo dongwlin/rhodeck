@@ -1,8 +1,8 @@
 //go:build !linux
 
 // 本文件是非 Linux 平台的生产加载器构造,与 loader_linux.go 的
-// NewLoader 同签名。macOS 与 Windows 均为规划能力、未验收(绑定
-// 设计 §4):本文件存在的目的是让公开层持有平台中立的生产入口、
+// NewLoader 同签名。macOS 与 Windows 均为规划能力、未验收。本文件
+// 存在的目的是让公开层持有平台中立的生产入口、
 // 保证 GOOS=windows/darwin 交叉构建可编译,而不是声明任何平台
 // 支持——这里返回使用「不支持平台原语」的加载器,其 open/lookup
 // 一律返回包装 ErrUnsupported 的错误,明确声明该平台的 loader 未

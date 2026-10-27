@@ -1,34 +1,7 @@
 //go:build linux
 
-// 本文件是 MAA-11 第二部分的 loader 夹具验证:以独立 C 夹具
-// (testdata/loaderfixture/fixture.c)经真实系统 loader 验证
-// Loader.Open → Library.Lookup → ResolveAndRegister 的完整装载链路。
-//
-// 对应任务验收条件的落实:
-//   - 夹具构建入口(MAA-11 步骤 4):buildLoaderFixture 以 cc/gcc 编译
-//     夹具,经 t.Logf 记录夹具源码路径、编译参数、平台与工具链;无
-//     C 编译器的环境计为 SKIP(跳过不是通过),夹具构建与装载验证
-//     未执行,不冒充本平台通过;
-//   - 完整夹具(TestM2LoaderFixtureCompleteLoadsInFreshSubprocess):
-//     26 导出全部在场时,装载 → 解析注册成功发布 API 表,能力快照
-//     Create/ImageBgr 置位、AsyncAttachWindow 在 Linux 恒关闭
-//     (windowsOnly 符号不查找),未知符号查找得到 *SymbolLookupError;
-//   - 缺失夹具(TestM2LoaderFixtureMissingRequiredSymbolsReportedTogether):
-//     3 个必需符号缺失时,一次 ResolveAndRegister 调用收集全部失败,
-//     AggregateError 恰含 3 项 *SymbolLookupError、顺序与符号清单
-//     一致,且不发布任何 API 表(失败原子性)。
-//
-// 为何走子进程执行器(internal/ffitest):FFI 纪律要求装载也发生在
-// 全新进程内并由父进程外部强制超时——dlopen 的原生副作用(库内构造
-// 器、依赖映射、系统 loader 状态)不可撤回,失败后同进程状态不可信。
-// 夹具全部导出是空函数且签名有意不对应真实 ABI,绝不可被调用,因此
-// 用例只触达 Open/Lookup/ResolveAndRegister 三个原语:不触达任何 raw
-// 调用包装(calls.go),也不走公开 Open——公开 Open 会对加载结果发起
-// GetVersion 等真实 ABI 调用,对空函数夹具既无意义也越出本文件边界。
-//
-// 边界声明:本文件是「装载验证」,结果以
-// MAA_M2_LOADER_FIXTURE_*_OK 标记单独记录,不进入 ABI 调用通过统计;
-// 真实 ABI 的调用验证由 MAA-12 的独立 fixture 承担,两者不得混用。
+// 本文件以独立 C 夹具验证 loader 的完整装载链路:Load → Lookup →
+// ResolveAndRegister,包括缺符号聚合报告与失败不发布半成品。
 
 package native
 
@@ -57,9 +30,9 @@ const (
 	// ResolveAndRegister 以聚合错误整体失败,断言通过后打印标记退出 0。
 	loaderFixtureModeMissing = "loaderfixture-missing"
 
-	// loaderFixtureSOEnv 向子进程传递夹具 .so 的绝对路径;子进程先
+	// loaderFixtureSOEnv 向子进程传递夹具.so 的绝对路径;子进程先
 	// 断言其为绝对路径,与 loader 只接受绝对路径的冻结策略一致。
-	loaderFixtureSOEnv = "MAA_M2_LOADER_FIXTURE_SO"
+	loaderFixtureSOEnv = "MAA_LOADER_FIXTURE_SO"
 
 	// loaderFixtureSrcRel 是夹具源码相对包目录的路径:go test 的工作
 	// 目录是包源码目录,testdata/ 下的文件不参与 Go 构建。
@@ -71,8 +44,8 @@ const (
 	// completeOKMarker / missingOKMarker 是两种子进程全部内部断言通过
 	// 后打印的结构化标记:父进程不信任子进程「退出 0」本身,只以
 	// stdout 实际标记行及其字段为复验依据(纵深防御)。
-	completeOKMarker = "MAA_M2_LOADER_FIXTURE_COMPLETE_OK"
-	missingOKMarker  = "MAA_M2_LOADER_FIXTURE_MISSING_OK"
+	completeOKMarker = "MAA_LOADER_FIXTURE_COMPLETE_OK"
+	missingOKMarker  = "MAA_LOADER_FIXTURE_MISSING_OK"
 
 	// loaderFixtureProbeSymbol 是完整变体中的故意缺失符号:验证 Lookup
 	// 的失败路径返回结构化 *SymbolLookupError。
@@ -112,7 +85,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// buildLoaderFixture 编译独立 C 夹具,返回 .so 绝对路径;missing 为
+// buildLoaderFixture 编译独立 C 夹具,返回.so 绝对路径;missing 为
 // true 时编译「多个必需导出缺失」变体。
 //
 // 编译器发现:依次 exec.LookPath 查找 cc、gcc;两者都缺失时 Skipf
@@ -124,7 +97,7 @@ func TestMain(m *testing.M) {
 // 编译进 t.TempDir(),输出 libloaderfixture.so;missing 变体加
 // -DLOADER_FIXTURE_MISSING(置于源文件参数之前)。所用编译器路径、
 // 编译器 --version 首行、完整编译命令行与变体全部经 t.Logf 记录
-// (MAA-11 步骤 4:记录夹具源码、编译参数、平台和工具链)。编译
+// (步骤 4:记录夹具源码、编译参数、平台和工具链)。编译
 // 失败 Fatalf 并附完整合并输出,不重试。
 func buildLoaderFixture(t *testing.T, missing bool) string {
 	t.Helper()
@@ -312,7 +285,7 @@ func runLoaderFixtureMissingChild() int {
 	return 0
 }
 
-// TestM2LoaderFixtureCompleteLoadsInFreshSubprocess 验收完整夹具装载:
+// TestLoaderFixtureCompleteLoadsInFreshSubprocess 验收完整夹具装载:
 // 新子进程中 NewLoader().Open → ResolveAndRegister 全部成功并发布
 // API 表。父进程断言子进程退出 0、标记行在场,并独立复验两处:
 //   - symbols 值等于父进程侧由 symbolSpecs(new(api)) 现算的适用符号
@@ -326,7 +299,7 @@ func runLoaderFixtureMissingChild() int {
 //
 // 无编译器时在构建入口处 skip(不构建夹具、不启动子进程);子进程
 // 失败(非零退出/信号/超时)一律 Fatalf 附完整诊断,不重试。
-func TestM2LoaderFixtureCompleteLoadsInFreshSubprocess(t *testing.T) {
+func TestLoaderFixtureCompleteLoadsInFreshSubprocess(t *testing.T) {
 	soPath := buildLoaderFixture(t, false)
 
 	out := ffitest.Run(t, ffitest.Options{
@@ -364,12 +337,12 @@ func TestM2LoaderFixtureCompleteLoadsInFreshSubprocess(t *testing.T) {
 	t.Logf("complete 子进程装载验证通过(单独标记,不计入 ABI 调用通过统计):%s", line)
 }
 
-// TestM2LoaderFixtureMissingRequiredSymbolsReportedTogether 验收缺失
+// TestLoaderFixtureMissingRequiredSymbolsReportedTogether 验收缺失
 // 夹具的聚合报告:缺失 3 个必需符号时,一次 ResolveAndRegister 调用
 // 收集全部失败并整体拒绝发布。父进程断言子进程退出 0(其内部断言
 // 全部通过)、标记行在场,并独立复验标记行 symbols 列表与顺序恰为
 // expectedMissingFixtureSymbols——与子进程内断言互相独立(纵深防御)。
-func TestM2LoaderFixtureMissingRequiredSymbolsReportedTogether(t *testing.T) {
+func TestLoaderFixtureMissingRequiredSymbolsReportedTogether(t *testing.T) {
 	soPath := buildLoaderFixture(t, true)
 
 	out := ffitest.Run(t, ffitest.Options{

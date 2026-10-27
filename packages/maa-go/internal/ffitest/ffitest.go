@@ -1,5 +1,5 @@
 // Package ffitest 提供「每个 FFI 用例一个新进程」的通用子进程执行器,
-// 为 maa-go 后续 FFI 测试(MAA-12/13)与 M2+ 阶段的同类用例服务。
+// 为 maa-go 的 FFI 测试与同类用例服务。
 //
 // # 背景与边界
 //
@@ -47,7 +47,7 @@
 // # 环境策略
 //
 // 子进程继承父进程全量环境,ExtraEnv 同名键覆盖继承值,模式变量由
-// 执行器独占。MAA-08 验收(acceptance_linux_test.go)对 LD_* 动态
+// 执行器独占。 验收(acceptance_linux_test.go)对 LD_* 动态
 // 链接器变量的剥离是真实库用例的锁定策略,不属于通用执行器:需要
 // 同类策略的用例应经 ExtraEnv 显式处理,或等待后续字段扩展,本包
 // 不隐式改写继承环境。
@@ -162,7 +162,7 @@ type Options struct {
 
 	// ExtraEnv 是追加到子进程环境的额外变量,同名键覆盖父进程继承值
 	// (覆盖语义在构造环境时显式去重保证,不依赖 environ 重复条目的
-	// 解析顺序)。平台特定策略(如 MAA-08 对 LD_* 变量的剥离)不属于
+	// 解析顺序)。平台特定策略(如对 LD_* 变量的剥离)不属于
 	// 通用执行器,由调用方经本字段或后续扩展字段自理。ChildModeEnv 由
 	// 执行器独占,本字段中的同名条目被忽略。
 	ExtraEnv map[string]string
@@ -222,7 +222,7 @@ func (o Outcome) Diagnostics() string {
 }
 
 // Run 在全新子进程中执行一次 opts.Mode 用例,返回原始执行结果。实现
-// 与 MAA-08 的内联执行器(acceptance_linux_test.go 的 runM1Child)
+// 与内联执行器(acceptance_linux_test.go 的 runCoreOpenChild)
 // 同源:以 go test 自身二进制(os.Args[0])重执行并传 -test.run=^$,
 // 子进程在 TestMain 经 Dispatch 分派,不进入测试框架。不重试、不
 // recover:cmd.Run 恰好执行一次,结果原样交回调用方判定——原生崩溃
@@ -268,7 +268,9 @@ func Run(t *testing.T, opts Options) Outcome {
 // childEnviron 构造子进程环境:父进程全量继承;ExtraEnv 同名键先从
 // 继承值中剔除再追加,使覆盖语义不依赖 environ 重复条目的解析顺序;
 // 模式变量最后追加且独占(剔除继承值与本字段中的任何同名条目)。
-// MAA-08 的 LD_* 剥离是真实库用例的锁定策略,不在通用执行器内隐式
+//
+//	LD_* 剥离是真实库用例的锁定策略,不在通用执行器内隐式
+//
 // 执行,理由见 Options.ExtraEnv 的文档。
 func childEnviron(extra map[string]string, mode string) []string {
 	override := make(map[string]struct{}, len(extra)+1)

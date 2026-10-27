@@ -1,5 +1,5 @@
 // env.go 冻结静态目标与宏环境:只接受 (linux, amd64) 与
-// (windows, amd64),未知组合失败;宏取值按绑定设计 §9.1.1 冻结,
+// (windows, amd64),未知组合失败;宏取值按冻结,
 // 不接受 -D,也不从 host 环境继承。ASST_WITH_EXTRA_CALLERS 运行
 // profile 取 0,另以 1 做实验导出发现。这些宏是解析用的确定值,
 // 不声称 Windows 编译器实际定义 __x86_64__ 或对应 GNU 版本。

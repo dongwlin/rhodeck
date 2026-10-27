@@ -1,71 +1,6 @@
-// 本文件是 MAA-26 的综合并发/故障/数据所有权跨组件回归套件(绑定设计
-// §7、§8、§9.1 补充行为验收):白盒同包验证公开 API 全链路——公开提交
-// 方法 → fake native 接缝 → 真实 token 注册表查表投递
-// (LookupCallbackDelivery → callbackTarget.deliver)→ callback 准入 →
-// 有界分发器 → 实例状态结算 → Operation/Events 公开面——在关闭、故
-// 障与完成竞争组合下的终态与数据所有权契约。按任务执行范围「集成
-// MAA-14 至 MAA-25,补跨组件回归,不重复各任务已有的局部测试」,本
-// 文件只覆盖既有局部用例未组合的交叉形态,并在下方维护 §9.1 补充行
-// 为验收与测试用例的映射记录。全部用例以受控屏障(channel/轮询等待)
-// 确定性同步,不加载任何原生库、不触达 loader/真实 API 表,
-// CGO_ENABLED=0 可跑;防挂死只用 hangGuard 兜底,不作同步手段;race
-// 检查只辅助发现 Go 并发问题,不作为原生 ABI 正确性的证明(§9)。
-//
-// maa→native 的 token 注册表是进程级共享状态:本文件用例互不并行
-// (不调 t.Parallel);实例由 createRig.cleanup 兜底 Close,不留悬挂
-// goroutine 与未注销 token 影响 -race。
-//
-// §9.1 补充行为验收 → 测试用例映射(既有局部用例 + 本文件新增跨组
-// 件组合;「补」指本文件新增的组合形态):
-//   - 「调用已准入但尚在串行门禁前排队,同时 Close:新调用被拒绝,
-//     旧调用完成后 Destroy 恰好一次;多个 Close 等同一关闭结果」:
-//     既有 TestCloseWaitsForCallsQueuedBeforeRawGate(state_test.go)、
-//     TestCloseWaitsQueuedSyncEntries(instance_sync_test.go)、
-//     TestInstanceCloseWaitsCallsBeforeDestroy(instance_test.go);
-//     补 TestIntegrationCloseWithQueuedAsyncAndSyncDestroyed——异步
-//     提交(pending 预留横跨关闭选主)与 Destroy 期间同步 Destroyed、
-//     关门后迟到投递的组合形态。
-//   - 「观察到 Done 或多个 Close 返回后立即读取 Err、等待 Operation:
-//     最终错误与结果稳定,不依赖额外调度或延时」:既有
-//     TestInstanceCloseWithStalledEventConsumer(instance_test.go);
-//     补 TestIntegrationStableTerminalStatesAndSnapshotIsolation——
-//     经公开投递路径取得副本(Events/Wait)后再改写、多次 Close 同
-//     终态的组合形态。
-//   - 「callback 查 token/准入处暂停,同时关闭:未准入者不能读取原
-//     生内存,已准入者退出前不释放状态;Stop/Destroy 同步回调不锁
-//     死」:既有 TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain、
-//     TestCallbackDeliverGateClosedSkipsNativeDetails(callback_test.go)、
-//     TestInstanceCloseGateAndTokenAfterDestroy(instance_test.go);
-//     补 TestIntegrationCloseWithQueuedAsyncAndSyncDestroyed——真实
-//     注册表查表路径上「Destroy 调用线程同步投递 Destroyed 不锁死 +
-//     关门后迟到(未准入)投递不读 details(nil 探针)」的组合形态。
-//   - 「丢弃 Operation、取消 Wait 后收到早到/晚到结果:关联和容量回
-//     收仍正确;Close 竞争只结算一次;消费者完全停读也不阻塞 native
-//     清理」:既有 TestAsyncWaitCancellationAndLateSettlement、
-//     TestAsyncCloseRacesSettleOnce、TestAsyncCompletionArrivalOrders
-//     (instance_async_test.go)、TestOperationSettlesExactlyOnceUnder
-//     Races(operation_test.go);补 TestIntegrationCompletionFaultMatrix
-//     ——取消等待 + 早到接合 + ret=false 晚到 + 非法 JSON 故障 + 重
-//     复完成的混排组合形态。
-//   - 「原生内容在调用后改写/销毁、配置和输入在方法返回后改写、一
-//     次 Wait 的结果被修改:Go 快照与后续 Wait 不受影响」:既有
-//     TestOpenSnapshotIsDeepCopy(runtime_test.go)、TestInstanceConfig
-//     SnapshotIsDeepCopy(input_test.go)、TestTaskInputSnapshotIsDeepCopy
-//     (input_test.go)、TestReadSnapshotsSurviveNativeAndCallerWrites
-//     (instance_read_test.go)、TestEventRecordSnapshotIsIndependent、
-//     TestOperationWaitSnapshotIndependence(event_test.go/operation_test.go);
-//     补 TestIntegrationStableTerminalStatesAndSnapshotIsolation——经
-//     真实投递链取得 Event/AsyncResult 副本后原地改写的组合形态。
-//   - 容量上限(§7.1)与消费者停读:单条 CallbackBytes、公开缓冲字节
-//     预算在消费者完全停读下的触发、故障通知独立可见与 pending 结算
-//     归 TestIntegrationCapacityLimitsWithStalledConsumer;内部队列计
-//     数/字节预算、pending 与早到上限的既有覆盖见
-//     TestEventDispatchBudgetOverflowReportsFault(dispatch_test.go)、
-//     TestAsyncPendingLimitReclaimsAndRejects、
-//     TestAsyncProtocolViolationsFaultInstance(instance_async_test.go)
-//     ——分发循环全程非阻塞,内部队列积压无法经公开 API 确定性构
-//     造(见文件尾的边界说明),其预算由 admit 原语在真实投递路径上
-//     继续把守。
+// 本文件是综合并发、故障与数据所有权跨组件回归套件:覆盖公开提交 →
+// fake native → token 注册表 → callback 准入 → 分发器 → Operation/Events
+// 的交叉形态,补充各组件局部用例未组合的竞态。
 
 package maa
 
@@ -79,7 +14,7 @@ import (
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
 )
 
-// TestIntegrationCloseWithQueuedAsyncAndSyncDestroyed 钉住验收条件
+// TestIntegrationCloseWithQueuedAsyncAndSyncDestroyed 验证
 // 「已准入排队调用受保护,新调用被拒绝;Destroy 同步 callback 不死锁
 // 且只执行一次销毁」与「未取得 callback lease 的线程不读 details」的
 // 跨组件组合:异步提交 A 在 raw 门禁段内执行、B 已准入并预留 pending
@@ -241,7 +176,7 @@ func TestIntegrationCloseWithQueuedAsyncAndSyncDestroyed(t *testing.T) {
 	}
 }
 
-// TestIntegrationCompletionFaultMatrix 钉住验收条件「取消或丢弃
+// TestIntegrationCompletionFaultMatrix 验证「取消或丢弃
 // Operation 不泄漏容量;关闭/故障/完成竞争只结算一次;无法关联的完
 // 成不能伪造成成功」的混排组合:取消的等待不回收容量、晚到 ret=false
 // 结算为原生失败并回收;早到接合按 ID 与预期 what 完成、未知字段与大
@@ -404,9 +339,9 @@ func TestIntegrationCompletionFaultMatrix(t *testing.T) {
 	}
 }
 
-// TestIntegrationCapacityLimitsWithStalledConsumer 钉住验收条件「消费
+// TestIntegrationCapacityLimitsWithStalledConsumer 验证「消费
 // 者完全停读时故障通知仍可见,pending 得到结算,Close 在 native 正常
-// 返回的前提下完成」与 §7.1 容量上限的公开路径触发:单条超过
+// 返回的前提下完成」与容量上限的公开路径触发:单条超过
 // CallbackBytes 在投递路径预留点即拒绝;公开缓冲字节预算在消费者完全
 // 停读下溢出、故障通知独立于 Events 可观察、丢失计数按条累计且首因
 // sticky;Close 在 native 正常返回下完成,返回首因身份,已确认的完成
@@ -545,7 +480,7 @@ func TestIntegrationCapacityLimitsWithStalledConsumer(t *testing.T) {
 	})
 }
 
-// TestIntegrationStableTerminalStatesAndSnapshotIsolation 钉住验收条件
+// TestIntegrationStableTerminalStatesAndSnapshotIsolation 验证
 // 「Done 或任一 Close 返回后可立即读取稳定 Err 和 Operation 结果,修
 // 改先前结果不污染内部快照」的公开路径组合:经真实投递链取得的
 // Event 与 Wait 结果各自是独立副本,原地改写不影响内部缓存、其他等

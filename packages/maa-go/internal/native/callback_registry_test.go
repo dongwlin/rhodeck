@@ -1,25 +1,5 @@
-// 本文件是 callback token 注册表与平台中立分发序的受控用例(MAA-18;
-// 绑定设计 §4、§7、§7.1、§8):白盒同包验证 token 单调生成与耗尽拒绝
-// (token 0、回绕及耗尽均不会被接受)、nil 投递函数不消耗 token、
-// dispatchCallback 的固定分发序(token-zero/unknown-token 记可见边界
-// 故障后不投递、命中精确透传且不解引用 details)、注册表锁绝不跨投递
-// (投递内重入注册表自死锁即实现违约)、已开始的投递不因注销中断
-// (§8 第 4 步注册表侧:强引用保持状态在投递期间可达)、测试暂停缝恰
-// 位于「查到 token 之后、投递之前」(准入竞态注入点),以及
-// CallbackDetailsLength/CopyCallbackDetails 的冻结边界(§7.1:恰好
-// CallbackBytes 字节后是 NUL 合法)与 install/remove 的接线层 panic
-// 纪律。
-//
-// 与既有检查的分工:callbackfixture_linux_test.go 以真实原生线程承载
-// trampoline 装配与 panic 顶栏;本文件全部经 dispatchCallback 直呼,
-// 无 build 标签、不装载任何原生库。
-//
-// 进程级共享状态纪律:token 生成器、注册表与边界故障槽为进程级共享,
-// 本文件用例互不并行(不调 t.Parallel);每个用例注销自己注册的
-// token、恢复被白盒修改的 callbackTokens.last、边界故障槽与暂停缝,
-// 不把共享状态泄漏给同包其他用例。防挂死兜底上限 hangGuard 对照
-// maa 包 state_test.go 的同名常量约定:只作「操作必须完成」的等待上
-// 限,同步一律经 channel/原子屏障完成。
+// 本文件是 callback token 注册表与平台中立分发序的受控用例:验证 token
+// 单调性与耗尽拒绝、固定分发序、锁不跨投递、注销时序,以及测试暂停缝。
 
 package native
 
@@ -115,7 +95,7 @@ func (r *cbDeliveryRecorder) snapshot() []cbDeliveryRecord {
 }
 
 // mustRegister 经生产注册入口铸造 token 并要求成功:token 非零是注册
-// 契约的一部分(§4:token 0 不会被接受),失败直接终止用例。
+// 契约的一部分(token 0 不会被接受),失败直接终止用例。
 func mustRegister(t *testing.T, deliver CallbackDelivery) uintptr {
 	t.Helper()
 	token, err := RegisterCallbackTarget(deliver)
@@ -135,8 +115,8 @@ func registryEntryCount() int {
 	return len(callbackTargets.targets)
 }
 
-// TestTokenMonotonicNeverReused 钉住验收条件「token 非零、单调且永不
-// 复用」(§4):连续注册得到严格递增、互不相同的非零 token;注销后再
+// TestTokenMonotonicNeverReused 验证「token 非零、单调且永不
+// 复用」():连续注册得到严格递增、互不相同的非零 token;注销后再
 // 次注册拿到的 token 仍大于之前全部——注销后的 token 不再发出,原生侧
 // 迟到的回调只会得到查表未命中的可见故障,绝不会投递给新实例。
 func TestTokenMonotonicNeverReused(t *testing.T) {
@@ -177,8 +157,8 @@ func TestTokenMonotonicNeverReused(t *testing.T) {
 	}
 }
 
-// TestTokenExhaustionRefusedAtWrapBoundary 白盒钉住验收条件「回绕及耗
-// 尽均不会被接受」(§4:耗尽或回绕时拒绝创建):把进程级计数器推到
+// TestTokenExhaustionRefusedAtWrapBoundary 白盒验证「回绕及耗
+// 尽均不会被接受」(耗尽或回绕时拒绝创建):把进程级计数器推到
 // ^uintptr(0) 后,RegisterCallbackTarget 返回包装 ErrProtocol 的错误、
 // token 为 0、注册表不新增条目;恢复计数器后注册表照常铸造可用 token
 // ——拒绝是精确的边界行为,不是注册表整体失效。
@@ -259,7 +239,7 @@ func TestTokenNotConsumedByNilDelivery(t *testing.T) {
 	}
 }
 
-// TestDispatchCallbackDeliveryOrder 钉住分发序的固定三步(§4:不允许
+// TestDispatchCallbackDeliveryOrder 钉住分发序的固定三步(不允许
 // 静默丢弃):token 0 与查表未命中分别记 token-zero/unknown-token 的
 // 可见边界故障后返回、绝不投递、不 panic(原生线程上的回调不能因接线
 // 层错误终止 C 线程);命中的投递收到精确的 (msg, details 指针)——
@@ -338,7 +318,7 @@ func TestDispatchCallbackDeliveryOrder(t *testing.T) {
 	})
 }
 
-// TestCallbackRegistryLockNotHeldAcrossDelivery 钉住 §4 红线「注册表
+// TestCallbackRegistryLockNotHeldAcrossDelivery 钉住红线「注册表
 // 锁不跨投递」:捕获投递函数在投递中途重入注册表(重入查表、经生产
 // 入口注册并注销新 token)。查表函数取出函数值后必须已释放读锁,重入
 // 操作才能在限时内完成;实现若在投递期间持有任何注册表锁,本用例必然
@@ -374,7 +354,7 @@ func TestCallbackRegistryLockNotHeldAcrossDelivery(t *testing.T) {
 	}
 }
 
-// TestCallbackRegistryInFlightDeliverySurvivesUnregister 钉住 §8 第 4
+// TestCallbackRegistryInFlightDeliverySurvivesUnregister 钉住第 4
 // 步竞态的注册表侧:注册表持有投递函数(及其捕获状态的强引用)直至
 // 显式注销,已开始的投递不因注销失败、捕获状态在投递期间保持可达。
 // 投递在 channel 屏障处暂停,主测试在暂停窗口内执行注销——注销必须
@@ -409,7 +389,7 @@ func TestCallbackRegistryInFlightDeliverySurvivesUnregister(t *testing.T) {
 
 	<-entered
 	// 注销在投递中途发生:remove 不等待在途投递(等待归 maa 层关闭流
-	// 程,§8 第 4 步的前置由准入门与退空承载),必须立即返回。
+	// 程, 第 4 步的前置由准入门与退空承载),必须立即返回。
 	removed := make(chan struct{})
 	go func() {
 		doUnregister()
@@ -456,7 +436,7 @@ func TestCallbackRegistryPauseSeamBetweenLookupAndDeliver(t *testing.T) {
 	deliver := func(msg int32, detailsJSON *byte) {
 		invoked.Store(true)
 		if reject.Load() {
-			// 准入拒绝:立即返回,不读取原生 details(§4 验收红线的
+			// 准入拒绝:立即返回,不读取原生 details(验收红线的
 			// 分发侧前提;红线本体由 maa 层 deliver 承载)。
 			return
 		}
@@ -549,7 +529,7 @@ func TestCallbackRegistryInstallRemovePanics(t *testing.T) {
 	})
 }
 
-// TestCallbackDetailsLengthBounds 钉住有界寻找 NUL 的冻结边界(§7.1:
+// TestCallbackDetailsLengthBounds 钉住有界寻找 NUL 的冻结边界(
 // 在下标 0..maxBytes 含端点内寻找,恰好 CallbackBytes 字节后是 NUL 合
 // 法,超过则按溢出处理;nil 缓冲返回未找到,由调用方按 ErrProtocol 处
 // 理):整段无 NUL 返回 (0, false),不投递截断 JSON 的决定归调用方。
@@ -567,7 +547,7 @@ func TestCallbackDetailsLengthBounds(t *testing.T) {
 	})
 
 	t.Run("恰在 maxBytes 下标的 NUL 合法", func(t *testing.T) {
-		// §7.1 冻结边界:扫描范围含端点 maxBytes,恰好 CallbackBytes
+		//  冻结边界:扫描范围含端点 maxBytes,恰好 CallbackBytes
 		// 字节后是 NUL 合法(9 字节缓冲、maxBytes=8)。
 		if length, found := CallbackDetailsLength(cbTestCBytes("12345678"), 8); !found || length != 8 {
 			t.Fatalf("CallbackDetailsLength = (%d, %v), want (8, true)", length, found)
@@ -592,7 +572,7 @@ func TestCallbackDetailsLengthBounds(t *testing.T) {
 	})
 }
 
-// TestCallbackDetailsCopySemantics 钉住精确复制的所有权与纪律(§6.1:
+// TestCallbackDetailsCopySemantics 钉住精确复制的所有权与纪律(
 // 原始字节复制,不做任何解析;副本与源独立):精确复制 length 字节、
 // length 0 不读取任何原生字节、负长度按接线层编程错误 panic、复制后
 // 改写源缓冲不影响副本。

@@ -1,14 +1,8 @@
 //go:build linux
 
-// realinput_linux_test.go 是 MAA-09 的真实头正例集成测试(沿用 MAA-08
-// 的缓存归档先例):从锁定的 MAA v6.20.1 linux 发行包缓存流式解包归档
-// 根的 AsstCaller.h/AsstPort.h/AsstCallerExtra.h 三个成员,先整包
-// SHA-256 钉扎,再把成员字节摘要逐一与 checker 内部 profile 常量核对
-// (不符即 Fail 不是 skip),据实写出 inputs.json 后对 (linux, amd64)
-// 与 (windows, amd64) 各跑一次完整 Run(--go-root 指向经 runtime.Caller
-// 定位的仓库根)。缓存归档缺失时 SKIP 并写明受阻原因——受阻不是通过。
-// 本测试同时证明验收条件 1:checker 实际读取真实独立的 C 头,而不是
-// 同一 Go 表生成的两个文件互证。
+// realinput_linux_test.go 是真实头正例集成测试:从锁定发行包缓存解包
+// 三个 C 头,校验整包与成员 SHA-256 后写出 inputs.json,并对 linux 与
+// windows 两个目标跑完整 checker;归档缺失时 SKIP 并写明受阻原因。
 
 package main
 
@@ -30,7 +24,7 @@ import (
 	"testing"
 )
 
-// 锁定基线(MAA-01/08 证据冻结):发行包整包 SHA-256。成员级摘要取自
+// 锁定基线(证据冻结):发行包整包 SHA-256。成员级摘要取自
 // checker 内部 profile 常量(newLockedProfile),不在本文件重复转录。
 const lockedReleaseTarballSHA256 = "814a128d24c8183b38003284facd56789fe8346b8a66932f9ff885df48d48bc1"
 
@@ -295,7 +289,7 @@ func TestRealHeaderCheckerEndToEnd(t *testing.T) {
 		t.Errorf("windows link = bound %d nontarget %v", len(winRep.Link.Bound), winRep.Link.NonTarget)
 	}
 
-	// 期望比对段(MAA-10):真实独立 C 头 + 真实 Go 树下,30 项冻结
+	// 期望比对段:真实独立 C 头 + 真实 Go 树下,30 项冻结
 	// 期望逐符号 expected=actual,两目标一致——证明冻结期望表与生产
 	// symbols.go/exclusions 一致。
 	for goos, r := range map[string]reportJSON{"linux": linuxRep, "windows": winRep} {
@@ -398,7 +392,7 @@ func TestRealHeaderCheckerEndToEnd(t *testing.T) {
 }
 
 // TestRealHeaderSignatureSection 用真实独立 C 头核验宽度级签名比对
-// 的成功报告段(MAA-10):两目标下全部 26 条绑定(含 linux 目标下属
+// 的成功报告段:两目标下全部 26 条绑定(含 linux 目标下属
 // NonTarget 的 windowsOnly 绑定)全部通过,即冻结映射与生产
 // api.go/callback_types.go 逐字段一致——任何一处宽度/符号位/指针
 // 用途/参数名偏离都会使整个命令失败。callback 平台适配两条均核验;
@@ -460,7 +454,7 @@ func TestRealHeaderSignatureSection(t *testing.T) {
 		}
 	}
 
-	// 关键映射逐点抽查(与绑定设计 §3 冻结矩阵逐条对应):
+	// 关键映射逐点抽查(与冻结矩阵逐条对应):
 	// 图像缓冲区 void* ↔ unsafe.Pointer,容量/返回 uint64。
 	gi := symbol(linuxRep, "AsstGetImage")
 	if gi.Field != "GetImage" || gi.CHeader != FileAsstCaller || gi.CLine <= 0 ||

@@ -1,55 +1,44 @@
-// 本文件实现实例的私有共享状态与调用准入原语(MAA-16;绑定设计 §2
-// 的 state.go:实例状态、调用/回调准入与单次关闭;语义依据 §7、§8,
-// 所有权、容量与停止策略已由 MAA-03 冻结)。单一 instanceState 承载
-// 实例阶段、唯一受门控的 handle、已准入调用与 callback 计数、
-// callback 准入门、首次故障、共享 closeDone 与最终错误存储,并据此
-// 提供调用 lease 准入/释放、独立 raw 串行门禁、关闭选主、在途调用
-// 清零等待、首次故障记录与终态发布原语,作为 callback 准入接线
-// (MAA-18)、pending Operation 表(MAA-19;有界早到结果表仍归
-// MAA-23)与 Stop/Destroy 关闭流程(MAA-20)的共同入口。
+// 本文件实现实例的私有共享状态与调用准入原语:实例阶段、唯一受门控的
+// handle、已准入调用与 callback 计数、callback 准入门、首次故障、共享
+// closeDone 与最终错误存储。它提供调用 lease 准入/释放、独立 raw 串行
+// 门禁、关闭选主、在途调用清零等待、首次故障记录与终态发布原语,并作为
+// callback 准入、pending Operation 结算与 Stop/Destroy 关闭流程的共同入口。
 //
-// MAA-17 在同一状态门内增补故障通知与丢失诊断(§7、§7.1,全部在
-// 状态锁内线性化):一次性 faultDone 通知只由首次故障关闭,正常
-// 关闭不触发;丢失条数采用饱和 uint64 计数,不回绕;首次故障只
-// 保留有界元数据和至多 faultRawPrefixBytes 字节原文前缀(不是完整
+// 故障通知与丢失诊断在同一状态门内维护:一次性 faultDone 通知只由首次
+// 故障关闭,正常关闭不触发;丢失条数采用饱和 uint64 计数,不回绕;首次
+// 故障只保留有界元数据和至多 faultRawPrefixBytes 字节原文前缀(不是完整
 // Event,不积累错误列表)。
 //
-// MAA-19 在同一状态门内增补 pending Operation 表与统一结算(§7、
-// §7.1):表容量取 Open 时 validateLimits 已校验的 PendingOperations
-// 快照,信任不重验;完成结算、首因线性化扫描与关闭清空全部在状态
-// 锁内进行,保证任一线性化点上每条记录要么仍在表中、要么已完整结
-// 算——故障后到达的完成消息因此不能覆盖故障终态。operation 自身的
-// 终态存储与等待语义见 operation.go;同步清空由结算本身完成,不启
-// 动 goroutine、不轮询、无 reaper。
+// pending Operation 表与统一结算使用同一状态门:表容量取 Open 时
+// validateLimits 已校验的 PendingOperations 快照,信任不重验;完成结算、
+// 首因线性化扫描与关闭清空全部在状态锁内进行,保证任一线性化点上每条
+// 记录要么仍在表中、要么已完整结算——故障后到达的完成消息因此不能覆盖
+// 故障终态。operation 自身的终态存储与等待语义见 operation.go。
 //
-// MAA-21 在同一状态门内增补创建期发布原语(§8 NewInstance):
-// publishHandle 登记 CreateEx 返回的句柄,tryPublishReady 在最终发布
-// 点原子复核早到故障并发布 ready——发布与故障复核同锁段,早到故障
-// 的任意到达时序都只能得到「不发布 + 按首因回滚」一种结论。
+// 创建期发布原语也在同一状态门内:publishHandle 登记 CreateEx 返回的
+// 句柄,tryPublishReady 在最终发布点原子复核早到故障并发布 ready——发布
+// 与故障复核同锁段,早到故障的任意到达时序都只能得到「不发布 + 按首因
+// 回滚」一种结论。
 //
-// 本单元只承载状态与基础 lease 原语:不调用 CreateEx,不实现关闭流
-// 程本体,不接 callback 分发;公开面(导出符号)零变化。
-//
-// 并发契约(绑定设计 §7、§8):
-//   - 状态锁 mu 只用于检查状态、登记/释放 lease 与发布结果;任何
-//     native 调用都不持有状态锁。等待在途调用清零期间绝不持有状态
-//     锁(§8 第 2 步),否则已准入调用无法释放 lease,关闭将死锁。
-//   - 调用纪律:先取得调用 lease,再排队等待独立的 raw 串行门禁;
-//     lease 覆盖排队、native 调用、输出复制与结果登记全过程——
-//     门禁前排队的调用已计入在途计数,关闭等待不会漏掉它们。
-//   - 关闭在状态锁内选主:恰一个申请者把 ready/faulted 转为 closing
-//     并成为所有者;其余申请者共享同一 closeDone 与同一最终错误
-//     存储,只允许所有者执行一次 Stop/Destroy(流程本体归 MAA-20)。
-//   - 阶段迁移:initializing → ready → closing → closed;异常路径
-//     进入 faulted 后仍经 closing 关闭。非法迁移与状态机不变量破坏
-//     按编程错误 panic(对照 runtime.go lifecycleGate.publish 的
-//     先例),不允许静默继续污染状态。
+// 并发契约:
+//   - 状态锁 mu 只用于检查状态、登记/释放 lease 与发布结果;任何 native
+//     调用都不持有状态锁。等待在途调用清零期间绝不持有状态锁,否则已准入
+//     调用无法释放 lease,关闭将死锁。
+//   - 调用纪律:先取得调用 lease,再排队等待独立的 raw 串行门禁;lease
+//     覆盖排队、native 调用、输出复制与结果登记全过程——门禁前排队的调用
+//     已计入在途计数,关闭等待不会漏掉它们。
+//   - 关闭在状态锁内选主:恰一个申请者把 ready/faulted 转为 closing 并
+//     成为所有者;其余申请者共享同一 closeDone 与同一最终错误存储,只允许
+//     所有者执行一次 Stop/Destroy。
+//   - 阶段迁移:initializing → ready → closing → closed;异常路径进入
+//     faulted 后仍经 closing 关闭。非法迁移与状态机不变量破坏按编程错误
+//     panic,不允许静默继续污染状态。
 //
 // 错误语义:拒绝新业务调用按阶段返回可辨识错误——closing 包装
-// native.ErrClosing,closed 包装 native.ErrClosed,faulted 包装首次
-// 故障的原始错误;全部经 %w 保留错误链,errors.Is / errors.As 沿链
-// 可达 native 哨兵或真正的失败原因。已准入的 lease 在任何阶段都能
-// 正常释放,否则关闭等待无法收敛。
+// native.ErrClosing,closed 包装 native.ErrClosed,faulted 包装首次故障的
+// 原始错误;全部经 %w 保留错误链,errors.Is / errors.As 沿链可达 native
+// 哨兵或真正的失败原因。已准入的 lease 在任何阶段都能正常释放,否则关闭
+// 等待无法收敛。
 
 package maa
 
@@ -62,21 +51,21 @@ import (
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
 )
 
-// faultRawPrefixBytes 是首次故障保留的原文前缀字节上限(§7.1 冻结:
+// faultRawPrefixBytes 是首次故障保留的原文前缀字节上限(冻结:
 // 首次故障及停止诊断只保留有界元数据和至多 4,096 字节原文前缀,
 // 不是完整 Event,不积累错误列表)。
 const faultRawPrefixBytes = 4096
 
-// instancePhase 是实例私有生命周期的阶段(§8:状态变化为
+// instancePhase 是实例私有生命周期的阶段(状态变化为
 // initializing → ready → closing → closed,异常路径可进入 faulted
 // 后关闭;faulted 不允许继续业务操作)。合法迁移只有:
 //
-//	initializing → ready    创建事务成功后发布(publishReady)
-//	initializing → faulted  创建期早到故障(recordFault)
-//	ready       → faulted   业务期首次故障(recordFault)
-//	ready       → closing   关闭选主胜出(electClose)
-//	faulted     → closing   关闭选主胜出(electClose)
-//	closing     → closed    所有者发布终态(publishClosed)
+//	initializing → ready 创建事务成功后发布(publishReady)
+//	initializing → faulted 创建期早到故障(recordFault)
+//	ready → faulted 业务期首次故障(recordFault)
+//	ready → closing 关闭选主胜出(electClose)
+//	faulted → closing 关闭选主胜出(electClose)
+//	closing → closed 所有者发布终态(publishClosed)
 //
 // closing 期间仍可经 recordFault 记录首因故障(阶段不变,最终错误
 // 随后发布);除此之外的组合都意味着私有状态机内部不变量被破坏,
@@ -91,57 +80,57 @@ const (
 	phaseFaulted                           // 首次故障,拒绝业务操作,等待关闭
 )
 
-// instanceState 是一个实例的唯一私有共享状态(§7:实例只维护一份
+// instanceState 是一个实例的唯一私有共享状态(实例只维护一份
 // 私有生命周期状态,包含阶段、handle、已准入调用数、已准入
 // callback 数、pending Operation 表、首次故障与共享 closeDone;
-// 有界早到结果表不在本单元,由 MAA-23 承接)。状态内含锁,只能经
+// 有界早到结果表不在本层,由本层承接)。状态内含锁,只能经
 // 指针使用,不按值复制。
 //
 // handle 是状态路径唯一受门控的实例句柄:不设第二份裸 handle,不
-// 提供绕过阶段检查的访问闭包或导出(§8)。业务路径只能经已准入
+// 提供绕过阶段检查的访问闭包或导出。业务路径只能经已准入
 // callLease.handle 读取,关闭路径只能经所有者专用的 closeHandle
-// 读取;0 表示尚未取得有效句柄(§3:0 无效,不解引用)。
+// 读取;0 表示尚未取得有效句柄(0 无效,不解引用)。
 type instanceState struct {
 	mu sync.Mutex
 
 	// callsDrained 在已准入调用计数归零时广播,callbacksDrained 在
 	// 已准入 callback 计数归零时广播。Cond.Wait 在挂起期间释放 mu,
-	// 等待清零期间因此不持有状态锁(§8 第 2 步)。
+	// 等待清零期间因此不持有状态锁(第 2 步)。
 	callsDrained     *sync.Cond
 	callbacksDrained *sync.Cond
 
 	phase  instancePhase
 	handle uintptr
 	// calls 是已准入、尚未释放的业务调用数,含尚在 raw 门禁前排队
-	// 的调用(先取得 lease 再排队,§7)。
+	// 的调用(先取得 lease 再排队)。
 	calls uint64
 
-	// callback 准入门(§4、§7):门开放时 callback 可取得 lease,
+	// callback 准入门:门开放时 callback 可取得 lease,
 	// closing 阶段仍开放——必要的原生消息和 Destroyed 复制入队不受
 	// 关闭影响;关闭流程在 Destroy 返回后关门并等待已准入 callback
-	// 退出。接入策略归 MAA-18,本单元只承载标志与计数。
+	// 退出。接入策略归本层,本层只承载标志与计数。
 	callbackGateClosed bool
 	callbacks          uint64
 
-	// pending 是已接受、尚未最终结算的 Operation 表(§7:pending 在
+	// pending 是已接受、尚未最终结算的 Operation 表(pending 在
 	// 提交进入 raw 串行门禁前预留,满时直接拒绝):键为提交返回的
 	// 异步 ID,准入与移除只在状态锁内进行。当前占用 = len(pending) +
 	// pendingReserved(已预留、尚未登记的提交槽)。记录的终态存储与
 	// 等待语义见 operation.go。
 	pending map[AsyncID]*operation
 	// pendingOperations 是表容量上限:只能取 Open 时 validateLimits
-	// 已校验并冻结的 Limits.PendingOperations 快照(§7.1:1–4,096),
+	// 已校验并冻结的 Limits.PendingOperations 快照(1–4,096),
 	// 信任不重验;超限拒绝本次提交并包装 native.ErrOperationLimit,
 	// 实例不因此故障。
 	pendingOperations uint64
 	// pendingReserved 是已预留、尚未登记为 pending 表项的提交槽数
-	// (MAA-23 异步提交:预留发生在进入 raw 串行门禁之前,而登记键
+	// (异步提交:预留发生在进入 raw 串行门禁之前,而登记键
 	// async ID 要到 raw 返回并校验后才存在,故预留以计数持有,登记
 	// 时转为 map 表项,失败时释放)。计入容量占用,保证「满时直接
 	// 拒绝,不调用 native」对门禁前排队中的提交同样成立。
 	pendingReserved uint64
 
-	// asyncWatermark 是已接受异步提交的高水位 ID(§7.1:binding 只接
+	// asyncWatermark 是已接受异步提交的高水位 ID(binding 只接
 	// 受 1..MaxInt32 且严格大于上次已接受 ID 的 raw 返回值,维护一个
 	// 高水位而不保存无界的 completed-ID 集合):raw 返回值必须非负、
 	// 非零且严格大于本值,负值/零/复用/倒退均为 ErrProtocol;高水位
@@ -149,36 +138,36 @@ type instanceState struct {
 	// 不要求 ID 连续,也不要求完成消息按 ID 顺序到达。
 	asyncWatermark AsyncID
 
-	// 早到结果窗口与有界早到表(§7:raw 返回前可能已收到完成;§7.1:
+	// 早到结果窗口与有界早到表(raw 返回前可能已收到完成;:
 	// 同一时刻 raw 串行门禁内至多一个「提交已进入 raw、尚未接合返回
 	// ID」的窗口,故 EarlyResults 固定为 1,仅该窗口内允许临存一个未
 	// 知 ID 的完成结果;raw 返回后按 token、ID、预期 what 接合并立即
 	// 清空,不把残留留给未来提交)。earlyWindowOpen 只在 raw 门禁段
 	// 内置位,earlyResult 非 nil 表示窗口内已存有早到结果;earlyBytes
 	// 是早到结果原始 JSON 的字节上限,只能取 Open 时 validateLimits
-	// 已校验并冻结的 Limits.EarlyBytes 快照(§7.1:1–16,777,216,交叉
+	// 已校验并冻结的 Limits.EarlyBytes 快照(1–16,777,216,交叉
 	// 校验保证 CallbackBytes ≤ EarlyBytes),信任不重验。
 	earlyWindowOpen bool
 	earlyResult     *completionInfo
 	earlyBytes      uint64
 
-	// firstFault 是首次故障,sticky:保留首个,不覆盖(§7.1)。
+	// firstFault 是首次故障,sticky:保留首个,不覆盖。
 	firstFault error
 	// firstFaultPrefix 是首次故障的有界原文前缀:只在首因线性化时
 	// 深拷贝至多 faultRawPrefixBytes 字节,后续故障不覆盖、不积累
-	// (§7.1:不是完整 Event,不积累错误列表)。
+	// (不是完整 Event,不积累错误列表)。
 	firstFaultPrefix []byte
-	// lostEvents 是饱和丢失计数(§7.1:丢失条数采用饱和 uint64 计数,
+	// lostEvents 是饱和丢失计数(丢失条数采用饱和 uint64 计数,
 	// 不回绕;关闭完成前可能增加,观察 Done 后稳定)。
 	lostEvents uint64
 	// faultDone 从构造起即存在,只由首次故障在状态门内线性化关闭
-	// 一次(§7.1:首次故障关闭独立的一次性 Fault 通知,绝不依赖
+	// 一次(首次故障关闭独立的一次性 Fault 通知,绝不依赖
 	// Events 还有空间;正常关闭不触发)。faultNotified 是防重复关闭
 	// 的哨兵,只在持有 mu 时读写。
 	faultDone     chan struct{}
 	faultNotified bool
 	// finalErr 是关闭所有者发布的不可变最终错误;所有关闭申请共享
-	// 同一存储(§8:并发 Close 共享同一 closeDone 和最终错误)。
+	// 同一存储(并发 Close 共享同一 closeDone 和最终错误)。
 	finalErr error
 	// closeDone 从构造起即存在,只由所有者在 publishClosed 中关闭
 	// 一次;先于它的最终错误发布保证观察者见到关闭即见稳定终态。
@@ -190,7 +179,7 @@ type instanceState struct {
 }
 
 // newInstanceState 构造实例共享状态:不依赖 NewInstance,供创建
-// 接线(MAA-20)与受控用例复用。handle 允许传 0(真实创建在
+// 接线与受控用例复用。handle 允许传 0(真实创建在
 // CreateEx 返回前尚未取得句柄)或非零占位值(受控用例构造);业务
 // 调用路径读取到 0 视为内部不变量破坏。pendingOperations 是 pending
 // Operation 表容量上限,earlyBytes 是早到结果窗口的字节上限,两者
@@ -213,7 +202,7 @@ func newInstanceState(handle uintptr, pendingOperations uint64, earlyBytes uint6
 	return s
 }
 
-// publishReady 在创建事务全部成功后发布 ready(§8 NewInstance 第
+// publishReady 在创建事务全部成功后发布 ready(NewInstance 第
 // 5 步:复核 Runtime 状态并发布 ready Instance)。调用契约:只能对
 // 同一次创建、在 initializing 阶段调用;其他阶段到达此处意味着私有
 // 状态机内部不变量被破坏,按编程错误 panic(对照 lifecycleGate.
@@ -230,11 +219,11 @@ func (s *instanceState) publishReady() {
 // publishHandle 在创建事务中登记 AsstCreateEx 返回的有效非零句柄:
 // CreateEx 调用前状态必须已建立(handle=0 构造),返回后由创建者把
 // 句柄写入唯一受门控的 handle 字段。只允许调用一次,重复登记或以 0
-// 登记即内部不变量破坏,panic(§3:0 无效,不解引用)。
+// 登记即内部不变量破坏,panic(0 无效,不解引用)。
 //
 // 允许的阶段是 initializing 与 faulted:创建期间的早到故障可能先于
-// CreateEx 返回进入 faulted(§7:回调在原生线程上并发准入),而回滚
-// 路径仍需要句柄执行一次 Stop 再一次 Destroy(§8.1:已创建 handle 后
+// CreateEx 返回进入 faulted(回调在原生线程上并发准入),而回滚
+// 路径仍需要句柄执行一次 Stop 再一次 Destroy(已创建 handle 后
 // 的失败执行同一销毁流程),因此 faulted 阶段照常登记。closing 及
 // 之后到达此处即内部不变量破坏,panic。锁序:创建流程在持有
 // Runtime 状态门(lifecycleGate.mu)之外调用本方法;本方法只取状态
@@ -256,8 +245,8 @@ func (s *instanceState) publishHandle(handle uintptr) {
 	}
 }
 
-// tryPublishReady 在创建事务的最终发布点原子复核并发布 ready(§8
-// NewInstance 第 6 步:复核 Runtime 状态并发布 ready Instance;§7.1
+// tryPublishReady 在创建事务的最终发布点原子复核并发布 ready(
+// NewInstance 第 6 步:复核 Runtime 状态并发布 ready Instance;
 // 冻结:早到故障会使创建失败):仍在 initializing 时发布 ready 并返
 // 回 nil;已因早到故障进入 faulted 时返回该首因、不发布——发布与
 // 故障复核在同一状态锁段内完成,故障早于、晚于选项应用或恰在发布
@@ -284,7 +273,7 @@ func (s *instanceState) tryPublishReady() error {
 
 // callLease 是一次已准入业务调用的在途凭证:准入在状态锁内完成,
 // 覆盖排队等待 raw 门禁、native 调用、输出复制与结果登记全过程
-// (§7)。零值不可用;准入与释放一一对应,推荐 defer release。
+// 。零值不可用;准入与释放一一对应,推荐 defer release。
 type callLease struct {
 	s *instanceState
 }
@@ -300,7 +289,7 @@ type callLease struct {
 //   - initializing:实例未发布前公开面拿不到它,业务调用不可达,
 //     到达此处即内部不变量破坏,panic。
 //
-// 已准入调用在 closing/faulted/closed 阶段照常释放 lease(§7.1:
+// 已准入调用在 closing/faulted/closed 阶段照常释放 lease(
 // 故障时仍在 raw 门禁前的预留也释放 lease),release 不检查阶段。
 func (s *instanceState) admitCall(what string) (callLease, error) {
 	s.mu.Lock()
@@ -344,8 +333,8 @@ func (l callLease) release() {
 
 // handle 返回本次调用可用的实例 handle:只能在持有本 lease 期间、
 // 按调用纪律处于 raw 门禁段内读取,并立即用于本次 native 调用;
-// 不得外泄、缓存或另存副本(§8:不能另存一份裸 handle 绕过状态
-// 检查)。发布后的实例 handle 必须非零(§3:0 无效,不解引用),
+// 不得外泄、缓存或另存副本(不能另存一份裸 handle 绕过状态
+// 检查)。发布后的实例 handle 必须非零(0 无效,不解引用),
 // 为 0 即内部不变量破坏,panic。
 func (l callLease) handle() uintptr {
 	l.s.mu.Lock()
@@ -356,7 +345,7 @@ func (l callLease) handle() uintptr {
 	return l.s.handle
 }
 
-// rawGate 是独立于状态锁的 raw 串行门禁(§7:普通调用先取得调用
+// rawGate 是独立于状态锁的 raw 串行门禁(普通调用先取得调用
 // lease,再等待独立的 raw 串行门禁;任何 native 调用都不持有
 // stateMu 或注册表锁)。同一时刻至多一个调用处于 enter 与 exit 之
 // 间;门禁前的排队者已持有调用 lease、计入在途计数,关闭等待因此
@@ -375,7 +364,7 @@ func (g *rawGate) enter() { g.mu.Lock() }
 // exit 释放 raw 段。
 func (g *rawGate) exit() { g.mu.Unlock() }
 
-// electClose 在状态锁内选主(§8 第 1 步:在 stateMu 下选出唯一关闭
+// electClose 在状态锁内选主(第 1 步:在 stateMu 下选出唯一关闭
 // 所有者并转为 closing,拒绝新业务调用):ready/faulted 阶段恰一个
 // 申请者赢得所有权,阶段转为 closing,返回 true;其余申请者——并发
 // 竞争失败者与之后的幂等申请(closing 关闭进行中、closed 已完成)——
@@ -397,12 +386,12 @@ func (s *instanceState) electClose() bool {
 	}
 }
 
-// waitCallsDrained 等待已准入调用全部释放(§8 第 2 步:不持状态锁
+// waitCallsDrained 等待已准入调用全部释放(第 2 步:不持状态锁
 // 等待所有已准入调用退出,包括尚在 raw 门禁前排队的调用——它们先
 // 取得 lease,已计入在途计数)。谓词在状态锁内复查,Cond.Wait 挂起
 // 期间释放锁,在途调用可正常登记与释放并触发广播;closing 阶段拒绝
 // 新准入,计数归零后不再增加。不设期限,也不用 context 取消强行使
-// native 调用返回:关闭超时交给 worker 的外部监督处理(§8)。由
+// native 调用返回:关闭超时交给 worker 的外部监督处理。由
 // 关闭所有者在 electClose 胜出后调用。
 func (s *instanceState) waitCallsDrained() {
 	s.mu.Lock()
@@ -414,7 +403,7 @@ func (s *instanceState) waitCallsDrained() {
 
 // closeHandle 供关闭所有者读取 handle:契约是 electClose 胜出、
 // waitCallsDrained 返回之后,为执行一次 Stop 再一次 Destroy 而读取
-// (§8.1);除此之外不得读取。全部调用 lease 已退出是前置条件,在途
+// 除此之外不得读取。全部调用 lease 已退出是前置条件,在途
 // 计数非零到达此处即内部不变量破坏,panic。ok 为 false 表示不存在
 // 有效非零 handle(CreateEx=0 的路径不执行 Stop/Destroy)。
 func (s *instanceState) closeHandle() (uintptr, bool) {
@@ -426,14 +415,14 @@ func (s *instanceState) closeHandle() (uintptr, bool) {
 	return s.handle, s.handle != 0
 }
 
-// recordFault 在状态锁内线性化记录首次故障(§7.1:保留首个 fault,
+// recordFault 在状态锁内线性化记录首次故障(保留首个 fault,
 // 拒绝新业务调用),无原文前缀;带前缀的记录经 recordFaultWithDetail。
 func (s *instanceState) recordFault(cause error) {
 	s.recordFaultWithDetail(cause, nil)
 }
 
 // recordFaultWithDetail 在状态锁内线性化记录首次故障并可选保留一段
-// 有界原文前缀(§7.1:保留首个 fault,拒绝新业务调用;首次故障只
+// 有界原文前缀(保留首个 fault,拒绝新业务调用;首次故障只
 // 保留有界元数据和至多 faultRawPrefixBytes 字节原文前缀):
 //
 //   - ready/initializing 阶段随即进入 faulted,此后 admitCall 一律
@@ -449,7 +438,7 @@ func (s *instanceState) recordFault(cause error) {
 // 首次故障时立即深拷贝,调用者返回后修改原切片不影响已保存副本。
 // 当本调用使 firstFault 从 nil 变为非 nil(即本调用是首次故障的
 // 线性化点)时,恰好关闭一次 faultDone;重复记录不重复关闭。同一
-// 线性化点将当时全部 pending Operation 统一结为该故障原因(§7.1;
+// 线性化点将当时全部 pending Operation 统一结为该故障原因(
 // 等待语义见 operation.go),故障后到达的完成消息因此不能覆盖故障
 // 终态;重复故障不重复扫描。
 func (s *instanceState) recordFaultWithDetail(cause error, prefix []byte) {
@@ -462,7 +451,7 @@ func (s *instanceState) recordFaultWithDetail(cause error, prefix []byte) {
 }
 
 // faultLocked 是 recordFaultWithDetail 的锁内实现,供已在状态锁段内
-// 的调用方(MAA-23 的提交接合与完成关联)复用同一首因线性化语义;
+// 的调用方(提交接合与完成关联)复用同一首因线性化语义;
 // 要求持有 mu。语义与锁序见 recordFaultWithDetail。
 func (s *instanceState) faultLocked(cause error, prefix []byte) {
 	first := false
@@ -478,7 +467,7 @@ func (s *instanceState) faultLocked(cause error, prefix []byte) {
 		panic(fmt.Sprintf("maa: instance state in unknown phase %d", s.phase))
 	}
 	if first {
-		// 首因线性化扫描(§7.1:立即将该时点尚未结算的 Operation 统
+		// 首因线性化扫描(立即将该时点尚未结算的 Operation 统
 		// 一结为该故障,清空表):扫描与完成结算同锁段串行化,故障后
 		// 的完成消息查不到记录,只能按未命中放弃。
 		for id, op := range s.pending {
@@ -486,7 +475,7 @@ func (s *instanceState) faultLocked(cause error, prefix []byte) {
 			op.settleFault(cause)
 		}
 	}
-	// 首次故障通知(§7.1:独立于事件队列的一次性通知):恰在首次
+	// 首次故障通知(独立于事件队列的一次性通知):恰在首次
 	// 故障的线性化点关闭,重复记录被 faultNotified 拦下,正常关闭
 	// 永不触发。
 	if !s.faultNotified {
@@ -512,9 +501,9 @@ func (s *instanceState) keepFirstFaultLocked(cause error, prefix []byte) bool {
 }
 
 // publishFinalError 由关闭所有者在原生销毁与 callback 清理完成之后、
-// publishClosed 之前发布不可变最终错误(§8 第 5 步;§8.1:已有首次
+// publishClosed 之前发布不可变最终错误(第 5 步;:已有首次
 // 故障/创建失败是主因,停止失败是唯一附加清理诊断,没有主因时停止
-// 拒绝才成为 Close/Err 的原因——组合归 MAA-20,本原语只负责存储与
+// 拒绝才成为 Close/Err 的原因——组合归本层,本原语只负责存储与
 // 一次性语义)。只首次生效:finalErr 一经设置不再被任何后续发布
 // 覆盖;所有关闭申请共享同一存储,经 finalError/waitClose 取得同一
 // 份。仅在 closing 阶段可调用,其他阶段到达此处即内部不变量破坏,
@@ -531,10 +520,10 @@ func (s *instanceState) publishFinalError(err error) {
 }
 
 // publishClosed 由关闭所有者发布 closed 终态并关闭共享 closeDone
-// (§8 第 5 步:先发布最终错误和 closed 状态,再关闭 Done 与
+// (第 5 步:先发布最终错误和 closed 状态,再关闭 Done 与
 // closeDone;观察到 closeDone 后 Err 已稳定)。调用契约:仅所有者
 // 在 publishFinalError 之后调用;callback 准入门必须已关闭且已准入
-// callback 全部退出(§8 第 4 步先于第 5 步)。通道只关闭一次;
+// callback 全部退出(第 4 步先于第 5 步)。通道只关闭一次;
 // 违反契约即内部不变量破坏,panic。
 func (s *instanceState) publishClosed() {
 	s.mu.Lock()
@@ -560,9 +549,9 @@ func (s *instanceState) done() <-chan struct{} {
 }
 
 // waitClose 等待共享 closeDone 并返回已稳定的最终错误:非所有者的
-// 关闭申请经它取得与所有者一致的结果(§8.1:多次 Close 返回同一
+// 关闭申请经它取得与所有者一致的结果(多次 Close 返回同一
 // 终态)。观察到 closeDone 关闭后 finalErr 必已发布且不再变化
-// (§8 第 5 步先发布最终错误,再关闭通道)。
+// (第 5 步先发布最终错误,再关闭通道)。
 func (s *instanceState) waitClose() error {
 	<-s.closeDone
 	return s.finalError()
@@ -584,7 +573,7 @@ func (s *instanceState) currentPhase() instancePhase {
 }
 
 // currentFault 返回已记录的首次故障(尚无返回 nil)。faulted 阶段
-// 即可经此观察首因(§8.1:Err 在 faulted 时即可见首次故障);最终
+// 即可经此观察首因(Err 在 faulted 时即可见首次故障);最终
 // 错误的稳定观察仍以 closeDone 与 finalError 为准。
 func (s *instanceState) currentFault() error {
 	s.mu.Lock()
@@ -593,14 +582,14 @@ func (s *instanceState) currentFault() error {
 }
 
 // faultNotify 返回一次性故障通知的只读视图:首次故障线性化时关闭
-// 一次(§7.1:通知独立于事件队列,绝不依赖 Events 还有空间;观察者
+// 一次(通知独立于事件队列,绝不依赖 Events 还有空间;观察者
 // 可同时选择 done()——Done 仍只表示关闭完成),正常关闭不触发。
 // 通道字段构造后不再改变,读取无需状态锁。
 func (s *instanceState) faultNotify() <-chan struct{} {
 	return s.faultDone
 }
 
-// recordLostEvents 把 n 条丢失事件计入饱和丢失计数(§7.1:丢失条数
+// recordLostEvents 把 n 条丢失事件计入饱和丢失计数(丢失条数
 // 采用饱和 uint64 计数):相加将回绕时夹到 math.MaxUint64,不回绕。
 // 纯诊断计数,不参与阶段迁移,可在任何未关闭阶段调用。
 func (s *instanceState) recordLostEvents(n uint64) {
@@ -620,7 +609,7 @@ func (s *instanceState) currentLostEvents() uint64 {
 	return s.lostEvents
 }
 
-// faultSnapshot 是首次故障的有界诊断快照(§7.1:Diagnostics 返回
+// faultSnapshot 是首次故障的有界诊断快照(Diagnostics 返回
 // 丢失条数、首错和停止诊断的深副本):lostEvents 是饱和丢失计数,
 // firstFault 是首因(可能尚为 nil),rawPrefix 是首因原文前缀的
 // 独立深拷贝(至多 faultRawPrefixBytes 字节;未保留前缀时为 nil)。
@@ -644,7 +633,7 @@ func (s *instanceState) faultDiagnostics() faultSnapshot {
 	}
 }
 
-// callbackLease 是一条已准入 callback 的在途凭证(§4:查到 token
+// callbackLease 是一条已准入 callback 的在途凭证(查到 token
 // 后必须取得 callback lease,才可读取 details 指针;准入失败则不
 // 读取原生 details)。复制 details、投递事件等全部原生内存访问都
 // 必须发生在持有本 lease 期间;零值不可用,准入与退出一一对应,
@@ -655,10 +644,10 @@ type callbackLease struct {
 
 // admitCallback 尝试准入一条 callback:准入门开放时递增已准入计数
 // 并返回 lease;门已关闭返回 false,调用方不得读取原生 details,
-// 立即退出(§4:与关闭形成明确的准入顺序,不留「取得状态后尚未
-// 登记在途引用就释放状态」的窗口)。closing 阶段门仍开放(§7:仍
+// 立即退出(与关闭形成明确的准入顺序,不留「取得状态后尚未
+// 登记在途引用就释放状态」的窗口)。closing 阶段门仍开放(仍
 // 允许必要的原生消息和 Destroyed 复制入队)。callback 不取得 raw
-// 串行门禁(§7)。
+// 串行门禁。
 func (s *instanceState) admitCallback() (callbackLease, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -688,8 +677,8 @@ func (l callbackLease) release() {
 }
 
 // closeCallbackGate 关闭 callback 准入门,此后新 callback 一律准入
-// 失败。由关闭流程在 Destroy 返回后调用(§8 第 4 步),或由
-// CreateEx=0 的创建回滚调用(§8:关闭临时 callback 门)。至多一次,
+// 失败。由关闭流程在 Destroy 返回后调用(第 4 步),或由
+// CreateEx=0 的创建回滚调用(关闭临时 callback 门)。至多一次,
 // 重复关闭即内部不变量破坏,panic。
 func (s *instanceState) closeCallbackGate() {
 	s.mu.Lock()
@@ -700,10 +689,10 @@ func (s *instanceState) closeCallbackGate() {
 	s.callbackGateClosed = true
 }
 
-// waitCallbacksDrained 等待已准入 callback 全部退出(§8 第 4 步:
+// waitCallbacksDrained 等待已准入 callback 全部退出(第 4 步:
 // 关门后等待,再移除 token)。Cond.Wait 挂起期间释放状态锁,已准入
 // callback 可正常复制、投递并退出。不设期限:原生回调卡死依赖
-// worker 进程隔离,不以持锁等待或超时伪装安全回收(§8)。
+// worker 进程隔离,不以持锁等待或超时伪装安全回收。
 func (s *instanceState) waitCallbacksDrained() {
 	s.mu.Lock()
 	for s.callbacks != 0 {
@@ -712,13 +701,13 @@ func (s *instanceState) waitCallbacksDrained() {
 	s.mu.Unlock()
 }
 
-// admitPendingOperation 准入一条已知 ID 的 pending Operation(MAA-19;
-// §7):ready 阶段在容量内创建 operation 插入表并返回;其余阶段拒绝
+// admitPendingOperation 准入一条已知 ID 的 pending Operation:
+// ready 阶段在容量内创建 operation 插入表并返回;其余阶段拒绝
 // 本次提交,返回带 what 上下文文本、可经 errors.Is 判别的错误(风格
-// 对照 admitCall)。容量占用含 MAA-23 异步提交已预留、尚未登记的槽
+// 对照 admitCall)。容量占用含异步提交已预留、尚未登记的槽
 // 位(pendingReserved),与 reservePendingOperation 共用同一上限:
 //   - 容量满:包装 native.ErrOperationLimit,实例不因此故障,已接受
-//     的提交与其他资源不受影响(§7.1);
+//     的提交与其他资源不受影响;
 //   - closing:包装 native.ErrClosing;
 //   - faulted:包装首次故障的原始错误——提交沿错误链可达真正的失败
 //     原因,与 admitCall 的 faulted 拒绝共享同一错误身份;
@@ -728,7 +717,7 @@ func (s *instanceState) waitCallbacksDrained() {
 //
 // id 为 0 属编程错误(ids.go:0 是异步提交的失败值,不会作为已接受
 // 提交的 ID 准入),panic。what 目前只进入拒绝文本作诊断。本入口供
-// 已知 ID 的直接准入(MAA-19 用例与受控场景)使用;公开异步提交的
+// 已知 ID 的直接准入(用例与受控场景)使用;公开异步提交的
 // 准入走 reservePendingOperation(raw 返回前 ID 未知,先预留后登记)。
 func (s *instanceState) admitPendingOperation(id AsyncID, what string) (*operation, error) {
 	if id == 0 {
@@ -761,7 +750,7 @@ func (s *instanceState) admitPendingOperation(id AsyncID, what string) (*operati
 }
 
 // pendingOccupiedLocked 返回 pending 表的当前容量占用:已登记表项数
-// 加上已预留、尚未登记的提交槽(MAA-23);要求持有 mu。
+// 加上已预留、尚未登记的提交槽;要求持有 mu。
 func (s *instanceState) pendingOccupiedLocked() uint64 {
 	occ, ok := addChecked(uint64(len(s.pending)), s.pendingReserved)
 	if !ok {
@@ -772,9 +761,11 @@ func (s *instanceState) pendingOccupiedLocked() uint64 {
 	return occ
 }
 
-// settleCompletion 是事件分发器的完成结算与关联接入(MAA-19 结算、
-// MAA-23 关联;§7:最终结果由 AsyncCallInfo 的 async_call_id、what、
-// details.ret 确认;§7.1:回调先查 pending,不在 pending 且 ID 不高
+// settleCompletion 是事件分发器的完成结算与关联接入(结算、
+//
+//	关联;:最终结果由 AsyncCallInfo 的 async_call_id、what、
+//
+// details.ret 确认;:回调先查 pending,不在 pending 且 ID 不高
 // 于高水位的完成是重复/旧结果,不允许放进 early 窗口)。仅由唯一
 // dispatcher goroutine 调用,与提交接合(finishAsyncRaw)、首因线性
 // 化扫描、关闭清空共用状态锁,保证任一线性化点上每条记录要么仍在
@@ -834,9 +825,9 @@ func (s *instanceState) settleCompletion(info completionInfo) {
 }
 
 // reservePendingOperation 为一次异步提交预留 pending 容量并登记未绑
-// 定 ID 的请求 Operation(MAA-23;§7:每次提交先建立 Go 请求/
-// Operation 状态再进入 raw;§7.1:pending 在调用进入 raw 串行门禁前
-// 预留,满时直接拒绝)。ready 阶段在容量内递增预留计数、创建未绑定
+// 定 ID 的请求 Operation:每次提交先建立 Go 请求/
+// Operation 状态再进入 raw;pending 在调用进入 raw 串行门禁前
+// 预留,满时直接拒绝。ready 阶段在容量内递增预留计数、创建未绑定
 // ID 的 operation 并返回;登记(finishAsyncRaw)把预留转为表项,失
 // 败路径的释放见 releasePendingReservation。其余阶段的拒绝语义与
 // admitPendingOperation 一致(closing/faulted/closed 各按哨兵拒绝,
@@ -890,11 +881,11 @@ func (s *instanceState) releasePendingReservationLocked() {
 }
 
 // beginAsyncRaw 在 raw 串行门禁段内、进入异步 native 调用前执行
-// (MAA-23;§7.1:高水位已达 MaxInt32 时在串行门禁内、进入下一次异
+// (高水位已达 MaxInt32 时在串行门禁内、进入下一次异
 // 步 raw 前直接故障,禁止让原生计数回绕):
 //   - 高水位已达 MaxInt32:以 ErrProtocol 故障(原生计数耗尽,binding
 //     拒绝让 ID 回绕),在状态锁内回收本次预留并返回错误——调用方不
-//     得进入 native,记录作废(§7.1:每份预留在拒绝/结算竞争中只回收
+//     得进入 native,记录作废(每份预留在拒绝/结算竞争中只回收
 //     一次,与 finishAsyncRaw 的失败路径同一纪律);
 //   - 否则打开早到结果窗口:此后的完成消息在 raw 返回前按未知 ID 临
 //     存进有界早到表(settleCompletion),raw 返回后由 finishAsyncRaw
@@ -921,7 +912,7 @@ func (s *instanceState) beginAsyncRaw() error {
 }
 
 // finishAsyncRaw 在 raw 串行门禁段内、异步 native 调用返回后执行
-// 返回 ID 的校验、登记与早到接合(MAA-23;§7.1:binding 只接受
+// 返回 ID 的校验、登记与早到接合(binding 只接受
 // 1..MaxInt32 且严格大于上次已接受 ID 的 raw 返回值;提交 ID=0 立即
 // 释放本次预留并返回 ErrNativeRejected,若该窗口已有完成消息则为
 // ErrProtocol,不能丢弃矛盾证据;raw 返回后必须按 token、ID、预期
@@ -937,7 +928,7 @@ func (s *instanceState) beginAsyncRaw() error {
 //     情况都不登记、不发布成功 Operation。
 //   - id < 0 或不严格大于高水位(复用/倒退):ErrProtocol 故障并释放
 //     预留。
-//   - 实例已故障(firstFault 非 nil):不再把记录插入 pending(§7.1:
+//   - 实例已故障(firstFault 非 nil):不再把记录插入 pending(
 //     已经进入 raw 的动作不能撤销,返回后只补记返回 ID/诊断,不重新
 //     插入 pending 或复活终态),释放预留并返回携带该 ID 与首因的
 //     诊断错误;故障前已复制但尚未结算的早到结果不在此接合,窗口照
@@ -989,7 +980,7 @@ func (s *instanceState) finishAsyncRaw(op *operation, expectedWhat string, id in
 	}
 
 	if s.firstFault != nil {
-		// §7.1:故障后返回的提交不重新插入 pending 或复活终态;补记
+		// 故障后返回的提交不重新插入 pending 或复活终态;补记
 		// 返回 ID/诊断后放弃记录。
 		s.releasePendingReservationLocked()
 		return fmt.Errorf("maa: async submission (%s) returned id %d but the instance is already faulted: %w",
@@ -1027,9 +1018,9 @@ func (s *instanceState) finishAsyncRaw(op *operation, expectedWhat string, id in
 }
 
 // settleRemainingPending 把 pending 表剩余记录全部以包装
-// native.ErrClosed 的错误结算一次并清空(§8 第 5 步:无 sticky fault
+// native.ErrClosed 的错误结算一次并清空(第 5 步:无 sticky fault
 // 时由统一 dispatcher 先处理已复制且可确认的结果,再结剩余项;调用
-// 时序归 MAA-20——必须在 dispatcher 排空之后,使剩余记录不含可确认
+// 时序归本层——必须在 dispatcher 排空之后,使剩余记录不含可确认
 // 完成)。仅 closing 阶段可调用,其他阶段到达此处即内部不变量破坏,
 // panic。表已空时为无害空操作;清空由结算本身完成,不启动 goroutine、
 // 不轮询。

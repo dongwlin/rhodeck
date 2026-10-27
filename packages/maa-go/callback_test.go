@@ -1,21 +1,6 @@
-// 本文件是实例 callback 准入接缝的受控用例(MAA-18;绑定设计 §4、§7、
-// §7.1、§8):白盒同包验证 callbackTarget.deliver 的固定准入序——正常
-// 路径经分发器到达 Events 且在途 lease 归零、查到 token 但未获
-// callback lease 的路径绝不读取原生 details(§4 验收红线,nil 探针 +
-// 暂停屏障竞态 A)、已准入 callback 结束前状态可达且关门等待退空后才
-// 允许移除 token(§8 第 4 步,竞态 B:真实注册 maa→native 接缝并按顺
-// 序钉死注销时点)、closing 阶段可接收必要消息且不获取 raw 串行门禁
-// (§7)、回调内 Go panic 转为实例 sticky fault 而不越过 native 边界
-// (§4)、单条 CallbackBytes 超限与 §7.1 冻结边界、disp.admit 溢出契
-// 约不经 deliver 额外计丢失、空 details 判内容归 dispatcher,以及构
-// 造与并发准入纪律。
-//
-// 全部用例以受控屏障(channel/WaitGroup/原子标志)确定性同步,不加载
-// 任何原生库、不触达 loader/Runtime,CGO_ENABLED=0 可跑;防挂死只用
-// state_test.go 的 hangGuard 兜底,不作同步手段。maa→native 的注册表
-// 是进程级共享状态:本文件用例互不并行(不调 t.Parallel),注册的
-// token 由用例自己注销,dispatcher/goroutine 收尾经 closeAndDrain/
-// mustDrain 或防挂死兜底排空,不留悬挂 goroutine 影响 -race。
+// 本文件是实例 callback 准入接缝的受控用例:白盒验证
+// callbackTarget.deliver 的准入序、token 与 lease 纪律、closing 阶段行为、
+// panic 转为 sticky fault,以及关闭流程中的 token 移除时序。
 
 package maa
 
@@ -48,7 +33,7 @@ func inFlightCallbacks(s *instanceState) uint64 {
 
 // newCallbackRig 构造已启动分发循环的 callback 准入接缝:状态发布
 // ready、分发器携带同一预算快照启动、target 挂接同一状态与分发器。
-// settle 恒为 nil(本单元不关心结算;需要阻塞结算的用例自行构造)。
+// settle 恒为 nil(本层不关心结算;需要阻塞结算的用例自行构造)。
 // 用例收尾负责 closeAndDrain(intake 已关时 mustDrain)排空分发循环。
 func newCallbackRig(t *testing.T, b dispatchBudgets) (*callbackTarget, *instanceState, *eventDispatcher) {
 	t.Helper()
@@ -57,7 +42,7 @@ func newCallbackRig(t *testing.T, b dispatchBudgets) (*callbackTarget, *instance
 	return newCallbackTarget(s, d, b.callbackBytes), s, d
 }
 
-// TestCallbackDeliverHappyPath 钉住准入序的正常路径(§4、§7.1:取得
+// TestCallbackDeliverHappyPath 钉住准入序的正常路径(取得
 // lease → 有界定长 → 预留额度 → 复制 → 入队,全程在 callback 返回之
 // 前):deliver 返回后事件已按序号到达公开 Events,原文逐字节一致;
 // 无故障、零丢失、在途 callback 归零(lease 在 deliver 返回前释放)。
@@ -92,7 +77,7 @@ func TestCallbackDeliverHappyPath(t *testing.T) {
 	}
 }
 
-// TestCallbackDeliverGateClosedSkipsNativeDetails 钉住 §4 验收红线
+// TestCallbackDeliverGateClosedSkipsNativeDetails 钉住验收红线
 // 「查到 token 但未获 callback lease 的路径不读取原生 details」:关门
 // 与投递经暂停屏障定序(竞态 A 的 deliver 侧等价前提),关门后到达的
 // deliver 以 nil details 作探针——路径若错误地读取原生 details,会按
@@ -171,7 +156,7 @@ func TestCallbackDeliverGateClosedSkipsNativeDetails(t *testing.T) {
 	})
 }
 
-// TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain 钉住 §8 第 4
+// TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain 钉住第 4
 // 步的两条契约(暂停屏障竞态 B):已准入 callback 结束前状态保持可达
 // (关门等待不收敛);准入关闭并等待全部已准入 callback 退出之后,才
 // 允许移除 token。用例经真实注册入口 RegisterCallbackTarget 注册
@@ -248,7 +233,7 @@ func TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain(t *testing.T) {
 		t.Fatal("放行后 waitCallbacksDrained 未在防挂死上限内收敛")
 	}
 
-	// §8 第 4 步顺序钉死:准入已关闭且全部已准入 callback 退出之后,
+	//  第 4 步顺序钉死:准入已关闭且全部已准入 callback 退出之后,
 	// 才允许移除 token(此前的任何提前移除都让本时序失序)。
 	doUnregister()
 
@@ -273,7 +258,7 @@ func TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain(t *testing.T) {
 	closeAndDrain(t, d)
 }
 
-// TestCallbackDeliverClosingIgnoresRawGate 钉住 §7 验收条件「closing
+// TestCallbackDeliverClosingIgnoresRawGate 验证「closing
 // 阶段可接收必要消息及同步 Destroyed,不获取 raw 串行门禁」:选主转
 // closing 后准入门仍开放,deliver 照常入队;主测试先行占据 raw 串行
 // 门禁再投递——callback 全程不被 raw 门禁阻塞(deliver 若错误地获取
@@ -319,11 +304,11 @@ func TestCallbackDeliverClosingIgnoresRawGate(t *testing.T) {
 	}
 }
 
-// TestCallbackDeliverPanicBecomesStickyFault 钉住 §4 验收条件「回调 Go
+// TestCallbackDeliverPanicBecomesStickyFault 验证「回调 Go
 // panic 转成可观察故障且不越过 native 边界」:closeIntake 制造 admit
 // 的编程错误 panic 路径,deliver 顶栏 recover 后转为实例 sticky fault
 // (包装 native.ErrProtocol、携带 msg、无原文前缀);defer LIFO 保证
-// lease 先释放——已准入 callback 在任何阶段都必须能正常退出(§7.1),
+// lease 先释放——已准入 callback 在任何阶段都必须能正常退出,
 // 否则关闭等待无法收敛。再次 deliver(门仍开):admitCallback 与阶段
 // 无关照常成功,重复故障不覆盖首因。
 func TestCallbackDeliverPanicBecomesStickyFault(t *testing.T) {
@@ -366,7 +351,7 @@ func TestCallbackDeliverPanicBecomesStickyFault(t *testing.T) {
 	}
 }
 
-// TestCallbackDeliverSingleMessageOverflow 钉住单条容量契约(§7.1):
+// TestCallbackDeliverSingleMessageOverflow 钉住单条容量契约:
 // 扫描范围 callbackBytes+1 内无 NUL 以 ErrEventOverflow 故障、计 1 条
 // 丢失、不投递截断 JSON;恰好 CallbackBytes 字节后是 NUL 合法——
 // Event 只携带不含 NUL 的界内原文。
@@ -403,7 +388,7 @@ func TestCallbackDeliverSingleMessageOverflow(t *testing.T) {
 		target, s, d := newCallbackRig(t, b)
 		defer closeAndDrain(t, d)
 
-		// §7.1 冻结边界:8 字节 payload、NUL 恰在下标 8(扫描范围含
+		//  冻结边界:8 字节 payload、NUL 恰在下标 8(扫描范围含
 		// 端点)→ length 8 界内,正常入队。
 		const payload = "12345678"
 		target.deliver(53, callbackCBytes(payload))
@@ -427,7 +412,7 @@ func TestCallbackDeliverSingleMessageOverflow(t *testing.T) {
 }
 
 // TestCallbackDeliverAdmitOverflowContract 钉住「disp.admit 溢出按契
-// 约上报、deliver 自身不额外计丢失」(§7.1):internalEvents=1 时,被
+// 约上报、deliver 自身不额外计丢失」():internalEvents=1 时,被
 // 阻塞在结算通知里的消息持续占用唯一内部额度,后续 admit 必然拒绝;
 // 拒绝的上报(故障 + 1 条丢失)全部由 admit 内部完成。公开缓冲预先滞
 // 留 1 条未读事件,放行后被阻塞的消息也无法投递公开缓冲——再按公开溢
@@ -525,7 +510,7 @@ func TestCallbackDeliverAdmitOverflowContract(t *testing.T) {
 }
 
 // TestCallbackDeliverEmptyDetails 钉住空 details(下标 0 即 NUL)的所
-// 有权边界(§7.1):callback 层只定长与复制、不判内容——length 0 照常
+// 有权边界:callback 层只定长与复制、不判内容——length 0 照常
 // 入队;空原文按公开预算交付为 len(JSON)==0 的 Event,非法 JSON 的
 // ErrProtocol 故障由 dispatcher 承载(故障文本可辨),交付成功不计丢
 // 失。
@@ -575,7 +560,7 @@ func TestCallbackTargetNilArgumentsPanic(t *testing.T) {
 	})
 }
 
-// TestCallbackDeliverConcurrentAdmission 钉住验收条件「并发 deliver 在
+// TestCallbackDeliverConcurrentAdmission 验证「并发 deliver 在
 // -race 下干净」(对照 dispatch_test 并发用例):8 个 goroutine 并发
 // deliver 400 条,充足预算下全部消息恰好入队一次;单一 dispatcher 串
 // 行分配序号并按 FIFO 发送,公开缓冲中的事件序号严格单调递增、从 1

@@ -1,12 +1,5 @@
-// 本文件是注册事务的故障注入与发布语义用例:经 loaderPrimitives 与
-// symbolRegistrar 两个注入边界构造缺符号、空地址、可选缺失、平台
-// 排除与注册 panic 等路径,不进入系统 loader,不替换生产包的全局
-// 函数变量。适用符号期望表手写内联、与 symbolSpecs 相互独立,避免
-// 用被检对象自身生成期望。
-//
-// 平台说明:期望表按 runtime.GOOS 取用。首期支持且实际运行测试的
-// 平台是 Linux amd64,对应设计 §3.1 的 25 个适用项——26 条冻结声明
-// 去掉 windowsOnly 的 AsstAsyncAttachWindow。
+// 本文件是注册事务的故障注入与发布语义用例:经注入边界覆盖缺符号、
+// 空地址、可选缺失、平台排除与注册 panic,不进入系统 loader。
 
 package native
 

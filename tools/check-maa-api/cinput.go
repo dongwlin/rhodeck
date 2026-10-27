@@ -3,7 +3,7 @@
 // 与 profile 内部常量一致;manifest 条目集合与 profile 已知文件一致
 // (未知条目失败;三个 checker_input 缺一失败;semantic_reference/
 // license 条目缺省可容忍但存在即校验)。每个 archive_path 必须相对、
-// 非空、不含 .. 分量、不重复;文件存在、非空,size 与 SHA-256 以
+// 非空、不含.. 分量、不重复;文件存在、非空,size 与 SHA-256 以
 // checker 内部常量为期望值,清单自带摘要只用于交叉核对。
 
 package main
@@ -194,7 +194,7 @@ func sortedProfileFiles(p Profile) []string {
 	return keys
 }
 
-// validateRelPath 校验归档相对路径:非空、相对、无空分量、无 . 或
+// validateRelPath 校验归档相对路径:非空、相对、无空分量、无. 或
 // .. 分量、不含反斜杠或冒号;失败返回未定类别的诊断(由调用方补齐)。
 func validateRelPath(p string) *Diagnostic {
 	switch {

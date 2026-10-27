@@ -1,5 +1,5 @@
 // expect.go 冻结锁定 profile 的独立 R/O 策略期望表并执行期望比对。
-// 期望表是 checker 内部常量,逐项转写自绑定设计 §3 的冻结矩阵(23 项
+// 期望表是 checker 内部常量,逐项转写自的冻结矩阵(23 项
 // required+allPlatforms、2 项 optional+allPlatforms、1 项
 // optional+windowsOnly、4 项 excluded,共 30 项,与锁定完整导出集合
 // 28 项 Caller + 2 项 Extra 一一对应),不从被检查的 Go 文件推导——
@@ -43,7 +43,7 @@ type Expectation struct {
 }
 
 // lockedPolicyExpectations 是 maa-v6.20.1 的冻结独立期望表:键为 C
-// 符号名,值转写自设计 §3 逐符号矩阵的分类列(R/O/D 与平台条件),
+// 符号名,值转写自逐符号矩阵的分类列(R/O/D 与平台条件),
 // 不随被检查输入变化。
 var lockedPolicyExpectations = map[string]Expectation{
 	// required + allPlatforms(23 项)。

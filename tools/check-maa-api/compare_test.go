@@ -1,6 +1,6 @@
 // compare_test.go 校验宽度级 C↔Go 逐参数语义比对与 callback 平台适
 // 配比对:冻结参数名映射与类型映射表逐条钉死(接受侧含 byte 别名,
-// 拒绝侧含设计 §9.1.2 的全部宽度/指针/角色向量,含 char pointee 的
+// 拒绝侧含的全部宽度/指针/角色向量,含 char pointee 的
 // const 语义:丢 const 与 UUID buff 加 const 都拒绝);正例以真实生产
 // native 包加合成 C 输入证明冻结映射与生产 api.go/callback_types.go
 // 逐字段一致;失败向量直接构造改动并断言 signature 类诊断的过错方定
@@ -117,7 +117,7 @@ func mustSigFail(t *testing.T, c *CExtraction, g *GoExtraction, link *LinkResult
 
 // ---- 冻结映射表钉死 ----
 
-// TestApprovedParamNameMapping 钉死设计 §3 冻结的 8 个参数名重命名,
+// TestApprovedParamNameMapping 钉死冻结的 8 个参数名重命名,
 // 并确认其余名字原样保留(同名规则)。
 func TestApprovedParamNameMapping(t *testing.T) {
 	want := map[string]string{
@@ -149,7 +149,7 @@ func TestApprovedParamNameMapping(t *testing.T) {
 }
 
 // TestPermittedGoTypesTable 逐条钉死类型映射表:接受侧给出许可拼写
-// (固定顺序),拒绝侧为空——覆盖 §9.1.2 的宽度/指针/角色拒绝向量
+// (固定顺序),拒绝侧为空——覆盖的宽度/指针/角色拒绝向量
 // 与 void* 的三种上下文许可。
 func TestPermittedGoTypesTable(t *testing.T) {
 	cUint8 := func() CType { return sigCScalar("uint8", 8, false) }
@@ -588,7 +588,7 @@ func TestCompareSignatureCSideFailures(t *testing.T) {
 	}
 }
 
-// TestCompareSignatureCharPointeeConstFailures 钉死设计 §9.1.2 的
+// TestCompareSignatureCharPointeeConstFailures 钉死的
 // "改变 const" 反例:C 侧 char pointee 丢 const(UTF-8 输入参数、
 // callback 的 details_json、AsstGetVersion 返回值)与 AsstGetUUID
 // buff 加 const 都拒绝,诊断定位到 C 声明行,expected/actual 以冻结

@@ -1,27 +1,22 @@
-// 本文件实现 callback 的 token 注册表与平台中立的分发序(MAA-18;
-// 绑定设计 §4、§7.1):进程级单调 token 生成器、token → 投递函数的
-// 注册表,以及查表后的固定分发步序(token 校验 → 查找 → 测试暂停
-// 缝 → 投递)。M2 的包级 sink 投递缝已由本注册表整体替换:平台装配
-// 层(callback_linux.go 的 nativeCallback)只承载 trampoline 装配与
-// panic 边界,其余全部分发都经 dispatchCallback 完成;边界故障原语
-// 也在本文件,使注册表与分发序在无平台条件的文件内自洽,后续平台
-// 的装配层直接复用。
+// 本文件实现 callback 的 token 注册表与平台中立的分发序:进程级单调
+// token 生成器、token → 投递函数的注册表,以及查表后的固定分发步序
+// (token 校验 → 查找 → 测试暂停缝 → 投递)。平台装配层
+// (callback_linux.go 的 nativeCallback)只承载 trampoline 装配与 panic
+// 边界,其余分发都经 dispatchCallback 完成;边界故障原语也在本文件,使
+// 注册表与分发序在无平台条件的文件内自洽。
 //
-// 并发契约(§4):
-//   - 注册表锁只覆盖查表与登记/移除;取出投递函数值后立即释放,锁
-//     绝不跨原生内存复制、投递或任何 native 调用;
-//   - token 由互斥锁保护的计数器单调生成:从 1 起、永不复用(注销
-//     后的 token 也不再发出);计数器将回绕时拒绝生成(§4:耗尽或
-//     回绕时拒绝创建)。不用原子变量——溢出判断与递增必须同一锁段
-//     内完成,拆开即丢失单调性保证;
-//   - 注册表持有投递函数(及其捕获的实例状态强引用),直至显式注
-//     销;token 移除只允许发生在 callback 准入门已关闭且全部已准入
-//     callback 退出之后(§8 第 4 步),移除本身不等待。
+// 并发契约:
+//   - 注册表锁只覆盖查表与登记/移除;取出投递函数值后立即释放,锁绝不
+//     跨原生内存复制、投递或任何 native 调用;
+//   - token 由互斥锁保护的计数器单调生成:从 1 起、永不复用(注销后的
+//     token 也不再发出);计数器将回绕时拒绝生成;
+//   - 注册表持有投递函数(及其捕获的实例状态强引用),直至显式注销;
+//     token 移除只允许发生在 callback 准入门已关闭且全部已准入 callback
+//     退出之后,移除本身不等待。
 //
-// 边界故障(§4:不允许静默丢弃):token 0 与查表未命中都记为可见
-// 的原子故障记录(测试与诊断可读),不投递、不 panic——原生线程上
-// 的回调不能因接线层错误而终止 C 线程。panic 边界由平台装配层的
-// nativeCallback 顶栏承载,本文件不 recover。
+// 边界故障不静默丢弃:token 0 与查表未命中都记为可见的原子故障记录,
+// 不投递、不 panic——原生线程上的回调不能因接线层错误而终止 C 线程。
+// panic 边界由平台装配层的 nativeCallback 顶栏承载,本文件不 recover。
 
 package native
 
@@ -34,7 +29,7 @@ import (
 
 // CallbackDelivery 是注册表持有的投递函数形态:detailsJSON 指向原生
 // 持有的 const char* 缓冲,仅在本次调用内有效;读取纪律(先取得
-// callback lease 再读原生内存,§4、§7.1)与实现方自身的锁纪律(状
+// callback lease 再读原生内存)与实现方自身的锁纪律(状
 // 态锁不跨原生内存复制)由实现方负责。注册表锁绝不跨本调用持有。
 type CallbackDelivery func(msg int32, detailsJSON *byte)
 
@@ -60,7 +55,7 @@ const (
 )
 
 // lastCallbackFault 保存最近一次边界故障(后写覆盖先写)。原子槽是
-// 有意的最小形态:正式的故障通道由 maa 层实例状态承接(§7.1 的
+// 有意的最小形态:正式的故障通道由 maa 层实例状态承接(的
 // sticky fault),到达本槽的故障意味着消息未进入任何实例,仅供测试
 // 与诊断观察。
 var lastCallbackFault atomic.Pointer[callbackFault]
@@ -83,7 +78,7 @@ type callbackTokenSource struct {
 var callbackTokens callbackTokenSource
 
 // next 生成下一个 token:计数器将回绕(超过 uintptr 最大值)时返回
-// 包装 ErrProtocol 的错误,成功返回未发出过的非零 token(§4:耗尽
+// 包装 ErrProtocol 的错误,成功返回未发出过的非零 token(耗尽
 // 或回绕时拒绝创建)。
 func (s *callbackTokenSource) next() (uintptr, error) {
 	s.mu.Lock()
@@ -98,14 +93,14 @@ func (s *callbackTokenSource) next() (uintptr, error) {
 // callbackTargetRegistry 是 token → 投递函数的进程级注册表:查表走
 // 读锁(callback 位于原生线程,频率高),登记/移除走写锁(创建与
 // 关闭各一次)。锁纪律:任何方法都不在持有锁期间调用投递函数、触
-// 碰原生内存或执行 native 调用(§4)。
+// 碰原生内存或执行 native 调用。
 type callbackTargetRegistry struct {
 	mu      sync.RWMutex
 	targets map[uintptr]CallbackDelivery
 }
 
 // callbackTargets 是进程唯一的 callback 注册表:注册表先于 CreateEx
-// 建立(§4),使创建过程中的早到回调也能找到投递目标。
+// 建立,使创建过程中的早到回调也能找到投递目标。
 var callbackTargets = &callbackTargetRegistry{targets: make(map[uintptr]CallbackDelivery)}
 
 // install 把 deliver 直写登记到指定 token。RegisterCallbackTarget 在
@@ -123,7 +118,7 @@ func (r *callbackTargetRegistry) install(token uintptr, deliver CallbackDelivery
 }
 
 // remove 移除已登记的 token,释放注册表对投递函数(及其捕获的实例
-// 状态)的强引用。前置契约(§8 第 4 步):callback 准入门已关闭且
+// 状态)的强引用。前置契约(第 4 步):callback 准入门已关闭且
 // 全部已准入 callback 退出;本方法不等待、不验证该前置(准入门属
 // 于 maa 层实例状态)。token 不存在或已移除属于接线层编程错误,
 // panic。
@@ -137,7 +132,7 @@ func (r *callbackTargetRegistry) remove(token uintptr) {
 }
 
 // lookup 返回 token 对应的投递函数:只在读锁内完成查找,取出函数值
-// 后立即释放——锁绝不跨复制、投递或任何 native 调用(§4)。未命中
+// 后立即释放——锁绝不跨复制、投递或任何 native 调用。未命中
 // 返回 nil,由调用方(dispatchCallback)记可见边界故障。
 func (r *callbackTargetRegistry) lookup(token uintptr) CallbackDelivery {
 	r.mu.RLock()
@@ -147,10 +142,10 @@ func (r *callbackTargetRegistry) lookup(token uintptr) CallbackDelivery {
 
 // RegisterCallbackTarget 生成新 token 并把 deliver 登记进注册表:
 //   - deliver 为 nil 返回包装 ErrInvalidInput 的错误,不消耗 token;
-//   - token 空间耗尽返回包装 ErrProtocol 的错误(§4:耗尽或回绕时
+//   - token 空间耗尽返回包装 ErrProtocol 的错误(耗尽或回绕时
 //     拒绝创建);
-//   - 成功返回非零 token,供 AsstCreateEx 的 custom_arg 接线(MAA-21)
-//     与关闭流程的移除(MAA-20)复用。
+//   - 成功返回非零 token,供 AsstCreateEx 的 custom_arg 接线
+//     与关闭流程的移除复用。
 //
 // 生成与登记两步对调用方原子完成:token 先经单调生成器取得,登记
 // 完成后本函数才把 token 交给调用方——token 唯一且永不复用,登记
@@ -169,7 +164,7 @@ func RegisterCallbackTarget(deliver CallbackDelivery) (uintptr, error) {
 
 // UnregisterCallbackTarget 移除已注册的 token(注册表对实例状态的强
 // 引用释放点)。契约:只允许在 callback 准入门已关闭且全部已准入
-// callback 退出后调用(§8 第 4 步);本函数不等待。token 不存在或
+// callback 退出后调用(第 4 步);本函数不等待。token 不存在或
 // 已移除属于接线层编程错误,panic。
 func UnregisterCallbackTarget(token uintptr) {
 	callbackTargets.remove(token)
@@ -178,7 +173,7 @@ func UnregisterCallbackTarget(token uintptr) {
 // LookupCallbackDelivery 返回 token 对应的投递函数,未命中返回 nil。
 // 供 maa 层创建接线用例在 CreateEx 调用期间经真实查表路径投递早到消
 // 息,验证「注册表先于 CreateEx 建立、早到回调能找到实例状态」的时
-// 序(§4);生产路径不使用本函数——原生回调的分发序由 dispatchCallback
+// 序;生产路径不使用本函数——原生回调的分发序由 dispatchCallback
 // 承接。锁纪律与 lookupCallbackTarget 相同:取出函数值后立即释放读
 // 锁,调用方不得在投递期间持有任何锁。
 func LookupCallbackDelivery(token uintptr) CallbackDelivery {
@@ -195,17 +190,17 @@ func lookupCallbackTarget(token uintptr) CallbackDelivery {
 // callbackDispatchHookSlot 是 dispatchCallback 的测试暂停缝:非 nil
 // 时在「查到 token 之后、调用 deliver 之前」以命中 token 调用一次。
 // 生产路径恒为 nil,本缝不承载任何生产语义,只供准入竞态用例在固
-// 定点挂起已命中的 callback(对照 M2 已删除的 callbackSinkSlot 先
-// 例;关闭流程的两类准入竞态验证归 MAA-20 的用例)。
+// 定点挂起已命中的 callback(对照已删除的 callbackSinkSlot 先
+// 例;关闭流程的两类准入竞态验证归本层的用例)。
 var callbackDispatchHookSlot atomic.Pointer[func(token uintptr)]
 
 // dispatchCallback 是平台中立的分发序,由平台装配层的 nativeCallback
 // 与测试调用,顺序固定:
 //
-//  1. token 为 0:记 token-zero 边界故障后返回,绝不投递(§4:token
+//  1. token 为 0:记 token-zero 边界故障后返回,绝不投递(token
 //     0 不会被接受为 custom_arg 的注册结果);
 //  2. 查表未命中:记 unknown-token 边界故障后返回——不允许静默丢
-//     弃(§4);尚未注册、已注销的 token 与原生侧矛盾的 custom_arg
+//     弃;尚未注册、已注销的 token 与原生侧矛盾的 custom_arg
 //     都到达此处;
 //  3. 命中:先经过测试暂停缝(非 nil 时),再调用投递函数;投递期
 //     间不持有注册表锁。
@@ -241,12 +236,12 @@ func dispatchCallback(msg int32, detailsJSON *byte, token uintptr) {
 
 // CallbackDetailsLength 在原生 details 缓冲的下标 0..maxBytes(含,
 // 共 maxBytes+1 字节)范围内寻找 NUL:在下标 i 找到则返回 (i, true)
-// ——i==maxBytes 合法(§7.1 冻结:恰好 CallbackBytes 字节后是 NUL
+// ——i==maxBytes 合法(冻结:恰好 CallbackBytes 字节后是 NUL
 // 合法,超过则溢出);整段无 NUL 返回 (0, false),由调用方按溢出契
 // 约处理(不投递截断 JSON)。detailsJSON 为 nil 返回 (0, false)(maa
 // 层在调用前自行判 nil 并按 ErrProtocol 处理)。maxBytes 应来自
 // Open 时 validateLimits 已校验的 Limits.CallbackBytes(1–16,777,216
-// ,int 转换安全);不分配内存,不修改原生缓冲。
+// int 转换安全);不分配内存,不修改原生缓冲。
 func CallbackDetailsLength(detailsJSON *byte, maxBytes int) (length int, found bool) {
 	if detailsJSON == nil {
 		return 0, false
@@ -261,7 +256,7 @@ func CallbackDetailsLength(detailsJSON *byte, maxBytes int) (length int, found b
 
 // CopyCallbackDetails 从原生缓冲精确复制 length 字节为独立 Go 字节
 // 串:原始字节复制,不做任何解析——不经 map[string]any 的 float64
-// 往返,超过 2^53 的整数原样保留(绑定设计 §6.1)。调用前置契约:
+// 往返,超过 2^53 的整数原样保留。调用前置契约:
 // length ≥ 0,且已由 CallbackDetailsLength 确认缓冲在 length 范围内
 // 有界(通常 length 即其返回值);违反即接线层编程错误,负长度
 // panic。length 为 0 时不读取任何原生字节,直接返回空字节串。

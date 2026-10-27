@@ -1,43 +1,7 @@
 //go:build linux
 
-// 本文件是 MAA-12 的独立真实 ABI fixture 验证:以独立手写 C 夹具
-// (testdata/abifixture/fixture.c,签名逐字对应锁定的 AsstCaller.h)
-// 真实调用并验证数值往返、参数位置、void 副作用与缓冲区协议,为
-// 公共封装提供可信 raw 层依据。
-//
-// 与既有检查的关系(分开报告,不得混用统计):
-//   - 静态 API checker(MAA-09/10)只核对声明一致性;
-//   - loader fixture(MAA-11,MAA_M2_LOADER_FIXTURE_* 标记)只证明
-//     装载/解析/注册链路,其空导出签名有意不对应真实 ABI,绝不可
-//     被调用;
-//   - 本文件以 MAA_M2_ABI_FIXTURE_* 标记报告真实调用结果。
-//
-// 四组用例各自在独立子进程中执行(internal/ffitest,父进程外部强
-// 制 2 分钟超时;崩溃/超时判失败),子进程内 NewLoader().Open →
-// ResolveAndRegister → 经临时 API 表调用 raw 函数断言,全部通过后
-// 打印标记行;父进程不信任「退出 0」,复验标记行及关键字段(纵深
-// 防御)。分组:
-//   - numeric(MAA_M2_ABI_FIXTURE_NUMERIC_OK):uint8 0/1/255 往返、
-//     恒 2 的非零真值、小端负 int32 往返、MaxUint64 哨兵、未深测符
-//     号的确定返回;
-//   - params(MAA_M2_ABI_FIXTURE_PARAMS_OK):4 参数槽位次序(负值
-//     区分)、5 参数折叠、CreateEx token 往返、六参数形状
-//     AsstAsyncAttachWindow 以 purego.RegisterFunc 本地绑定调用 ——
-//     它是 windowsOnly 符号,ResolveAndRegister 在 Linux 不注册;
-//     本地绑定只证明 SysV ABI 下六参数形状传递正确,不代表 Windows
-//     调用约定运行通过;
-//   - void-strings(MAA_M2_ABI_FIXTURE_VOID_STRINGS_OK):void 调用
-//     的可观察副作用(dump 读取通道)、借用版本字符串的复制与原生
-//     改写、字符串输入内容到达;
-//   - buffers(MAA_M2_ABI_FIXTURE_BUFFERS_OK):图像/UUID/任务列表的
-//     NULL/不足/恰好/超容量/合法零/哨兵、uint64 高位不截断、无 NUL
-//     UUID 按长度读取、任务容量按 int32 元素数。
-//
-// 夹具构建入口 buildABIFixture 照 MAA-11 先例(loaderfixture_linux_
-// test.go,本文件复用其 markerLine 与 compilerFirstLine 辅助函数,
-// 不新增第二个 TestMain):无 C 编译器时 Skipf——跳过不是通过。
-// 夹具语义契约全文见 fixture.c 文件头;数值折叠的期望值由本文件的
-// 镜像函数独立现算,两侧互不从对方生成。
+// 本文件以独立手写 C 夹具验证真实 ABI:签名逐字对应锁定的 AsstCaller.h,
+// 覆盖数值往返、参数位置、void 副作用与缓冲区协议。
 
 package native
 
@@ -69,12 +33,12 @@ const (
 	abiFixtureModeVoidStrings = "abifixture-void-strings"
 	abiFixtureModeBuffers     = "abifixture-buffers"
 
-	// abiFixtureSOEnv 向子进程传递夹具 .so 的绝对路径;子进程先断言
+	// abiFixtureSOEnv 向子进程传递夹具.so 的绝对路径;子进程先断言
 	// 其为绝对路径,与 loader 只接受绝对路径的冻结策略一致。
-	abiFixtureSOEnv = "MAA_M2_ABI_FIXTURE_SO"
+	abiFixtureSOEnv = "MAA_ABI_FIXTURE_SO"
 
 	// abiFixtureSrcRel 是夹具源码相对包目录的路径:夹具按任务规定
-	// 独立放在 maa-go 包根的 testdata/abifixture/(与 MAA-11 的
+	// 独立放在 maa-go 包根的 testdata/abifixture/(与
 	// internal/native/testdata/loaderfixture 分目录),go test 的工作
 	// 目录是 internal/native 包源码目录,testdata/ 下的文件不参与 Go
 	// 构建。
@@ -83,12 +47,12 @@ const (
 	// abiFixtureSOName 是编译产物文件名。
 	abiFixtureSOName = "libabifixture.so"
 
-	// 四个标记独立命名空间:与 loader fixture 的 MAA_M2_LOADER_FIXTURE_*
+	// 四个标记独立命名空间:与 loader fixture 的 MAA_LOADER_FIXTURE_*
 	// 和静态 checker 结果明确分开,单独统计报告。
-	numericOKMarker     = "MAA_M2_ABI_FIXTURE_NUMERIC_OK"
-	paramsOKMarker      = "MAA_M2_ABI_FIXTURE_PARAMS_OK"
-	voidStringsOKMarker = "MAA_M2_ABI_FIXTURE_VOID_STRINGS_OK"
-	buffersOKMarker     = "MAA_M2_ABI_FIXTURE_BUFFERS_OK"
+	numericOKMarker     = "MAA_ABI_FIXTURE_NUMERIC_OK"
+	paramsOKMarker      = "MAA_ABI_FIXTURE_PARAMS_OK"
+	voidStringsOKMarker = "MAA_ABI_FIXTURE_VOID_STRINGS_OK"
+	buffersOKMarker     = "MAA_ABI_FIXTURE_BUFFERS_OK"
 
 	// abiFixtureChildTimeout 是父进程强制的子进程 wall-clock 上限:
 	// 真实调用毫秒级完成,2 分钟只防御环境异常导致的挂起。
@@ -131,7 +95,7 @@ func init() {
 	ffitest.Register(abiFixtureModeBuffers, runABIFixtureBuffersChild)
 }
 
-// buildABIFixture 编译独立 C ABI 夹具,返回 .so 绝对路径。
+// buildABIFixture 编译独立 C ABI 夹具,返回.so 绝对路径。
 //
 // 编译器发现:依次 exec.LookPath 查找 cc、gcc;两者都缺失时 Skipf
 // ——夹具构建受阻属于测试环境受限,计为 SKIP(跳过不是通过),真实
@@ -218,7 +182,7 @@ func abiFoldAsyncAttachWindow(handle, hwnd uintptr, screencap, mouse, keyboard u
 
 // == 子进程辅助 ==
 
-// abiFixtureOpenChild 在子进程内装载夹具并完成解析注册:断言 .so 路
+// abiFixtureOpenChild 在子进程内装载夹具并完成解析注册:断言.so 路
 // 径为绝对路径(NewLoader().Open → ResolveAndRegister),失败时向
 // stderr 打印诊断并返回 ok=false(子进程将以非零退出码失败)。
 func abiFixtureOpenChild(scope, so string) (lib *Library, table *APITable, ok bool) {
@@ -743,9 +707,9 @@ func runABIFixtureBuffersChild() int {
 
 // == 父进程用例:每组独立子进程,复验标记行与关键字段 ==
 
-// TestM2AbiFixtureNumeric 验证数值往返组:子进程全部断言通过后打印
+// TestABIFixtureNumeric 验证数值往返组:子进程全部断言通过后打印
 // 标记,父进程独立复验关键字段(纵深防御)。
-func TestM2AbiFixtureNumeric(t *testing.T) {
+func TestABIFixtureNumeric(t *testing.T) {
 	soPath := buildABIFixture(t)
 
 	out := ffitest.Run(t, ffitest.Options{
@@ -777,9 +741,9 @@ func TestM2AbiFixtureNumeric(t *testing.T) {
 	t.Logf("numeric 子进程真实 ABI 验证通过(uint8 0/1/255、负 int32、MaxUint64 往返):%s", line)
 }
 
-// TestM2AbiFixtureParams 验证参数传递组:x/y 槽位、5 参数折叠、
+// TestABIFixtureParams 验证参数传递组:x/y 槽位、5 参数折叠、
 // token 往返、六参数形状。父进程用镜像函数独立现算期望值复验。
-func TestM2AbiFixtureParams(t *testing.T) {
+func TestABIFixtureParams(t *testing.T) {
 	soPath := buildABIFixture(t)
 
 	out := ffitest.Run(t, ffitest.Options{
@@ -827,9 +791,9 @@ func TestM2AbiFixtureParams(t *testing.T) {
 	t.Logf("params 子进程真实 ABI 验证通过(4 参数槽位、5 参数折叠、token 往返、六参数形状 SysV 本地绑定):%s", line)
 }
 
-// TestM2AbiFixtureVoidStrings 验证 void 与字符串组:副作用 dump、借
+// TestABIFixtureVoidStrings 验证 void 与字符串组:副作用 dump、借
 // 用字符串复制与改写、字符串输入到达。父进程复验标记关键字段。
-func TestM2AbiFixtureVoidStrings(t *testing.T) {
+func TestABIFixtureVoidStrings(t *testing.T) {
 	soPath := buildABIFixture(t)
 
 	out := ffitest.Run(t, ffitest.Options{
@@ -857,10 +821,10 @@ func TestM2AbiFixtureVoidStrings(t *testing.T) {
 	t.Logf("void-strings 子进程真实 ABI 验证通过(void 副作用、借用改写、字符串输入):%s", line)
 }
 
-// TestM2AbiFixtureBuffers 验证缓冲区协议组:NULL/不足/恰好/超容量、
+// TestABIFixtureBuffers 验证缓冲区协议组:NULL/不足/恰好/超容量、
 // 合法零、哨兵、高位 buffSize、无 NUL、负元素。父进程复验标记关键
 // 字段。
-func TestM2AbiFixtureBuffers(t *testing.T) {
+func TestABIFixtureBuffers(t *testing.T) {
 	soPath := buildABIFixture(t)
 
 	out := ffitest.Run(t, ffitest.Options{

@@ -8,7 +8,7 @@
 // 许可映射定位到 C 声明),含符号、参数位置与名称、expected/actual
 // (C 侧类型用 CType.String())。
 //
-// 类型映射是绑定设计 §3 冻结的常量表,不做任何猜测(不实现通用 C
+// 类型映射是冻结的常量表,不做任何猜测(不实现通用 C
 // 编译器/数据流分析);其余一切 C 类型形状无许可映射,出现即失败:
 //   - uint8 标量 → uint8(byte 是同类型别名,同样接受);int32 标量
 //     → int32;uint64 标量 → uint64;const 标量与 char 标量无许可
@@ -16,7 +16,7 @@
 //   - pointee 为 char 的指针(const char* 与 char*)→ *byte,但
 //     pointee 的 const 标志必须与冻结分布一致:非 const 仅许可
 //     AsstGetUUID 的 buff(UTF-8 输出缓冲区),其余任何位置丢
-//     const 或该位置加 const 均无许可映射(设计 §9.1.2 改变
+//     const 或该位置加 const 均无许可映射(改变
 //     const 失败);pointee 为 int32 的指针(任务列表)→ *int32;
 //     其余 pointee(含 uint8*、二级指针)无许可映射;
 //   - struct AsstExtAPI*(opaque handle)→ uintptr;
@@ -27,14 +27,14 @@
 //     为 AsstGetImage/AsstGetImageBgr → unsafe.Pointer(图像缓冲区)。
 //     其余任何 void* 位置失败。
 //
-// 参数名映射仅允许设计 §3 冻结的 8 个重命名,其余参数必须原样同名;
+// 参数名映射仅允许冻结的 8 个重命名,其余参数必须原样同名;
 // 匿名与空白参数名、未批准重命名以及同类型参数调序(x/y、
 // level/message、callback/customArg、窗口 method)因此失败。返回值:
 // C void → Go 必须无结果列表(不虚构成功码);其余按同一类型映射,
 // 返回位置没有参数名,故 void* 返回无许可映射。结果个数恰为 0 或 1
 // 由 Go 提取层保证,此处按单一结果值比对。
 //
-// callback 平台适配(设计 §4 与 §9.1):C 的 AsstApiCallback 在两
+// callback 平台适配:C 的 AsstApiCallback 在两
 // 平台都声明为 void(ASST_CALL*)(AsstMsgId, const char*, void*),
 // 无条件分支。unixCallback 无返回值(C void 原样);windowsCallback
 // 参数与 unix 相同,返回值必须恰为 uintptr——这是 purego 装配层的
@@ -50,7 +50,7 @@ import (
 	"strings"
 )
 
-// approvedParamNames 是设计 §3 冻结的参数名映射(C 名 → Go 名);仅
+// approvedParamNames 是冻结的参数名映射(C 名 → Go 名);仅
 // 此 8 个允许重命名,其余参数必须原样同名。
 var approvedParamNames = map[string]string{
 	"type":             "taskType",

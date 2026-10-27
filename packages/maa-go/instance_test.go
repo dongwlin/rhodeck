@@ -1,24 +1,6 @@
-// 本文件是实例单次关闭流程的受控用例(MAA-20;绑定设计 §7、§8、
-// §8.1):白盒同包验证 instance.close 组装状态、分发器、callback 准
-// 入与 pending 结算的唯一清理流程——并发多次 Close 只执行一次
-// Stop/Destroy 并共享同一 closeDone 与最终错误、排队及执行中的调用
-// 退出前不 Destroy 且 closing 后拒绝新调用、native 调用期间不持任何
-// 锁且同步 Destroyed 不锁死(也不以 Destroyed 为关闭完成的唯一条
-// 件)、Destroy 返回后才关门且最后一个已准入 callback 退出后才清理
-// token 与通道、外部停读 Events 时清理照常完成且观察 Done/Close 返
-// 回后 Err 与全部 Operation 终态立即稳定,以及最终错误组合纪律(不
-// 从 Destroy 的 void 返回制造成功码、停止拒绝与首因沿错误链可辨、
-// Close 不自设超时)。native 停止/销毁以 fakeInstanceCloser 注入
-// (对照 runtime.go 的 initSession 先例),callback 投递经生产注册表
-// 与 callbackTarget.deliver 真实接缝完成。全部用例以受控屏障
-// (channel/原子变量/轮询等待)确定性同步,不加载任何原生库、不触达
-// loader/Runtime,CGO_ENABLED=0 可跑;防挂死只用 state_test.go 的
-// hangGuard 兜底,不作同步手段。
-//
-// maa→native 的 token 注册表是进程级共享状态:本文件用例互不并行
-// (不调 t.Parallel),token 经生产入口注册、由 close 流程注销(或未
-// 执行 close 的用例经 rig.cleanup 兜底注销),不留悬挂 goroutine 影响
-// -race。
+// 本文件是实例单次关闭流程的受控用例:验证并发 Close 只执行一次
+// Stop/Destroy、关闭等待在途调用、同步 Destroyed 的处理、token 与事件
+// 通道清理顺序,以及关闭错误组合。
 
 package maa
 
@@ -104,7 +86,7 @@ func (f *fakeInstanceCloser) calls() []string {
 
 // closeRig 组装完整关闭组件的受控实例:状态发布 ready、分发器接
 // s.settleCompletion 并启动、callback target 经生产注册入口登记
-// target.deliver(钉住 maa→native 注册接缝形态,对照 MAA-18 先例)、
+// target.deliver(钉住 maa→native 注册接缝形态,对照既有先例)、
 // fake closer 注入。token 的生命周期由 close 流程负责:完整执行的
 // close 已注销 token;未执行 close 的用例经 cleanup 兜底注销并排空
 // 分发循环。
@@ -188,8 +170,7 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 }
 
 // assertClosedChannels 断言关闭完成后的通道终态:Done/closeDone 已
-// 关闭;Events 缓冲事件读尽后通道已关闭(关闭后已缓冲事件仍可读,
-// §8.1)。
+// 关闭;Events 缓冲事件读尽后通道已关闭(关闭后已缓冲事件仍可读)。
 func assertClosedChannels(t *testing.T, rig *closeRig) {
 	t.Helper()
 	select {
@@ -235,7 +216,7 @@ func TestNewInstanceContract(t *testing.T) {
 	assertPanics(t, "零 token", func() { newInstance(s, d, 0, closer) })
 }
 
-// TestInstanceCloseConcurrentSingleDestroy 钉住验收条件「并发多次
+// TestInstanceCloseConcurrentSingleDestroy 验证「并发多次
 // Close 只执行一次 Destroy,并等待同一 closeDone 后返回同一最终错
 // 误」:N 个 goroutine 并发 close 恰一所有者,Stop/Destroy 各恰一次
 // 且先 Stop 后 Destroy、handle 逐字转发;全部申请者(所有者与失败
@@ -265,7 +246,7 @@ func TestInstanceCloseConcurrentSingleDestroy(t *testing.T) {
 			t.Fatalf("Destroy 调用次数 = %d, want 恰 1", got)
 		}
 		if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-			t.Fatalf("native 调用序列 = %v, want [stop destroy](§8.1:一次 Stop 再一次 Destroy)", seq)
+			t.Fatalf("native 调用序列 = %v, want [stop destroy](一次 Stop 再一次 Destroy)", seq)
 		}
 		if got := rig.closer.stopHandles[0]; got != handle {
 			t.Errorf("Stop 收到 handle %#x, want %#x", got, handle)
@@ -319,14 +300,14 @@ func TestInstanceCloseConcurrentSingleDestroy(t *testing.T) {
 				t.Errorf("Close %d: errors.Is(err, native.ErrEventOverflow) = false; err = %v", i, err)
 			}
 		}
-		// faulted 进入关闭仍无条件执行一次 Stop/Destroy(§8.1)。
+		// faulted 进入关闭仍无条件执行一次 Stop/Destroy()。
 		if got := rig.closer.count("destroy"); got != 1 {
 			t.Errorf("faulted 关闭的 Destroy 次数 = %d, want 恰 1", got)
 		}
 	})
 }
 
-// TestInstanceCloseWaitsCallsBeforeDestroy 钉住验收条件「排队及执行
+// TestInstanceCloseWaitsCallsBeforeDestroy 验证「排队及执行
 // 中的调用退出前不 Destroy,新业务调用在 closing 后被拒绝」:执行中
 // 的 A(占据 raw 串行门禁)与门禁前排队的 B 均在途时,close 停在等
 // 待清零段,Stop/Destroy 不得发生;closing 后 admitCall 拒绝并包装
@@ -413,7 +394,7 @@ func TestInstanceCloseWaitsCallsBeforeDestroy(t *testing.T) {
 	}
 }
 
-// TestInstanceCloseSyncCallbackDuringNativeCalls 钉住验收条件「Stop/
+// TestInstanceCloseSyncCallbackDuringNativeCalls 验证「Stop/
 // Destroy 同步进入 callback 时无锁死,Destroyed 不被当作关闭完成的
 // 唯一条件」:native stop 调用挂起期间,状态锁操作与 callback 准入
 // 投递都能限时完成(实现若持状态锁/callback 门/分发器锁/注册表锁跨
@@ -449,7 +430,7 @@ func TestInstanceCloseSyncCallbackDuringNativeCalls(t *testing.T) {
 		}
 
 		// 探针二:callback 准入 + 分发器入队(native stop 调用挂起期
-		// 间)必须能完成——closing 阶段门仍开放(§7)。
+		// 间)必须能完成——closing 阶段门仍开放。
 		delivered := make(chan struct{})
 		go func() {
 			rig.target.deliver(60, callbackCBytes(`{"what":"DuringStop"}`))
@@ -525,7 +506,7 @@ func TestInstanceCloseSyncCallbackDuringNativeCalls(t *testing.T) {
 	})
 }
 
-// TestInstanceCloseGateAndTokenAfterDestroy 钉住验收条件「Destroy 返
+// TestInstanceCloseGateAndTokenAfterDestroy 验证「Destroy 返
 // 回后才关闭 callback 门,最后一个已准入 callback 退出后才清理 token
 // 和通道」:Destroy 返回前同步投递的消息必须照常准入入队(门若提前
 // 关闭即拒收,事件缺失即失序暴露);close 完成后门已关闭、token 已由
@@ -562,7 +543,7 @@ func TestInstanceCloseGateAndTokenAfterDestroy(t *testing.T) {
 		s := rig.s
 
 		// 主测试持分发器锁:deliver 将在取得 callback lease 后、预留
-		// 队列额度前暂停(对照 MAA-18 竞态 B 先例)。
+		// 队列额度前暂停(对照竞态 B 先例)。
 		rig.d.mu.Lock()
 		go func() {
 			rig.target.deliver(61, callbackCBytes(`{"what":"InFlight"}`))
@@ -629,12 +610,12 @@ func TestInstanceCloseGateAndTokenAfterDestroy(t *testing.T) {
 	})
 }
 
-// TestInstanceCloseWithStalledEventConsumer 钉住验收条件「外部停读
+// TestInstanceCloseWithStalledEventConsumer 验证「外部停读
 // Events 时仍能完成清理;观察 Done 或 Close 返回后,Err 与全部
 // Operation 终态立即稳定」:公开缓冲收紧到 1 条且消费者全程停读,
 // 排空对无法投递的事件按溢出契约记录故障并计丢失、不等待读者,关闭
 // 照常收敛(返回溢出首因);已确认的完成结果不被随后的溢出改写,未
-// 完成项按首因统一结项(§7.1);close 返回后全部 Operation 的等待立
+// 完成项按首因统一结项;close 返回后全部 Operation 的等待立
 // 即返回终态,无需任何额外等待。
 func TestInstanceCloseWithStalledEventConsumer(t *testing.T) {
 	b := generousBudgets()
@@ -691,7 +672,7 @@ func TestInstanceCloseWithStalledEventConsumer(t *testing.T) {
 	}
 
 	// 全部 Operation 终态立即稳定:已确认的成功结果不被随后的溢出
-	// 改写(§7.1、§8.1);未完成项由首因线性化扫描统一结项,错误与最
+	// 改写;未完成项由首因线性化扫描统一结项,错误与最
 	// 终错误同一存储值;等待无需任何额外延迟。
 	res, werr := waitGuarded(t, opSettled, context.Background())
 	if werr != nil {
@@ -722,13 +703,13 @@ func TestInstanceCloseWithStalledEventConsumer(t *testing.T) {
 	if _, ok := <-rig.d.events(); ok {
 		t.Error("close 后 Events 应已关闭")
 	}
-	// faulted 进入关闭仍无条件执行一次 Stop/Destroy(§8.1)。
+	// faulted 进入关闭仍无条件执行一次 Stop/Destroy()。
 	if got := rig.closer.count("destroy"); got != 1 {
 		t.Errorf("Destroy 次数 = %d, want 恰 1", got)
 	}
 }
 
-// TestInstanceCloseErrorComposition 钉住验收条件「不从 Destroy 的
+// TestInstanceCloseErrorComposition 验证「不从 Destroy 的
 // void 返回制造成功码,也不将等待超时描述为原生资源已安全回收」:
 // Stop 返回 0 时 Close 返回含接口与原始 bool 的 ErrNativeRejected 诊
 // 断(非 nil——Destroy 的 void 返回不制造成功),继续 Destroy,剩余
@@ -755,11 +736,11 @@ func TestInstanceCloseErrorComposition(t *testing.T) {
 				t.Errorf("停止诊断应含接口与原始 bool %q:\n%s", want, err.Error())
 			}
 		}
-		// 拒绝后继续 Destroy(§8.1),各恰一次。
+		// 拒绝后继续 Destroy(),各恰一次。
 		if got := rig.closer.count("stop"); got != 1 || rig.closer.count("destroy") != 1 {
 			t.Errorf("Stop/Destroy 次数 = %d/%d, want 1/1", rig.closer.count("stop"), rig.closer.count("destroy"))
 		}
-		// 剩余 Operation 不被结为成功:以 ErrClosed 结项(§8 第 5 步)。
+		// 剩余 Operation 不被结为成功:以 ErrClosed 结项(第 5 步)。
 		_, werr := waitGuarded(t, op, context.Background())
 		if !errors.Is(werr, native.ErrClosed) {
 			t.Errorf("errors.Is(剩余 Operation 结算错误, native.ErrClosed) = false; err = %v", werr)
@@ -801,7 +782,7 @@ func TestInstanceCloseErrorComposition(t *testing.T) {
 
 		// 负面观察窗:Destroy 未返回期间 close 不返回、Done 不关闭、
 		// 最终错误不发布——不存在「超时后宣称原生资源已安全回收」的
-		// 路径(§8:关闭由 control 的 worker 监督兜底)。
+		// 路径(关闭由 control 的 worker 监督兜底)。
 		<-time.After(notWithin)
 		select {
 		case err := <-closeErr:
@@ -844,7 +825,7 @@ func TestInstanceCloseErrorComposition(t *testing.T) {
 	})
 }
 
-// TestInstanceCloseZeroHandleSkipsStopDestroy 钉住 §8.1「CreateEx=0
+// TestInstanceCloseZeroHandleSkipsStopDestroy 钉住 「CreateEx=0
 // 的路径不调用 Stop/Destroy」:handle=0 的回滚路径跳过 native 停止/
 // 销毁,但关门、退空、移除 token、排空结算与终态发布照常完成。
 func TestInstanceCloseZeroHandleSkipsStopDestroy(t *testing.T) {
@@ -880,8 +861,8 @@ func TestInstanceCloseZeroHandleSkipsStopDestroy(t *testing.T) {
 }
 
 // TestInstanceCloseEventsClosedAfterSettlementAndPublication 钉住冻
-// 结的关闭顺序(§8 第 5 步:先发布最终错误和 closed 状态,再由通道
-// 所有者关闭 Events;§8.1:Events 的发送者停止、所有 callback 退出、
+// 结的关闭顺序(第 5 步:先发布最终错误和 closed 状态,再由通道
+// 所有者关闭 Events;:Events 的发送者停止、所有 callback 退出、
 // Operation 全部结算后,才关闭 Events——固定容量和关闭顺序是冻结的
 // 验收要求):用一次性结算屏障把分发器拦停在「可确认结算已完成、尚
 // 未投递」处(发送者停止点因此未到达,关闭流程确定性停在
@@ -963,7 +944,7 @@ func TestInstanceCloseEventsClosedAfterSettlementAndPublication(t *testing.T) {
 		case _, ok := <-rig.d.events():
 			eventsOpen = ok
 			if !ok {
-				t.Error("剩余结算与终态发布之前 Events 不得被关闭(§8 第 5 步、§8.1 冻结顺序)")
+				t.Error("剩余结算与终态发布之前 Events 不得被关闭(冻结顺序)")
 			}
 		default:
 			eventsOpen = false // 已空且未关闭:顺序正确

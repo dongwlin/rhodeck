@@ -10,8 +10,8 @@ module 下的开发工具,不成为 maa-go 的运行依赖。
 (参数个数/顺序/具名、返回值形态、类型宽度/符号位/指针用途与 char
 pointee 的 const 语义,含 void* 的三种上下文许可与 callback 平台适
 配)。它**不能**证明寄存器
-传递、内存有效性、原生行为或 Windows 运行支持(绑定设计 §9.1);
-实际 purego callback 装配(MAA-13)在此基础上继续验收。
+传递、内存有效性、原生行为或 Windows 运行支持；实际 purego callback
+装配在此基础上继续验收。
 
 ## 使用方式
 
@@ -65,7 +65,7 @@ check-maa-api --profile maa-v6.20.1 --goos windows --goarch amd64 \
   (`return`,`c_type` 与 `go_type`,C void 与 Go 无结果均为空串);
   `callbacks` 给出两个 callback 类型的同样核验(unixCallback 原样
   void,windowsCallback 许可适配为 uintptr)。映射是 checker 内部的
-  冻结常量表(设计 §3,含 char pointee 的 const 冻结分布:非 const
+  冻结常量表(含 char pointee 的 const 冻结分布:非 const
   仅许可 AsstGetUUID 的 buff),不从被检查输入推导。
 
 ## 失败行为与退出码
@@ -79,17 +79,17 @@ check-maa-api --profile maa-v6.20.1 --goos windows --goarch amd64 \
 |---|---|
 | `input` | 命令参数、清单/文件/摘要/profile/目标、Go 文件选择(目录缺失、共用声明文件缺失或被约束隐藏) |
 | `c-syntax` | C 输入的受限语法、宏、条件与 typedef(第一段冻结) |
-| `go-syntax` | Go 解析、§3.1 声明形式、raw 类型词表、名字遮蔽、unsafe 导入形态、重复声明、空清单、共用文件自带 build 约束 |
+| `go-syntax` | Go 解析、声明形式、raw 类型词表、名字遮蔽、unsafe 导入形态、重复声明、空清单、共用文件自带 build 约束 |
 | `relation` | C↔Go 一对一关联:未知导出、漏绑、重复绑定、错误/重复 Target、多余 raw 字段、陈旧或重复排除、实验发现未排除或被绑定、平台矛盾 |
 | `policy` | 锁定 profile 独立期望比对:绑定未冻结符号、D/实验项改绑、required↔optional 互换、allPlatforms↔windowsOnly 互换、期望绑定符号被排除或缺失绑定;诊断含条目文件/行号/符号与 expected/actual 策略 |
 | `signature` | 宽度级 C↔Go 逐参数语义比对与 callback 平台适配:参数个数增删、匿名/未批准重命名/同类型调序(定位到参数位置)、uint8→bool、int32→int/uint32、uint64→uintptr/uint32、char 标量与 const 标量、pointee 语义改变(const char*→uint8_t*)、char pointee 的 const 改变(C 侧丢 const 或 AsstGetUUID buff 加 const,均无许可映射)、二级指针、uint8* 指针、char*→uintptr、任务 *int32→unsafe.Pointer、图像 unsafe.Pointer→uintptr、void* 上下文许可外的任何用途、void 返回虚构成功码、Unix callback 增加返回、Windows callback 少返回或返回非 uintptr;Go 侧错误定位到字段/callback 声明行,C 类型无许可映射定位到 C 声明行(C 侧类型以规范化拼写给出) |
 
 ## 支持的声明语法边界
 
-按绑定设计 §9.1.1 如实列出。**支持**:
+支持的声明语法边界如下。**支持**:
 
 - C 侧(第一段冻结):`#pragma once`、注释、冻结 include 集合、
-  AsstPort.h 的锁定宏表、§9.1.1 冻结的条件拼写(非活跃分支同样检查)、
+  AsstPort.h 的锁定宏表、冻结的条件拼写(非活跃分支同样检查)、
   标量 typedef 链、`AsstHandle`、`AsstApiCallback` 函数指针、普通
   `返回类型 ASSTAPI 名称(参数列表);`、唯一的
   `ASSTAPI_PORT const char* ASST_CALL AsstGetVersion();` 拼写、Caller
@@ -117,8 +117,7 @@ check-maa-api --profile maa-v6.20.1 --goos windows --goarch amd64 \
   多级指针、host 的 `int/long/size_t` 代换、外部预定义 `ASST_CALL`。
 - Go:helper/append/循环/条件/拼接/反射构造的清单、间接变量目标、
   自定义宽度别名、别名或伪造的 unsafe 导入、泛型声明。
-- `Policy`/`Platform` 常量的序数值比较;实际 purego callback 装配
-  (MAA-13)。
+- `Policy`/`Platform` 常量的序数值比较;实际 purego callback 装配。
 
 ## 文件选择规则
 
@@ -169,7 +168,7 @@ tag `v6.20.1`,commit `d94dd007aca3b519395fb1f0aee26c7bd5ba5d5f`。
 
 ## 反例覆盖
 
-绑定设计 §9.1.2 的反例目录按类别以**完整命令入口**验收:每个反例在
+反例按类别以**完整命令入口**验收:每个反例在
 进程内走 Run 的完整 CLI 路径(参数解析 → 摘要校验 → 文件读取 → C
 提取 → Go 选择/提取 → 关联 → 期望比对 → 签名比对 → 退出),断言非
 零退出、stdout 无内容且无 PASS、stderr 含 profile/目标头、诊断类别
@@ -179,7 +178,7 @@ tag `v6.20.1`,commit `d94dd007aca3b519395fb1f0aee26c7bd5ba5d5f`。
 写。拒绝层如实归属:被更早层冻结规则拒绝的向量钉死在该层,不强行移
 到比对层。
 
-| §9.1.2 类别 | Run() 级反例测试 | 拒绝层 |
+| 类别 | Run() 级反例测试 | 拒绝层 |
 |---|---|---|
 | 输入/目标 | `TestRunArgumentFailures`(缺 flag、未知 profile、未知目标)、`TestRunInputFailures`(缺头、缺清单、缺 native 目录)、`TestCounterexampleCInputThroughCLI`(空文件、盘上摘要不符、清单路径越界)、`TestRealNativeVariantsFailThroughCLI`(空 API/符号/排除表) | input |
 | C 提取 | `TestCounterexampleCExtractionThroughCLI`(未知 typedef、循环别名、非活跃分支未知条件、GetVersion 特殊拼写、ASST_CALL 右值与外部预定义、零参数函数加参) | c-syntax |
@@ -201,8 +200,7 @@ c-syntax 拒绝;正例基线同时断言成功报告的 `discovery_exports` 恰�
 
 ### 范围边界
 
-静态 checker 只证明**声明层**的一致性(绑定设计 §9.1 分层检查表的
-第一行),它不能证明:
+静态 checker 只证明**声明层**的一致性,它不能证明:
 
 - 寄存器传参与调用约定的实际执行效果——由独立 C ABI fixture 的真
   实调用验收;
@@ -210,8 +208,7 @@ c-syntax 拒绝;正例基线同时断言成功报告的 `discovery_exports` 恰�
   形态;
 - 真实 callback 行为——`unixCallback`/`windowsCallback` 的平台适
   配只是声明层形式核验(无返回/uintptr),实际 purego
-  `NewCallback` 装配、trampoline 常量 0 返回与线程行为由 MAA-13
-  接入后验收;
+  `NewCallback` 装配、trampoline 常量 0 返回与线程行为需另行验收;
 - Windows 运行支持——`(windows, amd64)` 目标只按同一套冻结规则
   解析声明并核验 Windows 分支拼写,不声称 Windows 库执行通过。
 
@@ -235,7 +232,7 @@ CGO_ENABLED=0 go test ./tools/check-maa-api/... -count=1
 形式向量、C↔Go 关联向量、冻结期望表逐项钉死与期望比对失败向量、
 宽度级签名比对的冻结映射表钉死与接受/拒绝向量(真实生产树正例、
 Go/C 两侧过错方定位、callback 平台适配、C callback 变体的 c-syntax
-拒绝归属)、真实目录破坏变体与按 §9.1.2 目录类别归组的完整命令入
+拒绝归属)、真实目录破坏变体与按目录类别归组的完整命令入
 口反例集(counterexample_cli_test.go,含 C 提取、输入摘要、覆盖/
 关系、精确排除与实验发现、宽度/指针/次序、callback、文件选择正确
 副本不掩盖、独立性)、真实发行包头的两目标端到端正例与 signatures

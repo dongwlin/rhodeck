@@ -1,4 +1,4 @@
-// goextract.go 对入选 Go 文件执行受限 AST 提取:§3.1 冻结的声明形式——
+// goextract.go 对入选 Go 文件执行受限 AST 提取: 冻结的声明形式——
 // 唯一 type api struct(字段名=C 符号去 Asst 前缀,每字段恰好一个具名
 // func 类型,禁止嵌入/匿名参数/变参/多返回值,无返回值=无结果列表,
 // 有返回值=恰一个未命名结果)、唯一 symbolSpecs(单条直接 return 的
@@ -44,7 +44,7 @@ var goShadowNames = map[string]bool{
 	"any": true, "iota": true, "unsafe": true,
 }
 
-// symbolSpecsParamName 是 §3.1 冻结的 symbolSpecs 参数名;Target 必须
+// symbolSpecsParamName 是冻结的 symbolSpecs 参数名;Target 必须
 // 是对该参数的字段取址。
 const symbolSpecsParamName = "table"
 
@@ -252,7 +252,7 @@ func ExtractGo(sel *GoSelection) (*GoExtraction, []Diagnostic) {
 		}
 	}
 
-	// 唯一性收尾:缺失的冻结声明以 §3.1 的期望文件定位。
+	// 唯一性收尾:缺失的冻结声明以的期望文件定位。
 	switch {
 	case seenAPI == 0:
 		return fail(Diagnostic{Category: CatGoSyntax, File: "api.go", Symbol: "api",
@@ -550,7 +550,7 @@ func extractSymbolSpecs(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, con
 	p := fn.Type.Params.List[0]
 	if p.Names[0].Name != symbolSpecsParamName {
 		return nil, formDiag("parameter named "+symbolSpecsParamName, p.Names[0].Name,
-			"symbolSpecs parameter name is frozen by §3.1")
+			"symbolSpecs parameter name is frozen by the shared declaration file")
 	}
 	star, ok := unwrapParen(p.Type).(*ast.StarExpr)
 	if !ok {
@@ -909,7 +909,7 @@ func stringLiteralValue(fset *gotoken.FileSet, rel string, e ast.Expr, key strin
 }
 
 // isBareFileName 判断裸文件名:非空、不含路径分隔符与盘符冒号、
-// 不是 . 或 ..。
+// 不是. 或..。
 func isBareFileName(s string) bool {
 	if s == "" || s == "." || s == ".." {
 		return false

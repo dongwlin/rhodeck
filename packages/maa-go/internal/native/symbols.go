@@ -1,19 +1,17 @@
-// 本文件的符号表是加载策略的唯一清单:symbolSpecs 把每项 C 符号
-// 名、api 字段目标、R/O 策略与适用平台逐项关联;加载实现只能依据
-// 本清单,不做运行期拼接符号名或反射猜测 ABI。
+// 本文件的符号表是加载策略的唯一清单:symbolSpecs 把每项 C 符号名、api
+// 字段目标、R/O 策略与适用平台逐项关联;加载实现只能依据本清单,不做
+// 运行期拼接符号名或反射猜测 ABI。
 //
-// 策略语义(与绑定设计 §3.1 一致):
-//   - R(required)缺失则拒绝初始化,收集全部必需项失败后一次性
-//     整体报告;
+// 策略语义:
+//   - R(required)缺失则拒绝初始化,收集全部必需项失败后一次性整体报告;
 //   - O(optional)缺失只关闭对应 capability,不阻塞加载;
-//   - D 与实验项不查找、不注册,只能出现在 exclusions;每条排除
-//     记录来源头文件与原因,不靠通配符隐藏遗漏。
+//   - D 与实验项不查找、不注册,只能出现在 exclusions;每条排除记录来源
+//     头文件与原因,不靠通配符隐藏遗漏。
 //
-// 声明形式冻结自设计 §3.1:symbolSpecs 只有一条直接 return 的
-// []symbolSpec 字面量,每条目恰好四个具名 key(Name/Target/
-// Policy/Platform);禁止 helper、append、循环、条件、字符串拼接、
-// 反射与间接变量目标——形式漂移由 symbols_static_test.go 在构建
-// 期报错。
+// symbolSpecs 只有一条直接 return 的 []symbolSpec 字面量,每条目恰好四个
+// 具名 key(Name/Target/Policy/Platform);禁止 helper、append、循环、条件、
+// 字符串拼接、反射与间接变量目标——形式漂移由 symbols_static_test.go 在
+// 构建期报错。
 
 package native
 
@@ -76,7 +74,7 @@ func symbolSpecs(table *api) []symbolSpec {
 }
 
 // exclusionSpec 记录一条精确排除:D 项与实验项不绑定,Name/
-// Header/Reason 均必填,与设计 §3.0 的排除表逐字对应。
+// Header/Reason 均必填,与的排除表逐字对应。
 type exclusionSpec struct {
 	Name   string
 	Header string

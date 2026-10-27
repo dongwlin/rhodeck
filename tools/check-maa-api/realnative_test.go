@@ -19,7 +19,7 @@ import (
 	"testing"
 )
 
-// copyRealNative 读取真实仓库 native 目录的全部 .go 文件内容(键为
+// copyRealNative 读取真实仓库 native 目录的全部.go 文件内容(键为
 // 文件名),供变体改写。
 func copyRealNative(t *testing.T) map[string]string {
 	t.Helper()
@@ -58,7 +58,7 @@ func writeMutatedGoRoot(t *testing.T, files map[string]string) string {
 	return root
 }
 
-// realNativeNames 列出真实 native 目录可参与构建的 .go 文件名(排除
+// realNativeNames 列出真实 native 目录可参与构建的.go 文件名(排除
 // _test.go,排序),供选择结果断言。
 func realNativeNames(t *testing.T) []string {
 	t.Helper()
@@ -87,7 +87,7 @@ func fmtJSON(t *testing.T, v any) string {
 // 验收:每个变体都断言非零退出、stdout 无 PASS、stderr 含诊断类别
 // 与定位片段。C 输入用测试 profile 注册表的合成正例(与锁定形状
 // 一致),Go 侧为改写后的真实目录副本。策略类向量(R↔O 互换、D 项
-// 改绑、适用导出被排除)由 MAA-10 的期望比对以 policy 类诊断拒绝;
+// 改绑、适用导出被排除)由本层的期望比对以 policy 类诊断拒绝;
 // 平台互换向量已被 link 先行以 relation 类拒绝。
 func TestRealNativeVariantsFailThroughCLI(t *testing.T) {
 	cFiles := positiveFiles(t)
