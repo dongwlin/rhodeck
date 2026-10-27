@@ -109,6 +109,7 @@ type environment struct {
 	CC           string
 	CCVersion    string
 	ADB          string
+	ADBVersion   string
 	CoreSHA256   string
 	DeviceConfig bool
 	GitCommit    string
@@ -123,6 +124,7 @@ type envReport struct {
 	CC           string `json:"cc"`
 	CCVersion    string `json:"cc_version"`
 	ADB          string `json:"adb"`
+	ADBVersion   string `json:"adb_version"`
 	CoreProfile  string `json:"core_profile"`
 	CoreSHA256   string `json:"core_tarball_sha256"`
 	DeviceConfig bool   `json:"device_config_set"`
@@ -338,6 +340,7 @@ func collectEnvironment(root string) environment {
 		env.CGOEnabled = os.Getenv("CGO_ENABLED")
 	}
 	env.CCVersion = ccVersion(env.CC)
+	env.ADBVersion = adbVersion(env.ADB)
 	if sha, ok := coreTarballSHA256(); ok {
 		env.CoreSHA256 = sha
 	}
@@ -413,6 +416,28 @@ func ccVersion(name string) string {
 	return redact(line)
 }
 
+func adbVersion(name string) string {
+	if name == "" {
+		return ""
+	}
+	cmd := exec.Command(name, "version")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	version := strings.TrimSpace(lines[0])
+	if len(lines) > 1 {
+		if second := strings.TrimSpace(lines[1]); second != "" {
+			version += "; " + second
+		}
+	}
+	return redact(version)
+}
+
 func gitCommit(root string) string {
 	cmd := exec.Command("git", "-C", root, "rev-parse", "--short", "HEAD")
 	out, err := cmd.Output()
@@ -439,6 +464,7 @@ func buildReport(env environment, selected map[string]bool, results []layerResul
 			CC:           env.CC,
 			CCVersion:    env.CCVersion,
 			ADB:          env.ADB,
+			ADBVersion:   env.ADBVersion,
 			CoreProfile:  coreProfile,
 			CoreSHA256:   env.CoreSHA256,
 			DeviceConfig: env.DeviceConfig,
@@ -533,6 +559,9 @@ func printSummary(rep report) {
 	)
 	if rep.Environment.CCVersion != "" {
 		fmt.Println("c compiler:", rep.Environment.CCVersion)
+	}
+	if rep.Environment.ADBVersion != "" {
+		fmt.Println("adb version:", rep.Environment.ADBVersion)
 	}
 	fmt.Printf("%-14s %-22s %5s %5s %5s  %s\n", "LAYER", "STATUS", "PASS", "SKIP", "FAIL", "DETAIL")
 	for _, res := range rep.Layers {

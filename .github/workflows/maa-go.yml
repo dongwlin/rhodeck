@@ -7,7 +7,8 @@ name: maa-go
 # callback fixtures, device gate/refusal tests, the CGO_ENABLED=0 build/vet,
 # and gofmt. The real-MaaCore (`core`) and explicit-device (`device`) layers
 # are local-only and are never claimed by this workflow. A skip or missing
-# toolchain in a selected layer is UNVERIFIED and fails the job (exit 2).
+# toolchain in a selected layer is UNVERIFIED (binary exit 2); a real failure
+# is exit 1. Either fails the job.
 "on":
   push:
     paths:
@@ -43,8 +44,10 @@ jobs:
           cache: true
       - name: Install C toolchain for fixtures
         run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Build layered checker
+        run: go build -o /tmp/maa-go-check ./tools/maa-go-check
       - name: Run layered checks
-        run: go run ./tools/maa-go-check --layers ci
+        run: /tmp/maa-go-check --layers ci
 
   race:
     name: race detector (CGO_ENABLED=1, separate from production build)
@@ -58,5 +61,7 @@ jobs:
           cache: true
       - name: Install C toolchain for fixtures
         run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Build layered checker
+        run: go build -o /tmp/maa-go-check ./tools/maa-go-check
       - name: Run race layer
-        run: go run ./tools/maa-go-check --layers race
+        run: /tmp/maa-go-check --layers race

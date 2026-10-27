@@ -28,6 +28,16 @@ go run ./tools/maa-go-check --list
 
 `--root` 默认为当前目录向上最近的 `go.mod` 所在目录。
 
+需要精确区分退出码时先构建二进制：
+
+```sh
+go build -o maa-go-check ./tools/maa-go-check
+./maa-go-check --layers ci
+```
+
+`go run` 会把任何非零退出统一显示为 shell 状态 1，无法区分
+`UNVERIFIED`（2）与 `FAIL`（1）；CI 使用构建后的二进制。
+
 ## 层与选择
 
 | 层 | 运行内容 | 外部要求 | CI |
@@ -44,21 +54,28 @@ go run ./tools/maa-go-check --list
 | `fmt` | `gofmt -l .`，有输出即失败 | 无 | 是 |
 | `race` | `go test ./packages/maa-go/... -race` | `cc`/`gcc`（race 需要 cgo） | 独立任务 |
 
+`race` 层由 `raceGoTestStep` 固定携带 `Race: true`，`goTestArgs` 因此
+追加 `-race`；`TestGoTestArgsIncludesRaceOnlyWhenRequested` 钉住该参数，
+缺少 `-race` 时测试失败，避免把普通测试二进制报告成竞态检查通过。
+
 `--layers ci` 是 `static,go,device-gate,loader,abi,callback,build,fmt`。
 `--layers all` 包含 `core`、`device` 与 `race`；缺少发行包、设备配置或
-编译器时对应层为 `UNVERIFIED`，整体退出码 2。CI 工作流
-`.github/workflows/maa-go.yml` 只调用 `ci` 与独立的 `race` 层，**不运行
-也不声称** `core` 与 `device`。
+编译器时对应层为 `UNVERIFIED`，二进制整体退出码 2（`go run` 统一显示
+为 1）。CI 工作流 `.github/workflows/maa-go.yml` 只调用 `ci` 与独立的
+`race` 层，**不运行也不声称** `core` 与 `device`。
 
 ## 状态与退出码
 
-| 状态 | 含义 | 退出码 |
+| 状态 | 含义 | 二进制退出码 |
 |---|---|---|
 | `PASS` | 所有选中的检查实际执行并通过 | 0 |
 | `PASS (expected skips)` | 层内只有明确声明的预期跳过（例如设备门默认关闭）；跳过的测试没有验证任何行为，详情会列出 | 0 |
 | `UNVERIFIED` | 选中的层被跳过、匹配不到测试、或缺少外部资源/授权；**不是通过** | 2 |
 | `FAIL` | 有测试或命令失败；`FAIL` 优先于 `UNVERIFIED` | 1 |
 | `NOT SELECTED` | 本次未选择，未运行，不做任何声明 | — |
+
+`go run` 对任何非零退出统一返回 1；上表是构建后二进制的退出码。CI
+使用二进制，因此 UNVERIFIED 会让 job 以 2 失败，而不是与 FAIL 混为 1。
 
 空测试选择也算 `UNVERIFIED`：把 `-run` 写错导致一个测试都没跑，不会
 显示成绿色。`go test -json` 的顶层与子测试跳过都被记录；子测试跳过不
@@ -67,7 +84,7 @@ go run ./tools/maa-go-check --list
 ## 外部资源
 
 - **C 编译器**：loader/ABI/callback fixture 与 race 层需要 `cc` 或
-  `gcc`。缺失时这些层 `UNVERIFIED`，退出码 2。
+  `gcc`。缺失时这些层 `UNVERIFIED`，二进制退出码 2。
 - **锁定 MaaCore**：`core` 层使用
   `~/.cache/maa/MAA-v6.20.1-linux-x86_64.tar.gz`，可用
   `MAA_M1_TARBALL` 覆盖；测试会校验整包与成员 SHA-256。缺失时该层
@@ -80,7 +97,7 @@ go run ./tools/maa-go-check --list
 ## 报告
 
 默认输出逐层表格、环境摘要与结论。环境摘要只包含 Go/OS/架构、purego
-版本、默认 cgo 设置、C 编译器/ADB 是否可用、锁定发行包 SHA-256 前缀、
+版本、默认 cgo 设置、C 编译器与 ADB 版本、锁定发行包 SHA-256 前缀、
 设备配置是否设置与 git 提交；不包含仓库根、用户目录或设备地址。
 `--json` 输出同样的信息，便于 CI 归档。
 
