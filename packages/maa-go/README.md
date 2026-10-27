@@ -4,21 +4,20 @@
 经 purego 动态加载 `libMaaCore.so`，不把 MaaCore 链接进 Go 二进制，
 生产 Go 包可以 `CGO_ENABLED=0` 构建。
 
-**首版支持声明（2026-10-27）**：在 Linux amd64 / glibc 上，本包对下方
-“公开面”列出的 API 提供支持。其他平台、未列出的能力与所有未通过分层
-检查的层均未验证；未验证不等于支持。
+**支持声明**：在 Linux amd64 / glibc 上，本包对下方“公开面”列出的 API
+提供支持。其他平台、未列出的能力与所有未通过分层检查的层均未验证；
+未验证不等于支持。
 
 ## 支持矩阵
 
 | 平台 | 架构 | 运行环境 | 结论 |
 |---|---|---|---|
-| Linux | amd64 | glibc 2.43（Fedora 44）实测 | **支持**（本页公开面） |
+| Linux | amd64 | glibc 2.43（Fedora 44）验证 | **支持**（本页公开面） |
 | Linux | arm64 | 未执行 | 未验证；交叉编译成功不构成运行支持 |
 | macOS | amd64/arm64 | 未执行 | 未验证 |
 | Windows | amd64 | 只运行声明层 checker | 未验证运行支持；Windows 声明检查通过不代表可加载/调用 |
 
-已实测组合（精确源码/摘要清单由锁定 checker 输入与真实库测试维护，
-本页不重复验收摘要）：
+验证基线：
 
 - Go `1.26.9`，purego `v0.11.2`；
 - MaaCore `v6.20.1`；锁定源码 commit 与三个头的 SHA-256 见
@@ -27,21 +26,16 @@
 - 发行包 `MAA-v6.20.1-linux-x86_64.tar.gz`；
 - 同一发行包内的 `resource/` 资源；`resource/version.json` 的
   `last_updated` 为 `2026-10-20 00:59:49.000`，其 SHA-256 由真实库测试
-  的锁定常量校验，具体摘要不在此重复（验收摘要按归属规则维护）；
+  的锁定常量校验；
 - glibc 2.43（Fedora 44）；
-- ADB：Android SDK platform-tools `37.0.1-15733141`（`adb version`
-  1.0.41）；
-- 测试夹具与 race 层另需 C 编译器（本轮为 cc/GCC 16.2.1）：前者编译
-  测试用 `.so`，后者是 `-race` 所需的 cgo 运行时；生产
-  `CGO_ENABLED=0` 构建不使用它；
+- 测试夹具与 race 层另需 C 编译器：前者编译测试用 `.so`，后者是
+  `-race` 所需的 cgo 运行时；生产 `CGO_ENABLED=0` 构建不使用它；
 - `AsstGetNullSize()` 在锁定基线返回 `math.MaxUint64`。
 
-本组合上实际执行并通过的层包括：静态 checker 双目标、Go 故障注入、
-loader fixture、真实 ABI fixture、原生线程 callback fixture、真实库
-无设备 M1/M3 链路，以及显式设备的 Depot precondition/success/stop
-（其中 precondition 含 Connect/Screencap）。各层由
-`go run ./tools/maa-go-check --layers …` 独立报告；没有运行的层保持
-未验证。
+仓库内可重复执行的分层检查包括：静态 checker 双目标、Go 故障注入、
+loader fixture、真实 ABI fixture、原生线程 callback fixture，以及真实库
+无设备链路。各层由 `go run ./tools/maa-go-check --layers …` 独立报告；
+没有运行的层保持未验证。
 
 ## 公开面
 
@@ -131,22 +125,18 @@ worker/control、IPC、HTTP、持久化、Web、Wails 与 CLI 不在本包范围
 ## 分层检查
 
 ```sh
-# CI 与离线默认集合：静态 checker、Go 故障注入、设备门、loader/ABI/
+# CI 与离线默认集合：静态 checker、Go 故障注入、loader/ABI/
 # callback fixture、CGO_ENABLED=0 build/vet 与 gofmt
 go run ./tools/maa-go-check --layers ci
 
-# 真实 MaaCore 无设备链路（需要锁定发行包）
+# 真实 MaaCore 无设备链路（需要锁定发行包，仅本地运行）
 go run ./tools/maa-go-check --layers core
 
-# 显式设备场景（仓库外配置；没有配置不会运行）
-MAA_M4_DEVICE_CONFIG=/absolute/path/device-acceptance.json \
-  go run ./tools/maa-go-check --layers device
-
-# 全部层；任何缺少资源/授权/工具链的层都会使整体非零退出，而不是被算作通过
+# 全部层；任何缺少资源/工具链的层都会使整体非零退出，而不是被算作通过
 go run ./tools/maa-go-check --layers all
 
 # race 使用 -race 与 CGO_ENABLED=1，只跑 Go 并发/单元测试
-# （-skip M1/M3 与 TestM4Device 真实验收；core/device 层单独覆盖）
+# （-skip TestRealCore；真实核心由 core 层单独覆盖）
 go run ./tools/maa-go-check --layers race
 ```
 
@@ -156,48 +146,22 @@ go run ./tools/maa-go-check --layers race
 构建后的二进制，因此保留 2/1 的区分。
 
 CI 工作流 `.github/workflows/maa-go.yml` 只运行 `ci` 与 `race` 两层；它
-不运行 `core`/`device`，也不把任何跳过算作通过。`race` 层以 `-skip`
-排除 M1/M3 与 TestM4Device（真实核心/设备），被排除的测试不会出现在
-`go test -json` 的 skip 事件中、因此不计入 `Skipped`；详情与 JSON 的
-`skip_filter` 会写明排除模式，真实核心/设备由 `core`/`device` 层单独
-覆盖。
+不运行 `core`，也不把任何跳过算作通过。`race` 层以 `-skip` 排除
+`TestRealCore`（真实核心），被排除的测试不会出现在 `go test -json` 的
+skip 事件中、因此不计入 `Skipped`；详情与 JSON 的 `skip_filter` 会写明
+排除模式，真实核心由 `core` 层单独覆盖。
 
 状态含义：`PASS` 表示该层所有检查实际执行并通过；`PASS (expected skips)`
-表示该层只有明确声明的预期跳过（例如设备门默认关闭），跳过的测试
-没有验证任何行为，详情会列出；`UNVERIFIED` 表示跳过、匹配不到测试或
-缺少外部资源，**不是通过**，二进制退出 2（`go run` 统一显示为 1）；
-`FAIL` 退出 1；`NOT SELECTED` 未运行、不做声明。空的 `-run` 选择也是
-`UNVERIFIED`。
+表示该层只有明确声明的预期跳过，跳过的测试没有验证任何行为，详情会
+列出；`UNVERIFIED` 表示跳过、匹配不到测试或缺少外部资源，**不是通过**，
+二进制退出 2（`go run` 统一显示为 1）；`FAIL` 退出 1；`NOT SELECTED`
+未运行、不做声明。空的 `-run` 选择也是 `UNVERIFIED`。
 
 分层不能互相借结论：静态 checker 只证明声明层；loader fixture 只证明
 装载/解析/注册，空导出绝不可调用；ABI/callback fixture 只证明手写 C
-签名与调用约定；真实库测试证明锁定 MaaCore 的初始化/生命周期；设备
-测试证明指定设备与许可范围内的连接/截图/识别；`race` 层只跑 Go 并发/
-单元测试（`-skip` M1/M3 与 TestM4Device），不证明真实核心/设备。任何
-一层没有运行，都不能由另一层替代。
-
-## 设备验收事实
-
-2026-10-27 在 Linux amd64、一台 TCP ADB 设备、TouchMode=adb 上，显式
-许可的 Depot 场景真实执行通过：
-
-- precondition：Connect 与 Screencap 各一次（ID 1/2，1280x720），连接
-  后 `Connected()==true`；
-- success：同一未关闭实例两轮 Depot（TaskID 1/2），任务消息
-  （`TaskChainCompleted`、`AllTasksCompleted`、`DepotInfo`）按 TaskID
-  关联；
-- stop：`TaskChainStopped` 且没有 `AllTasksCompleted`。
-
-设备配置、截图与原始日志保存在仓库外，不进入提交；设备地址不在任何
-公开文件中。
-
-允许清单登记 Depot 与入口步骤 StartUp；本轮实际提交并完成的识别
-任务只有 Depot。Entry（StartUp）场景在早前一次尝试中以 Go 测试 10
-分钟超时（`panic: test timed out after 10m0s`）结束，没有 entry 证据，
-不计为通过；最终运行在游戏已处于主界面时按授权没有提交 StartUp，
-因此 StartUp 成功路径未复验。该结论的边界：只覆盖这一台设备与 ADB
-触摸路径；minitouch/maatouch 未验收；StartUp 成功路径未复验；设备层
-不在 CI 中运行，必须显式启用。
+签名与调用约定；真实库测试证明锁定 MaaCore 的初始化/生命周期；`race`
+层只跑 Go 并发/单元测试（`-skip TestRealCore`），不证明真实核心行为。
+任何一层没有运行，都不能由另一层替代。
 
 ## 已知限制
 
@@ -206,14 +170,13 @@ CI 工作流 `.github/workflows/maa-go.yml` 只运行 `ci` 与 `race` 两层；�
 - 仅 Linux amd64/glibc；musl、静态单文件、macOS、Windows 运行未验证。
 - 每进程单 Runtime、单活动实例；无 Dlclose、热重载、同进程重建。
 - `Close` 在原生卡住时可能阻塞；没有自设回收超时，依赖外部 supervisor。
-- 设备验收范围见上一节；不自动导航、不重放未知结果、不执行未授权任务。
+- 仓库内测试不连接真机；真机连接、截图与任务执行不在自动验收范围内。
 - 任务参数与消息按原文透传；binding 不提供任务类型封闭枚举或培养业务
   模型，未知字段/大整数不被丢弃或改写。
 
 未验证项的去向：公开事件流与 BGR 读取必须作为新的公开面单独接线并
 按同一分层门槛验收；macOS/Windows/arm64 需要各自完成 loader、
-callback、真实库与设备门槛；设备侧 minitouch/maatouch 与 StartUp
-成功路径需在显式授权下另行验收。在这些完成前不更新支持矩阵。
+callback 与真实库门槛。在这些完成前不更新支持矩阵。
 
 ## 版本升级复验
 
@@ -227,11 +190,9 @@ OS/架构、Go、purego、Core 文件摘要、源码 commit 与资源版本：
    `--layers abi`、`--layers callback`。
 3. 用新发行包跑 `--layers core`，确认真实 Version/NullSize、初始化
    事务、无设备链路与退出。
-4. 在显式许可下跑 `--layers device`；没有设备/许可时保持未验证，不得
-   引用旧组合的设备结果。
-5. 跑 `--layers build`、`--layers fmt`、`--layers race` 与
+4. 跑 `--layers build`、`--layers fmt`、`--layers race` 与
    `--layers all`；全绿后才更新本页支持矩阵。
-6. 任何跳过的层保持“未验证”；升级不能把旧平台的旧证据直接继承。
+5. 任何跳过的层保持“未验证”；升级不能把旧平台的旧证据直接继承。
 
 本包不以版本字符串推断兼容性；符号集合、checker profile、fixture 与
 真实库结果必须对同一锁定组合成立。
@@ -244,5 +205,5 @@ OS/架构、Go、purego、Core 文件摘要、源码 commit 与资源版本：
 - `tools/check-maa-api/testdata/locked/README.md`：仓库内锁定头的
   来源、摘要与许可证。
 - `tools/maa-go-check/README.md`：分层入口、状态与退出码。
-- `packages/maa-go/testdata/README.md`：C fixture、真实库与设备
-  验收的使用方式。
+- `packages/maa-go/testdata/README.md`：C fixture 与真实库链路的
+  使用方式。

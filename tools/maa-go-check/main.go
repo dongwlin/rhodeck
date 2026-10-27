@@ -9,9 +9,8 @@
 //
 // The CI selection (--layers ci) contains only layers that can run on a
 // clean Linux amd64 machine with a C compiler and the vendored checker
-// input. Real MaaCore (--layers core) and real-device (--layers device)
-// layers are local-only: they need the locked release tarball and an
-// explicit device configuration, and CI never claims them.
+// input. The real-MaaCore layer (--layers core) is local-only: it needs the
+// locked release tarball, and CI never claims it.
 package main
 
 import (
@@ -37,8 +36,8 @@ import (
 const coreProfile = "maa-v6.20.1"
 
 // Layer status values. Statuses are deliberately not booleans: UNVERIFIED
-// exists so a missing toolchain, native library, or explicit device
-// configuration can never be rendered as a pass.
+// exists so a missing toolchain or native library can never be rendered as
+// a pass.
 const (
 	statusPass         = "PASS"
 	statusPassExpected = "PASS (expected skips)"
@@ -107,35 +106,29 @@ func (r *layerResult) merge(other layerResult) {
 // intentionally not serialized: reports must not contain absolute home
 // paths or repository-external locations.
 type environment struct {
-	Root         string
-	GoVersion    string
-	GOOS         string
-	GOARCH       string
-	Purego       string
-	CGOEnabled   string
-	CC           string
-	CCVersion    string
-	ADB          string
-	ADBVersion   string
-	CoreSHA256   string
-	DeviceConfig bool
-	GitCommit    string
+	Root       string
+	GoVersion  string
+	GOOS       string
+	GOARCH     string
+	Purego     string
+	CGOEnabled string
+	CC         string
+	CCVersion  string
+	CoreSHA256 string
+	GitCommit  string
 }
 
 type envReport struct {
-	GoVersion    string `json:"go_version"`
-	GOOS         string `json:"goos"`
-	GOARCH       string `json:"goarch"`
-	Purego       string `json:"purego"`
-	CGOEnv       string `json:"cgo_env"`
-	CC           string `json:"cc"`
-	CCVersion    string `json:"cc_version"`
-	ADB          string `json:"adb"`
-	ADBVersion   string `json:"adb_version"`
-	CoreProfile  string `json:"core_profile"`
-	CoreSHA256   string `json:"core_tarball_sha256"`
-	DeviceConfig bool   `json:"device_config_set"`
-	GitCommit    string `json:"git_commit"`
+	GoVersion   string `json:"go_version"`
+	GOOS        string `json:"goos"`
+	GOARCH      string `json:"goarch"`
+	Purego      string `json:"purego"`
+	CGOEnv      string `json:"cgo_env"`
+	CC          string `json:"cc"`
+	CCVersion   string `json:"cc_version"`
+	CoreProfile string `json:"core_profile"`
+	CoreSHA256  string `json:"core_tarball_sha256"`
+	GitCommit   string `json:"git_commit"`
 }
 
 type report struct {
@@ -149,7 +142,7 @@ type report struct {
 func main() {
 	var layersFlag, rootFlag string
 	var list, jsonOut bool
-	flag.StringVar(&layersFlag, "layers", "ci", "comma-separated layers or aliases: ci, all, static, go, device-gate, loader, abi, callback, core, device, build, fmt, race")
+	flag.StringVar(&layersFlag, "layers", "ci", "comma-separated layers or aliases: ci, all, static, go, loader, abi, callback, core, build, fmt, race")
 	flag.StringVar(&rootFlag, "root", "", "repository root (default: nearest ancestor containing go.mod)")
 	flag.BoolVar(&list, "list", false, "list layers and exit")
 	flag.BoolVar(&jsonOut, "json", false, "print the machine-readable report instead of the table")
@@ -233,11 +226,7 @@ func requirementError(name string, env environment) error {
 		}
 	case "tarball":
 		if env.CoreSHA256 == "" {
-			return errors.New("locked MaaCore tarball missing (set MAA_M1_TARBALL or place MAA-v6.20.1-linux-x86_64.tar.gz in the user cache); real-core layer is unverified")
-		}
-	case "device-config":
-		if !env.DeviceConfig {
-			return errors.New("MAA_M4_DEVICE_CONFIG is not set; device scenarios are explicit-only and unverified")
+			return errors.New("locked MaaCore tarball missing (set MAA_CORE_TARBALL or place MAA-v6.20.1-linux-x86_64.tar.gz in the user cache); real-core layer is unverified")
 		}
 	default:
 		return fmt.Errorf("unknown layer requirement %q", name)
@@ -281,7 +270,7 @@ func selectLayers(defs []layer, spec string) (map[string]bool, error) {
 	}
 	sort.Strings(all)
 	aliases := map[string][]string{
-		"ci":  {"static", "go", "device-gate", "loader", "abi", "callback", "build", "fmt"},
+		"ci":  {"static", "go", "loader", "abi", "callback", "build", "fmt"},
 		"all": all,
 	}
 	if strings.TrimSpace(spec) == "" {
@@ -322,23 +311,21 @@ func printLayerList(defs []layer) {
 		fmt.Printf("%-14s %-46s %s\n", def.Name, def.Description, req)
 	}
 	fmt.Println()
-	fmt.Println("aliases: ci = static,go,device-gate,loader,abi,callback,build,fmt")
-	fmt.Println("         all = every layer (real MaaCore and device layers need local resources/authorization)")
-	fmt.Println("local-only layers: core, device (never run or claimed by CI)")
+	fmt.Println("aliases: ci = static,go,loader,abi,callback,build,fmt")
+	fmt.Println("         all = every layer (the real MaaCore layer needs local resources)")
+	fmt.Println("local-only layer: core (never run or claimed by CI)")
 }
 
 func collectEnvironment(root string) environment {
 	env := environment{
-		Root:         root,
-		GoVersion:    goEnv(root, "GOVERSION"),
-		GOOS:         runtime.GOOS,
-		GOARCH:       runtime.GOARCH,
-		Purego:       puregoVersion(root),
-		CGOEnabled:   goEnv(root, "CGO_ENABLED"),
-		CC:           firstLookPath("cc", "gcc"),
-		ADB:          firstLookPath("adb"),
-		DeviceConfig: os.Getenv("MAA_M4_DEVICE_CONFIG") != "",
-		GitCommit:    gitCommit(root),
+		Root:       root,
+		GoVersion:  goEnv(root, "GOVERSION"),
+		GOOS:       runtime.GOOS,
+		GOARCH:     runtime.GOARCH,
+		Purego:     puregoVersion(root),
+		CGOEnabled: goEnv(root, "CGO_ENABLED"),
+		CC:         firstLookPath("cc", "gcc"),
+		GitCommit:  gitCommit(root),
 	}
 	if env.GoVersion == "" {
 		env.GoVersion = runtime.Version()
@@ -347,7 +334,6 @@ func collectEnvironment(root string) environment {
 		env.CGOEnabled = os.Getenv("CGO_ENABLED")
 	}
 	env.CCVersion = ccVersion(env.CC)
-	env.ADBVersion = adbVersion(env.ADB)
 	if sha, ok := coreTarballSHA256(); ok {
 		env.CoreSHA256 = sha
 	}
@@ -390,7 +376,7 @@ func firstLookPath(names ...string) string {
 }
 
 func coreTarballSHA256() (string, bool) {
-	path := os.Getenv("MAA_M1_TARBALL")
+	path := os.Getenv("MAA_CORE_TARBALL")
 	if path == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -423,28 +409,6 @@ func ccVersion(name string) string {
 	return redact(line)
 }
 
-func adbVersion(name string) string {
-	if name == "" {
-		return ""
-	}
-	cmd := exec.Command(name, "version")
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 0 {
-		return ""
-	}
-	version := strings.TrimSpace(lines[0])
-	if len(lines) > 1 {
-		if second := strings.TrimSpace(lines[1]); second != "" {
-			version += "; " + second
-		}
-	}
-	return redact(version)
-}
-
 func gitCommit(root string) string {
 	cmd := exec.Command("git", "-C", root, "rev-parse", "--short", "HEAD")
 	out, err := cmd.Output()
@@ -463,19 +427,16 @@ func buildReport(env environment, selected map[string]bool, results []layerResul
 	return report{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Environment: envReport{
-			GoVersion:    env.GoVersion,
-			GOOS:         env.GOOS,
-			GOARCH:       env.GOARCH,
-			Purego:       env.Purego,
-			CGOEnv:       env.CGOEnabled,
-			CC:           env.CC,
-			CCVersion:    env.CCVersion,
-			ADB:          env.ADB,
-			ADBVersion:   env.ADBVersion,
-			CoreProfile:  coreProfile,
-			CoreSHA256:   env.CoreSHA256,
-			DeviceConfig: env.DeviceConfig,
-			GitCommit:    env.GitCommit,
+			GoVersion:   env.GoVersion,
+			GOOS:        env.GOOS,
+			GOARCH:      env.GOARCH,
+			Purego:      env.Purego,
+			CGOEnv:      env.CGOEnabled,
+			CC:          env.CC,
+			CCVersion:   env.CCVersion,
+			CoreProfile: coreProfile,
+			CoreSHA256:  env.CoreSHA256,
+			GitCommit:   env.GitCommit,
 		},
 		Selected:   selectedNames,
 		Layers:     results,
@@ -553,22 +514,17 @@ func exitCode(rep report) int {
 func printSummary(rep report) {
 	fmt.Println()
 	fmt.Println("maa-go layered verification")
-	fmt.Printf("environment: go=%s %s/%s purego=%s cgo_env=%s cc=%s adb=%s core_sha256=%s device_config=%s git=%s\n",
+	fmt.Printf("environment: go=%s %s/%s purego=%s cgo_env=%s cc=%s core_sha256=%s git=%s\n",
 		rep.Environment.GoVersion,
 		rep.Environment.GOOS, rep.Environment.GOARCH,
 		orAbsent(rep.Environment.Purego),
 		orAbsent(rep.Environment.CGOEnv),
 		orAbsent(rep.Environment.CC),
-		orAbsent(rep.Environment.ADB),
 		shortSHA(rep.Environment.CoreSHA256),
-		setWord(rep.Environment.DeviceConfig),
 		orAbsent(rep.Environment.GitCommit),
 	)
 	if rep.Environment.CCVersion != "" {
 		fmt.Println("c compiler:", rep.Environment.CCVersion)
-	}
-	if rep.Environment.ADBVersion != "" {
-		fmt.Println("adb version:", rep.Environment.ADBVersion)
 	}
 	fmt.Printf("%-14s %-22s %5s %5s %5s  %s\n", "LAYER", "STATUS", "PASS", "SKIP", "FAIL", "DETAIL")
 	for _, res := range rep.Layers {
@@ -611,13 +567,6 @@ func shortSHA(s string) string {
 		return s[:12]
 	}
 	return s
-}
-
-func setWord(b bool) string {
-	if b {
-		return "set"
-	}
-	return "unset"
 }
 
 func truncate(s string, n int) string {

@@ -1,7 +1,7 @@
 // Layer definitions for maa-go-check. Each layer is independently selected
 // and reported; the "ci" alias only contains layers that are runnable on a
 // clean Linux amd64 machine with a C compiler and the vendored checker
-// input. Real MaaCore and device layers are local-only.
+// input. The real-MaaCore layer is local-only.
 package main
 
 import (
@@ -29,11 +29,6 @@ func definitions() []layer {
 			Run:         runGo,
 		},
 		{
-			Name:        "device-gate",
-			Description: "device entry/gate/config tests (no device actions)",
-			Run:         runDeviceGate,
-		},
-		{
 			Name:        "loader",
 			Description: "loader fixture in a fresh subprocess",
 			Requires:    []string{"cc"},
@@ -53,15 +48,9 @@ func definitions() []layer {
 		},
 		{
 			Name:        "core",
-			Description: "real MaaCore no-device chain (M1/M3)",
+			Description: "real MaaCore no-device chain",
 			Requires:    []string{"tarball"},
 			Run:         runCore,
-		},
-		{
-			Name:        "device",
-			Description: "explicit real-device scenarios",
-			Requires:    []string{"device-config"},
-			Run:         runDevice,
 		},
 		{
 			Name:        "build",
@@ -113,14 +102,14 @@ func runStatic(ctx context.Context, env environment) layerResult {
 }
 
 // runGo runs the fake-native, lifecycle, snapshot, and tool unit tests. The
-// real-library and real-device acceptance tests are selected out; they have
-// their own layers so a missing tarball or device cannot hide here.
+// real-library acceptance tests are selected out; they have their own layer
+// so a missing tarball cannot hide here.
 func runGo(ctx context.Context, env environment) layerResult {
 	res := newLayerResult("go")
 	res.merge(runGoTest(ctx, env, goTestStep{
 		Name:     "maa-go unit tests",
 		Packages: []string{"./packages/maa-go/"},
-		Skip:     "TestM1|TestM3|TestM4",
+		Skip:     "TestRealCore",
 		Env:      noCGO,
 		Timeout:  10 * time.Minute,
 	}))
@@ -133,7 +122,7 @@ func runGo(ctx context.Context, env environment) layerResult {
 	res.merge(runGoTest(ctx, env, goTestStep{
 		Name:     "native unit tests",
 		Packages: []string{"./packages/maa-go/internal/native/"},
-		Skip:     "TestM2LoaderFixture|TestM2AbiFixture|TestM2Callback",
+		Skip:     "TestLoaderFixture|TestABIFixture|TestCallbackFixture",
 		Env:      noCGO,
 		Timeout:  10 * time.Minute,
 	}))
@@ -149,37 +138,11 @@ func runGo(ctx context.Context, env environment) layerResult {
 	return res
 }
 
-// runDeviceGate verifies the explicit-device gate and refusal matrix without
-// touching a device. The default-off skip of the gate test is the behavior
-// under test; it is recorded as an expected skip, not a device verification.
-func runDeviceGate(ctx context.Context, env environment) layerResult {
-	res := newLayerResult("device-gate")
-	var allowed []string
-	if !env.DeviceConfig {
-		allowed = append(allowed, "TestM4DeviceScenarioGateSkipsWithoutExplicitConfig")
-	}
-	res.merge(runGoTest(ctx, env, goTestStep{
-		Name:       "device gate tests",
-		Packages:   []string{"./packages/maa-go/"},
-		Run:        "TestM4",
-		Skip:       "TestM4Device(Connect|Screencap|Depot)",
-		AllowSkips: allowed,
-		Env:        noCGO,
-		Timeout:    15 * time.Minute,
-	}))
-	if len(res.ExpectedSkips) > 0 {
-		res.Detail = "device gate default-off verified; device scenarios not run (explicit-only)"
-	} else if res.Status == statusPass {
-		res.Detail = "device gate/config/smoke tests passed; device scenarios not run in this layer"
-	}
-	return res
-}
-
 func runLoader(ctx context.Context, env environment) layerResult {
 	res := runGoTest(ctx, env, goTestStep{
 		Name:     "loader fixture",
 		Packages: []string{"./packages/maa-go/internal/native/"},
-		Run:      "TestM2LoaderFixture",
+		Run:      "TestLoaderFixture",
 		Env:      noCGO,
 		Timeout:  5 * time.Minute,
 	})
@@ -193,7 +156,7 @@ func runABI(ctx context.Context, env environment) layerResult {
 	res := runGoTest(ctx, env, goTestStep{
 		Name:     "abi fixture",
 		Packages: []string{"./packages/maa-go/internal/native/"},
-		Run:      "TestM2AbiFixture",
+		Run:      "TestABIFixture",
 		Env:      noCGO,
 		Timeout:  5 * time.Minute,
 	})
@@ -207,7 +170,7 @@ func runCallback(ctx context.Context, env environment) layerResult {
 	res := runGoTest(ctx, env, goTestStep{
 		Name:     "callback fixture",
 		Packages: []string{"./packages/maa-go/internal/native/"},
-		Run:      "TestM2Callback",
+		Run:      "TestCallbackFixture",
 		Env:      noCGO,
 		Timeout:  5 * time.Minute,
 	})
@@ -221,26 +184,12 @@ func runCore(ctx context.Context, env environment) layerResult {
 	res := runGoTest(ctx, env, goTestStep{
 		Name:     "real core",
 		Packages: []string{"./packages/maa-go/"},
-		Run:      "TestM1|TestM3",
+		Run:      "TestRealCore",
 		Env:      noCGO,
 		Timeout:  30 * time.Minute,
 	})
 	if res.Status == statusPass {
-		res.Detail = "real MaaCore v6.20.1 no-device chain (M1/M3) passed"
-	}
-	return res
-}
-
-func runDevice(ctx context.Context, env environment) layerResult {
-	res := runGoTest(ctx, env, goTestStep{
-		Name:     "device scenarios",
-		Packages: []string{"./packages/maa-go/"},
-		Run:      "TestM4Device(Connect|Screencap|Depot)",
-		Env:      noCGO,
-		Timeout:  90 * time.Minute,
-	})
-	if res.Status == statusPass {
-		res.Detail = "explicit device scenarios passed; address/screenshots/logs are not recorded"
+		res.Detail = "real MaaCore v6.20.1 no-device chain passed"
 	}
 	return res
 }
@@ -270,7 +219,7 @@ func raceGoTestStep() goTestStep {
 	return goTestStep{
 		Name:     "race detector",
 		Packages: []string{"./packages/maa-go/..."},
-		Skip:     "TestM1|TestM3|TestM4Device",
+		Skip:     "TestRealCore",
 		Race:     true,
 		Env:      []string{"CGO_ENABLED=1", "GOWORK=off"},
 		Timeout:  25 * time.Minute,
@@ -280,7 +229,7 @@ func raceGoTestStep() goTestStep {
 func runRace(ctx context.Context, env environment) layerResult {
 	res := runGoTest(ctx, env, raceGoTestStep())
 	if res.Status == statusPass {
-		res.Detail = "race passed (-race, CGO_ENABLED=1); -skip TestM1|TestM3|TestM4Device (real-core/device acceptance in core/device layers)"
+		res.Detail = "race passed (-race, CGO_ENABLED=1); -skip TestRealCore (real-core acceptance in the core layer)"
 	}
 	return res
 }

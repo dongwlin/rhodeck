@@ -24,7 +24,7 @@ func TestSelectLayers(t *testing.T) {
 		want    []string
 		wantErr bool
 	}{
-		{name: "default is ci", spec: "", want: []string{"abi", "build", "callback", "device-gate", "fmt", "go", "loader", "static"}},
+		{name: "default is ci", spec: "", want: []string{"abi", "build", "callback", "fmt", "go", "loader", "static"}},
 		{name: "all", spec: "all", want: sortedStrings(all)},
 		{name: "explicit", spec: "static,core", want: []string{"core", "static"}},
 		{name: "duplicate deduplicated", spec: "static,static", want: []string{"static"}},
@@ -50,17 +50,17 @@ func TestSelectLayers(t *testing.T) {
 	}
 }
 
-func TestCISelectionDoesNotClaimDeviceOrCore(t *testing.T) {
+func TestCISelectionDoesNotClaimRealCore(t *testing.T) {
 	selected, err := selectLayers(definitions(), "ci")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"core", "device", "race"} {
+	for _, name := range []string{"core", "race"} {
 		if selected[name] {
 			t.Fatalf("ci selection must not include %q", name)
 		}
 	}
-	for _, name := range []string{"static", "go", "device-gate", "loader", "abi", "callback", "build", "fmt"} {
+	for _, name := range []string{"static", "go", "loader", "abi", "callback", "build", "fmt"} {
 		if !selected[name] {
 			t.Fatalf("ci selection must include %q", name)
 		}
@@ -94,8 +94,8 @@ func TestExitCode(t *testing.T) {
 }
 
 func TestConclusionReportsExpectedSkips(t *testing.T) {
-	results := []layerResult{{Name: "device-gate", Status: statusPassExpected, Skipped: 1}}
-	got := conclusion(map[string]bool{"device-gate": true}, results)
+	results := []layerResult{{Name: "core", Status: statusPassExpected, Skipped: 1}}
+	got := conclusion(map[string]bool{"core": true}, results)
 	if !strings.Contains(got, "expected skips") {
 		t.Fatalf("conclusion = %q, want mention of expected skips", got)
 	}
@@ -114,8 +114,8 @@ func TestGoTestArgsIncludesRaceOnlyWhenRequested(t *testing.T) {
 	if !containsArg(args, "-race") {
 		t.Fatalf("race layer args = %v, want -race", args)
 	}
-	if spec.Skip != "TestM1|TestM3|TestM4Device" {
-		t.Fatalf("race layer skip filter = %q, want TestM1|TestM3|TestM4Device", spec.Skip)
+	if spec.Skip != "TestRealCore" {
+		t.Fatalf("race layer skip filter = %q, want TestRealCore", spec.Skip)
 	}
 	if !containsArg(args, "-skip") {
 		t.Fatalf("race layer args = %v, want -skip", args)
@@ -349,7 +349,7 @@ func TestDefinitionsAreUniqueAndConsistent(t *testing.T) {
 		}
 		for _, req := range def.Requires {
 			switch req {
-			case "cc", "tarball", "device-config":
+			case "cc", "tarball":
 			default:
 				t.Fatalf("layer %q has unknown requirement %q", def.Name, req)
 			}

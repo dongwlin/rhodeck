@@ -2,17 +2,15 @@ name: maa-go
 
 # Layered verification for the maa-go binding on Linux amd64.
 #
-# CI intentionally runs only layers that need no MaaCore release artifact and
-# no device: static declaration checks, Go/fake-native tests, loader/ABI/
-# callback fixtures, device gate/refusal tests, the CGO_ENABLED=0 build/vet,
-# and gofmt. The real-MaaCore (`core`) and explicit-device (`device`) layers
-# are local-only and are never claimed by this workflow. A skip or missing
-# toolchain in a selected layer is UNVERIFIED (binary exit 2); a real failure
-# is exit 1. Either fails the job.
+# CI intentionally runs only layers that need no MaaCore release artifact:
+# static declaration checks, Go/fake-native tests, loader/ABI/callback
+# fixtures, the CGO_ENABLED=0 build/vet, and gofmt. The real-MaaCore
+# (`core`) layer is local-only and is never claimed by this workflow. A skip
+# or missing toolchain in a selected layer is UNVERIFIED (binary exit 2); a
+# real failure is exit 1. Either fails the job.
 #
-# The race layer uses -race and CGO_ENABLED=1 but skips real-core/device
-# acceptance (TestM1|TestM3|TestM4Device); those remain local-only and are
-# covered by the core/device layers.
+# The race layer uses -race and CGO_ENABLED=1 but skips real-core acceptance
+# (TestRealCore); that remains local-only and is covered by the core layer.
 "on":
   push:
     paths:
@@ -54,7 +52,7 @@ jobs:
         run: /tmp/maa-go-check --layers ci
 
   race:
-    name: race detector on Go unit tests (real-core/device acceptance excluded)
+    name: race detector on Go unit tests (real-core acceptance excluded)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
