@@ -546,7 +546,7 @@ func (r *m4tEventReader) finalEvents(t *testing.T) []Event {
 	return r.snapshot()
 }
 
-// m4tPrepareDevice 完成三个场景共用的前置段:初始化锁定 Core/资源快照、
+// m4tPrepareDevice 完成四个场景共用的前置段:初始化锁定 Core/资源快照、
 // 显式连接配置指定的设备并核对连接查询语义;不执行任何任务动作。
 func m4tPrepareDevice(t *testing.T, cfg *deviceAcceptanceConfig) (*Runtime, *Instance, AsyncResult) {
 	t.Helper()
@@ -1462,6 +1462,9 @@ func verifyM4tStopMetadata(stdout string) (map[string]string, error) {
 // 判定依据(全部为去敏元数据,不含设备地址、事件原文与物品数据)。
 func m4tEvidenceFields(marker map[string]string) map[string]string {
 	fields := m4EvidenceFields(marker)
+	// 覆盖 MAA-29 通用说明:Depot 场景只截取一次前置画面,不存在「两次缓存
+	// 读取」;该次读取严格在 Screencap 成功之后,场景未在读取之外提交采集。
+	fields["png_cache_note"] = "前置画面 PNG 在该次 Screencap 成功后读取,属缓存读取(binding 不承诺新鲜度);场景未在读取之外提交新采集(async_call_events=2)"
 	fields["task_type"] = m4tTaskType
 	fields["task_params_literal"] = m4tTaskParamsLiteral
 	fields["task_allowance_note"] = "允许清单登记 Depot 与入口步骤 StartUp;admitTask 在任何原生任务调用前拒绝未列任务"
@@ -1480,6 +1483,9 @@ func m4tEvidenceFields(marker map[string]string) map[string]string {
 // 字段。
 func m4tEntryEvidenceFields(marker map[string]string) map[string]string {
 	fields := m4EvidenceFields(marker)
+	// 覆盖 MAA-29 通用说明:入口场景提交两次 Screencap(入口前/入口后),每次
+	// PNG 都在对应 Screencap 成功后读取,均为缓存读取(binding 不承诺新鲜度)。
+	fields["png_cache_note"] = "入口前/入口后 PNG 各在对应 Screencap 成功后读取,属缓存读取(binding 不承诺新鲜度);两次采集均由子进程事件断言(async_call_events=3)"
 	fields["entry_task_type"] = m4tEntryTaskType
 	fields["entry_task_params_literal"] = m4tEntryTaskParamsLiteral
 	fields["entry_allowance_note"] = "允许清单登记入口步骤 StartUp;admitTask 在任何原生任务调用前拒绝未列任务"
