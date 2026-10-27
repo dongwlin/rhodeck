@@ -24,8 +24,9 @@
 - 发行包 `MAA-v6.20.1-linux-x86_64.tar.gz`，SHA-256
   `814a128d24c8183b38003284facd56789fe8346b8a66932f9ff885df48d48bc1`；
 - 同一发行包内的 `resource/` 资源、glibc 2.43、ADB；
-- 测试夹具另需 C 编译器（本轮为 cc/GCC 16.2.1）；它只用于编译测试用
-  `.so`，生产 Go 构建不需要 cgo；
+- 测试夹具与 race 层另需 C 编译器（本轮为 cc/GCC 16.2.1）：前者编译
+  测试用 `.so`，后者是 `-race` 所需的 cgo 运行时；生产
+  `CGO_ENABLED=0` 构建不使用它；
 - `libMaaCore.so` 与 `resource/version.json` 的 SHA-256 由真实库测试
   逐项钉扎；`AsstGetNullSize()` 在锁定基线返回 `math.MaxUint64`。
 
