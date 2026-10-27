@@ -200,7 +200,8 @@
 //
 //  1. 先运行 TestM4DeviceDepotEntryScenario，人工查看 output_dir 中的
 //     入口后画面 PNG，确认 StartUp 已把游戏带到主界面（标题/登录/更新
-//     确认画面不算）；
+//     确认画面不算）。游戏已停在游戏内主界面（执行者经截图/前置画面确
+//     认）时跳过本步：不需要客户端启动，StartUp 会重复 am start；
 //  2. 再运行 TestM4DeviceDepotPreconditionScenario，人工查看前置画面
 //     PNG，再次确认设备处于 Depot 任务所需的游戏内画面；
 //  3. 确认后再运行 TestM4DeviceDepotScenario 与
