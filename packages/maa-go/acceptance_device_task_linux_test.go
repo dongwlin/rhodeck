@@ -135,6 +135,12 @@
 // 关闭并交付全部事件（关闭顺序由 MAA-27 验收）。除该通道外不读取任何私
 // 有状态。
 //
+// Core 的任务终态消息顺序由实现固定：任务链消息（TaskChainCompleted/
+// TaskChainStopped/TaskChainError）在 Assistant.cpp:677-682/694 发出，
+// AllTasksCompleted 只在任务队列排空之后（Assistant.cpp:700-702）发出。
+// 读取器游标单调前进，场景必须按该顺序等待——先等 AllTasksCompleted 会把
+// 先到的 TaskChainCompleted 当作「不匹配」吞掉，随后再等它必然超时。
+//
 // # 验收条件 → 用例映射（MAA-30）
 //
 //   - 「任务确实存在于锁定 Core/资源且非消耗性依据可复核；任务定义和参数
@@ -472,7 +478,14 @@ type m4tEventReader struct {
 // 任务事件全部发生在启动之后。
 func m4tStartEventReader(t *testing.T, inst *Instance) *m4tEventReader {
 	t.Helper()
-	r := &m4tEventReader{ch: inst.inst.disp.events(), closed: make(chan struct{})}
+	return m4tEventReaderFrom(inst.inst.disp.events())
+}
+
+// m4tEventReaderFrom 在给定事件源上启动读取器(源关闭后读取器交付全部已
+// 收到的事件并关闭 closed)。设备场景的源是实例的公开 Events 缓冲;无设备
+// 回归测试用合成通道钉住终态等待顺序。
+func m4tEventReaderFrom(ch <-chan Event) *m4tEventReader {
+	r := &m4tEventReader{ch: ch, closed: make(chan struct{})}
 	go func() {
 		defer close(r.closed)
 		for ev := range r.ch {
@@ -645,6 +658,37 @@ func m4tInt64SliceEquals(got, want []int64) bool {
 	return true
 }
 
+// m4tAwaitTerminal 按 Core 的发出顺序等待一条任务链的终态消息并核对关联
+// (执行步骤 2–3):TaskChainCompleted(10002) 在 Assistant.cpp:677-682 发
+// 出,AllTasksCompleted(3) 只在任务队列排空后(Assistant.cpp:700-702)才
+// 发出——单任务链下 10002 先于 3 由实现固定。读取器游标单调前进,若先等
+// 3,会把先到的 10002 当作「不匹配」吞掉,随后再等 10002 必然超时(实测:
+// 任务已成功完成,场景却在第二轮等待上失败)。成功场景与入口场景共用本函
+// 数;无设备回归 TestM4tAwaitTerminalCoreMessageOrder 用合成事件流钉住该
+// 顺序。label 只用于失败诊断。
+func m4tAwaitTerminal(t *testing.T, reader *m4tEventReader, timeout time.Duration, label, chain string, id TaskID) {
+	t.Helper()
+	matchesChain := func(ev Event, mid MessageID) bool {
+		if ev.MessageID != mid {
+			return false
+		}
+		var m m4tTaskMessage
+		return json.Unmarshal(ev.JSON, &m) == nil && m.TaskID == int64(id)
+	}
+	comp := reader.waitFor(t, timeout, fmt.Sprintf("%s TaskChainCompleted (taskid=%d)", label, id), func(ev Event) bool {
+		return matchesChain(ev, m4tTaskChainCompletedMessageID)
+	})
+	if cmsg := m4tParseMessage(t, comp); cmsg.TaskChain != chain {
+		t.Fatalf("%s TaskChainCompleted.taskchain = %q, want %q", label, cmsg.TaskChain, chain)
+	}
+	all := reader.waitFor(t, timeout, fmt.Sprintf("%s AllTasksCompleted (taskid=%d)", label, id), func(ev Event) bool {
+		return matchesChain(ev, m4tAllTasksCompletedMessageID)
+	})
+	if msg := m4tParseMessage(t, all); !m4tInt64SliceEquals(msg.FinishedTasks, []int64{int64(id)}) {
+		t.Fatalf("%s AllTasksCompleted.finished_tasks = %v, want [%d] (TaskID 与任务终态必须可关联)", label, msg.FinishedTasks, id)
+	}
+}
+
 // m4tAppendStartAndComplete 执行一轮许可任务的完整生命周期(执行步骤 2–3;
 // 成功场景调用两轮):
 //  1. AppendTask 返回非 0 TaskID——入队成功;入队不等于开始或完成;
@@ -652,9 +696,9 @@ func m4tInt64SliceEquals(got, want []int64) bool {
 //     列,任务开始后逐个弹出,必须在 Start 前核对);
 //  3. Start 返回 nil——启动请求被 Core 受理;连同 Running()=true 的同步置
 //     位佐证;受理不当作任务成功;
-//  4. 等待任务终态:AllTasksCompleted(3) 的 taskid 与本轮 TaskID 相等且
-//     finished_tasks 精确等于 [本轮 ID],TaskChainCompleted(10002) 佐证
-//     (taskchain=Depot、taskid 一致)——任务完成只认任务消息,与 Connect/
+//  4. 等待任务终态(m4tAwaitTerminal):TaskChainCompleted(10002) 与
+//     AllTasksCompleted(3) 的 taskid 与本轮 TaskID 相等、taskchain=Depot、
+//     finished_tasks 精确等于 [本轮 ID]——任务完成只认任务消息,与 Connect/
 //     Screencap 的 Operation 完成语义严格区分;
 //  5. Running() 收敛 false(本轮队列排空)。
 func m4tAppendStartAndComplete(t *testing.T, inst *Instance, reader *m4tEventReader, round int) TaskID {
@@ -684,28 +728,7 @@ func m4tAppendStartAndComplete(t *testing.T, inst *Instance, reader *m4tEventRea
 		t.Fatalf("第 %d 轮 Start 受理后 Running() = (%v, %v), want (true, nil)", round, running, err)
 	}
 
-	all := reader.waitFor(t, m4tTaskWait, fmt.Sprintf("第 %d 轮 AllTasksCompleted (taskid=%d)", round, id), func(ev Event) bool {
-		if ev.MessageID != m4tAllTasksCompletedMessageID {
-			return false
-		}
-		var m m4tTaskMessage
-		return json.Unmarshal(ev.JSON, &m) == nil && m.TaskID == int64(id)
-	})
-	msg := m4tParseMessage(t, all)
-	if !m4tInt64SliceEquals(msg.FinishedTasks, []int64{int64(id)}) {
-		t.Fatalf("第 %d 轮 AllTasksCompleted.finished_tasks = %v, want [%d] (TaskID 与任务终态必须可关联)", round, msg.FinishedTasks, id)
-	}
-	comp := reader.waitFor(t, m4tTaskWait, fmt.Sprintf("第 %d 轮 TaskChainCompleted (taskid=%d)", round, id), func(ev Event) bool {
-		if ev.MessageID != m4tTaskChainCompletedMessageID {
-			return false
-		}
-		var m m4tTaskMessage
-		return json.Unmarshal(ev.JSON, &m) == nil && m.TaskID == int64(id)
-	})
-	cmsg := m4tParseMessage(t, comp)
-	if cmsg.TaskChain != m4tTaskType {
-		t.Fatalf("第 %d 轮 TaskChainCompleted.taskchain = %q, want %q", round, cmsg.TaskChain, m4tTaskType)
-	}
+	m4tAwaitTerminal(t, reader, m4tTaskWait, fmt.Sprintf("第 %d 轮", round), m4tTaskType, id)
 	m4tWaitRunningFalse(t, inst, m4tRunningGuard)
 	return id
 }
@@ -895,26 +918,10 @@ func runM4tEntryChild(t *testing.T) {
 		var m m4tTaskMessage
 		return json.Unmarshal(ev.JSON, &m) == nil && m.TaskID == int64(id)
 	})
-	all := reader.waitFor(t, m4tEntryTaskWait, fmt.Sprintf("AllTasksCompleted (taskid=%d)", id), func(ev Event) bool {
-		if ev.MessageID != m4tAllTasksCompletedMessageID {
-			return false
-		}
-		var m m4tTaskMessage
-		return json.Unmarshal(ev.JSON, &m) == nil && m.TaskID == int64(id)
-	})
-	if msg := m4tParseMessage(t, all); !m4tInt64SliceEquals(msg.FinishedTasks, []int64{int64(id)}) {
-		t.Fatalf("AllTasksCompleted.finished_tasks = %v, want [%d] (TaskID 与任务终态必须可关联)", msg.FinishedTasks, id)
-	}
-	comp := reader.waitFor(t, m4tEntryTaskWait, fmt.Sprintf("TaskChainCompleted (taskid=%d)", id), func(ev Event) bool {
-		if ev.MessageID != m4tTaskChainCompletedMessageID {
-			return false
-		}
-		var m m4tTaskMessage
-		return json.Unmarshal(ev.JSON, &m) == nil && m.TaskID == int64(id)
-	})
-	if cmsg := m4tParseMessage(t, comp); cmsg.TaskChain != m4tEntryTaskType {
-		t.Fatalf("TaskChainCompleted.taskchain = %q, want %q", cmsg.TaskChain, m4tEntryTaskType)
-	}
+	// 终态按 Core 的发出顺序等待(理由见 m4tAwaitTerminal):TaskChainCompleted
+	// (10002, Assistant.cpp:677-682)先于 AllTasksCompleted(3,
+	// Assistant.cpp:700-702)。
+	m4tAwaitTerminal(t, reader, m4tEntryTaskWait, "入口步骤", m4tEntryTaskType, id)
 	m4tWaitRunningFalse(t, inst, m4tRunningGuard)
 
 	afterRes, na, wa, ha := m4tScreencapToOutput(t, inst, cfg, m4tEntryPngAfterName, "入口后画面(主界面候选)")
@@ -1495,4 +1502,26 @@ func m4tEntryEvidenceFields(marker map[string]string) map[string]string {
 	fields["start_game_evidence"] = "exactly one SubTaskStart and one SubTaskCompleted with subtask=StartGameTask (AbstractTask::run emits Completed only when _run returns true)"
 	fields["entry_screen_note"] = "入口前/入口后 PNG 落盘 output_dir 由执行者人工核对;场景不解析画面内容、不自动导航"
 	return fields
+}
+
+// TestM4tAwaitTerminalCoreMessageOrder 是无设备回归(默认运行,不连接设备):
+// 用合成事件流复现锁定 Core 的真实终态顺序——TaskChainCompleted(10002)先
+// 于 AllTasksCompleted(3)(Assistant.cpp:677-682 与 700-702)——m4tAwaitTerminal
+// 必须在该顺序下通过。若把等待顺序反过来,单游标读取器会把先到的 10002 当
+// 作「不匹配」吞掉,后续等待超时,本测试失败;设备场景得到同一保证,但需要
+// 设备与显式配置才会运行。
+func TestM4tAwaitTerminalCoreMessageOrder(t *testing.T) {
+	ch := make(chan Event, 2)
+	ch <- Event{
+		MessageID: m4tTaskChainCompletedMessageID,
+		JSON:      json.RawMessage(`{"taskchain":"Depot","taskid":7,"uuid":"synthetic-test-value"}`),
+		Sequence:  1,
+	}
+	ch <- Event{
+		MessageID: m4tAllTasksCompletedMessageID,
+		JSON:      json.RawMessage(`{"taskchain":"Depot","taskid":7,"finished_tasks":[7],"uuid":"synthetic-test-value"}`),
+		Sequence:  2,
+	}
+	close(ch)
+	m4tAwaitTerminal(t, m4tEventReaderFrom(ch), 5*time.Second, "回归", m4tTaskType, 7)
 }
