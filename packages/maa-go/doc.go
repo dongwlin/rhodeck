@@ -5,8 +5,9 @@
 // (模拟原生库的 C 代码)才需要 C 编译器,这是运行依赖与测试环境的
 // 区别,不构成对生产构建的要求。
 //
-// 首期目标平台为 Linux amd64。其他平台的支持状态由后续任务按能力
-// 探测契约另行声明,本包不承诺任何未经验证的平台。
+// 首期实测平台为 Linux amd64/glibc。其他平台的支持状态不因交叉编译
+// 或声明层检查而成立;本包不承诺任何未经验证的平台。首版支持声明、
+// 已知限制与版本升级复验步骤见仓库 packages/maa-go/README.md。
 //
 // # 已交付的公开面
 //
@@ -90,8 +91,23 @@
 // 立 Go 快照,可长期持有、修改,不影响后续调用。可选 BGR(=
 // AsstGetImageBgr)首期只报告能力(Runtime.Capabilities().ImageBgr),
 // 不公开读取方法、不调用、不分配生产 buffer。事件流公开面
-// (Events/Done/Err/Fault/Diagnostics)尚未接入,在它们被声明并验证
-// 之前,调用方不应假设这些 API 可用。
+// (Events/Done/Err/Fault/Diagnostics)在本版尚未接入:在它们被声明
+// 并验证之前,调用方不应假设这些 API 可用。设计契约要求 Events 为
+// 单消费者通道——若接入,只有唯一读取者推进事件消费,分发器绝不
+// 等待读者,Close 也不依赖读者存活;本版没有公开的 Events,因此不
+// 存在可依赖的多消费者或"读者阻塞关闭"行为。
+//
+// # 事件流与单消费者边界(尚未接入)
+//
+// 内部有界分发器、故障通知与诊断快照已经实现并有测试,但公开方法
+// Events/Done/Err/Fault/Diagnostics 尚未接线。因此:
+//   - 当前版本的调用方不能从公开面读取事件、等待 Done 或取得 Err;
+//   - 接入后的契约是单消费者:Events 返回的通道只允许一个读取者,
+//     binding 不把同一事件复制给多个读者,也不等待读者消费后推进
+//     关闭;丢弃读者不会阻塞原生清理;
+//   - 事件丢失/溢出由实例故障与诊断处理,不以静默丢弃后继续;
+//   - 该缺口是已知限制,不得把内部测试或白盒观察描述成公开事件流
+//     已交付。
 //
 // # Open 的进程级契约
 //
@@ -120,9 +136,50 @@
 //     周期进入 terminated;多次/并发 Close 共享同一最终结果,重复关
 //     闭不再进入 native。原生库保持加载到进程退出,Close 不卸载。
 //
-// Runtime 经 Open 返回的指针使用:零值不可用,不按值复制。元数据
-// 方法并发安全;Open 并发安全(由生命周期门串行化预占);Close 并
-// 发安全(并发申请共享同一关闭结果)。
+// Runtime、Instance、Operation 的指针语义:只能经 Open、NewInstance、
+// 异步提交方法或 Operation.Wait 返回的指针使用;零值不可用,不按值
+// 复制。按值复制会复制内部状态/通道引用,使两个副本越过单次关闭、
+// 并发准入与 token 归属,因此不受支持。Runtime 的只读元数据方法
+// 并发安全;Open 并发安全(由生命周期门串行化预占);Runtime.Close
+// 与 Instance.Close 并发安全(并发申请共享同一关闭结果);Instance
+// 的业务方法可并发调用,由实例状态准入与 raw 串行门禁约束;
+// Operation.Wait 可重复、可并发。
+//
+// # 取消与关闭边界
+//
+// Wait(ctx) 的超时/取消只结束本次等待:返回 ctx.Err() 与零值结果,
+// 不改写 Operation 终态,不撤销已提交的原生动作,不提前回收
+// PendingOperations 槽位;之后仍可再次 Wait 取得真实结果。已完成的
+// Operation 在 ctx 已取消时仍返回终态副本;Wait(nil) 返回
+// ErrInvalidInput。C API 没有按 async ID 取消的接口,Stop 也不等同于
+// 取消异步操作队列。
+//
+// Close 不接受强制回收超时。原生 Stop/Destroy 卡住时 Close 可能不
+// 返回;binding 不卸载库、不杀死原生线程、不伪造回收完成。Instance.
+// Close 与 Runtime.Close 的并发申请共享同一关闭结果,只有一个所有者
+// 执行 Stop/Destroy;外部 worker supervisor 必须在期限后终止整个进程。
+// 不要在 Close 卡住时丢弃 goroutine、复用进程或宣称回收完成。
+//
+// # 错误与原生返回值
+//
+// 错误一律用 errors.Is/errors.As 判别,不依赖文本匹配。C bool=false
+// 通常没有结构化原因,返回 ErrNativeRejected,不编造 LastError;C void
+// 返回(Destroy、SetConnectionExtras、AsstLog)只证明调用已返回,不
+// 提供成功码。输出缓冲区的 NullSize 不是"所需容量";耗尽返回
+// ErrBufferLimit,大于实际容量返回 ErrProtocol,合法 0 长度返回空
+// 结果。加载、符号查找与注册分别保留 LibraryLoadError、
+// SymbolLookupError、FunctionRegistrationError 与可遍历的
+// AggregateError。
+//
+// # 部署与外部监督
+//
+// 生产绑定可以 CGO_ENABLED=0 构建,但这不是 MaaCore 无原生依赖的
+// 声明:运行时仍需匹配的 libMaaCore.so、resource/ 资源根、可写用户
+// 目录与 ADB;MaaCore 及其系统依赖(本基线 glibc)仍由系统 loader
+// 加载。不保证 musl、静态单文件、无系统动态库或 Wails desktop 免
+// cgo;这些组合需要各自验收。原生库与资源不随本包分发。首期只实测
+// Linux amd64/glibc;其他平台未验证。一个实例关闭后 Runtime 终止使用,
+// 恢复只能退出进程并启动新 worker,不支持同进程 Dlclose/热重载/重建。
 //
 // 依赖方向固定且单向:公开层 → internal/native → purego / 系统 loader
 // → MaaCore。internal/native 不向公开层导出 raw 函数类型、handle、
