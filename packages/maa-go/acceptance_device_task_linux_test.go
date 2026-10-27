@@ -1257,8 +1257,12 @@ func TestM4DeviceDepotStopScenario(t *testing.T) {
 	m4WriteRedactedEvidence(t, cfg, m4tModeStop, m4tEvidenceFields(fields))
 }
 
-// m4tRequireIDs 校验 OK 标记字段中的 ID 均为非零整数且互不相等(至少两个
-// 时)。
+// m4tRequireIDs 校验同一 ID 命名空间内的一组 OK 标记字段:均为非零整数且
+// 互不相等(至少两个时)。AsyncCallID 与 TaskID 是锁定 Core 中两个独立的
+// 进程级计数器(Assistant.h: m_call_id 与 m_task_id,都从 1 开始),跨命名
+// 空间的数值相等不构成冲突——调用方必须按命名空间分组调用,不能把两类 ID
+// 混在一组里要求全局互异(否则 connect=1、screencap=2 与首轮 task=1 的合
+// 法结果会被误判为重复)。
 func m4tRequireIDs(fields map[string]string, keys ...string) error {
 	seen := make(map[int]bool, len(keys))
 	for _, k := range keys {
@@ -1267,7 +1271,7 @@ func m4tRequireIDs(fields map[string]string, keys ...string) error {
 			return fmt.Errorf("OK 标记字段 %s = %q, want 非零整数", k, fields[k])
 		}
 		if seen[id] {
-			return fmt.Errorf("OK 标记字段 %s = %q 与另一 ID 重复: TaskID/AsyncID 必须逐任务独立", k, fields[k])
+			return fmt.Errorf("OK 标记字段 %s = %q 与同一命名空间的另一 ID 重复: 同类 ID 必须逐次独立", k, fields[k])
 		}
 		seen[id] = true
 	}
@@ -1361,7 +1365,8 @@ func verifyM4tPreconditionMetadata(stdout string) (map[string]string, error) {
 }
 
 // verifyM4tSuccessMetadata 父侧复验成功场景 OK 标记:固定字段(两轮终态计
-// 数、零错误、零未知消息容忍记录)、四个 ID 非零且互异、PNG 元数据为正。
+// 数、零错误、零未知消息容忍记录)、AsyncID 与 TaskID 各自非零且同命名空
+// 间内互异、PNG 元数据为正。
 func verifyM4tSuccessMetadata(stdout string) (map[string]string, error) {
 	fields, err := m4ParseMarkerFields(stdout, m4tSuccessOKMarker)
 	if err != nil {
@@ -1384,7 +1389,13 @@ func verifyM4tSuccessMetadata(stdout string) (map[string]string, error) {
 			return fields, fmt.Errorf("OK 标记字段 %s = %q, want %q", k, got, w)
 		}
 	}
-	if err := m4tRequireIDs(fields, "connect_id", "screencap_id", "task_id_1", "task_id_2"); err != nil {
+	// AsyncCallID 与 TaskID 由锁定 Core 的两个独立进程级计数器分配
+	// (都从 1 开始),必须分命名空间校验——跨命名空间的数值相等是合法
+	// 结果,不构成重复。
+	if err := m4tRequireIDs(fields, "connect_id", "screencap_id"); err != nil {
+		return fields, err
+	}
+	if err := m4tRequireIDs(fields, "task_id_1", "task_id_2"); err != nil {
 		return fields, err
 	}
 	if err := m4tRequireCounts(fields, "unknown_messages", "events_total", "task_chain_stopped_idle"); err != nil {
@@ -1399,7 +1410,8 @@ func verifyM4tSuccessMetadata(stdout string) (map[string]string, error) {
 }
 
 // verifyM4tStopMetadata 父侧复验停止场景 OK 标记:固定字段(受理/收敛/无成
-// 功终态/停止消息至少一条)、ID 非零、PNG 元数据为正。
+// 功终态/停止消息至少一条)、AsyncID 与 TaskID 各自非零(同命名空间内互
+// 异)、PNG 元数据为正。
 func verifyM4tStopMetadata(stdout string) (map[string]string, error) {
 	fields, err := m4ParseMarkerFields(stdout, m4tStopOKMarker)
 	if err != nil {
@@ -1422,7 +1434,12 @@ func verifyM4tStopMetadata(stdout string) (map[string]string, error) {
 			return fields, fmt.Errorf("OK 标记字段 %s = %q, want %q", k, got, w)
 		}
 	}
-	if err := m4tRequireIDs(fields, "connect_id", "screencap_id", "task_id"); err != nil {
+	// 分命名空间校验(理由见 verifyM4tSuccessMetadata):connect=1、
+	// screencap=2 与 task=1 的数值相等是合法结果。
+	if err := m4tRequireIDs(fields, "connect_id", "screencap_id"); err != nil {
+		return fields, err
+	}
+	if err := m4tRequireIDs(fields, "task_id"); err != nil {
 		return fields, err
 	}
 	if stopped, err := strconv.Atoi(fields["task_chain_stopped"]); err != nil || stopped < 1 {
