@@ -17,7 +17,7 @@
 // 结基线一致）：
 //
 //   - 存在性：Assistant.cpp:337 经 append_task 的类型分支注册 DepotTask；
-//     Interface/DepotTask.h:10 定义 TaskType="Depot"；锁定包
+//     Interface/DepotTask.h:9 定义 TaskType="Depot"；锁定包
 //     resource/tasks/tasks.json 含完整 pipeline（Depot、DepotBegin、
 //     DepotAllTab、DepotMaterialTab、DepotMaterialTabClicked、
 //     DepotSlowlySwipeToTheRight），resource/template/Depot/ 模板齐全。
@@ -49,7 +49,7 @@
 //     （Assistant.cpp:677-682，仅任务链 ret=true 时发出）与 DepotInfo
 //     （SubTaskExtraInfo=20003，details.done=true，
 //     DepotRecognitionTask.cpp:118-136）佐证；任务链失败 = TaskChainError
-//     (10000)；停止 = TaskChainStopped(10003)（Assistant.cpp:677、711-712
+//     (10000)；停止 = TaskChainStopped(10004)（Assistant.cpp:677、711-712
 //     ——stop 清空任务队列并置 m_thread_idle 后，working_proc 不再发出
 //     AllTasksCompleted，被中断的任务不结算为成功）。
 //
@@ -193,15 +193,18 @@ const (
 // src/MaaCore/Common/AsstMsg.h(InternalError=0、InitFailed=1、
 // ConnectionInfo=2、AllTasksCompleted=3、AsyncCallInfo=4、Destroyed=5、
 // TaskChainError=10000、TaskChainStart=10001、TaskChainCompleted=10002、
-// TaskChainExtraInfo=10004、SubTaskError=20000、SubTaskStart=20001、
-// SubTaskCompleted=20002、SubTaskExtraInfo=20003、SubTaskStopped=20004、
-// ReportRequest=30000);已与参考仓库 HEAD 逐文件核对一致。
+// TaskChainExtraInfo=10003、TaskChainStopped=10004、SubTaskError=20000、
+// SubTaskStart=20001、SubTaskCompleted=20002、SubTaskExtraInfo=20003、
+// SubTaskStopped=20004、ReportRequest=30000);已与参考仓库 HEAD 逐文件核对
+// 一致,并与上游文档 docs/en-us/protocol/callback-schema.md:40-41 的编号
+// 互相印证。注意顺序:ExtraInfo 在 Stopped 之前(10003 是额外信息,10004 才
+// 是手动停止),两者不可互换——停止场景的收敛只认 10004。
 const (
 	m4tAllTasksCompletedMessageID  = MessageID(3)
 	m4tTaskChainErrorMessageID     = MessageID(10000)
 	m4tTaskChainStartMessageID     = MessageID(10001)
 	m4tTaskChainCompletedMessageID = MessageID(10002)
-	m4tTaskChainStoppedMessageID   = MessageID(10003)
+	m4tTaskChainStoppedMessageID   = MessageID(10004)
 	m4tSubTaskExtraInfoMessageID   = MessageID(20003)
 )
 
@@ -1115,7 +1118,7 @@ func m4tEvidenceFields(marker map[string]string) map[string]string {
 	fields["bigint_probe"] = "params 含未知字段 maa30_probe_bigint=9007199254740993(>2^53):允许清单按 json.Number 字面形式精确匹配,Core 接受并完成任务;逐字节透传白箱断言见 instance_sync_test.go(MAA-22)"
 	fields["non_consumption_basis"] = "DepotTask=DepotBegin(navigate)+DepotRecognitionTask(recognize);device actions=get_image/swipe(DepotSlowlySwipeToTheRight)/click-all-tab(DepotAllTab) only;no resource-consuming action;locked commit d94dd007: Assistant.cpp:337, DepotTask.cpp:7-18, DepotRecognitionTask.cpp"
 	fields["precondition_note"] = "前置画面 PNG 落盘 output_dir 由执行者人工核对;场景不解析画面内容、不自动导航"
-	fields["terminal_state_basis"] = "success=AllTasksCompleted(3).finished_tasks+TaskChainCompleted(10002)+DepotInfo(20003).done=true;stop=TaskChainStopped(10003);AsstMsg IDs frozen from AsstMsg.h@d94dd007"
+	fields["terminal_state_basis"] = "success=AllTasksCompleted(3).finished_tasks+TaskChainCompleted(10002)+DepotInfo(20003).done=true;stop=TaskChainStopped(10004);AsstMsg IDs frozen from AsstMsg.h@d94dd007"
 	fields["multi_round_note"] = "成功场景为同一未关闭实例连续两轮任务,无任何 Close/NewInstance(§8 多轮复用契约)"
 	return fields
 }
