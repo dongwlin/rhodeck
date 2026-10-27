@@ -28,6 +28,7 @@ type goTestStep struct {
 	Run        string
 	Skip       string
 	AllowSkips []string
+	Race       bool
 	Env        []string
 	Timeout    time.Duration
 }
@@ -39,12 +40,14 @@ type testEvent struct {
 	Output  string `json:"Output"`
 }
 
-// runGoTest runs one `go test -json` invocation and converts its events into
-// a layer result. A test-level skip never increments Passed. Subtests are
-// tracked separately so a skipped subtest cannot hide behind a passing parent.
-func runGoTest(ctx context.Context, env environment, spec goTestStep) layerResult {
-	res := newLayerResult(spec.Name)
+// goTestArgs builds the exact `go test` argv. -race is emitted only when the
+// step asks for it; the race layer must request it explicitly or its PASS
+// would be a false green.
+func goTestArgs(spec goTestStep) []string {
 	args := []string{"test", "-json", "-count=1"}
+	if spec.Race {
+		args = append(args, "-race")
+	}
 	if spec.Run != "" {
 		args = append(args, "-run", spec.Run)
 	}
@@ -54,7 +57,15 @@ func runGoTest(ctx context.Context, env environment, spec goTestStep) layerResul
 	if spec.Timeout > 0 {
 		args = append(args, "-timeout", spec.Timeout.String())
 	}
-	args = append(args, spec.Packages...)
+	return append(args, spec.Packages...)
+}
+
+// runGoTest runs one `go test -json` invocation and converts its events into
+// a layer result. A test-level skip never increments Passed. Subtests are
+// tracked separately so a skipped subtest cannot hide behind a passing parent.
+func runGoTest(ctx context.Context, env environment, spec goTestStep) layerResult {
+	res := newLayerResult(spec.Name)
+	args := goTestArgs(spec)
 
 	timeout := spec.Timeout
 	if timeout <= 0 {

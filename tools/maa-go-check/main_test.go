@@ -101,6 +101,30 @@ func TestConclusionReportsExpectedSkips(t *testing.T) {
 	}
 }
 
+func TestGoTestArgsIncludesRaceOnlyWhenRequested(t *testing.T) {
+	base := goTestStep{Packages: []string{"./x"}}
+	if containsArg(goTestArgs(base), "-race") {
+		t.Fatal("goTestArgs must not add -race for an ordinary step")
+	}
+	spec := raceGoTestStep()
+	if !spec.Race {
+		t.Fatal("raceGoTestStep must set Race: true")
+	}
+	args := goTestArgs(spec)
+	if !containsArg(args, "-race") {
+		t.Fatalf("race layer args = %v, want -race", args)
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRunLayerPreservesDefinitionName(t *testing.T) {
 	def := layer{
 		Name: "outer",

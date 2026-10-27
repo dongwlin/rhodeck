@@ -263,16 +263,24 @@ func runFmt(ctx context.Context, env environment) layerResult {
 	return res
 }
 
-func runRace(ctx context.Context, env environment) layerResult {
-	res := runGoTest(ctx, env, goTestStep{
+// raceGoTestStep is the single source of the race layer's test spec. It must
+// carry Race: true; without the actual -race flag the layer would only run
+// the ordinary test binary and report a false green.
+func raceGoTestStep() goTestStep {
+	return goTestStep{
 		Name:     "race detector",
 		Packages: []string{"./packages/maa-go/..."},
 		Skip:     "TestM1|TestM3|TestM4",
+		Race:     true,
 		Env:      []string{"CGO_ENABLED=1", "GOWORK=off"},
 		Timeout:  25 * time.Minute,
-	})
+	}
+}
+
+func runRace(ctx context.Context, env environment) layerResult {
+	res := runGoTest(ctx, env, raceGoTestStep())
 	if res.Status == statusPass {
-		res.Detail = "race detector passed with CGO_ENABLED=1 (separate from the production CGO_ENABLED=0 build)"
+		res.Detail = "race detector passed with -race and CGO_ENABLED=1 (separate from the production CGO_ENABLED=0 build)"
 	}
 	return res
 }
