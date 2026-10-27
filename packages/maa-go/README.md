@@ -17,24 +17,31 @@
 | macOS | amd64/arm64 | 未执行 | 未验证 |
 | Windows | amd64 | 只运行声明层 checker | 未验证运行支持；Windows 声明检查通过不代表可加载/调用 |
 
-已实测组合：
+已实测组合（精确源码/摘要清单由锁定 checker 输入与真实库测试维护，
+本页不重复验收摘要）：
 
 - Go `1.26.9`，purego `v0.11.2`；
-- MaaCore `v6.20.1`，源码 commit `d94dd007aca3b519395fb1f0aee26c7bd5ba5d5f`；
-- 发行包 `MAA-v6.20.1-linux-x86_64.tar.gz`，SHA-256
-  `814a128d24c8183b38003284facd56789fe8346b8a66932f9ff885df48d48bc1`；
-- 同一发行包内的 `resource/` 资源、glibc 2.43、ADB；
+- MaaCore `v6.20.1`；锁定源码 commit 与三个头的 SHA-256 见
+  `tools/check-maa-api/testdata/locked/README.md`，整包与成员摘要由
+  真实库测试在运行时钉扎；
+- 发行包 `MAA-v6.20.1-linux-x86_64.tar.gz`；
+- 同一发行包内的 `resource/` 资源；`resource/version.json` 的
+  `last_updated` 为 `2026-10-20 00:59:49.000`，其 SHA-256 由真实库测试
+  的锁定常量校验，具体摘要不在此重复（验收摘要按归属规则维护）；
+- glibc 2.43（Fedora 44）；
+- ADB：Android SDK platform-tools `37.0.1-15733141`（`adb version`
+  1.0.41）；
 - 测试夹具与 race 层另需 C 编译器（本轮为 cc/GCC 16.2.1）：前者编译
   测试用 `.so`，后者是 `-race` 所需的 cgo 运行时；生产
   `CGO_ENABLED=0` 构建不使用它；
-- `libMaaCore.so` 与 `resource/version.json` 的 SHA-256 由真实库测试
-  逐项钉扎；`AsstGetNullSize()` 在锁定基线返回 `math.MaxUint64`。
+- `AsstGetNullSize()` 在锁定基线返回 `math.MaxUint64`。
 
 本组合上实际执行并通过的层包括：静态 checker 双目标、Go 故障注入、
 loader fixture、真实 ABI fixture、原生线程 callback fixture、真实库
-无设备 M1/M3 链路，以及显式设备 Connect/Screencap/Depot 场景。各层
-由 `go run ./tools/maa-go-check --layers …` 独立报告；没有运行的层
-保持未验证。
+无设备 M1/M3 链路，以及显式设备的 Depot precondition/success/stop
+（其中 precondition 含 Connect/Screencap）。各层由
+`go run ./tools/maa-go-check --layers …` 独立报告；没有运行的层保持
+未验证。
 
 ## 公开面
 
@@ -64,6 +71,12 @@ C 侧的 `AsstConnect` 与 `AsstAttachWindow` 是 deprecated 对照项，不提�
 
 - 运行时仍需显式配置的 `libMaaCore.so`、至少一个包含 `resource/` 的
   资源根、可写的用户目录与 ADB 可执行文件；
+- 发行包根目录的 9 个 `.so` 必须放在同一目录并一起部署：
+  `libMaaCore.so` 与 8 个捆绑依赖 `libMaaAdbControlUnit.so`、
+  `libMaaUtils.so`、`libfastdeploy_ppocr.so`、`libonnxruntime.so.1`、
+  `libunwind.so.1`、`libopencv_world4.so.412`、`libc++.so.1`、
+  `libc++abi.so.1`。`libMaaCore.so` 的 `DT_RUNPATH=$ORIGIN` 依赖同目录
+  解析；只复制 `libMaaCore.so` 会在 dlopen 时失败；
 - MaaCore 自己依赖系统库（本基线为 glibc 2.43）；不保证 musl、静态
   单文件、无系统动态库或 Wails desktop 免 cgo；这些组合需要各自验收；
 - 原生库与资源不随本仓库分发，也不在 `go test` 中打包；真实库测试从
@@ -129,12 +142,17 @@ go run ./tools/maa-go-check --layers core
 MAA_M4_DEVICE_CONFIG=/absolute/path/device-acceptance.json \
   go run ./tools/maa-go-check --layers device
 
-# 全部层；任何缺少资源/授权的层都会使整体退出 2，而不是被算作通过
+# 全部层；任何缺少资源/授权/工具链的层都会使整体非零退出，而不是被算作通过
 go run ./tools/maa-go-check --layers all
 
-# race 使用 CGO_ENABLED=1，单独记录，不代表生产构建需要 cgo
+# race 使用 -race 与 CGO_ENABLED=1，单独记录，不代表生产构建需要 cgo
 go run ./tools/maa-go-check --layers race
 ```
+
+以上 `go run` 示例在 shell 中把任何非零退出统一显示为 1；需要精确区分
+`UNVERIFIED`（二进制退出 2）与 `FAIL`（1）时，先
+`go build -o maa-go-check ./tools/maa-go-check` 再运行二进制。CI 使用
+构建后的二进制，因此保留 2/1 的区分。
 
 CI 工作流 `.github/workflows/maa-go.yml` 只运行 `ci` 与 `race` 两层；它
 不运行 `core`/`device`，也不把任何跳过算作通过。
@@ -142,8 +160,9 @@ CI 工作流 `.github/workflows/maa-go.yml` 只运行 `ci` 与 `race` 两层；�
 状态含义：`PASS` 表示该层所有检查实际执行并通过；`PASS (expected skips)`
 表示该层只有明确声明的预期跳过（例如设备门默认关闭），跳过的测试
 没有验证任何行为，详情会列出；`UNVERIFIED` 表示跳过、匹配不到测试或
-缺少外部资源，**不是通过**，整体退出 2；`FAIL` 退出 1；`NOT SELECTED`
-未运行、不做声明。空的 `-run` 选择也是 `UNVERIFIED`。
+缺少外部资源，**不是通过**，二进制退出 2（`go run` 统一显示为 1）；
+`FAIL` 退出 1；`NOT SELECTED` 未运行、不做声明。空的 `-run` 选择也是
+`UNVERIFIED`。
 
 分层不能互相借结论：静态 checker 只证明声明层；loader fixture 只证明
 装载/解析/注册，空导出绝不可调用；ABI/callback fixture 只证明手写 C
@@ -154,17 +173,25 @@ CI 工作流 `.github/workflows/maa-go.yml` 只运行 `ci` 与 `race` 两层；�
 ## 设备验收事实
 
 2026-10-27 在 Linux amd64、一台 TCP ADB 设备、TouchMode=adb 上，显式
-许可的 Connect、Screencap、Depot（仓库识别）precondition/success/stop
-场景真实执行通过：成功场景在同一未关闭实例上两轮 Depot，任务消息
-（`TaskChainCompleted`、`AllTasksCompleted`、`DepotInfo`）按 TaskID
-关联；停止场景得到 `TaskChainStopped` 且没有 `AllTasksCompleted`。
+许可的 Depot 场景真实执行通过：
+
+- precondition：Connect 与 Screencap 各一次（ID 1/2，1280x720），连接
+  后 `Connected()==true`；
+- success：同一未关闭实例两轮 Depot（TaskID 1/2），任务消息
+  （`TaskChainCompleted`、`AllTasksCompleted`、`DepotInfo`）按 TaskID
+  关联；
+- stop：`TaskChainStopped` 且没有 `AllTasksCompleted`。
+
 设备配置、截图与原始日志保存在仓库外，不进入提交；设备地址不在任何
 公开文件中。
 
-该结论的边界：只覆盖这一台设备与 ADB 触摸路径；minitouch/maatouch
-未验收；识别的允许清单只含 Depot；StartUp 入口在最终运行中因游戏已
-在主界面而跳过，其客户端响应状态下的成功路径未复验；设备层不在 CI
-中运行，必须显式启用。
+允许清单登记 Depot 与入口步骤 StartUp；本轮实际提交并完成的识别
+任务只有 Depot。Entry（StartUp）场景在早前一次尝试中以 Go 测试 10
+分钟超时（`panic: test timed out after 10m0s`）结束，没有 entry 证据，
+不计为通过；最终运行在游戏已处于主界面时按授权没有提交 StartUp，
+因此 StartUp 成功路径未复验。该结论的边界：只覆盖这一台设备与 ADB
+触摸路径；minitouch/maatouch 未验收；StartUp 成功路径未复验；设备层
+不在 CI 中运行，必须显式启用。
 
 ## 已知限制
 

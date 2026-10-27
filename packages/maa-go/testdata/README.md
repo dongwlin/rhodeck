@@ -48,6 +48,12 @@ MAA_M4_DEVICE_CONFIG=/absolute/path/device-acceptance.json \
 `output_dir`（仓库外），并通过去敏占位符隐藏设备地址。场景不自动重试、
 不重放未知结果、不执行未登记任务。
 
+设备验收的 Depot precondition/success/stop 三场景在 2026-10-27 的最终
+运行通过；Entry（StartUp）场景曾在 10 分钟 Go 测试超时
+（`panic: test timed out after 10m0s`）中结束，没有 entry 证据，不计为
+通过。允许清单登记 Depot 与入口步骤 StartUp，实际完成识别的只有
+Depot；StartUp 成功路径未复验。
+
 ## 分层入口
 
 建议使用统一入口，而不是逐条记忆测试名：

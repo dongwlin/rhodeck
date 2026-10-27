@@ -1,9 +1,9 @@
 // Package maa 是 MaaCore C ABI 的 Go 薄绑定。
 //
 // 本包经 purego 在运行时动态加载原生库并按符号调用其 C ABI,
-// 不使用 cgo。生产包可完全以 CGO_ENABLED=0 构建;只有测试 fixture
-// (模拟原生库的 C 代码)才需要 C 编译器,这是运行依赖与测试环境的
-// 区别,不构成对生产构建的要求。
+// 不使用 cgo。生产包可完全以 CGO_ENABLED=0 构建;C 编译器只用于
+// 测试 fixture(模拟原生库的 C 代码)与 race 检查(-race 需要 cgo
+// 运行时),不是生产构建或运行依赖。
 //
 // 首期实测平台为 Linux amd64/glibc。其他平台的支持状态不因交叉编译
 // 或声明层检查而成立;本包不承诺任何未经验证的平台。首版支持声明、
@@ -43,8 +43,10 @@
 // params) 原样透传未知任务类型与 JSON 字段并返回 TaskID(0 明确表示
 // 提交失败);SetTaskParams、Start、Stop、BackToHome 解释对应
 // C bool——返回 nil 只表示请求被 Core 接受,一律不赋予任务开始/停
-// 止/完成等执行语义(接受请求不等于任务执行完成,任务进度经事件流
-// 观察);Running、Connected 的 false 是正常查询结果,不转换成错误。
+// 止/完成等执行语义(接受请求不等于任务执行完成;任务进度只能经
+// Core 的原生任务消息观察,而本版公开事件流尚未接入——见下方事件流
+// 边界,调用方目前不能从公开面读取这些消息);Running、Connected 的
+// false 是正常查询结果,不转换成错误。
 // Connect(ConnectConfig)、Click(x, y)、Screencap 以 block=false 异
 // 步提交设备动作并返回 *Operation:非零 ID 只表示提交被接受,最终结
 // 果由 AsyncCallInfo 按 async_call_id 关联确认后经 Operation.Wait 取
@@ -174,10 +176,11 @@
 // # 部署与外部监督
 //
 // 生产绑定可以 CGO_ENABLED=0 构建,但这不是 MaaCore 无原生依赖的
-// 声明:运行时仍需匹配的 libMaaCore.so、resource/ 资源根、可写用户
-// 目录与 ADB;MaaCore 及其系统依赖(本基线 glibc)仍由系统 loader
-// 加载。不保证 musl、静态单文件、无系统动态库或 Wails desktop 免
-// cgo;这些组合需要各自验收。原生库与资源不随本包分发。首期只实测
+// 声明:运行时仍需匹配的 libMaaCore.so、发行包根目录同放的 8 个捆绑
+// 依赖 .so(DT_RUNPATH=$ORIGIN)、resource/ 资源根、可写用户目录与
+// ADB;MaaCore 及其系统依赖(本基线 glibc)仍由系统 loader 加载。不
+// 保证 musl、静态单文件、无系统动态库或 Wails desktop 免 cgo;这些
+// 组合需要各自验收。原生库与资源不随本包分发。首期只实测
 // Linux amd64/glibc;其他平台未验证。一个实例关闭后 Runtime 终止使用,
 // 恢复只能退出进程并启动新 worker,不支持同进程 Dlclose/热重载/重建。
 //
