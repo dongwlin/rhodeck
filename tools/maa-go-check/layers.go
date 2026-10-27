@@ -270,7 +270,7 @@ func raceGoTestStep() goTestStep {
 	return goTestStep{
 		Name:     "race detector",
 		Packages: []string{"./packages/maa-go/..."},
-		Skip:     "TestM1|TestM3|TestM4",
+		Skip:     "TestM1|TestM3|TestM4Device",
 		Race:     true,
 		Env:      []string{"CGO_ENABLED=1", "GOWORK=off"},
 		Timeout:  25 * time.Minute,
@@ -280,7 +280,7 @@ func raceGoTestStep() goTestStep {
 func runRace(ctx context.Context, env environment) layerResult {
 	res := runGoTest(ctx, env, raceGoTestStep())
 	if res.Status == statusPass {
-		res.Detail = "race detector passed with -race and CGO_ENABLED=1 (separate from the production CGO_ENABLED=0 build)"
+		res.Detail = "race passed (-race, CGO_ENABLED=1); -skip TestM1|TestM3|TestM4Device (real-core/device acceptance in core/device layers)"
 	}
 	return res
 }

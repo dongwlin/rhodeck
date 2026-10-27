@@ -114,6 +114,17 @@ func TestGoTestArgsIncludesRaceOnlyWhenRequested(t *testing.T) {
 	if !containsArg(args, "-race") {
 		t.Fatalf("race layer args = %v, want -race", args)
 	}
+	if spec.Skip != "TestM1|TestM3|TestM4Device" {
+		t.Fatalf("race layer skip filter = %q, want TestM1|TestM3|TestM4Device", spec.Skip)
+	}
+	if !containsArg(args, "-skip") {
+		t.Fatalf("race layer args = %v, want -skip", args)
+	}
+	for i, arg := range args {
+		if arg == "-skip" && (i+1 >= len(args) || args[i+1] != spec.Skip) {
+			t.Fatalf("race layer -skip value = %v, want %q", args, spec.Skip)
+		}
+	}
 }
 
 func containsArg(args []string, want string) bool {

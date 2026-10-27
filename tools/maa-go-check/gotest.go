@@ -65,6 +65,7 @@ func goTestArgs(spec goTestStep) []string {
 // tracked separately so a skipped subtest cannot hide behind a passing parent.
 func runGoTest(ctx context.Context, env environment, spec goTestStep) layerResult {
 	res := newLayerResult(spec.Name)
+	res.SkipFilter = spec.Skip
 	args := goTestArgs(spec)
 
 	timeout := spec.Timeout

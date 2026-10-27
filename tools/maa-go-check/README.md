@@ -52,11 +52,17 @@ go build -o maa-go-check ./tools/maa-go-check
 | `device` | 显式启用的连接、截图与 Depot 场景（M4） | `MAA_M4_DEVICE_CONFIG` | 否 |
 | `build` | `CGO_ENABLED=0 go build ./...` 与 `go vet ./...` | 无 | 是 |
 | `fmt` | `gofmt -l .`，有输出即失败 | 无 | 是 |
-| `race` | `go test ./packages/maa-go/... -race` | `cc`/`gcc`（race 需要 cgo） | 独立任务 |
+| `race` | `go test ./packages/maa-go/... -race`，另以 `-skip` 排除 M1/M3 与 TestM4Device（Go 并发/单元测试；真实核心与设备由 core/device 覆盖） | `cc`/`gcc`（race 需要 cgo） | 独立任务 |
 
 `race` 层由 `raceGoTestStep` 固定携带 `Race: true`，`goTestArgs` 因此
-追加 `-race`；`TestGoTestArgsIncludesRaceOnlyWhenRequested` 钉住该参数，
-缺少 `-race` 时测试失败，避免把普通测试二进制报告成竞态检查通过。
+追加 `-race`；同时固定 `-skip 'TestM1|TestM3|TestM4Device'`，只跑 Go
+并发/单元测试。被 `-skip` 排除的 M1/M3 与 TestM4Device 是真实库子进程
+与显式设备验收，不属于 Go 并发检查，且 CI 没有发行包/设备；它们不会
+出现在 `go test -json` 的 skip 事件里，所以该层 `Skipped=0`，报告的
+`skip_filter` 字段与详情会写明排除模式。M4 的任务消息纯 Go 用例
+（TestM4t）仍在该层运行。真实核心生命周期与设备由 `core`/`device` 层
+单独覆盖。`TestGoTestArgsIncludesRaceOnlyWhenRequested` 同时钉住
+`-race` 与该 `-skip` 值。
 
 `--layers ci` 是 `static,go,device-gate,loader,abi,callback,build,fmt`。
 `--layers all` 包含 `core`、`device` 与 `race`；缺少发行包、设备配置或

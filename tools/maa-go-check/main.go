@@ -59,6 +59,7 @@ type layerResult struct {
 	Failed          int      `json:"failed"`
 	ExpectedSkips   []string `json:"expected_skips,omitempty"`
 	UnexpectedSkips []string `json:"unexpected_skips,omitempty"`
+	SkipFilter      string   `json:"skip_filter,omitempty"`
 	Failures        []string `json:"failures,omitempty"`
 }
 
@@ -75,6 +76,12 @@ func (r *layerResult) merge(other layerResult) {
 	r.Failed += other.Failed
 	r.ExpectedSkips = append(r.ExpectedSkips, other.ExpectedSkips...)
 	r.UnexpectedSkips = append(r.UnexpectedSkips, other.UnexpectedSkips...)
+	if other.SkipFilter != "" {
+		if r.SkipFilter != "" {
+			r.SkipFilter += "; "
+		}
+		r.SkipFilter += other.SkipFilter
+	}
 	r.Failures = append(r.Failures, other.Failures...)
 	switch other.Status {
 	case statusFail:
