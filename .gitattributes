@@ -1,0 +1,5 @@
+# The declaration checker verifies these files against upstream SHA-256 digests.
+tools/check-maa-api/testdata/locked/** text eol=lf
+# Counterexample tests mutate exact source lines on every test host.
+*.go text eol=lf
+tools/check-maa-api/testdata/*.h text eol=lf

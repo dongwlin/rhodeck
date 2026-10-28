@@ -13,9 +13,15 @@
 | 平台 | 架构 | 运行环境 | 结论 |
 |---|---|---|---|
 | Linux | amd64 | glibc 2.43（Fedora 44）验证 | **支持**（本页公开面） |
-| Linux | arm64 | 未执行 | 未验证；交叉编译成功不构成运行支持 |
-| macOS | amd64/arm64 | 未执行 | 未验证 |
-| Windows | amd64 | 只运行声明层 checker | 未验证运行支持；Windows 声明检查通过不代表可加载/调用 |
+| Linux | arm64 | CI 仅交叉编译包与测试二进制 | 未执行单测或真实 Core |
+| macOS | arm64 | CI 执行 Go/fake-native 单测 | 原生 loader 未实现，`Open` 返回 `ErrUnsupported` |
+| macOS | amd64 | CI 仅交叉编译包与测试二进制 | 未执行单测；原生 loader 未实现 |
+| Windows | amd64 | CI 执行 Go/fake-native 单测 | 原生 loader 未实现，`Open` 返回 `ErrUnsupported` |
+| Windows | arm64 | CI 仅交叉编译包与测试二进制 | 未执行单测；原生 loader 未实现 |
+
+上述 CI 条目描述工作流配置；具体执行结果以对应 CI run 为准。后续平台与
+架构回归以 CI 单测验收，真实 Core、设备与 Docker 运行中的问题按用户
+反馈处理。交叉编译只验证编译兼容，不计为实际单测执行或原生运行支持。
 
 验证基线：
 
@@ -42,22 +48,56 @@ loader fixture、真实 ABI fixture、原生线程 callback fixture，以及真�
 | 对象 | 方法 / 类型 |
 |---|---|
 | Runtime | `Open(RuntimeConfig)`、`Version()`、`Capabilities()`、`NullSize()`、`Log(level, message)`、`NewInstance(InstanceConfig)`、`Close()` |
-| Instance | `Close()`、`AppendTask(taskType, params)`、`SetTaskParams(id, params)`、`Start()`、`Stop()`、`BackToHome()`、`Running()`、`Connected()`、`Connect(ConnectConfig)`、`Click(x, y)`、`Screencap()`、`GetImagePNG()`、`UUID()`、`Tasks()` |
+| Instance | `Close()`、`Events()`、`Done()`、`Err()`、`Fault()`、`Diagnostics()`、`AppendTask(taskType, params)`、`SetTaskParams(id, params)`、`Start()`、`Stop()`、`BackToHome()`、`Running()`、`Connected()`、`Connect(ConnectConfig)`、`Click(x, y)`、`Screencap()`、`GetImagePNG()`、`UUID()`、`Tasks()` |
 | Operation | `ID()`、`Wait(ctx)` |
-| 数据与配置 | `RuntimeConfig`、`InstanceConfig`、`ConnectConfig`、`Limits`、`BufferLimits`、`StaticOption`、`InstanceOption`、`ConnectionExtra`、`Event`、`AsyncResult`、`TaskID`/`AsyncID`/`MessageID`、状态哨兵错误与加载/符号/注册错误类型 |
+| 数据与配置 | `RuntimeConfig`、`InstanceConfig`、`ConnectConfig`、`Limits`、`BufferLimits`、`StaticOption`、`InstanceOption`、`ConnectionExtra`、`Event`、`AsyncResult`、`InstanceDiagnostics`、`TaskID`/`AsyncID`/`MessageID`、状态哨兵错误与加载/符号/注册错误类型 |
 
 C 侧的 `AsstConnect` 与 `AsstAttachWindow` 是 deprecated 对照项，不提供
 公开方法；`AsstCallerExtra.h` 的实验接口不在首期范围。`AsstGetImageBgr`
 只报告 `Capabilities().ImageBgr()`，不提供读取方法，也不分配生产 BGR
 缓冲区。
 
-**已知缺口：公开事件流 API。** 本版没有公开 `Events()`、`Done()`、
-`Err()`、`Fault()`、`Diagnostics()`。`Event`/`AsyncResult` 数据类型与
-内部有界分发器已经实现并有测试，但没有接线到公开方法；调用方不能从
-公开面读取事件流或 `Done`/`Err`。接入后的契约是单消费者：`Events`
-通道只能由一个读取者推进，分发器不等待读者，`Close` 也不依赖读者
-存活。该缺口不影响下方已列出的同步/异步/读取 API，但不能被描述为
-“事件流已交付”。
+`Events()` 返回同一条单消费者通道，只有一个读取者推进消费；未知合法
+消息按原文交付，`Event.JSON` 是可安全保留和修改的独立副本。任务完成
+由 Core 的事件表达，`Done()` 只表示实例关闭完成。
+
+分发器不等待读者，`Close()` 也不依赖读者存活。事件溢出或协议错误会
+使实例故障，关闭独立的 `Fault()` 通知；`Err()` 立即可见首因，未完成的
+Operation 结为该故障，已经确认的结果保持不变。正常关闭以及仅关闭
+Stop 被拒绝时不会触发 `Fault()`，观察者应同时等待 `Done()`。
+
+`Diagnostics()` 返回 `InstanceDiagnostics`：饱和的 `LostEvents`、只读
+`FirstFault`、至多 4096 字节的独立 `RawPrefix` 和只读 `StopDiagnostic`。
+关闭 Stop 被拒绝时，诊断在 Destroy 返回前即可见。`RawPrefix` 可能是
+不完整 JSON 或无效 UTF-8；修改它不影响后续快照。
+
+观察到 `Done()` 或任意 `Close()` 返回后，Events 已关闭、分发器已退出、
+全部 callback 已退出、Operation 已结算，`Err()` 与诊断保持稳定。
+`Err()` 返回与 `Close()` 相同的最终错误；已缓冲事件在关闭后仍可读取。
+
+例如，由一个读取者消费事件，同时由实例所有者决定何时关闭：
+
+```go
+func observe(in *maa.Instance, handleEvent func(maa.Event)) error {
+    for {
+        select {
+        case event, ok := <-in.Events():
+            if !ok {
+                <-in.Done()
+                return in.Err()
+            }
+            handleEvent(event)
+        case <-in.Fault():
+            return in.Close()
+        case <-in.Done():
+            return in.Err()
+        }
+    }
+}
+```
+
+此例在故障或关闭时退出；若需处理全部缓冲事件，关闭后继续遍历
+`Events()` 至通道排空。`handleEvent` 应及时返回，避免阻塞读取者自身。
 
 ## 原生依赖与部署
 
@@ -129,7 +169,10 @@ worker/control、IPC、HTTP、持久化、Web、Wails 与 CLI 不在本包范围
 # callback fixture、CGO_ENABLED=0 build/vet 与 gofmt
 go run ./tools/maa-go-check --layers ci
 
-# 真实 MaaCore 无设备链路（需要锁定发行包，仅本地运行）
+# Windows/macOS CI 单测集合（不选择 Linux 原生 fixture）
+go run ./tools/maa-go-check --layers static,go,build,fmt
+
+# 真实 MaaCore 无设备链路（可选，需要锁定发行包，仅本地运行）
 go run ./tools/maa-go-check --layers core
 
 # 全部层；任何缺少资源/工具链的层都会使整体非零退出，而不是被算作通过
@@ -145,8 +188,10 @@ go run ./tools/maa-go-check --layers race
 `go build -o maa-go-check ./tools/maa-go-check` 再运行二进制。CI 使用
 构建后的二进制，因此保留 2/1 的区分。
 
-CI 工作流 `.github/workflows/maa-go.yml` 只运行 `ci` 与 `race` 两层；它
-不运行 `core`，也不把任何跳过算作通过。`race` 层以 `-skip` 排除
+CI 工作流 `.github/workflows/maa-go.yml` 在 Linux amd64 运行 `ci` 与
+独立 `race`；Windows amd64、macOS arm64 运行 `static,go,build,fmt`。
+Linux arm64、Windows arm64、macOS amd64 只交叉编译全部包与测试二进制。
+工作流不运行 `core`，也不把任何跳过算作通过。`race` 层以 `-skip` 排除
 `TestRealCore`（真实核心），被排除的测试不会出现在 `go test -json` 的
 skip 事件中、因此不计入 `Skipped`；详情与 JSON 的 `skip_filter` 会写明
 排除模式，真实核心由 `core` 层单独覆盖。
@@ -165,7 +210,6 @@ skip 事件中、因此不计入 `Skipped`；详情与 JSON 的 `skip_filter` �
 
 ## 已知限制
 
-- 公开事件流 API（Events/Done/Err/Fault/Diagnostics）未接线；见上文。
 - BGR 读取未公开；只有能力探测。
 - 仅 Linux amd64/glibc；musl、静态单文件、macOS、Windows 运行未验证。
 - 每进程单 Runtime、单活动实例；无 Dlclose、热重载、同进程重建。
@@ -174,9 +218,9 @@ skip 事件中、因此不计入 `Skipped`；详情与 JSON 的 `skip_filter` �
 - 任务参数与消息按原文透传；binding 不提供任务类型封闭枚举或培养业务
   模型，未知字段/大整数不被丢弃或改写。
 
-未验证项的去向：公开事件流与 BGR 读取必须作为新的公开面单独接线并
-按同一分层门槛验收；macOS/Windows/arm64 需要各自完成 loader、
-callback 与真实库门槛。在这些完成前不更新支持矩阵。
+未验证项的去向：BGR 读取作为新的公开面单独决策与验收；平台与架构的
+回归以 CI 单测覆盖为验收，真实 Core、设备和部署中的后续问题按用户
+反馈处理。CI 单测通过不表示未实现的原生加载器已经可用。
 
 ## 版本升级复验
 

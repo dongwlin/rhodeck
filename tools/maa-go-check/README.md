@@ -12,6 +12,9 @@
 # CI 与离线默认集合（需要 Go 与 C 编译器）
 go run ./tools/maa-go-check --layers ci
 
+# Windows/macOS 的单测集合（不选择尚未实现的原生 fixture）
+go run ./tools/maa-go-check --layers static,go,build,fmt
+
 # 单层
 go run ./tools/maa-go-check --layers static
 go run ./tools/maa-go-check --layers core
@@ -44,9 +47,9 @@ go build -o maa-go-check ./tools/maa-go-check
 |---|---|---|---|
 | `static` | `tools/check-maa-api` 单测/反例 + 仓库内锁定 C 输入的 linux/windows 完整 checker | 无（头文件已随仓库提供） | 是 |
 | `go` | `packages/maa-go` 单测与故障注入、`internal/ffitest`、`internal/native` 非 fixture 单测、本工具单测 | 无 | 是 |
-| `loader` | 独立 C loader fixture 的装载/解析/注册 | `cc`/`gcc` | 是 |
-| `abi` | 真实 C ABI fixture 的数值、参数、void 与缓冲区调用 | `cc`/`gcc` | 是 |
-| `callback` | 原生线程 callback fixture | `cc`/`gcc` | 是 |
+| `loader` | 独立 C loader fixture 的装载/解析/注册 | Linux、`cc`/`gcc` | Linux |
+| `abi` | 真实 C ABI fixture 的数值、参数、void 与缓冲区调用 | Linux、`cc`/`gcc` | Linux |
+| `callback` | 原生线程 callback fixture | Linux、`cc`/`gcc` | Linux |
 | `core` | 锁定 MaaCore v6.20.1 的真实库无设备链路 | 锁定发行包 | 否 |
 | `build` | `CGO_ENABLED=0 go build ./...` 与 `go vet ./...` | 无 | 是 |
 | `fmt` | `gofmt -l .`，有输出即失败 | 无 | 是 |
@@ -64,8 +67,24 @@ go build -o maa-go-check ./tools/maa-go-check
 `--layers ci` 是 `static,go,loader,abi,callback,build,fmt`。
 `--layers all` 包含 `core` 与 `race`；缺少发行包或编译器时对应层为
 `UNVERIFIED`，二进制整体退出码 2（`go run` 统一显示为 1）。CI 工作流
-`.github/workflows/maa-go.yml` 只调用 `ci` 与独立的 `race` 层，**不运行
-也不声称** `core`。
+`.github/workflows/maa-go.yml` 使用以下矩阵，**不运行也不声称** `core`：
+
+| Runner | 实际运行平台 | 层 |
+|---|---|---|
+| `ubuntu-24.04` | Linux amd64 | `ci`、独立 `race` |
+| `windows-2025` | Windows amd64 | `static,go,build,fmt` |
+| `macos-15` | macOS arm64 | `static,go,build,fmt` |
+
+其余 `linux/arm64`、`windows/arm64`、`darwin/amd64` 组合由独立任务
+交叉编译全部包与测试二进制，不执行测试。测试编译通过只证明编译兼容，
+不计为对应架构的单测通过。
+
+矩阵在各平台实际执行 Go 单测、故障注入与构建检查；Linux 额外执行
+loader/ABI/callback fixture。`static` 在所有 runner 上仍检查锁定的
+`linux/amd64`、`windows/amd64` 两个声明目标，不把宿主架构当成新的
+ABI 基线。Windows/macOS 的生产 loader 仍返回 `ErrUnsupported`，
+这些平台的单测通过不代表已能加载 MaaCore。真实 Core、设备与 Docker
+运行不属于 CI 单测验收，后续运行问题按用户反馈处理。
 
 ## 状态与退出码
 

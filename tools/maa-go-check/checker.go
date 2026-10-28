@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -46,6 +47,9 @@ func buildChecker(ctx context.Context, env environment) (string, func(), error) 
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
 	bin := filepath.Join(dir, "check-maa-api")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()

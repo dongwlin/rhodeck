@@ -254,12 +254,30 @@ func writeTestModule(t *testing.T, body string) string {
 func TestRunCommandFailOnOutput(t *testing.T) {
 	dir := t.TempDir()
 	env := environment{Root: dir}
-	if res := runCommand(context.Background(), env, "silent", []string{"sh", "-c", "true"}, nil, time.Minute, true); res.Status != statusPass {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{exe, "-test.run=^TestRunCommandHelper$"}
+	if res := runCommand(context.Background(), env, "silent", args, []string{"MAA_CHECK_COMMAND_HELPER=silent"}, time.Minute, true); res.Status != statusPass {
 		t.Fatalf("silent command status = %q, want %q (%s)", res.Status, statusPass, res.Detail)
 	}
-	if res := runCommand(context.Background(), env, "noisy", []string{"sh", "-c", "echo file.go"}, nil, time.Minute, true); res.Status != statusFail {
+	if res := runCommand(context.Background(), env, "noisy", args, []string{"MAA_CHECK_COMMAND_HELPER=noisy"}, time.Minute, true); res.Status != statusFail {
 		t.Fatalf("noisy command status = %q, want %q (%s)", res.Status, statusFail, res.Detail)
 	}
+}
+
+// TestRunCommandHelper supplies portable silent/noisy subprocesses without
+// requiring a shell on the host running the tool tests.
+func TestRunCommandHelper(t *testing.T) {
+	mode := os.Getenv("MAA_CHECK_COMMAND_HELPER")
+	if mode == "" {
+		return
+	}
+	if mode == "noisy" {
+		_, _ = os.Stdout.WriteString("file.go\n")
+	}
+	os.Exit(0)
 }
 
 func TestCheckerTargetsUseVendoredInput(t *testing.T) {
