@@ -25,7 +25,8 @@ func definitions() []layer {
 		},
 		{
 			Name:        "go",
-			Description: "Go unit and fault-injection tests (no native)",
+			Description: "Go unit, fault-injection, and platform loader tests",
+			Requires:    []string{"cc"},
 			Run:         runGo,
 		},
 		{
@@ -101,9 +102,9 @@ func runStatic(ctx context.Context, env environment) layerResult {
 	return res
 }
 
-// runGo runs the fake-native, lifecycle, snapshot, and tool unit tests. The
-// real-library acceptance tests are selected out; they have their own layer
-// so a missing tarball cannot hide here.
+// runGo runs the fake-native, lifecycle, snapshot, platform loader, and tool
+// unit tests. Platform loader tests compile small C fixtures. MaaCore release
+// acceptance tests have their own layer so a missing tarball cannot hide here.
 func runGo(ctx context.Context, env environment) layerResult {
 	res := newLayerResult("go")
 	res.merge(runGoTest(ctx, env, goTestStep{

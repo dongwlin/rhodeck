@@ -123,8 +123,8 @@ check-maa-api --profile maa-v6.20.1 --goos windows --goarch amd64 \
 
 Go 输入固定为 `--go-root/packages/maa-go/internal/native`,按目标
 GOOS/GOARCH、`CGO_ENABLED=0` 与工具链 release tags 用标准库 go/build
-选择真实参与构建的源文件:处理文件名后缀(`loader_linux.go` /
-`loader_other.go`)、`//go:build`、旧式 build 行,排除 `_test.go` 与
+选择真实参与构建的源文件:处理文件名后缀(如 `loader_windows.go`)、
+`//go:build`(如 `loader_unix.go`)、旧式 build 行,排除 `_test.go` 与
 `_`/`.` 前缀文件,不接受自定义 tags。生产错误声明与不参与目标构建的
 正确副本并存、声明隐藏于 tag、只在测试文件放正确类型,均不能借正确
 副本掩盖生产错误。

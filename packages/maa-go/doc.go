@@ -8,6 +8,8 @@
 // 已验证平台为 Linux amd64/glibc。其他平台的支持状态不因交叉编译
 // 或声明层检查而成立;本包不承诺任何未经验证的平台。支持声明、
 // 已知限制与版本升级复验步骤见仓库 packages/maa-go/README.md。
+// Linux/macOS loader 使用 dlopen/dlsym,Windows 使用 LoadLibraryExW/
+// GetProcAddress;依赖由系统 loader 解析,库保持加载到进程退出。
 //
 // # 已交付的公开面
 //

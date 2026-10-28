@@ -1,14 +1,15 @@
 # maa-go 测试夹具与真实库验收入口
 
-本目录（以及 `internal/native/testdata/loaderfixture`）保存测试专用的
+本目录以及 `internal/native/testdata/` 保存测试专用的
 手写 C 夹具与真实库验收说明。它们都不参与生产 Go 构建：生产包没有
-cgo，C 夹具只在测试进程里由 `cc`/`gcc` 编译成 `.so` 后经 purego 加载。
+cgo，C 夹具只在测试进程里由 C 编译器生成原生动态库，再经生产 loader 加载。
 夹具通过不等于真实 MaaCore 通过，各层结果分开记录。
 
 ## 夹具一览
 
 | 夹具 | 源码 | 用途 | 证明 | 不能证明 |
 |---|---|---|---|---|
+| 跨平台 loader fixture | `internal/native/testdata/platformfixture/` | Linux/macOS/Windows 主库与同目录依赖库 | Unicode/空格路径、依赖解析及缺失错误、符号查找、uint64 调用、C→Go callback 与 JSON 复制 | MaaCore API 表注册、原生线程并发或真实 Core 行为 |
 | loader fixture | `internal/native/testdata/loaderfixture/fixture.c` | 26 个空导出，含缺少必需符号的变体 | 系统 loader 的打开/查找/注册事务、缺符号聚合报告、失败不发布半成品 | 任何 ABI 调用；空导出签名有意不对应真实头，绝不可调用 |
 | ABI fixture | `testdata/abifixture/fixture.c` | 与锁定 `AsstCaller.h` 对应的真实函数 | uint8/负 int32/uint64 往返、4/5/6 参数位置、void 副作用、借用字符串复制、图像/UUID/任务列表缓冲区协议 | 真实 MaaCore 的资源、连接、任务或线程行为 |
 | callback fixture | `testdata/callbackfixture/fixture.c` | 从原生线程回调 Go trampoline | token 往返、线程回调、调用返回后的 JSON 改写、panic 边界 | C++ 异常、原生崩溃隔离或真实 Core 的回调序列 |
@@ -23,6 +24,7 @@ CGO_ENABLED=0 go test ./packages/maa-go/internal/native \
   -run 'TestLoaderFixture|TestABIFixture|TestCallbackFixture' -count=1 -v
 
 # 只跑一组
+CGO_ENABLED=0 go test ./packages/maa-go/internal/native -run 'TestPlatformLoader' -count=1 -v
 CGO_ENABLED=0 go test ./packages/maa-go/internal/native -run 'TestABIFixture' -count=1 -v
 CGO_ENABLED=0 go test ./packages/maa-go/internal/native -run 'TestCallbackFixture' -count=1 -v
 CGO_ENABLED=0 go test ./packages/maa-go/internal/native -run 'TestLoaderFixture' -count=1 -v
@@ -42,6 +44,7 @@ CGO_ENABLED=0 go test ./packages/maa-go -run 'TestRealCore' -count=1 -v -timeout
 
 ```sh
 go run ./tools/maa-go-check --layers loader
+go run ./tools/maa-go-check --layers go
 go run ./tools/maa-go-check --layers abi
 go run ./tools/maa-go-check --layers callback
 go run ./tools/maa-go-check --layers core

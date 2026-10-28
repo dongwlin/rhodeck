@@ -25,10 +25,10 @@ func TestSelectRealNativeDir(t *testing.T) {
 			t.Errorf("shared file %s must be selected on both targets", shared)
 		}
 	}
-	if !strings.Contains(linuxNames, "loader_linux.go") || strings.Contains(linuxNames, "loader_other.go") {
+	if !linuxSel.contains("loader_unix.go") || linuxSel.contains("loader_other.go") || linuxSel.contains("loader_windows.go") {
 		t.Errorf("linux selection = %s", linuxNames)
 	}
-	if !strings.Contains(windowsNames, "loader_other.go") || strings.Contains(windowsNames, "loader_linux.go") {
+	if !windowsSel.contains("loader_windows.go") || windowsSel.contains("loader_other.go") || windowsSel.contains("loader_unix.go") {
 		t.Errorf("windows selection = %s", windowsNames)
 	}
 	for _, sel := range []*GoSelection{linuxSel, windowsSel} {

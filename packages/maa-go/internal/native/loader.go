@@ -1,18 +1,20 @@
 // 本文件实现 MaaCore 动态库加载器:纯 Go 的路径校验与规范化、
 // 可注入的平台打开/查符号原语边界,以及加载与查找失败到结构化
 // 错误的转换。本文件平台中立,不含任何平台条件;平台原语的实现
-// 见各平台文件(如 loader_linux.go)。
+// 见 loader_unix.go 与 loader_windows.go。
 //
 // 冻结的加载策略,实现与调用方都不得自行扩展:
 //
 //   - 只接受调用方显式给出的绝对路径:不推导搜索路径、不扫描附加
 //     目录、不修改 LD_LIBRARY_PATH、不预加载任何依赖;
-//   - 以 RTLD_NOW|RTLD_LOCAL 打开:全部重定位在加载期完成,缺符号
+//   - Linux/macOS 以 RTLD_NOW|RTLD_LOCAL 打开:全部重定位在加载期完成,缺符号
 //     与依赖缺失等链接失败在打开阶段即暴露;库自身符号不进入进程
 //     全局符号名字空间,不使用 RTLD_GLOBAL;
-//   - 依赖解析完全交给系统 loader:随包目录内的 $ORIGIN RUNPATH
-//     与系统 loader 默认搜索范围已覆盖锁定发行包的全部依赖,本层
-//     不做任何额外干预;
+//   - Windows 以 LoadLibraryExW 打开,使用 DLL_LOAD_DIR|SYSTEM32:
+//     依赖只从目标库目录与 System32 解析,不搜索工作目录或 PATH,
+//     不修改进程级 DLL 搜索目录;
+//   - 依赖解析交给系统 loader:Unix 使用库内的 $ORIGIN RUNPATH 或
+//     @loader_path/@rpath,本层不预加载依赖或扫描附加目录;
 //   - 库一经加载保持到进程退出,本层不提供 Close/Dlclose,首期不
 //     卸载原生库;
 //   - dlopen 会执行库内的原生构造器并映射全部依赖;RTLD_LOCAL 只

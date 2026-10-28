@@ -1,7 +1,8 @@
 # maa-go
 
 `maa-go` 是 MaaCore C ABI 的 Go 薄绑定，Go 包名为 `maa`。它在运行时
-经 purego 动态加载 `libMaaCore.so`，不把 MaaCore 链接进 Go 二进制，
+动态加载 `libMaaCore.so`（Linux）、`libMaaCore.dylib`（macOS）或
+`MaaCore.dll`（Windows），不把 MaaCore 链接进 Go 二进制，
 生产 Go 包可以 `CGO_ENABLED=0` 构建。
 
 **支持声明**：在 Linux amd64 / glibc 上，本包对下方“公开面”列出的 API
@@ -14,10 +15,10 @@
 |---|---|---|---|
 | Linux | amd64 | glibc 2.43（Fedora 44）验证 | **支持**（本页公开面） |
 | Linux | arm64 | CI 仅交叉编译包与测试二进制 | 未执行单测或真实 Core |
-| macOS | arm64 | CI 执行 Go/fake-native 单测 | 原生 loader 未实现，`Open` 返回 `ErrUnsupported` |
-| macOS | amd64 | CI 仅交叉编译包与测试二进制 | 未执行单测；原生 loader 未实现 |
-| Windows | amd64 | CI 执行 Go/fake-native 单测 | 原生 loader 未实现，`Open` 返回 `ErrUnsupported` |
-| Windows | arm64 | CI 仅交叉编译包与测试二进制 | 未执行单测；原生 loader 未实现 |
+| macOS | arm64 | CI 执行 Go/fake-native 与原生 loader 测试 | loader 已实现；结果以 CI run 为准 |
+| macOS | amd64 | CI 执行 Go/fake-native 与原生 loader 测试 | loader 已实现；结果以 CI run 为准 |
+| Windows | amd64 | CI 执行 Go/fake-native 与原生 loader 测试 | loader 已实现；结果以 CI run 为准 |
+| Windows | arm64 | CI 仅交叉编译包与测试二进制 | loader 已实现；未执行单测或真实 Core |
 
 上述 CI 条目描述工作流配置；具体执行结果以对应 CI run 为准。后续平台与
 架构回归以 CI 单测验收，真实 Core、设备与 Docker 运行中的问题按用户
@@ -35,7 +36,8 @@
   的锁定常量校验；
 - glibc 2.43（Fedora 44）；
 - 测试夹具与 race 层另需 C 编译器：前者编译测试用 `.so`，后者是
-  `-race` 所需的 cgo 运行时；生产 `CGO_ENABLED=0` 构建不使用它；
+  `-race` 所需的 cgo 运行时；跨平台 loader 夹具按系统生成 `.so`、
+  `.dylib` 或 `.dll`；生产 `CGO_ENABLED=0` 构建不使用它；
 - `AsstGetNullSize()` 在锁定基线返回 `math.MaxUint64`。
 
 仓库内可重复执行的分层检查包括：静态 checker 双目标、Go 故障注入、
@@ -103,9 +105,9 @@ func observe(in *maa.Instance, handleEvent func(maa.Event)) error {
 
 `CGO_ENABLED=0` 只描述 Go 构建方式，**不**表示 MaaCore 没有原生依赖：
 
-- 运行时仍需显式配置的 `libMaaCore.so`、至少一个包含 `resource/` 的
+- 运行时仍需显式配置的 MaaCore 库绝对路径、至少一个包含 `resource/` 的
   资源根、可写的用户目录与 ADB 可执行文件；
-- 发行包根目录的 9 个 `.so` 必须放在同一目录并一起部署：
+- Linux 锁定发行包根目录的 9 个 `.so` 必须放在同一目录并一起部署：
   `libMaaCore.so` 与 8 个捆绑依赖 `libMaaAdbControlUnit.so`、
   `libMaaUtils.so`、`libfastdeploy_ppocr.so`、`libonnxruntime.so.1`、
   `libunwind.so.1`、`libopencv_world4.so.412`、`libc++.so.1`、
@@ -117,6 +119,13 @@ func observe(in *maa.Instance, handleEvent func(maa.Event)) error {
   锁定发行包缓存读取并校验摘要，缺失时明确报告受阻，不冒充通过；
 - 连接参数（ADB 路径、地址、profile）由调用方提供；本包不做设备发现、
   不做 shell 展开、不记录设备地址。
+
+Linux/macOS 使用 `dlopen(RTLD_NOW|RTLD_LOCAL)` 与 `dlsym`，依赖由
+系统 loader 根据库内的 `$ORIGIN`、`@loader_path`/`@rpath` 等信息解析。
+Windows 使用 `LoadLibraryExW` 与 `GetProcAddress`，依赖搜索范围为
+目标 DLL 所在目录与 System32；将发行包的依赖 DLL 一起部署到库目录，
+不依赖当前工作目录或 PATH。本包不修改进程级搜索路径、不预加载依赖。
+Windows 路径以 UTF-16 传给系统 API，调用方仍提供 UTF-8 Go 字符串。
 
 每进程只支持一个 Runtime 和一个活动实例。`Open` 预占生命周期后，库
 加载/符号解析/初始化失败都会终止本进程的 binding 使用；没有 Dlclose、
@@ -189,8 +198,10 @@ go run ./tools/maa-go-check --layers race
 构建后的二进制，因此保留 2/1 的区分。
 
 CI 工作流 `.github/workflows/maa-go.yml` 在 Linux amd64 运行 `ci` 与
-独立 `race`；Windows amd64、macOS arm64 运行 `static,go,build,fmt`。
-Linux arm64、Windows arm64、macOS amd64 只交叉编译全部包与测试二进制。
+独立 `race`；Windows amd64、macOS 两种架构运行 `static,go,build,fmt`。
+Go 层包含真实系统库与小型原生依赖夹具的加载、函数调用和回调测试。
+Linux、Windows、macOS × amd64、arm64 的全部 6 个组合另做交叉编译，
+构建全部包与测试二进制；Linux/Windows arm64 不执行测试。
 工作流不运行 `core`，也不把任何跳过算作通过。`race` 层以 `-skip` 排除
 `TestRealCore`（真实核心），被排除的测试不会出现在 `go test -json` 的
 skip 事件中、因此不计入 `Skipped`；详情与 JSON 的 `skip_filter` 会写明
@@ -220,7 +231,7 @@ skip 事件中、因此不计入 `Skipped`；详情与 JSON 的 `skip_filter` �
 
 未验证项的去向：BGR 读取作为新的公开面单独决策与验收；平台与架构的
 回归以 CI 单测覆盖为验收，真实 Core、设备和部署中的后续问题按用户
-反馈处理。CI 单测通过不表示未实现的原生加载器已经可用。
+反馈处理。原生 loader 与夹具测试不替代真实 MaaCore 运行验证。
 
 ## 版本升级复验
 

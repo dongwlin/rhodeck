@@ -294,15 +294,16 @@ func TestRealNativeSelectionBaseline(t *testing.T) {
 			t.Fatalf("%s baseline stdout is not JSON: %v", goos, err)
 		}
 		want := realNativeNames(t)
+		want = withoutName(want, "loader_other.go")
 		// 平台条件文件按目标切换;callback trampoline 只选择目标的
 		// 具名适配文件。这里维护独立期望,不复用生产选择逻辑。
 		switch goos {
 		case "linux":
-			want = withoutName(want, "loader_other.go")
+			want = withoutName(want, "loader_windows.go")
 			want = withoutName(want, "callback_windows.go")
 			want = withoutName(want, "callback_darwin.go")
 		case "windows":
-			want = withoutName(want, "loader_linux.go")
+			want = withoutName(want, "loader_unix.go")
 			want = withoutName(want, "callback_linux.go")
 			want = withoutName(want, "callback_darwin.go")
 		}
