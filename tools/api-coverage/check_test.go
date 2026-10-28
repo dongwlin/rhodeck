@@ -120,8 +120,10 @@ func TestScanIsReproducible(t *testing.T) {
 }
 
 // TestFrozenInventoryReconcilesWithSource verifies the frozen symbol table
-// matches the current source exactly in drift mode: no drift, no mapping
-// failures, and registered gaps allowed.
+// matches the current source exactly in drift mode: no drift and no mapping
+// failures. Registered gaps are allowed in drift mode, whatever their count;
+// the gap semantics are exercised on a controlled copy in
+// TestFinalModeFailsWhileGapsRemain.
 func TestFrozenInventoryReconcilesWithSource(t *testing.T) {
 	report := scanAndCheck(t, repoRoot(t), ModeDrift)
 	if !report.Pass {
@@ -130,9 +132,6 @@ func TestFrozenInventoryReconcilesWithSource(t *testing.T) {
 	}
 	if report.Scanned != report.Frozen {
 		t.Fatalf("scanned %d items but inventory freezes %d", report.Scanned, report.Frozen)
-	}
-	if report.Pending == 0 {
-		t.Fatalf("the current baseline must carry registered gaps; got none")
 	}
 }
 
@@ -172,10 +171,32 @@ func TestInventoryPinsThirtyTwoPublicEntries(t *testing.T) {
 	}
 }
 
-// TestFinalModeFailsWhileGapsRemain verifies the final integrity check fails
-// while registered gaps exist: they do not count as coverage.
+// TestFinalModeFailsWhileGapsRemain verifies the two-mode gap semantics:
+// registered gaps do not count as coverage, so final mode fails while they
+// exist, and drift mode still passes with them. The live inventory is
+// gap-free since WKR-09, so one done entry is downgraded to a registered gap
+// in memory instead of depending on the live gap count.
 func TestFinalModeFailsWhileGapsRemain(t *testing.T) {
-	report := scanAndCheck(t, repoRoot(t), ModeFinal)
+	mappings := mappingsCopy(t)
+	downgraded := ""
+	for key, m := range mappings {
+		if m.Status == "done" {
+			m.Status = "pending:WKR-12"
+			mappings[key] = m
+			downgraded = key
+			break
+		}
+	}
+	if downgraded == "" {
+		t.Fatal("no done entry to downgrade into a registered gap")
+	}
+	root := repoRoot(t)
+	drift := checkWithInventory(t, root, mappings, ModeDrift)
+	if !drift.Pass {
+		t.Fatalf("drift check must pass while registered gaps exist: added=%v removed=%v changed=%v mapping=%v",
+			drift.Added, drift.Removed, drift.Changed, drift.Mapping)
+	}
+	report := checkWithInventory(t, root, mappings, ModeFinal)
 	if report.Pass {
 		t.Fatal("final check passed while registered gaps remain; gaps must not count as coverage")
 	}
