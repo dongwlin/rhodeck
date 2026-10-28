@@ -66,8 +66,8 @@ go build -o maa-go-check ./tools/maa-go-check
 
 `--layers ci` 是 `static,go,loader,abi,callback,build,fmt`。
 `--layers all` 包含 `core` 与 `race`；缺少发行包或编译器时对应层为
-`UNVERIFIED`，二进制整体退出码 2（`go run` 统一显示为 1）。CI 工作流
-`.github/workflows/maa-go.yml` 使用以下矩阵，**不运行也不声称** `core`：
+`UNVERIFIED`，二进制整体退出码 2（`go run` 统一显示为 1）。
+[CI 工作流](../../.github/workflows/maa-go.yml)使用以下矩阵，不运行 `core`：
 
 | Runner | 实际运行平台 | 层 |
 |---|---|---|
@@ -85,8 +85,7 @@ Linux 额外执行 loader/ABI/callback 独立 fixture 层。Windows 使用 runne
 预装的 MinGW gcc，macOS 使用系统 C 编译器。`static` 在所有 runner 上仍检查锁定的
 `linux/amd64`、`windows/amd64` 两个声明目标，不把宿主架构当成新的
 ABI 基线。Windows/macOS 生产 loader 由本机原生库与夹具测试验证；
-真实 MaaCore、设备与 Docker
-运行不属于 CI 单测验收，后续运行问题按用户反馈处理。
+真实 MaaCore、设备与 Docker 运行不在上述 CI 测试覆盖范围内。
 
 ## 状态与退出码
 

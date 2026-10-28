@@ -11,7 +11,7 @@
 // Linux/macOS loader 使用 dlopen/dlsym,Windows 使用 LoadLibraryExW/
 // GetProcAddress;依赖由系统 loader 解析,库保持加载到进程退出。
 //
-// # 已交付的公开面
+// # 公开 API
 //
 // Open(RuntimeConfig) 执行单进程初始化事务并返回 *Runtime;Runtime
 // 提供只读元数据 Version、Capabilities、NullSize——全部读取初始化时
@@ -92,7 +92,7 @@
 // 耗尽返回可辨识的 ErrBufferLimit(NullSize 原因不明),原生返回值
 // 超过实际容量为 ErrProtocol;合法 0 长度返回空结果。返回的都是独
 // 立 Go 快照,可长期持有、修改,不影响后续调用。可选 BGR(=
-// AsstGetImageBgr)首期只报告能力(Runtime.Capabilities().ImageBgr),
+// AsstGetImageBgr)只报告能力(Runtime.Capabilities().ImageBgr),
 // 不公开读取方法、不调用、不分配生产 buffer。
 //
 // # 事件流与故障观察
@@ -184,10 +184,11 @@
 // 声明:运行时仍需匹配的 libMaaCore.so、发行包根目录同放的 8 个捆绑
 // 依赖.so(DT_RUNPATH=$ORIGIN)、resource/ 资源根、可写用户目录与
 // ADB;MaaCore 及其系统依赖(本基线 glibc)仍由系统 loader 加载。不
-// 保证 musl、静态单文件、无系统动态库或 Wails desktop 免 cgo;这些
-// 组合需要各自验收。原生库与资源不随本包分发。首期只实测
-// Linux amd64/glibc;其他平台未验证。一个实例关闭后 Runtime 终止使用,
-// 恢复只能退出进程并启动新 worker,不支持同进程 Dlclose/热重载/重建。
+// 保证 musl、静态单文件或无系统动态库部署。原生库与资源不随本包
+// 分发。真实 MaaCore 运行支持仅限 Linux amd64/glibc;其他平台的
+// loader 与夹具测试不替代真实 MaaCore 验证。一个实例关闭后 Runtime
+// 终止使用,恢复只能退出进程并启动新 worker,不支持同进程
+// Dlclose/热重载/重建。
 //
 // 依赖方向固定且单向:公开层 → internal/native → purego / 系统 loader
 // → MaaCore。internal/native 不向公开层导出 raw 函数类型、handle、

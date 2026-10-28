@@ -657,7 +657,7 @@ type faultSnapshot struct {
 }
 
 // faultDiagnostics 返回故障诊断的深拷贝快照:丢失计数、首因与原文
-// 前缀各自独立复制,供后续公开 Diagnostics 接线与用例消费;数据
+// 前缀各自独立复制,供公开 Diagnostics 与用例消费;数据
 // 读取与复制在状态锁内完成,关闭完成前内容仍可能增加。
 func (s *instanceState) faultDiagnostics() faultSnapshot {
 	s.mu.Lock()

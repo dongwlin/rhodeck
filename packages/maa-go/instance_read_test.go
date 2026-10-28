@@ -375,7 +375,7 @@ func TestReadEntriesLegalZeroLength(t *testing.T) {
 // 原生入口(fake 全调用序列无 asyncScreencap);扩容重试期间缓存可
 // 能更新,第一次探测(旧帧)返回哨兵、第二次探测(新帧)返回有效
 // 数据时,结果只含最后一次有效区间——binding 不发布首次旧内容、不
-// 承诺重试固定同一帧(冻结向量 B08 的部分)。
+// 承诺重试固定同一帧。
 func TestGetImagePNGDoesNotScreencapOrPinFrame(t *testing.T) {
 	const handle = uintptr(0x1A60)
 	inst, rig := newReadRig(t, handle)

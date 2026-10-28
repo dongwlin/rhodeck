@@ -13,32 +13,30 @@
 
 | 平台 | 架构 | 运行环境 | 结论 |
 |---|---|---|---|
-| Linux | amd64 | glibc 2.43（Fedora 44）验证 | **支持**（本页公开面） |
+| Linux | amd64 | glibc | **支持**（本页公开面） |
 | Linux | arm64 | CI 仅交叉编译包与测试二进制 | 未执行单测或真实 Core |
 | macOS | arm64 | CI 执行 Go/fake-native 与原生 loader 测试 | loader 已实现；结果以 CI run 为准 |
 | macOS | amd64 | CI 执行 Go/fake-native 与原生 loader 测试 | loader 已实现；结果以 CI run 为准 |
 | Windows | amd64 | CI 执行 Go/fake-native 与原生 loader 测试 | loader 已实现；结果以 CI run 为准 |
 | Windows | arm64 | CI 仅交叉编译包与测试二进制 | loader 已实现；未执行单测或真实 Core |
 
-上述 CI 条目描述工作流配置；具体执行结果以对应 CI run 为准。后续平台与
-架构回归以 CI 单测验收，真实 Core、设备与 Docker 运行中的问题按用户
-反馈处理。交叉编译只验证编译兼容，不计为实际单测执行或原生运行支持。
+上述 CI 条目描述[工作流配置](../../.github/workflows/maa-go.yml)；具体
+执行结果以对应 CI run 为准。交叉编译只验证编译兼容，不计为实际单测
+执行或真实 MaaCore 运行支持。原生 loader 与夹具测试也不替代真实
+MaaCore 运行验证。
 
-验证基线：
+## ABI 与依赖
 
-- Go `1.26.9`，purego `v0.11.2`；
-- MaaCore `v6.20.1`；锁定源码 commit 与三个头的 SHA-256 见
-  `tools/check-maa-api/testdata/locked/README.md`，整包与成员摘要由
-  真实库测试在运行时钉扎；
-- 发行包 `MAA-v6.20.1-linux-x86_64.tar.gz`；
-- 同一发行包内的 `resource/` 资源；`resource/version.json` 的
-  `last_updated` 为 `2026-10-20 00:59:49.000`，其 SHA-256 由真实库测试
-  的锁定常量校验；
-- glibc 2.43（Fedora 44）；
-- 测试夹具与 race 层另需 C 编译器：前者编译测试用 `.so`，后者是
-  `-race` 所需的 cgo 运行时；跨平台 loader 夹具按系统生成 `.so`、
-  `.dylib` 或 `.dll`；生产 `CGO_ENABLED=0` 构建不使用它；
-- `AsstGetNullSize()` 在锁定基线返回 `math.MaxUint64`。
+Go 工具链与 purego 版本见 [go.mod](../../go.mod)。当前 ABI profile
+锁定 MaaCore `v6.20.1`；源码 commit、头文件摘要与许可证见
+[锁定 C 输入](../../tools/check-maa-api/testdata/locked/README.md)。
+该 profile 的 `AsstGetNullSize()` 为 `math.MaxUint64`。
+
+可选的真实库测试使用 `MAA-v6.20.1-linux-x86_64.tar.gz` 及其中的
+`resource/`，在运行时校验整包与成员摘要；缓存路径及运行命令见
+[测试夹具说明](testdata/README.md)。测试夹具与 race 层另需 C 编译器：
+前者按系统生成 `.so`、`.dylib` 或 `.dll`，后者使用 `-race` 所需的
+cgo 运行时；生产 `CGO_ENABLED=0` 构建不使用它。
 
 仓库内可重复执行的分层检查包括：静态 checker 双目标、Go 故障注入、
 loader fixture、真实 ABI fixture、原生线程 callback fixture，以及真实库
@@ -55,7 +53,7 @@ loader fixture、真实 ABI fixture、原生线程 callback fixture，以及真�
 | 数据与配置 | `RuntimeConfig`、`InstanceConfig`、`ConnectConfig`、`Limits`、`BufferLimits`、`StaticOption`、`InstanceOption`、`ConnectionExtra`、`Event`、`AsyncResult`、`InstanceDiagnostics`、`TaskID`/`AsyncID`/`MessageID`、状态哨兵错误与加载/符号/注册错误类型 |
 
 C 侧的 `AsstConnect` 与 `AsstAttachWindow` 是 deprecated 对照项，不提供
-公开方法；`AsstCallerExtra.h` 的实验接口不在首期范围。`AsstGetImageBgr`
+公开方法；`AsstCallerExtra.h` 的实验接口不在本包公开范围。`AsstGetImageBgr`
 只报告 `Capabilities().ImageBgr()`，不提供读取方法，也不分配生产 BGR
 缓冲区。
 
@@ -113,8 +111,8 @@ func observe(in *maa.Instance, handleEvent func(maa.Event)) error {
   `libunwind.so.1`、`libopencv_world4.so.412`、`libc++.so.1`、
   `libc++abi.so.1`。`libMaaCore.so` 的 `DT_RUNPATH=$ORIGIN` 依赖同目录
   解析；只复制 `libMaaCore.so` 会在 dlopen 时失败；
-- MaaCore 自己依赖系统库（本基线为 glibc 2.43）；不保证 musl、静态
-  单文件、无系统动态库或 Wails desktop 免 cgo；这些组合需要各自验收；
+- MaaCore 自己依赖系统库，Linux 运行环境需与发行包要求的 glibc
+  兼容；不保证 musl、静态单文件或无系统动态库部署；
 - 原生库与资源不随本仓库分发，也不在 `go test` 中打包；真实库测试从
   锁定发行包缓存读取并校验摘要，缺失时明确报告受阻，不冒充通过；
 - 连接参数（ADB 路径、地址、profile）由调用方提供；本包不做设备发现、
@@ -130,12 +128,10 @@ Windows 路径以 UTF-16 传给系统 API，调用方仍提供 UTF-8 Go 字符�
 每进程只支持一个 Runtime 和一个活动实例。`Open` 预占生命周期后，库
 加载/符号解析/初始化失败都会终止本进程的 binding 使用；没有 Dlclose、
 热重载或同进程重试，恢复只能退出进程并由 supervisor 启动新 worker。
-worker/control、IPC、HTTP、持久化、Web、Wails 与 CLI 不在本包范围内，
-本页不把它们列为已交付。
 
 ## 生命周期、并发与所有权
 
-本节的完整代码级契约见 `doc.go`；这里给出调用方必须遵守的边界。
+本节的完整代码级契约见 [doc.go](doc.go)；这里给出调用方必须遵守的边界。
 
 - **只通过指针使用，不按值复制。** `Runtime`、`Instance`、`Operation` 只能使用
   构造函数返回的指针；零值不可用。不要按值复制、不要从字段重建、不要
@@ -197,7 +193,7 @@ go run ./tools/maa-go-check --layers race
 `go build -o maa-go-check ./tools/maa-go-check` 再运行二进制。CI 使用
 构建后的二进制，因此保留 2/1 的区分。
 
-CI 工作流 `.github/workflows/maa-go.yml` 在 Linux amd64 运行 `ci` 与
+CI [工作流](../../.github/workflows/maa-go.yml)在 Linux amd64 运行 `ci` 与
 独立 `race`；Windows amd64、macOS 两种架构运行 `static,go,build,fmt`。
 Go 层包含真实系统库与小型原生依赖夹具的加载、函数调用和回调测试。
 Linux、Windows、macOS × amd64、arm64 的全部 6 个组合另做交叉编译，
@@ -222,16 +218,14 @@ skip 事件中、因此不计入 `Skipped`；详情与 JSON 的 `skip_filter` �
 ## 已知限制
 
 - BGR 读取未公开；只有能力探测。
-- 仅 Linux amd64/glibc；musl、静态单文件、macOS、Windows 运行未验证。
+- 真实 MaaCore 运行支持仅限 Linux amd64/glibc；macOS、Windows 的
+  测试覆盖原生 loader 与夹具，真实 MaaCore 运行未验证；musl 与静态
+  单文件部署未验证。
 - 每进程单 Runtime、单活动实例；无 Dlclose、热重载、同进程重建。
 - `Close` 在原生卡住时可能阻塞；没有自设回收超时，依赖外部 supervisor。
 - 仓库内测试不连接真机；真机连接、截图与任务执行不在自动验收范围内。
 - 任务参数与消息按原文透传；binding 不提供任务类型封闭枚举或培养业务
   模型，未知字段/大整数不被丢弃或改写。
-
-未验证项的去向：BGR 读取作为新的公开面单独决策与验收；平台与架构的
-回归以 CI 单测覆盖为验收，真实 Core、设备和部署中的后续问题按用户
-反馈处理。原生 loader 与夹具测试不替代真实 MaaCore 运行验证。
 
 ## 版本升级复验
 
@@ -254,11 +248,11 @@ OS/架构、Go、purego、Core 文件摘要、源码 commit 与资源版本：
 
 ## 相关文档
 
-- `doc.go`：公开生命周期、并发、所有权、取消、错误与部署边界。
-- `tools/check-maa-api/README.md`：静态声明 checker 的输入、输出、
+- [包文档](doc.go)：公开生命周期、并发、所有权、取消、错误与部署边界。
+- [check-maa-api](../../tools/check-maa-api/README.md)：静态声明 checker 的输入、输出、
   失败规则与反例覆盖。
-- `tools/check-maa-api/testdata/locked/README.md`：仓库内锁定头的
+- [锁定 C 输入](../../tools/check-maa-api/testdata/locked/README.md)：仓库内锁定头的
   来源、摘要与许可证。
-- `tools/maa-go-check/README.md`：分层入口、状态与退出码。
-- `packages/maa-go/testdata/README.md`：C fixture 与真实库链路的
+- [maa-go-check](../../tools/maa-go-check/README.md)：分层入口、状态与退出码。
+- [测试夹具](testdata/README.md)：C fixture 与真实库链路的
   使用方式。

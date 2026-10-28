@@ -51,6 +51,6 @@ go run ./tools/maa-go-check --layers core
 ```
 
 `UNVERIFIED` 表示选中层被跳过或缺少资源，不是通过；详见
-`tools/maa-go-check/README.md`。静态 checker 的输入与使用方式见
-`tools/check-maa-api/README.md`，仓库内锁定头见
-`tools/check-maa-api/testdata/locked/README.md`。
+[maa-go-check](../../../tools/maa-go-check/README.md)。静态 checker 的输入与使用方式见
+[check-maa-api](../../../tools/check-maa-api/README.md)，仓库内锁定头见
+[锁定 C 输入](../../../tools/check-maa-api/testdata/locked/README.md)。

@@ -1,10 +1,10 @@
 /*
- * fixture.c — MAA-12 独立真实 ABI fixture(abifixture)。
+ * fixture.c — 独立真实 ABI fixture(abifixture)。
  *
  * 定位与边界:
  *   - 本夹具按锁定的 C 头文件 AsstCaller.h(行号见各导出注释)独立
- *     手写 26 个 R/O 导出的真实签名;不由 Go 符号表生成,与 MAA-11
- *     的空导出 loader fixture(testdata/loaderfixture/fixture.c,签名
+ *     手写 26 个 R/O 导出的真实签名;不由 Go 符号表生成,与空导出的
+ *     loader fixture(internal/native/testdata/loaderfixture/fixture.c,签名
  *     有意不对应真实 ABI、绝不可被调用)分目录、分统计维护,两者
  *     不得混用;
  *   - Linux 上 ASSTAPI 与 ASST_CALL 均展开为空,导出直接写成普通
@@ -16,8 +16,8 @@
  *   - 本夹具不调用、不依赖任何真实 MaaCore;全部行为来自本文件的
  *     已发表契约,语义确定、可审计;
  *   - 真实调用发生在 Go 侧独立子进程中(超时由父进程外部强制),
- *     结果以 MAA_M2_ABI_FIXTURE_*_OK 标记单独报告,与静态 checker
- *     和 MAA_M2_LOADER_FIXTURE_* 装载检查分开统计。
+ *     结果以 MAA_ABI_FIXTURE_*_OK 标记单独报告,与静态 checker
+ *     和 MAA_LOADER_FIXTURE_* 装载检查分开统计。
  *
  * == 已发表契约(全文) ==
  *
@@ -90,7 +90,7 @@
  *     0x1_0000_0000+15)不得被截断成 32 位 —— 截断后该值变为 15,
  *     对 16 字节图像会误判容量不足,Go 侧以此区分截断与否。
  *
- * 未深测符号(MAA-12 未深测,仅保证签名在场与确定返回):
+ * 其余符号的确定性行为(不验证对应的真实 Core 行为):
  *   - AsstCreate:恒返回 (AsstHandle)0x00C0FFEE(固定非零值,调用方
  *     不解引用);
  *   - AsstCreateEx:返回 0x00C0FFEE ^ (uintptr_t)callback ^

@@ -286,9 +286,8 @@ func validateConfigContent(cfg RuntimeConfig, limits Limits) error {
 	seenKey := make(map[int32]bool, len(cfg.StaticOptions))
 	for i, opt := range cfg.StaticOptions {
 		if opt.Key == 0 {
-			// StaticOptionKey 的 Invalid=0(冻结向量
-			// C10:option key 为 0 → ErrInvalidInput,原生调用计数为
-			// 0,纯 Go 校验失败不消耗生命周期,运行归属含)。
+			// StaticOptionKey 的 Invalid=0,在纯 Go 校验中返回
+			// ErrInvalidInput,不触发原生调用、不消耗生命周期。
 			// 不得透传给原生:锁定 Core 对 key 0 走 default 返回失败,
 			// 真实库上只会以 ErrNativeRejected 烧掉进程生命周期。
 			return fmt.Errorf("maa: StaticOptions[%d].Key must not be 0 (Invalid): %w", i, native.ErrInvalidInput)

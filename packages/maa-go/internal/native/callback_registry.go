@@ -181,7 +181,7 @@ func LookupCallbackDelivery(token uintptr) CallbackDelivery {
 }
 
 // lookupCallbackTarget 返回 token 对应的投递函数,未命中返回 nil:
-// 分发序与后续关闭/创建接线共用的内部查表入口,锁纪律见
+// 分发序与关闭/创建流程共用的内部查表入口,锁纪律见
 // callbackTargetRegistry.lookup。
 func lookupCallbackTarget(token uintptr) CallbackDelivery {
 	return callbackTargets.lookup(token)

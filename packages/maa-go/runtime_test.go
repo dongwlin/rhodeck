@@ -330,14 +330,13 @@ func TestOpenSessionStepsAndMetadata(t *testing.T) {
 }
 
 // TestOpenAcceptsVersionAtScanWindowBoundary 验证 Version 扫描窗的
-// 恰达边界接受侧(冻结向量 C13 的本层运行部分):Version 恰
+// 恰达边界接受侧:Version 恰
 // 为 4,096 字节、NUL 落在扫描窗(4,097 字节)末端时被接受,复制结果
 // 逐字节正确。fake 假 buffer 恒分配满 4,097 字节(见 fakeSession.version
 // 的注释),4,096 字节文本经 versionText 注入后 NUL 恰在窗口末字节;
 // 若扫描窗被缩短到 4,096 字节,本用例将因界内无 NUL 而失败。「窗口
 // 内无 NUL → ErrProtocol」的拒绝侧见 TestOpenStepFailuresTerminateLifecycle
-// 的「version 界内无 NUL」。C13 的完整验收(含真实库行为)归属
-// 本用例不宣称已完成 C13。
+// 的「version 界内无 NUL」。本用例使用 fake,不验证真实库行为。
 func TestOpenAcceptsVersionAtScanWindowBoundary(t *testing.T) {
 	sess := newValidFakeSession()
 	env := &fakeEnv{session: sess}

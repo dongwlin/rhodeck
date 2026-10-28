@@ -1,11 +1,11 @@
 /*
- * fixture.c — MAA-13 独立原生线程 callback fixture(callbackfixture)。
+ * fixture.c — 独立原生线程 callback fixture(callbackfixture)。
  *
  * 定位与边界:
- *   - 本夹具是 MAA-13 专属的 callback 线程验证夹具,全部导出以 cbfx_
- *     前缀命名,不属于 MaaCore 的 26 个 Asst 导出契约;与 MAA-11 的空
- *     导出 loader fixture(testdata/loaderfixture/fixture.c,签名有意
- *     不对应真实 ABI、绝不可被调用)和 MAA-12 的真实 ABI 夹具
+ *   - 本夹具用于 callback 线程验证,全部导出以 cbfx_
+ *     前缀命名,不属于 MaaCore 的 26 个 Asst 导出契约;与空导出的
+ *     loader fixture(internal/native/testdata/loaderfixture/fixture.c,签名有意
+ *     不对应真实 ABI、绝不可被调用)和真实 ABI 夹具
  *     (testdata/abifixture/fixture.c)分目录、分统计维护,三者不得
  *     混用;
  *   - 回调一律经 C 函数指针 void (*)(int32_t msg, const char*
@@ -17,8 +17,8 @@
  *   - 本夹具不调用、不依赖任何真实 MaaCore;全部行为来自本文件的
  *     已发表契约,语义确定、可审计;
  *   - 真实调用发生在 Go 侧独立子进程中(超时由父进程外部强制),结果
- *     以 MAA_M2_CALLBACK_*_OK 标记单独报告,与静态 checker、
- *     MAA_M2_LOADER_FIXTURE_* 装载检查和 MAA_M2_ABI_FIXTURE_* 数值/
+ *     以 MAA_CALLBACK_*_OK 标记单独报告,与静态 checker、
+ *     MAA_LOADER_FIXTURE_* 装载检查和 MAA_ABI_FIXTURE_* 数值/
  *     缓冲区结果分开统计。
  *
  * == 已发表契约(全文) ==

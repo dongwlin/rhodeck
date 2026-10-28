@@ -1,14 +1,14 @@
 /*
- * loaderfixture.c — MAA-11 独立装载夹具(loader fixture)。
+ * loaderfixture.c — 独立装载夹具(loader fixture)。
  *
  * 契约与边界:
  *   - 本夹具只证明 dlopen 装载、dlsym 符号解析与两阶段注册事务
  *     (解析→注册→发布),不证明任何 ABI 兼容性;
  *   - 全部导出是空函数(函数体为空),签名有意不对应真实 ABI
  *     (统一写成 void 名字(void)),绝不可被调用;
- *   - 真实 ABI fixture 由 MAA-12 独立维护,两者不得混用;
+ *   - 真实 ABI fixture 位于 testdata/abifixture/fixture.c,两者不得混用;
  *   - 装载验证结果在 Go 侧单独标记
- *     (MAA_M2_LOADER_FIXTURE_COMPLETE_OK / MAA_M2_LOADER_FIXTURE_MISSING_OK),
+ *     (MAA_LOADER_FIXTURE_COMPLETE_OK / MAA_LOADER_FIXTURE_MISSING_OK),
  *     不计入 ABI 调用通过统计。
  *
  * 导出清单:26 个导出逐一对应 native 包 symbolSpecs 的 26 条,顺序

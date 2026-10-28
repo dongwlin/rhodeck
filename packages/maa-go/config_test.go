@@ -322,9 +322,9 @@ func TestLimitsValidationAcceptsBoundaries(t *testing.T) {
 	}
 }
 
-// TestConfigEntriesExactUpperBoundAccepted 验证冻结向量 C07
-// 的恰达上界接受侧(本层运行部分):合计项数恰为 ConfigEntries
-// (默认 256)被接受,再多一项拒绝。固定字段若被误计入项数,恰达
+// TestConfigEntriesExactUpperBoundAccepted 验证配置项数的上界:
+// 合计项数恰为 ConfigEntries(默认 256)被接受,再多一项拒绝。
+// 固定字段若被误计入项数,恰达
 // 上界的配置将变成 258 项而被拒,故接受侧同时钉死「固定字段与
 // Limits 自身不计入项数」。
 func TestConfigEntriesExactUpperBoundAccepted(t *testing.T) {
@@ -348,9 +348,9 @@ func TestConfigEntriesExactUpperBoundAccepted(t *testing.T) {
 	}
 }
 
-// TestConfigBytesExactUpperBoundAccepted 验证冻结向量 C08 的
-// 恰达限接受侧(本层运行部分):全部文本字节合计(含固定路径)
-// 恰为 ConfigBytes(默认 4,194,304)被接受,再多 1 字节拒绝;各单串
+// TestConfigBytesExactUpperBoundAccepted 验证配置总字节数的上界:
+// 全部文本字节合计(含固定路径)恰为 ConfigBytes(默认 4,194,304)
+// 被接受,再多 1 字节拒绝;各单串
 // 均不超 InputStringBytes,超的只是总预算。
 func TestConfigBytesExactUpperBoundAccepted(t *testing.T) {
 	// 用资源根凑足文本:每根取 min(余量, InputStringBytes),末根取
@@ -427,9 +427,9 @@ func TestStaticOptionValueMayBeEmpty(t *testing.T) {
 	}
 }
 
-// TestStaticOptionZeroKeyRejected 验证冻结向量 C10 的 option
-// key 为 0 分支:key 0(StaticOptionKey 的 Invalid)在纯
-// Go 校验阶段被拒,错误含字段路径;校验发生在触碰生命周期门之前,
+// TestStaticOptionZeroKeyRejected 验证 option key 为 0 时被拒绝:
+// key 0(StaticOptionKey 的 Invalid)在纯 Go 校验阶段被拒,错误含
+// 字段路径;校验发生在触碰生命周期门之前,
 // 原生调用计数为 0,同一 gate 修正输入后仍可成功 Open。
 func TestStaticOptionZeroKeyRejected(t *testing.T) {
 	cfg := validRuntimeConfig()
@@ -450,7 +450,7 @@ func TestStaticOptionZeroKeyRejected(t *testing.T) {
 		t.Errorf("错误文本 %q 未包含字段路径 StaticOptions[1].Key", err.Error())
 	}
 
-	// 经注入边界的 open 复核 C10 的运行语义:原生调用计数为 0,
+	// 经注入边界的 open 复核拒绝路径:原生调用计数为 0,
 	// 校验失败不消耗进程生命周期。
 	env := &fakeEnv{session: newValidFakeSession()}
 	gate := &lifecycleGate{}
