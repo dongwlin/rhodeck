@@ -350,9 +350,9 @@ var mappings = map[string]Mapping{
 		DTO:    "OperationEvent,OperationResult.OK,OperationResult.What,OperationResult.Details,OperationResult.Error",
 		Worker: "nativeOperation.Wait",
 		Client: "Operation.Wait",
-		Test:   "TestSessionAsyncCompletionDoesNotBlockStop,TestSessionAsyncCompletionOrdering,TestSessionCloseSettlesPendingOperations,TestClientOperationWaitIsRepeatableAndConcurrent,TestClientWaitCancellationIsLocal",
+		Test:   "TestSessionAsyncCompletionDoesNotBlockStop,TestSessionAsyncCompletionOrdering,TestSessionCloseSettlesPendingOperations,TestClientOperationWaitIsRepeatableAndConcurrent,TestClientWaitCancellationIsLocal,TestClientUnconfirmedOperationAfterFaultIsUnknown",
 		Status: "done",
-		Note:   "客户端等待可重复、可并发：首个终态缓存后不被后续故障改写，等待取消只结束本次等待、不撤销已提交动作、不释放原生槽位；结果与 details 每次等待取得独立副本，内部分发不依赖事件消费者。",
+		Note:   "客户端等待可重复、可并发：首个终态缓存后不被后续故障改写，等待取消只结束本次等待、不撤销已提交动作、不释放原生槽位；结果与 details 每次等待取得独立副本，内部分发不依赖事件消费者，未确认操作在关闭结算为生命周期错误、在故障后保持 unknown。",
 	},
 	"entry Instance.UUID": {
 		DTO:    "UUID,UUIDResult.UUID",

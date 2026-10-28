@@ -157,7 +157,7 @@ func helper(mode string) int {
 					return 13
 				}
 			}
-			if mode == "pendingops" {
+			if mode == "pendingops" || mode == "pendingcrash" {
 				firstConnectID = req.ID
 				respond(protocol.OperationAccepted{AsyncID: 41})
 				continue
@@ -223,7 +223,7 @@ func helper(mode string) int {
 			respond(struct{}{})
 		case protocol.Start:
 			switch mode {
-			case "crash":
+			case "crash", "pendingcrash":
 				fmt.Fprintln(os.Stderr, "fixture native crash")
 				return 7
 			case "hang":
@@ -860,4 +860,47 @@ func TestClientAttachWindowWireIsLossless(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireReaped(t, c)
+}
+
+// TestClientUnconfirmedOperationAfterFaultIsUnknown proves a session fault
+// leaves an operation without any result genuinely unknown: the waiter returns
+// the sticky *Failure with Unknown=true — never a fabricated terminal state —
+// and no wait hangs against the dead session.
+func TestClientUnconfirmedOperationAfterFaultIsUnknown(t *testing.T) {
+	c := launchFixture(t, "pendingcrash")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	op, err := c.Connect(ctx, protocol.ConnectRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type settled struct {
+		result protocol.OperationResult
+		err    error
+	}
+	done := make(chan settled, 1)
+	go func() {
+		r, err := op.Wait(ctx)
+		done <- settled{r, err}
+	}()
+	// The crash arrives through the same session; the waiting goroutine must
+	// return without any further input.
+	if err := c.Start(ctx); err == nil {
+		t.Fatal("crashing start succeeded")
+	}
+	select {
+	case got := <-done:
+		requireFailure(t, got.err, true)
+		if got.result.What != "" || got.result.OK || got.result.Error != nil {
+			t.Fatalf("a fault must not fabricate a terminal state: %+v", got.result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("wait hung against a faulted session")
+	}
+	requireReaped(t, c)
+	if _, err := op.Wait(ctx); !errors.Is(err, c.Err()) {
+		t.Fatalf("later wait diverged from the sticky failure: %v", err)
+	}
 }
