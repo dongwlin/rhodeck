@@ -304,6 +304,49 @@ func helper(mode string) int {
 				respond(protocol.UUIDResult{UUID: "emulator-5554"})
 			}
 			continue
+		case protocol.Log:
+			var input protocol.LogRequest
+			if protocol.Decode(req.Payload, &input) != nil {
+				return 13
+			}
+			// "flow" sends one nonempty and one empty log input; both must
+			// arrive verbatim and be answered by the empty object.
+			verbatim := input.Level == "warn" && input.Message == " hello 世界 "
+			if !verbatim && (input.Level != "" || input.Message != "") {
+				return 13
+			}
+			respond(struct{}{})
+			continue
+		case protocol.MapLevelKey:
+			var query protocol.MapLevelKeyRequest
+			if protocol.Decode(req.Payload, &query) != nil {
+				return 13
+			}
+			if mode == "queryschema" {
+				respond(map[string]int{"stage_id": 42})
+				continue
+			}
+			// The empty key means "not found": the zero value is the answer.
+			if query.Key == "" {
+				respond(protocol.MapLevelKeyResult{})
+				continue
+			}
+			respond(protocol.MapLevelKeyResult{StageID: "main-07", Code: "1-7", LevelID: "level_07", Name: "粉碎矿山"})
+			continue
+		case protocol.ItemName:
+			var query protocol.ItemNameRequest
+			if protocol.Decode(req.Payload, &query) != nil {
+				return 13
+			}
+			switch {
+			case query.ID == "":
+				respond(protocol.ItemNameResult{Name: "Unknown"})
+			case query.ID == "known":
+				respond(protocol.ItemNameResult{Name: "item-name"})
+			default:
+				respond(protocol.ItemNameResult{})
+			}
+			continue
 		case protocol.Stop:
 			respond(protocol.StopResult{Stopped: true})
 		case protocol.GetImagePNG, protocol.GetImageBGR:
@@ -693,6 +736,46 @@ func TestClientHandshakeAndPrecancelledRequests(t *testing.T) {
 	}
 }
 
+// TestClientLogAndExperimentQueries proves the client surfaces for the
+// process-level log and the two experiment queries: the log input crosses
+// verbatim (empty strings included) and acceptance is delivered without
+// inventing a completion fact; the four-field level result transfers without
+// loss and the zero value answers an empty key; "Unknown", the empty name and
+// the not-found zero value arrive as normal observations.
+func TestClientLogAndExperimentQueries(t *testing.T) {
+	c := launchFixture(t, "flow")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Log(ctx, protocol.LogRequest{Level: "warn", Message: " hello 世界 "}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Log(ctx, protocol.LogRequest{}); err != nil {
+		t.Fatalf("empty log input: %v", err)
+	}
+	mk, err := c.MapLevelKey(ctx, protocol.MapLevelKeyRequest{Key: "粉碎矿山"})
+	if err != nil || mk != (protocol.MapLevelKeyResult{StageID: "main-07", Code: "1-7", LevelID: "level_07", Name: "粉碎矿山"}) {
+		t.Fatalf("map_level_key: %+v, %v", mk, err)
+	}
+	if empty, err := c.MapLevelKey(ctx, protocol.MapLevelKeyRequest{}); err != nil || empty != (protocol.MapLevelKeyResult{}) {
+		t.Fatalf("not-found is a normal result: %+v, %v", empty, err)
+	}
+	if name, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: ""}); err != nil || name.Name != "Unknown" {
+		t.Fatalf("empty id: %+v, %v", name, err)
+	}
+	if name, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: "known"}); err != nil || name.Name != "item-name" {
+		t.Fatalf("known id: %+v, %v", name, err)
+	}
+	if name, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: "missing"}); err != nil || name.Name != "" {
+		t.Fatalf("empty name is a normal result: %+v, %v", name, err)
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireReaped(t, c)
+}
+
 func TestClientRemoteRejectionAndBadResponseSchema(t *testing.T) {
 	c := launchFixture(t, "reject")
 	var rejected *protocol.Error
@@ -709,6 +792,13 @@ func TestClientRemoteRejectionAndBadResponseSchema(t *testing.T) {
 	c = launchFixture(t, "uuidschema")
 	if _, err := c.UUID(context.Background()); err == nil {
 		t.Fatal("bad uuid schema accepted")
+	} else {
+		requireFailure(t, err, true)
+	}
+	requireReaped(t, c)
+	c = launchFixture(t, "queryschema")
+	if _, err := c.MapLevelKey(context.Background(), protocol.MapLevelKeyRequest{Key: "k"}); err == nil {
+		t.Fatal("bad map_level_key schema accepted")
 	} else {
 		requireFailure(t, err, true)
 	}

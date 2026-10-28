@@ -25,11 +25,17 @@ type fakeEngine struct {
 	connect    protocol.ConnectRequest
 	click      protocol.ClickRequest
 	attach     protocol.AttachWindowRequest
+	logInput   protocol.LogRequest
+	queryKey   string
+	queryID    string
 	start      func() error
 	backToHome func() error
 	stop       func() (bool, error)
 	status     func() (protocol.ExecutionStatus, error)
 	uuid       func() (protocol.UUIDResult, error)
+	log        func(protocol.LogRequest) error
+	mapLevel   func(protocol.MapLevelKeyRequest) (protocol.MapLevelKeyResult, error)
+	itemName   func(protocol.ItemNameRequest) (protocol.ItemNameResult, error)
 	imagePNG   func() ([]byte, error)
 	imageBGR   func() ([]byte, error)
 	closeHook  func()
@@ -111,6 +117,27 @@ func (f *fakeEngine) UUID() (protocol.UUIDResult, error) {
 		return f.uuid()
 	}
 	return protocol.UUIDResult{}, nil
+}
+func (f *fakeEngine) Log(input protocol.LogRequest) error {
+	f.logInput = input
+	if f.log != nil {
+		return f.log(input)
+	}
+	return nil
+}
+func (f *fakeEngine) MapLevelKey(query protocol.MapLevelKeyRequest) (protocol.MapLevelKeyResult, error) {
+	f.queryKey = query.Key
+	if f.mapLevel != nil {
+		return f.mapLevel(query)
+	}
+	return protocol.MapLevelKeyResult{}, nil
+}
+func (f *fakeEngine) ItemName(query protocol.ItemNameRequest) (protocol.ItemNameResult, error) {
+	f.queryID = query.ID
+	if f.itemName != nil {
+		return f.itemName(query)
+	}
+	return protocol.ItemNameResult{}, nil
 }
 func (f *fakeEngine) GetImagePNG() ([]byte, error) {
 	if f.imagePNG != nil {
@@ -315,21 +342,153 @@ func TestSessionRawTasksAndUnknownCallbacks(t *testing.T) {
 	}
 }
 
-// TestSessionReservedCommandsStayUnsupported proves the frozen v1 command
-// names are answerable before they are implemented: a reserved command is
-// rejected with the stable unsupported code and the session survives.
-func TestSessionReservedCommandsStayUnsupported(t *testing.T) {
+// TestSessionRuntimeLogAndExperimentQueries proves the wire contract of the
+// process-level log and the two experiment queries: the log input reaches the
+// engine verbatim (empty strings included) and the C void return is answered
+// as an empty object that states only "the call returned"; the four-field
+// level query transfers every field without loss; zero-valued query results,
+// empty names and the native "Unknown" stay normal results; and capability
+// absence, input rejections, native contract breaches and lifecycle states
+// keep their stable codes with the session intact.
+func TestSessionRuntimeLogAndExperimentQueries(t *testing.T) {
+	t.Run("log input is verbatim and the void return is no completion fact", func(t *testing.T) {
+		f := newFakeEngine()
+		h := harness(t, fakeFactory(f))
+		h.initialize()
+		if m := h.call(protocol.Log, protocol.LogRequest{Level: "warn", Message: " hello 世界 "}); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if f.logInput.Level != "warn" || f.logInput.Message != " hello 世界 " {
+			t.Fatalf("log input changed: %+v", f.logInput)
+		}
+		// Empty strings are valid inputs; the empty-object response only means
+		// the call was issued and returned.
+		if m := h.call(protocol.Log, protocol.LogRequest{}); m.Error != nil || string(m.Payload) != `{}` {
+			t.Fatalf("empty log input: %+v payload %s", m, m.Payload)
+		}
+		if f.logInput.Level != "" || f.logInput.Message != "" {
+			t.Fatalf("empty log input changed: %+v", f.logInput)
+		}
+		// A hook error is classified, not swallowed into an empty success.
+		f.log = func(protocol.LogRequest) error { return maa.ErrRuntimeTerminated }
+		if m := h.call(protocol.Log, protocol.LogRequest{Level: "x", Message: "y"}); m.Error == nil || m.Error.Code != protocol.InvalidState {
+			t.Fatalf("terminated log: %+v", m)
+		}
+		if m := h.call(protocol.Ping, nil); m.Error != nil {
+			t.Fatalf("session unusable after log calls: %+v", m)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("four-field query transfers without loss", func(t *testing.T) {
+		f := newFakeEngine()
+		want := protocol.MapLevelKeyResult{StageID: "main-07", Code: "1-7", LevelID: "level_07", Name: "粉碎矿山"}
+		f.mapLevel = func(protocol.MapLevelKeyRequest) (protocol.MapLevelKeyResult, error) { return want, nil }
+		h := harness(t, fakeFactory(f))
+		h.initialize()
+		if m := h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{Key: "粉碎矿山"}); m.Error != nil || string(m.Payload) != `{"stage_id":"main-07","code":"1-7","level_id":"level_07","name":"粉碎矿山"}` {
+			t.Fatalf("map_level_key: %+v payload %s", m, m.Payload)
+		}
+		if f.queryKey != "粉碎矿山" {
+			t.Fatalf("query key changed: %q", f.queryKey)
+		}
+		// The empty key passes through verbatim.
+		if m := h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{}); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if f.queryKey != "" {
+			t.Fatalf("empty key changed: %q", f.queryKey)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("zero values, empty names and Unknown are normal results", func(t *testing.T) {
+		f := newFakeEngine()
+		f.itemName = func(query protocol.ItemNameRequest) (protocol.ItemNameResult, error) {
+			if query.ID == "" {
+				return protocol.ItemNameResult{Name: "Unknown"}, nil
+			}
+			return protocol.ItemNameResult{}, nil
+		}
+		h := harness(t, fakeFactory(f))
+		h.initialize()
+		// Not found is the zero value: a normal result, not an error.
+		if m := h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{Key: "missing"}); m.Error != nil || string(m.Payload) != `{"stage_id":"","code":"","level_id":"","name":""}` {
+			t.Fatalf("not-found result: %+v payload %s", m, m.Payload)
+		}
+		if m := h.call(protocol.ItemName, protocol.ItemNameRequest{ID: ""}); m.Error != nil || string(m.Payload) != `{"name":"Unknown"}` {
+			t.Fatalf("empty id result: %+v payload %s", m, m.Payload)
+		}
+		if m := h.call(protocol.ItemName, protocol.ItemNameRequest{ID: "unknown-id"}); m.Error != nil || string(m.Payload) != `{"name":""}` {
+			t.Fatalf("empty name result: %+v payload %s", m, m.Payload)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("capability absence and contract breaches keep stable codes", func(t *testing.T) {
+		f := newFakeEngine()
+		f.log = func(protocol.LogRequest) error { return maa.ErrInvalidInput }
+		f.mapLevel = func(protocol.MapLevelKeyRequest) (protocol.MapLevelKeyResult, error) {
+			return protocol.MapLevelKeyResult{}, maa.ErrUnsupported
+		}
+		f.itemName = func(protocol.ItemNameRequest) (protocol.ItemNameResult, error) {
+			return protocol.ItemNameResult{}, maa.ErrProtocol
+		}
+		h := harness(t, fakeFactory(f))
+		h.initialize()
+		if m := h.call(protocol.Log, protocol.LogRequest{Level: "l", Message: "m"}); m.Error == nil || m.Error.Code != protocol.InvalidInput {
+			t.Fatalf("invalid log input: %+v", m)
+		}
+		if m := h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{Key: "k"}); m.Error == nil || m.Error.Code != protocol.Unsupported {
+			t.Fatalf("absent experiment symbol: %+v", m)
+		}
+		if m := h.call(protocol.ItemName, protocol.ItemNameRequest{ID: "i"}); m.Error == nil || m.Error.Code != protocol.ProtocolError {
+			t.Fatalf("native contract breach: %+v", m)
+		}
+		if m := h.call(protocol.Ping, nil); m.Error != nil {
+			t.Fatalf("session unusable after classified rejections: %+v", m)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestSessionUnknownCommandsStayUnsupported proves the stable rejection floor
+// of the frozen v1 table: a command name the build does not implement is
+// answered with the unsupported code and the session survives. The last
+// reserved names (log, map_level_key, item_name) became implemented commands
+// in WKR-07, so this now guards the default branch itself.
+func TestSessionUnknownCommandsStayUnsupported(t *testing.T) {
 	f := newFakeEngine()
 	h := harness(t, fakeFactory(f))
 	h.initialize()
-	for _, name := range []string{protocol.Log, protocol.MapLevelKey, protocol.ItemName} {
+	for _, name := range []string{"frobnicate", "log2", "MAP_LEVEL_KEY"} {
 		m := h.call(name, nil)
 		if m.Error == nil || m.Error.Code != protocol.Unsupported {
 			t.Fatalf("%s must be rejected with unsupported, got %+v", name, m)
 		}
 	}
 	if m := h.call(protocol.Ping, nil); m.Error != nil {
-		t.Fatalf("session did not survive reserved rejections: %+v", m)
+		t.Fatalf("session did not survive unknown rejections: %+v", m)
 	}
 }
 
@@ -508,7 +667,7 @@ func TestSessionAsyncCompletionDoesNotBlockStop(t *testing.T) {
 func TestSessionSyncControlLifecycleAdmission(t *testing.T) {
 	t.Run("rejected before initialize", func(t *testing.T) {
 		h := harness(t, fakeFactory(newFakeEngine()))
-		for _, name := range []string{protocol.BackToHome, protocol.UUID, protocol.Status, protocol.Stop, protocol.GetImagePNG, protocol.GetImageBGR, protocol.ImageChunk} {
+		for _, name := range []string{protocol.BackToHome, protocol.UUID, protocol.Status, protocol.Stop, protocol.GetImagePNG, protocol.GetImageBGR, protocol.ImageChunk, protocol.Log, protocol.MapLevelKey, protocol.ItemName} {
 			if m := h.call(name, nil); m.Error == nil || m.Error.Code != protocol.InvalidState {
 				t.Fatalf("pre-init %s: %+v", name, m)
 			}
@@ -547,6 +706,13 @@ func TestSessionSyncControlLifecycleAdmission(t *testing.T) {
 		f := newFakeEngine()
 		f.backToHome = func() error { return maa.ErrClosing }
 		f.uuid = func() (protocol.UUIDResult, error) { return protocol.UUIDResult{}, maa.ErrRuntimeTerminated }
+		f.log = func(protocol.LogRequest) error { return maa.ErrClosing }
+		f.mapLevel = func(protocol.MapLevelKeyRequest) (protocol.MapLevelKeyResult, error) {
+			return protocol.MapLevelKeyResult{}, maa.ErrRuntimeTerminated
+		}
+		f.itemName = func(protocol.ItemNameRequest) (protocol.ItemNameResult, error) {
+			return protocol.ItemNameResult{}, maa.ErrClosing
+		}
 		h := harness(t, fakeFactory(f))
 		h.initialize()
 		if m := h.call(protocol.BackToHome, nil); m.Error == nil || m.Error.Code != protocol.InvalidState {
@@ -554,6 +720,15 @@ func TestSessionSyncControlLifecycleAdmission(t *testing.T) {
 		}
 		if m := h.call(protocol.UUID, nil); m.Error == nil || m.Error.Code != protocol.InvalidState {
 			t.Fatalf("terminated rejection: %+v", m)
+		}
+		if m := h.call(protocol.Log, protocol.LogRequest{Level: "l", Message: "m"}); m.Error == nil || m.Error.Code != protocol.InvalidState {
+			t.Fatalf("closing log rejection: %+v", m)
+		}
+		if m := h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{Key: "k"}); m.Error == nil || m.Error.Code != protocol.InvalidState {
+			t.Fatalf("terminated query rejection: %+v", m)
+		}
+		if m := h.call(protocol.ItemName, protocol.ItemNameRequest{ID: "i"}); m.Error == nil || m.Error.Code != protocol.InvalidState {
+			t.Fatalf("closing query rejection: %+v", m)
 		}
 		if m := h.call(protocol.Close, nil); m.Error != nil {
 			t.Fatal(m.Error)
