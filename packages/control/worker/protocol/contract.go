@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"regexp"
@@ -37,6 +38,11 @@ const (
 	// aggregate in-flight image memory is at most
 	// ImageTransfersMax * ImageTransferMaxBytes on each side of the pipe.
 	ImageTransfersMax = 2
+	// MaxRawPrefixBytes is the frozen bound of the diagnostics raw prefix: the
+	// first fault's original bytes are kept and transported only up to this
+	// length, base64-encoded so bytes that are neither valid UTF-8 nor valid
+	// JSON survive intact.
+	MaxRawPrefixBytes = 4096
 )
 
 // Limits is the wire form of one complete binding limit configuration. A nil
@@ -272,6 +278,12 @@ type FaultNotice struct {
 	Error Error `json:"error"`
 }
 
+// Validate checks a fault notice the client received before it is recorded as
+// the native instance fault.
+func (n *FaultNotice) Validate() error {
+	return validateBoundedError(&n.Error)
+}
+
 // InstanceDiagnostics is the payload of the diagnostics event: the bounded
 // diagnostics snapshot of the native instance, sent once when the instance
 // reaches its terminal state. It is the wire form of the binding's snapshot:
@@ -284,4 +296,31 @@ type InstanceDiagnostics struct {
 	FirstFault     *Error `json:"first_fault,omitempty"`
 	RawPrefix      string `json:"raw_prefix,omitempty"`
 	StopDiagnostic *Error `json:"stop_diagnostic,omitempty"`
+}
+
+// Validate checks a diagnostics report the client received: the optional
+// structured errors obey the shared bounds and the raw prefix must be
+// standard base64 within the frozen byte bound, so a compliant peer can
+// always decode it back to the original bytes.
+func (d *InstanceDiagnostics) Validate() error {
+	if d.FirstFault != nil {
+		if err := validateBoundedError(d.FirstFault); err != nil {
+			return fmt.Errorf("worker: invalid first_fault: %w", err)
+		}
+	}
+	if d.StopDiagnostic != nil {
+		if err := validateBoundedError(d.StopDiagnostic); err != nil {
+			return fmt.Errorf("worker: invalid stop_diagnostic: %w", err)
+		}
+	}
+	if d.RawPrefix != "" {
+		raw, err := base64.StdEncoding.DecodeString(d.RawPrefix)
+		if err != nil {
+			return fmt.Errorf("worker: raw_prefix is not standard base64: %w", err)
+		}
+		if len(raw) > MaxRawPrefixBytes {
+			return fmt.Errorf("worker: raw_prefix of %d bytes exceeds the bound of %d bytes", len(raw), MaxRawPrefixBytes)
+		}
+	}
+	return nil
 }

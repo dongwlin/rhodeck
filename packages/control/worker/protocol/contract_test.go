@@ -484,6 +484,38 @@ func TestFaultAndDiagnosticsPayloads(t *testing.T) {
 		t.Fatalf("raw prefix changed: %x", decoded)
 	}
 
+	// The payload validators reject bound breaches before a client records
+	// the facts: unstable errors, an unbounded or undecodable raw prefix.
+	if err := (&FaultNotice{}).Validate(); err == nil {
+		t.Fatal("a fault without a code must be rejected")
+	}
+	if err := (&FaultNotice{Error: Error{Code: EventOverflow}}).Validate(); err == nil {
+		t.Fatal("a fault without a message must be rejected")
+	}
+	if err := (&FaultNotice{Error: Error{Code: EventOverflow, Message: strings.Repeat("x", 4097)}}).Validate(); err == nil {
+		t.Fatal("an over-long fault message must be rejected")
+	}
+	if err := (&FaultNotice{Error: Error{Code: EventOverflow, Message: "m", Detail: &ErrorDetail{Kind: strings.Repeat("x", 129)}}}).Validate(); err == nil {
+		t.Fatal("an over-long fault detail must be rejected")
+	}
+	if err := report.Validate(); err != nil {
+		t.Fatalf("the frozen report must validate: %v", err)
+	}
+	if err := (&InstanceDiagnostics{RawPrefix: "!!!"}).Validate(); err == nil {
+		t.Fatal("a non-base64 raw prefix must be rejected")
+	}
+	oversize := InstanceDiagnostics{RawPrefix: base64.StdEncoding.EncodeToString(make([]byte, MaxRawPrefixBytes+1))}
+	if err := oversize.Validate(); err == nil {
+		t.Fatal("an unbounded raw prefix must be rejected")
+	}
+	atBound := InstanceDiagnostics{RawPrefix: base64.StdEncoding.EncodeToString(make([]byte, MaxRawPrefixBytes))}
+	if err := atBound.Validate(); err != nil {
+		t.Fatalf("the frozen raw-prefix bound must validate: %v", err)
+	}
+	if err := (&InstanceDiagnostics{FirstFault: &Error{Code: EventOverflow}}).Validate(); err == nil {
+		t.Fatal("a first fault without a message must be rejected")
+	}
+
 	// A normal close carries neither fault nor prefix; the fields are absent.
 	normal, err := json.Marshal(InstanceDiagnostics{LostEvents: 0})
 	if err != nil {
