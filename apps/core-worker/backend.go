@@ -25,6 +25,9 @@ type operation interface {
 // event stream independently; it never writes to IPC on a callback thread.
 type engine interface {
 	Connect(protocol.ConnectRequest) (operation, error)
+	Click(protocol.ClickRequest) (operation, error)
+	Screencap() (operation, error)
+	AttachWindow(protocol.AttachWindowRequest) (operation, error)
 	AppendTask(protocol.TaskRequest) (int32, error)
 	SetTaskParams(protocol.TaskParamsRequest) error
 	Start() error
@@ -222,6 +225,49 @@ func hashFile(path string) (string, error) {
 
 func (e *nativeEngine) Connect(req protocol.ConnectRequest) (operation, error) {
 	op, err := e.instance.Connect(maa.ConnectConfig{ADBPath: req.ADBPath, Address: req.Address, Config: req.Config})
+	if err != nil {
+		return nil, err
+	}
+	return nativeOperation{op}, nil
+}
+
+func (e *nativeEngine) Click(req protocol.ClickRequest) (operation, error) {
+	op, err := e.instance.Click(req.X, req.Y)
+	if err != nil {
+		return nil, err
+	}
+	return nativeOperation{op}, nil
+}
+
+func (e *nativeEngine) Screencap() (operation, error) {
+	op, err := e.instance.Screencap()
+	if err != nil {
+		return nil, err
+	}
+	return nativeOperation{op}, nil
+}
+
+// hwndFromUint64 converts the wire window handle to platform pointer width.
+// The check rejects any value the platform pointer cannot hold before the
+// native call, so a wide handle is a rejection instead of a silent truncation.
+func hwndFromUint64(v uint64) (uintptr, error) {
+	hwnd, ok := protocol.PointerFromUint64(v)
+	if !ok {
+		return 0, wireError(protocol.InvalidInput, fmt.Sprintf("hwnd %d does not fit the platform pointer width", v))
+	}
+	return hwnd, nil
+}
+
+// AttachWindow submits the Win32 window binding. The handle is width-checked
+// before the native call and the three method masks pass through bit for bit;
+// a non-Windows platform or a missing optional symbol surfaces the binding's
+// unsupported rejection and never falls back to an ADB submission.
+func (e *nativeEngine) AttachWindow(req protocol.AttachWindowRequest) (operation, error) {
+	hwnd, err := hwndFromUint64(req.Hwnd)
+	if err != nil {
+		return nil, err
+	}
+	op, err := e.instance.AttachWindow(hwnd, maa.Win32ScreencapMethod(req.ScreencapMethod), maa.Win32InputMethod(req.MouseMethod), maa.Win32InputMethod(req.KeyboardMethod))
 	if err != nil {
 		return nil, err
 	}

@@ -231,3 +231,25 @@ func TestOpenEngineRejectsIllegalLimitsBeforeNativeLoad(t *testing.T) {
 		})
 	}
 }
+
+// TestHwndFromUint64ChecksPointerWidth proves the window-handle conversion
+// never truncates: values within the platform pointer width convert exactly
+// (including the 2^53+1 JSON boundary and the full uint64 range on 64-bit
+// builds), and a value the platform pointer cannot hold is rejected with
+// invalid_input instead of being wrapped.
+func TestHwndFromUint64ChecksPointerWidth(t *testing.T) {
+	width := uint64(^uintptr(0))
+	for _, v := range []uint64{1, 1 << 53, (1 << 53) + 1, width} {
+		hwnd, err := hwndFromUint64(v)
+		if err != nil || hwnd != uintptr(v) {
+			t.Fatalf("hwndFromUint64(%d) = %d, %v", v, hwnd, err)
+		}
+	}
+	if width < ^uint64(0) {
+		if _, err := hwndFromUint64(width + 1); err == nil {
+			t.Fatal("a value beyond the platform pointer width must be rejected")
+		} else if got := classify(err).Code; got != protocol.InvalidInput {
+			t.Fatalf("overflow code = %s, want invalid_input", got)
+		}
+	}
+}

@@ -22,6 +22,9 @@ type fakeEngine struct {
 	closes     atomic.Int32
 	task       protocol.TaskRequest
 	params     protocol.TaskParamsRequest
+	connect    protocol.ConnectRequest
+	click      protocol.ClickRequest
+	attach     protocol.AttachWindowRequest
 	start      func() error
 	backToHome func() error
 	stop       func() (bool, error)
@@ -29,13 +32,46 @@ type fakeEngine struct {
 	uuid       func() (protocol.UUIDResult, error)
 	closeHook  func()
 	closeError error
-	op         *fakeOperation
+	// hooks replace the default submission behavior; the default returns the
+	// engine's shared operation without touching the native side.
+	connectHook   func(protocol.ConnectRequest) (operation, error)
+	clickHook     func(protocol.ClickRequest) (operation, error)
+	screencapHook func() (operation, error)
+	attachHook    func(protocol.AttachWindowRequest) (operation, error)
+	op            *fakeOperation
+	created       []*fakeOperation
 }
 
 func newFakeEngine() *fakeEngine {
 	return &fakeEngine{events: make(chan protocol.Callback, 256), closed: make(chan struct{})}
 }
-func (f *fakeEngine) Connect(protocol.ConnectRequest) (operation, error) { return f.op, nil }
+func (f *fakeEngine) Connect(req protocol.ConnectRequest) (operation, error) {
+	f.connect = req
+	if f.connectHook != nil {
+		return f.connectHook(req)
+	}
+	return f.op, nil
+}
+func (f *fakeEngine) Click(req protocol.ClickRequest) (operation, error) {
+	f.click = req
+	if f.clickHook != nil {
+		return f.clickHook(req)
+	}
+	return f.op, nil
+}
+func (f *fakeEngine) Screencap() (operation, error) {
+	if f.screencapHook != nil {
+		return f.screencapHook()
+	}
+	return f.op, nil
+}
+func (f *fakeEngine) AttachWindow(req protocol.AttachWindowRequest) (operation, error) {
+	f.attach = req
+	if f.attachHook != nil {
+		return f.attachHook(req)
+	}
+	return f.op, nil
+}
 func (f *fakeEngine) AppendTask(req protocol.TaskRequest) (int32, error) {
 	f.task = req
 	return 23, nil
@@ -94,6 +130,9 @@ func (f *fakeEngine) Close() error {
 		f.closeHook()
 	}
 	close(f.closed)
+	for _, op := range f.created {
+		op.finish()
+	}
 	if f.op != nil {
 		f.op.finish()
 	}
@@ -101,19 +140,43 @@ func (f *fakeEngine) Close() error {
 }
 
 type fakeOperation struct {
-	done chan struct{}
-	once sync.Once
+	id     int32
+	done   chan struct{}
+	once   sync.Once
+	result protocol.OperationResult
+	err    error
 }
 
-func (o *fakeOperation) ID() int32 { return 41 }
+// newFakeOperation builds a pending operation that, once finished, reports a
+// native rejection whose details keep a >2^53 integer verbatim.
+func newFakeOperation(id int32) *fakeOperation {
+	return &fakeOperation{
+		id:   id,
+		done: make(chan struct{}),
+		result: protocol.OperationResult{
+			AsyncID: id, What: "Connect", OK: false,
+			Details: json.RawMessage(`{"ret":false,"large":9007199254740993}`),
+		},
+		err: maa.ErrNativeRejected,
+	}
+}
+
+func (o *fakeOperation) ID() int32 { return o.id }
 func (o *fakeOperation) finish()   { o.once.Do(func() { close(o.done) }) }
 func (o *fakeOperation) Wait(ctx context.Context) (protocol.OperationResult, error) {
 	select {
 	case <-o.done:
-		return protocol.OperationResult{AsyncID: 41, What: "Connect", OK: false, Details: json.RawMessage(`{"ret":false,"large":9007199254740993}`)}, maa.ErrNativeRejected
+		return o.result, o.err
 	case <-ctx.Done():
-		return protocol.OperationResult{AsyncID: 41}, ctx.Err()
+		return protocol.OperationResult{AsyncID: o.id}, ctx.Err()
 	}
+}
+
+// submit registers a created operation so the engine's close settles it, then
+// returns it as the submission result.
+func (f *fakeEngine) submit(op *fakeOperation) (operation, error) {
+	f.created = append(f.created, op)
+	return op, nil
 }
 
 type sessionHarness struct {
@@ -245,7 +308,7 @@ func TestSessionReservedCommandsStayUnsupported(t *testing.T) {
 	f := newFakeEngine()
 	h := harness(t, fakeFactory(f))
 	h.initialize()
-	for _, name := range []string{protocol.GetImagePNG, protocol.AttachWindow, protocol.Click, protocol.MapLevelKey} {
+	for _, name := range []string{protocol.GetImagePNG, protocol.GetImageBGR, protocol.ImageChunk, protocol.Log, protocol.MapLevelKey, protocol.ItemName} {
 		m := h.call(name, nil)
 		if m.Error == nil || m.Error.Code != protocol.Unsupported {
 			t.Fatalf("%s must be rejected with unsupported, got %+v", name, m)
@@ -397,7 +460,7 @@ func TestSessionAppliesLimitsContract(t *testing.T) {
 
 func TestSessionAsyncCompletionDoesNotBlockStop(t *testing.T) {
 	f := newFakeEngine()
-	f.op = &fakeOperation{done: make(chan struct{})}
+	f.op = newFakeOperation(41)
 	h := harness(t, fakeFactory(f))
 	h.initialize()
 	accepted := h.call(protocol.Connect, protocol.ConnectRequest{})
@@ -685,4 +748,246 @@ func TestSessionShutdownDeadlineAndOutputOverflow(t *testing.T) {
 			t.Fatalf("close count: %d", f.closes.Load())
 		}
 	})
+}
+
+// operationEvents returns the next n operation results, draining messages the
+// harness already collected plus anything still in flight.
+func operationEvents(t *testing.T, h *sessionHarness, n int) []protocol.OperationResult {
+	t.Helper()
+	var out []protocol.OperationResult
+	for len(out) < n {
+		var m protocol.Message
+		if len(h.events) > 0 {
+			m, h.events = h.events[0], h.events[1:]
+		} else {
+			m = h.read()
+		}
+		if m.Name != protocol.OperationEvent {
+			t.Fatalf("expected an operation event, got %+v", m)
+		}
+		var r protocol.OperationResult
+		if err := protocol.Decode(m.Payload, &r); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// TestSessionAsyncSubmissionFamily proves the four async submissions share one
+// acceptance contract: each accepted command answers with a nonzero async_id,
+// request payloads travel verbatim (including a >2^53 window handle and
+// full-width masks), schema violations are invalid_input, and submission
+// rejections keep their stable codes while the session survives.
+func TestSessionAsyncSubmissionFamily(t *testing.T) {
+	t.Run("four submissions are accepted with verbatim payloads", func(t *testing.T) {
+		f := newFakeEngine()
+		var next int32
+		f.connectHook = func(protocol.ConnectRequest) (operation, error) { next++; return f.submit(newFakeOperation(next)) }
+		f.clickHook = func(protocol.ClickRequest) (operation, error) { next++; return f.submit(newFakeOperation(next)) }
+		f.screencapHook = func() (operation, error) { next++; return f.submit(newFakeOperation(next)) }
+		f.attachHook = func(protocol.AttachWindowRequest) (operation, error) { next++; return f.submit(newFakeOperation(next)) }
+		h := harness(t, fakeFactory(f))
+		h.initialize()
+		if m := h.call(protocol.Click, protocol.ClickRequest{X: -5, Y: 7}); m.Error != nil {
+			t.Fatal(m.Error)
+		} else {
+			var accepted protocol.OperationAccepted
+			if err := protocol.Decode(m.Payload, &accepted); err != nil || accepted.AsyncID != 1 {
+				t.Fatalf("click acceptance: %+v, %v", accepted, err)
+			}
+		}
+		if f.click.X != -5 || f.click.Y != 7 {
+			t.Fatalf("click payload changed: %+v", f.click)
+		}
+		if m := h.call(protocol.Screencap, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		attach := protocol.AttachWindowRequest{
+			Hwnd:            9007199254740993, // 2^53 + 1
+			ScreencapMethod: 1 << 63,
+			MouseMethod:     math.MaxUint64,
+			KeyboardMethod:  1 << 40,
+		}
+		if m := h.call(protocol.AttachWindow, attach); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if f.attach != attach {
+			t.Fatalf("attach_window payload changed: %+v, want %+v", f.attach, attach)
+		}
+		if m := h.call(protocol.Ping, nil); m.Error != nil {
+			t.Fatalf("session unusable after four submissions: %+v", m)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("schema violations are invalid_input", func(t *testing.T) {
+		f := newFakeEngine()
+		h := harness(t, fakeFactory(f))
+		h.initialize()
+		if m := h.call(protocol.Click, nil); m.Error == nil || m.Error.Code != protocol.InvalidInput {
+			t.Fatalf("click without payload: %+v", m)
+		}
+		if m := h.call(protocol.AttachWindow, map[string]any{"hwnd": 1.5, "screencap_method": 1, "mouse_method": 0, "keyboard_method": 0}); m.Error == nil || m.Error.Code != protocol.InvalidInput {
+			t.Fatalf("fractional hwnd: %+v", m)
+		}
+		if m := h.call(protocol.AttachWindow, map[string]any{"hwnd": "9e18", "screencap_method": 1, "mouse_method": 0, "keyboard_method": 0}); m.Error == nil || m.Error.Code != protocol.InvalidInput {
+			t.Fatalf("exponent hwnd: %+v", m)
+		}
+		if m := h.call(protocol.Ping, nil); m.Error != nil {
+			t.Fatalf("session damaged by schema rejections: %+v", m)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("submission rejections keep stable codes", func(t *testing.T) {
+		f := newFakeEngine()
+		f.clickHook = func(protocol.ClickRequest) (operation, error) { return nil, maa.ErrNativeRejected }
+		f.screencapHook = func() (operation, error) { return nil, maa.ErrOperationLimit }
+		f.attachHook = func(protocol.AttachWindowRequest) (operation, error) { return nil, maa.ErrUnsupported }
+		h := harness(t, fakeFactory(f))
+		h.initialize()
+		if m := h.call(protocol.Click, protocol.ClickRequest{X: 1, Y: 2}); m.Error == nil || m.Error.Code != protocol.NativeRejected {
+			t.Fatalf("click rejection: %+v", m)
+		}
+		if m := h.call(protocol.Screencap, nil); m.Error == nil || m.Error.Code != protocol.LimitExceeded {
+			t.Fatalf("screencap operation limit: %+v", m)
+		}
+		if m := h.call(protocol.AttachWindow, protocol.AttachWindowRequest{}); m.Error == nil || m.Error.Code != protocol.Unsupported {
+			t.Fatalf("attach_window without the native symbol must stay unsupported, not fall back: %+v", m)
+		}
+		if len(f.created) != 0 {
+			t.Fatalf("rejected submissions must not hold pending slots: %d", len(f.created))
+		}
+		if m := h.call(protocol.Ping, nil); m.Error != nil {
+			t.Fatalf("session damaged by submission rejections: %+v", m)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestSessionAsyncCompletionOrdering proves the completion path is decoupled
+// from the command loop and from submission order: several operations stay in
+// flight while the command loop keeps answering, one completes before the
+// harness reads its acceptance, completions arrive out of submission order,
+// and each event is keyed to its own request ID with an intact result.
+func TestSessionAsyncCompletionOrdering(t *testing.T) {
+	f := newFakeEngine()
+	first, second := newFakeOperation(41), newFakeOperation(42)
+	first.result.What, first.result.OK, first.err = "Connect", true, nil
+	first.result.Details = json.RawMessage(`{"ret":true,"large":9007199254740993}`)
+	var calls atomic.Int32
+	f.connectHook = func(protocol.ConnectRequest) (operation, error) {
+		if calls.Add(1) == 1 {
+			op, _ := f.submit(first)
+			return op, nil
+		}
+		op, _ := f.submit(second)
+		return op, nil
+	}
+	h := harness(t, fakeFactory(f))
+	h.initialize()
+	firstID := h.send(protocol.Connect, protocol.ConnectRequest{})
+	secondID := h.send(protocol.Connect, protocol.ConnectRequest{})
+	for _, tc := range []struct {
+		id   uint64
+		want int32
+	}{{firstID, 41}, {secondID, 42}} {
+		m := h.response(tc.id)
+		var accepted protocol.OperationAccepted
+		if err := protocol.Decode(m.Payload, &accepted); err != nil || accepted.AsyncID != tc.want {
+			t.Fatalf("acceptance %d: %+v, %v", tc.id, accepted, err)
+		}
+	}
+	if m := h.call(protocol.Stop, nil); m.Error != nil {
+		t.Fatalf("command loop blocked by in-flight operations: %+v", m)
+	}
+	// The second operation completes out of submission order while the first
+	// is still in flight.
+	second.finish()
+	completion := operationEvents(t, h, 1)[0]
+	if completion.AsyncID != 42 || completion.RequestID != secondID || completion.OK {
+		t.Fatalf("second completion: %+v (request %d)", completion, secondID)
+	}
+	if completion.Error == nil || completion.Error.Code != protocol.NativeRejected || !strings.Contains(string(completion.Details), "9007199254740993") {
+		t.Fatalf("native failure facts: %+v", completion)
+	}
+	first.finish()
+	completion = operationEvents(t, h, 1)[0]
+	if completion.AsyncID != 41 || completion.RequestID != firstID || !completion.OK || completion.Error != nil {
+		t.Fatalf("first completion: %+v (request %d)", completion, firstID)
+	}
+	if !strings.Contains(string(completion.Details), "9007199254740993") {
+		t.Fatalf("success details changed: %s", completion.Details)
+	}
+	// A third submission completes before the session can wait for it at all:
+	// the early completion event still follows its acceptance response.
+	third := newFakeOperation(43)
+	third.result.What, third.result.OK, third.err = "Connect", true, nil
+	f.connectHook = func(protocol.ConnectRequest) (operation, error) {
+		third.finish()
+		op, _ := f.submit(third)
+		return op, nil
+	}
+	thirdID := h.send(protocol.Connect, protocol.ConnectRequest{})
+	m := h.response(thirdID)
+	var accepted protocol.OperationAccepted
+	if err := protocol.Decode(m.Payload, &accepted); err != nil || accepted.AsyncID != 43 {
+		t.Fatalf("third acceptance: %+v, %v", accepted, err)
+	}
+	completion = operationEvents(t, h, 1)[0]
+	if completion.AsyncID != 43 || completion.RequestID != thirdID || !completion.OK {
+		t.Fatalf("early completion: %+v (request %d)", completion, thirdID)
+	}
+	if m := h.call(protocol.Close, nil); m.Error != nil {
+		t.Fatal(m.Error)
+	}
+	if err := <-h.done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSessionCloseSettlesPendingOperations proves a close settles every
+// pending operation as a lifecycle result (invalid_state, no fabricated What)
+// before the close response, and the worker still exits cleanly.
+func TestSessionCloseSettlesPendingOperations(t *testing.T) {
+	f := newFakeEngine()
+	op := newFakeOperation(41)
+	op.result = protocol.OperationResult{AsyncID: 41}
+	op.err = maa.ErrClosed
+	f.op = op
+	h := harness(t, fakeFactory(f))
+	h.initialize()
+	accepted := h.call(protocol.Connect, protocol.ConnectRequest{})
+	if accepted.Error != nil {
+		t.Fatal(accepted.Error)
+	}
+	if m := h.call(protocol.Close, nil); m.Error != nil {
+		t.Fatal(m.Error)
+	}
+	settlement := operationEvents(t, h, 1)[0]
+	if settlement.RequestID != accepted.ID || settlement.AsyncID != 41 || settlement.OK || settlement.What != "" {
+		t.Fatalf("close settlement: %+v", settlement)
+	}
+	if settlement.Error == nil || settlement.Error.Code != protocol.InvalidState {
+		t.Fatalf("lifecycle settlement must be invalid_state: %+v", settlement.Error)
+	}
+	if err := <-h.done; err != nil {
+		t.Fatal(err)
+	}
 }

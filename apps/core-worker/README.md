@@ -99,9 +99,9 @@ implemented, a task type is accepted, or an action will succeed.
 | `close` | absent or `{}` | Stop/Destroy returned, events and operations drained; process exits | implemented |
 | `back_to_home` | absent or `{}` | Call accepted, or `native_rejected` when Core refuses it; acceptance carries no completion fact | implemented |
 | `uuid` | absent or `{}` | `uuid` string read from the Core buffer; the empty string is a normal result and the read never connects | implemented |
-| `click` | `x`, `y` int32 | Nonzero `async_id`: accepted only | reserved |
-| `screencap` | absent or `{}` | Nonzero `async_id`: accepted only | reserved |
-| `attach_window` | `hwnd` uint64, `screencap_method`, `mouse_method`, `keyboard_method` uint64 masks | Nonzero `async_id`: accepted only | reserved |
+| `click` | `x`, `y` int32 | Nonzero `async_id`: accepted only | implemented |
+| `screencap` | absent or `{}` | Nonzero `async_id`: accepted only | implemented |
+| `attach_window` | `hwnd` uint64, `screencap_method`, `mouse_method`, `keyboard_method` uint64 masks | Nonzero `async_id`: accepted only; a handle beyond the platform pointer width is `invalid_input`, a missing symbol or platform is `unsupported` — never an ADB fallback | implemented |
 | `get_image_png` / `get_image_bgr` | absent or `{}` | `ImageTransfer` describing one owned snapshot of the cached image | reserved |
 | `image_chunk` | `transfer_id`, `offset`, `length` | `ImageChunkResponse` with exactly the requested bytes | reserved |
 | `log` | `level`, `message` | Call accepted; void return carries no completion fact | reserved |

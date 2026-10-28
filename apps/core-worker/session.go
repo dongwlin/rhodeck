@@ -271,6 +271,29 @@ func (s *session) commands(factory engineFactory) (result error) {
 				if err == nil {
 					out = protocol.OperationAccepted{AsyncID: op.ID()}
 				}
+			case protocol.Click:
+				var cfg protocol.ClickRequest
+				if err = payload(req, &cfg); err == nil {
+					op, err = core.Click(cfg)
+				}
+				if err == nil {
+					out = protocol.OperationAccepted{AsyncID: op.ID()}
+				}
+			case protocol.Screencap:
+				if err = emptyPayload(req.Payload); err == nil {
+					op, err = core.Screencap()
+				}
+				if err == nil {
+					out = protocol.OperationAccepted{AsyncID: op.ID()}
+				}
+			case protocol.AttachWindow:
+				var cfg protocol.AttachWindowRequest
+				if err = payload(req, &cfg); err == nil {
+					op, err = core.AttachWindow(cfg)
+				}
+				if err == nil {
+					out = protocol.OperationAccepted{AsyncID: op.ID()}
+				}
 			case protocol.AppendTask:
 				var task protocol.TaskRequest
 				if err = payload(req, &task); err == nil {
