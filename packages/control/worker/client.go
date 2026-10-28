@@ -6,6 +6,9 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -484,6 +487,10 @@ func validateResponse(m protocol.Message) error {
 		target = &protocol.StopResult{}
 	case protocol.UUID:
 		target = &protocol.UUIDResult{}
+	case protocol.GetImagePNG, protocol.GetImageBGR:
+		target = &protocol.ImageTransfer{}
+	case protocol.ImageChunk:
+		target = &protocol.ImageChunkResponse{}
 	}
 	if err := protocol.Decode(m.Payload, target); err != nil {
 		return err
@@ -502,6 +509,16 @@ func validateResponse(m protocol.Message) error {
 	case *protocol.TaskAccepted:
 		if r.TaskID == 0 {
 			return errors.New("worker: zero task ID")
+		}
+	case *protocol.ImageTransfer:
+		// The transfer description bounds every later allocation and each
+		// chunk request, so it is verified before it can reach a caller.
+		if err := r.Validate(); err != nil {
+			return err
+		}
+	case *protocol.ImageChunkResponse:
+		if r.TransferID == 0 {
+			return errors.New("worker: zero transfer ID")
 		}
 	}
 	return nil
@@ -706,6 +723,93 @@ func (c *Client) Screencap(ctx context.Context) (*Operation, error) {
 func (c *Client) AttachWindow(ctx context.Context, req protocol.AttachWindowRequest) (*Operation, error) {
 	return c.submitOperation(ctx, protocol.AttachWindow, req)
 }
+
+// GetImagePNG transfers the Core's cached PNG encoding and returns one fully
+// assembled, independently owned byte snapshot. The read never triggers a
+// screencap: a fresh image requires waiting for a Screencap operation's real
+// success first. The empty image is a normal result (an empty, non-nil slice).
+func (c *Client) GetImagePNG(ctx context.Context) ([]byte, error) {
+	return c.fetchImage(ctx, protocol.GetImagePNG)
+}
+
+// GetImageBGR transfers the Core's cached BGR pixels. Size, stride and
+// channel order are decided by Core: the snapshot stays opaque bytes. A
+// missing optional symbol arrives as the worker's stable unsupported
+// rejection; buffer exhaustion as limit_exceeded — the two stay
+// distinguishable.
+func (c *Client) GetImageBGR(ctx context.Context) ([]byte, error) {
+	return c.fetchImage(ctx, protocol.GetImageBGR)
+}
+
+// fetchImage runs one bounded image transfer. The acceptance describes an
+// immutable snapshot (total length, whole-payload SHA256, chunk length); the
+// chunks are pulled with at most one outstanding request per transfer so
+// chunk traffic cannot flood the outbound queue. Every chunk is checked
+// against its request (transfer ownership, offset, decoded length) before it
+// is placed, and the payload is delivered only after the assembled bytes
+// match the declared SHA256 — a truncated, duplicated, out-of-range,
+// interrupted or mismatched transfer fails instead of publishing a partial
+// success. Each request carries the supervisor's request deadline; the
+// caller's context bounds the whole transfer, and a cancellation while a
+// chunk request might already have executed terminates the session under the
+// frozen failure discipline.
+func (c *Client) fetchImage(ctx context.Context, name string) ([]byte, error) {
+	if ctx == nil {
+		return nil, errors.New("worker: request requires a context")
+	}
+	raw, err := c.request(ctx, name, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	var transfer protocol.ImageTransfer
+	if err := protocol.Decode(raw, &transfer); err != nil {
+		failure := &Failure{Code: "protocol_error", Unknown: true, Cause: err}
+		c.abort(failure)
+		return nil, failure
+	}
+	if transfer.TotalBytes > protocol.ImageTransferMaxBytes {
+		// The read loop rejects this contract breach before the response is
+		// delivered; the check keeps the assembly allocation bounded even if
+		// that upstream guarantee were ever relaxed.
+		failure := &Failure{Code: "protocol_error", Unknown: true, Cause: fmt.Errorf("worker: total_bytes %d exceeds the transfer budget of %d bytes", transfer.TotalBytes, uint64(protocol.ImageTransferMaxBytes))}
+		c.abort(failure)
+		return nil, failure
+	}
+	payload := make([]byte, transfer.TotalBytes)
+	for offset := uint64(0); offset < transfer.TotalBytes; {
+		length := uint64(transfer.ChunkBytes)
+		if remaining := transfer.TotalBytes - offset; remaining < length {
+			length = remaining
+		}
+		req := protocol.ImageChunkRequest{TransferID: transfer.TransferID, Offset: offset, Length: uint32(length)}
+		raw, err := c.request(ctx, protocol.ImageChunk, req, false)
+		if err != nil {
+			return nil, err
+		}
+		var chunk protocol.ImageChunkResponse
+		if err := protocol.Decode(raw, &chunk); err != nil {
+			failure := &Failure{Code: "protocol_error", Unknown: true, Cause: err}
+			c.abort(failure)
+			return nil, failure
+		}
+		data, decodeErr := base64.StdEncoding.DecodeString(chunk.Data)
+		if decodeErr != nil || chunk.TransferID != transfer.TransferID || chunk.Offset != offset || uint64(len(data)) != length {
+			failure := &Failure{Code: "protocol_error", Unknown: true, Cause: fmt.Errorf("worker: image chunk for offset %d does not match its request", offset)}
+			c.abort(failure)
+			return nil, failure
+		}
+		copy(payload[offset:], data)
+		offset += length
+	}
+	digest := sha256.Sum256(payload)
+	if hex.EncodeToString(digest[:]) != transfer.SHA256 {
+		failure := &Failure{Code: "protocol_error", Unknown: true, Cause: errors.New("worker: assembled image does not match the declared sha256")}
+		c.abort(failure)
+		return nil, failure
+	}
+	return payload, nil
+}
+
 func (c *Client) AppendTask(ctx context.Context, req protocol.TaskRequest) (protocol.TaskAccepted, error) {
 	var r protocol.TaskAccepted
 	err := c.decode(ctx, protocol.AppendTask, req, &r)

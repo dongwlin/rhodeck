@@ -156,10 +156,15 @@ type ImageTransfer struct {
 var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // Validate checks an ImageTransfer the client received before it allocates or
-// trusts anything derived from it.
+// trusts anything derived from it. The total length is bounded by the frozen
+// per-transfer budget: a peer claiming more could never have accepted the
+// transfer, so allocating for it would be trusting unbounded input.
 func (t *ImageTransfer) Validate() error {
 	if t.TransferID == 0 {
 		return errors.New("worker: transfer_id must be nonzero")
+	}
+	if t.TotalBytes > ImageTransferMaxBytes {
+		return fmt.Errorf("worker: total_bytes must be within [0, %d]", ImageTransferMaxBytes)
 	}
 	if t.ChunkBytes == 0 || t.ChunkBytes > ImageChunkBytes {
 		return fmt.Errorf("worker: chunk_bytes must be within (0, %d]", ImageChunkBytes)

@@ -1,7 +1,11 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,6 +87,35 @@ func helper(mode string) int {
 			os.Exit(10)
 		}
 	}
+	// fixtureImagePattern is the deterministic image the fixture subprocess
+	// serves: byte[i] = i*131 + salt (mod 256). The tests replicate it
+	// independently and compare byte for byte.
+	fixtureImagePattern := func(size int, salt byte) []byte {
+		out := make([]byte, size)
+		for i := range out {
+			out[i] = byte(uint64(i)*131 + uint64(salt))
+		}
+		return out
+	}
+	fixtureImageSHA256 := func(payload []byte) string {
+		sum := sha256.Sum256(payload)
+		return hex.EncodeToString(sum[:])
+	}
+	// imageTransfers tracks one served snapshot per transfer ID with the next
+	// expected chunk offset, so the frozen per-transfer sequential pull is
+	// enforced even when two transfers interleave on the wire.
+	type fixtureImage struct {
+		payload  []byte
+		chunkLen uint32
+		next     uint64
+		served   int
+	}
+	images := map[uint64]*fixtureImage{}
+	var imageCoreSequence uint64
+	const (
+		imagePNGTransfer = uint64(77)
+		imageBGRTransfer = uint64(78)
+	)
 	g := protocol.Greeting{WorkerVersion: "fixture", SessionID: "fixture-session", OS: "fixture", Arch: "fixture", MaxFrameBytes: protocol.MaxFrameBytes, QueueMessages: protocol.QueueMessages, QueueBytes: protocol.QueueBytes}
 	emit(protocol.Hello, "", 0, 0, g, nil)
 	reader := protocol.NewReader(os.Stdin)
@@ -273,6 +306,76 @@ func helper(mode string) int {
 			continue
 		case protocol.Stop:
 			respond(protocol.StopResult{Stopped: true})
+		case protocol.GetImagePNG, protocol.GetImageBGR:
+			if mode == "unsupportedbgr" && req.Name == protocol.GetImageBGR {
+				emit(protocol.Response, req.Name, req.ID, 0, nil, &protocol.Error{Code: protocol.Unsupported, Message: "fixture lacks the optional BGR symbol"})
+				continue
+			}
+			transferID := imagePNGTransfer
+			salt := byte(0x50)
+			if req.Name == protocol.GetImageBGR {
+				transferID = imageBGRTransfer
+				salt = 0x47
+			}
+			payload := fixtureImagePattern(3<<20+4567, salt)
+			if mode == "emptyimage" {
+				payload = nil
+			}
+			declared := fixtureImageSHA256(payload)
+			if mode == "badsha" {
+				declared = fixtureImageSHA256(fixtureImagePattern(len(payload), salt+1))
+			}
+			chunkBytes := uint32(1 << 20)
+			total := uint64(0)
+			if mode != "emptyimage" {
+				total = uint64(len(payload))
+			}
+			if mode == "fatimage" {
+				total = protocol.ImageTransferMaxBytes + 1
+			}
+			respond(protocol.ImageTransfer{TransferID: transferID, TotalBytes: total, SHA256: declared, ChunkBytes: chunkBytes})
+			if mode != "emptyimage" && mode != "fatimage" {
+				images[transferID] = &fixtureImage{payload: payload, chunkLen: chunkBytes}
+			}
+			continue
+		case protocol.ImageChunk:
+			var chunk protocol.ImageChunkRequest
+			if protocol.Decode(req.Payload, &chunk) != nil {
+				return 13
+			}
+			image, ok := images[chunk.TransferID]
+			if !ok || chunk.Offset != image.next {
+				return 13 // not the frozen backpressured sequential pull
+			}
+			length := uint64(image.chunkLen)
+			if remaining := uint64(len(image.payload)) - chunk.Offset; remaining < length {
+				length = remaining
+			}
+			if chunk.Length != uint32(length) {
+				return 13
+			}
+			if mode == "chunkerror" {
+				emit(protocol.Response, req.Name, req.ID, 0, nil, &protocol.Error{Code: protocol.LimitExceeded, Message: "fixture exhausted the snapshot"})
+				continue
+			}
+			data := image.payload[chunk.Offset : chunk.Offset+length]
+			offset := chunk.Offset
+			if mode == "wrongoffset" {
+				offset++
+			}
+			if mode == "shortchunk" && chunk.Offset == 0 {
+				data = data[:1]
+			}
+			image.next, image.served = chunk.Offset+length, image.served+1
+			if mode == "images" && image.served == 2 {
+				// A core event interleaves with chunk traffic: the frozen
+				// contract keeps the two streams independent.
+				sequence++
+				imageCoreSequence++
+				emit(protocol.Event, protocol.CoreEvent, 0, sequence, protocol.Callback{MessageID: 3, CoreSequence: imageCoreSequence, JSON: json.RawMessage(`{"between":"chunks"}`)}, nil)
+			}
+			respond(protocol.ImageChunkResponse{TransferID: chunk.TransferID, Offset: offset, Data: base64.StdEncoding.EncodeToString(data)})
+			continue
 		case protocol.Close:
 			if mode == "pendingops" && firstConnectID != 0 {
 				// Settle the still-pending operation as a lifecycle result
@@ -902,5 +1005,184 @@ func TestClientUnconfirmedOperationAfterFaultIsUnknown(t *testing.T) {
 	requireReaped(t, c)
 	if _, err := op.Wait(ctx); !errors.Is(err, c.Err()) {
 		t.Fatalf("later wait diverged from the sticky failure: %v", err)
+	}
+}
+
+// fixtureImagePattern is the deterministic image the fixture subprocess serves
+// (byte[i] = i*131 + salt): the tests replicate it independently and compare
+// byte for byte, so a divergence anywhere in the chunk pipeline is visible.
+func fixtureImagePattern(size int, salt byte) []byte {
+	out := make([]byte, size)
+	for i := range out {
+		out[i] = byte(uint64(i)*131 + uint64(salt))
+	}
+	return out
+}
+
+// TestClientImageTransfersAssembleVerifiedSnapshots proves the client side of
+// the frozen image contract: transfers assemble byte for byte from a
+// backpressured sequential chunk pull, chunk traffic never enters or disturbs
+// the event stream, and concurrent transfers stay keyed to their own transfer
+// IDs and offsets.
+func TestClientImageTransfersAssembleVerifiedSnapshots(t *testing.T) {
+	c := launchFixture(t, "images")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	png, err := c.GetImagePNG(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPNG := fixtureImagePattern(3<<20+4567, 0x50)
+	if !bytes.Equal(png, wantPNG) {
+		t.Fatalf("png snapshot diverged: %d bytes", len(png))
+	}
+	bgr, err := c.GetImageBGR(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(bgr, fixtureImagePattern(3<<20+4567, 0x47)) {
+		t.Fatalf("bgr snapshot diverged: %d bytes", len(bgr))
+	}
+	// One core event interleaved with each transfer's chunk traffic; both
+	// kept their own contiguous sequence domain.
+	var sequences []uint64
+	for range 2 {
+		select {
+		case event := <-c.Events():
+			if event.Name != protocol.CoreEvent {
+				t.Fatalf("unexpected event: %+v", event)
+			}
+			sequences = append(sequences, event.Sequence)
+		case <-time.After(5 * time.Second):
+			t.Fatal("interleaved core event missing")
+		}
+	}
+	if len(sequences) != 2 || sequences[0] != 1 || sequences[1] != 2 {
+		t.Fatalf("event sequences: %v", sequences)
+	}
+	select {
+	case event := <-c.Events():
+		t.Fatalf("chunk traffic produced extra events: %+v", event)
+	default:
+	}
+	// The returned snapshots are independently owned: mutating one does not
+	// damage the session or any other returned buffer.
+	png[0] ^= 0xFF
+	if err := c.Ping(ctx); err != nil {
+		t.Fatalf("session damaged by caller mutation: %v", err)
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireReaped(t, c)
+
+	// Concurrent transfers interleave on the wire while each stays a
+	// sequential, backpressured pull of its own snapshot.
+	c = launchFixture(t, "images")
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	results := make([][]byte, 2)
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() { defer wg.Done(); results[0], errs[0] = c.GetImagePNG(ctx) }()
+	go func() { defer wg.Done(); results[1], errs[1] = c.GetImageBGR(ctx) }()
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent transfer %d: %v", i, err)
+		}
+	}
+	if !bytes.Equal(results[0], wantPNG) || !bytes.Equal(results[1], fixtureImagePattern(3<<20+4567, 0x47)) {
+		t.Fatal("concurrent snapshots diverged")
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestClientRejectsBrokenImageTransfers proves that broken transfers never
+// publish a partial success: a declared digest that the assembled bytes do
+// not match, a short chunk, a wrong offset, and an oversized total length all
+// terminate the session with a protocol failure, while worker-side
+// rejections (a rejected chunk, the missing optional BGR symbol) surface as
+// stable remote errors and leave the session usable.
+func TestClientRejectsBrokenImageTransfers(t *testing.T) {
+	t.Run("mismatched digest aborts the session", func(t *testing.T) {
+		c := launchFixture(t, "badsha")
+		_, err := c.GetImagePNG(context.Background())
+		requireFailure(t, err, true)
+		requireReaped(t, c)
+	})
+	t.Run("short chunk aborts the session", func(t *testing.T) {
+		c := launchFixture(t, "shortchunk")
+		_, err := c.GetImagePNG(context.Background())
+		requireFailure(t, err, true)
+		requireReaped(t, c)
+	})
+	t.Run("wrong offset aborts the session", func(t *testing.T) {
+		c := launchFixture(t, "wrongoffset")
+		_, err := c.GetImagePNG(context.Background())
+		requireFailure(t, err, true)
+		requireReaped(t, c)
+	})
+	t.Run("total beyond the frozen budget aborts the session", func(t *testing.T) {
+		c := launchFixture(t, "fatimage")
+		_, err := c.GetImagePNG(context.Background())
+		requireFailure(t, err, true)
+		requireReaped(t, c)
+	})
+	t.Run("worker rejections stay remote errors", func(t *testing.T) {
+		c := launchFixture(t, "chunkerror")
+		var rejected *protocol.Error
+		if _, err := c.GetImagePNG(context.Background()); !errors.As(err, &rejected) || rejected.Code != protocol.LimitExceeded {
+			t.Fatalf("chunk rejection: %v", err)
+		}
+		if err := c.Ping(context.Background()); err != nil {
+			t.Fatalf("session unusable after the rejection: %v", err)
+		}
+		if err := c.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("missing optional BGR symbol is unsupported", func(t *testing.T) {
+		c := launchFixture(t, "unsupportedbgr")
+		var rejected *protocol.Error
+		if _, err := c.GetImageBGR(context.Background()); !errors.As(err, &rejected) || rejected.Code != protocol.Unsupported {
+			t.Fatalf("bgr rejection: %v", err)
+		}
+		png, err := c.GetImagePNG(context.Background())
+		if err != nil || !bytes.Equal(png, fixtureImagePattern(3<<20+4567, 0x50)) {
+			t.Fatalf("png after bgr rejection: %d bytes, %v", len(png), err)
+		}
+		if err := c.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestClientEmptyImageIsNormalResult proves a zero-length cached image is a
+// complete, verified transfer that needs no chunks and returns an empty,
+// non-nil snapshot.
+func TestClientEmptyImageIsNormalResult(t *testing.T) {
+	c := launchFixture(t, "emptyimage")
+	ctx := context.Background()
+	for _, fetch := range []func(context.Context) ([]byte, error){c.GetImagePNG, c.GetImageBGR} {
+		image, err := fetch(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if image == nil || len(image) != 0 {
+			t.Fatalf("empty image must be an empty non-nil snapshot: %#v", image)
+		}
+	}
+	if err := c.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
 	}
 }

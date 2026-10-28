@@ -330,6 +330,7 @@ func TestImageTransferContract(t *testing.T) {
 			{TransferID: 1, TotalBytes: 1, SHA256: sha256Hex([]byte("x")), ChunkBytes: ImageChunkBytes + 1},
 			{TransferID: 1, TotalBytes: 1, SHA256: strings.ToUpper(sha256Hex([]byte("x"))), ChunkBytes: ImageChunkBytes},
 			{TransferID: 1, TotalBytes: 1, SHA256: "zz", ChunkBytes: ImageChunkBytes},
+			{TransferID: 1, TotalBytes: ImageTransferMaxBytes + 1, SHA256: sha256Hex(nil), ChunkBytes: ImageChunkBytes},
 		}
 		for i, b := range bad {
 			if err := b.Validate(); err == nil {
