@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -191,7 +192,10 @@ func TestWorkerProcess(t *testing.T) {
 }
 
 // Opt in with explicit, caller-owned paths. This test never connects, starts a
-// task, discovers devices, or uses an ADB executable. CI excludes it explicitly.
+// task, discovers devices, or uses an ADB executable. The only asynchronous
+// probe is an unconnected Screencap: Core rejects it locally with ret=false
+// without contacting any device, the same failure probe the locked-Core
+// binding acceptance uses. CI excludes this test explicitly.
 func TestRealCoreWorkerNoDevice(t *testing.T) {
 	library := os.Getenv("RHODECK_WORKER_CORE_LIBRARY")
 	root := os.Getenv("RHODECK_WORKER_RESOURCE_ROOT")
@@ -203,60 +207,246 @@ func TestRealCoreWorkerNoDevice(t *testing.T) {
 	if !filepath.IsAbs(library) || !filepath.IsAbs(root) || len(digest) != 64 || expectedVersion == "" {
 		t.Fatal("all real Core inputs must be explicit, including SHA256 and version")
 	}
-	c := launchWorker(t)
 	ctx := context.Background()
-	info, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "explicit-no-device-test", LibraryPath: library, UserDir: t.TempDir(), ResourceRoots: []string{root}, ExpectedLibrarySHA256: digest, ExpectedCoreVersion: expectedVersion})
-	if err != nil {
-		t.Fatalf("initialize: %v; diagnostics: %s", err, c.Diagnostics())
-	}
-	if info.LibrarySHA256 != digest || info.CoreVersion != expectedVersion || len(info.Resources) != 1 || len(info.Resources[0].VersionSHA256) != 64 {
-		t.Fatalf("runtime snapshot: %+v", info)
-	}
-	_, err = c.AppendTask(ctx, protocol.TaskRequest{Type: "RhodeckUnknownTaskForProtocolTest", Params: json.RawMessage(`{"future":9007199254740993}`)})
-	var rejected *protocol.Error
-	if !errors.As(err, &rejected) || rejected.Code != protocol.NativeRejected {
-		t.Fatalf("Core must decide unknown task acceptance: %v", err)
-	}
-	var ids []int32
-	for range 2 {
-		r, err := c.AppendTask(ctx, protocol.TaskRequest{Type: "Award", Params: json.RawMessage(`{"enable":false,"future":9007199254740993}`)})
-		if err != nil || r.TaskID == 0 {
-			t.Fatalf("append only: %+v, %v", r, err)
+
+	t.Run("default limits, metadata, queries and rejections", func(t *testing.T) {
+		c := launchWorker(t)
+		info, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "explicit-no-device-test", LibraryPath: library, UserDir: t.TempDir(), ResourceRoots: []string{root}, ExpectedLibrarySHA256: digest, ExpectedCoreVersion: expectedVersion})
+		if err != nil {
+			t.Fatalf("initialize: %v; diagnostics: %s", err, c.Diagnostics())
 		}
-		ids = append(ids, r.TaskID)
-	}
-	if err := c.SetTaskParams(ctx, protocol.TaskParamsRequest{TaskID: ids[0], Params: json.RawMessage(`{"enable":false}`)}); err != nil {
-		t.Fatal(err)
-	}
-	status, err := c.Status(ctx)
-	if err != nil || status.Running || status.Connected || len(status.Tasks) != 2 {
-		t.Fatalf("unconnected status: %+v, %v", status, err)
-	}
-	for _, id := range ids {
-		found := false
-		for _, actual := range status.Tasks {
-			found = found || id == actual
+		// Metadata: the locked library and resource digests, the native
+		// NullSize sentinel and the whole materialized default limit set must
+		// come back in the immutable snapshot.
+		if info.LibrarySHA256 != digest || info.CoreVersion != expectedVersion || len(info.Resources) != 1 || len(info.Resources[0].VersionSHA256) != 64 {
+			t.Fatalf("runtime snapshot: %+v", info)
 		}
-		if !found {
-			t.Fatalf("missing submitted task %d: %+v", id, status)
+		if info.NullSize != math.MaxUint64 {
+			t.Fatalf("null size sentinel: got %d, want %d", info.NullSize, uint64(math.MaxUint64))
 		}
+		if info.Limits == nil || *info.Limits != bindingDefaultLimits {
+			t.Fatalf("omitted limits must report the materialized default set: %+v", info.Limits)
+		}
+		if runtime.GOOS != "windows" && info.Capabilities.AttachWindow {
+			t.Fatalf("async attach window is Windows-only and must be reported absent on %s", runtime.GOOS)
+		}
+		assertQueryCapabilityMatchesBehavior(t, c, info.Capabilities)
+		// Queries: a log line and the device UUID are plain native calls with
+		// no device on the other end; UUID without a connection must not
+		// imply one (empty string is a normal result).
+		if err := c.Log(ctx, protocol.LogRequest{Level: "Trace", Message: "worker no-device probe 9007199254740993"}); err != nil {
+			t.Fatalf("log: %v; diagnostics: %s", err, c.Diagnostics())
+		}
+		uuid, err := c.UUID(ctx)
+		if err != nil {
+			t.Fatalf("uuid: %v; diagnostics: %s", err, c.Diagnostics())
+		}
+		if status, err := c.Status(ctx); err != nil || status.Connected {
+			t.Fatalf("uuid read must not open an implicit connection: %+v, %v", status, err)
+		}
+		// Rejections: Core decides task-type acceptance, and a task id that
+		// was never appended is a native false.
+		if _, err := c.AppendTask(ctx, protocol.TaskRequest{Type: "RhodeckUnknownTaskForProtocolTest", Params: json.RawMessage(`{"future":9007199254740993}`)}); !isNativeRejected(err) {
+			t.Fatalf("Core must decide unknown task acceptance: %v", err)
+		}
+		var ids []int32
+		for range 2 {
+			r, err := c.AppendTask(ctx, protocol.TaskRequest{Type: "Award", Params: json.RawMessage(`{"enable":false,"future":9007199254740993}`)})
+			if err != nil || r.TaskID == 0 {
+				t.Fatalf("append only: %+v, %v", r, err)
+			}
+			ids = append(ids, r.TaskID)
+		}
+		if err := c.SetTaskParams(ctx, protocol.TaskParamsRequest{TaskID: ids[0], Params: json.RawMessage(`{"enable":false}`)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.SetTaskParams(ctx, protocol.TaskParamsRequest{TaskID: 1 << 30, Params: json.RawMessage(`{"enable":false}`)}); !isNativeRejected(err) {
+			t.Fatalf("params for a task id that was never appended must be a native rejection: %v", err)
+		}
+		status, err := c.Status(ctx)
+		if err != nil || status.Running || status.Connected || len(status.Tasks) != 2 {
+			t.Fatalf("unconnected status: %+v, %v", status, err)
+		}
+		for _, id := range ids {
+			found := false
+			for _, actual := range status.Tasks {
+				found = found || id == actual
+			}
+			if !found {
+				t.Fatalf("missing submitted task %d: %+v", id, status)
+			}
+		}
+		// Stop on a never-started instance is a plain native observation, not
+		// a device action; Core clears its pending task list and caches.
+		if _, err := c.Stop(ctx); err != nil {
+			t.Fatalf("stop on a never-started instance: %v; diagnostics: %s", err, c.Diagnostics())
+		}
+		// Unconnected Screencap failure probe: the submission is accepted, the
+		// native completion arrives with ok=false and is reported as the
+		// stable native_rejected code, never as a success.
+		op, err := c.Screencap(ctx)
+		if err != nil {
+			t.Fatalf("screencap submission: %v", err)
+		}
+		if op.ID() == 0 {
+			t.Fatal("screencap submission must return a nonzero async id")
+		}
+		if res, err := op.Wait(ctx); err != nil {
+			var remote *protocol.Error
+			if !errors.As(err, &remote) || remote.Code != protocol.NativeRejected {
+				t.Fatalf("unconnected screencap must settle as native_rejected: %v", err)
+			}
+			if res.What != "Screencap" || res.OK || res.AsyncID != op.ID() {
+				t.Fatalf("screencap completion must keep its identity: %+v", res)
+			}
+		} else {
+			t.Fatalf("unconnected screencap must not report success: %+v", res)
+		}
+		// Cached image reads without any capture: an empty image is a legal,
+		// complete transfer, not an error and not a fake success.
+		png, err := c.GetImagePNG(ctx)
+		if err != nil || len(png) != 0 {
+			t.Fatalf("empty PNG cache must be an empty transfer: %d bytes, %v", len(png), err)
+		}
+		bgr, err := c.GetImageBGR(ctx)
+		if err != nil || len(bgr) != 0 {
+			t.Fatalf("empty BGR cache must be an empty transfer: %d bytes, %v", len(bgr), err)
+		}
+		if err := c.Ping(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Close(ctx); err != nil {
+			t.Fatalf("close: %v; diagnostics: %s", err, c.Diagnostics())
+		}
+		diagnostics, callbacks, operations := drainClosedEvents(t, c)
+		if diagnostics.LostEvents != 0 || diagnostics.FirstFault != nil {
+			t.Fatalf("clean close must deliver a fault-free diagnostics snapshot: %+v", diagnostics)
+		}
+		// The unconnected Screencap completion (message 4) precedes Destroyed
+		// (message 5) on the same FIFO observation stream; the buffered events
+		// stay readable after the close response, and the worker's own
+		// operation event carries the same terminal state.
+		if len(callbacks) != 2 || callbacks[0].MessageID != 4 || callbacks[1].MessageID != 5 ||
+			callbacks[0].CoreSequence != 1 || callbacks[1].CoreSequence != 2 {
+			t.Fatalf("expected the screencap completion then Destroyed, got %+v", callbacks)
+		}
+		if len(operations) != 1 || operations[0].What != "Screencap" || operations[0].OK ||
+			operations[0].AsyncID != op.ID() || operations[0].Error == nil || !isNativeRejected(operations[0].Error) {
+			t.Fatalf("operation event must carry the screencap terminal state: %+v", operations)
+		}
+		t.Logf("platform=%s/%s Core=%s library_sha256=%s resource_version_sha256=%s null_size=%d uuid=%q capabilities=%+v; metadata/config/query/rejection/close passed without device actions",
+			runtime.GOOS, runtime.GOARCH, info.CoreVersion, info.LibrarySHA256, info.Resources[0].VersionSHA256, info.NullSize, uuid.UUID, info.Capabilities)
+	})
+
+	// A complete, binding-legal explicit limit set must reach the real native
+	// factory and come back as the effective configuration. This is the only
+	// place where the explicit mapping meets a real Core, so it uses a second
+	// worker process (one Runtime per process).
+	t.Run("explicit limits reach the real factory", func(t *testing.T) {
+		c := launchWorker(t)
+		limits := bindingDefaultLimits
+		limits.ImageBGR = protocol.BufferLimits{Initial: 4 << 20, Max: 128 << 20, GrowthRetries: 5}
+		info, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "explicit-no-device-limits", LibraryPath: library, UserDir: t.TempDir(), ResourceRoots: []string{root}, ExpectedLibrarySHA256: digest, ExpectedCoreVersion: expectedVersion, Limits: &limits})
+		if err != nil {
+			t.Fatalf("initialize with explicit limits: %v; diagnostics: %s", err, c.Diagnostics())
+		}
+		if info.Limits == nil || *info.Limits != limits {
+			t.Fatalf("explicit limits must be applied and reported verbatim: %+v", info.Limits)
+		}
+		if info.NullSize != math.MaxUint64 {
+			t.Fatalf("null size sentinel: got %d, want %d", info.NullSize, uint64(math.MaxUint64))
+		}
+		if err := c.Close(ctx); err != nil {
+			t.Fatalf("close: %v; diagnostics: %s", err, c.Diagnostics())
+		}
+		diagnostics, callbacks, operations := drainClosedEvents(t, c)
+		if diagnostics.LostEvents != 0 || diagnostics.FirstFault != nil {
+			t.Fatalf("clean close must deliver a fault-free diagnostics snapshot: %+v", diagnostics)
+		}
+		if len(operations) != 0 {
+			t.Fatalf("no operation ran in this flow: %+v", operations)
+		}
+		if len(callbacks) != 1 || callbacks[0].MessageID != 5 || callbacks[0].CoreSequence != 1 {
+			t.Fatalf("expected the sole Destroyed callback, got %+v", callbacks)
+		}
+	})
+}
+
+// isNativeRejected reports whether err is the worker's stable
+// native_rejected protocol error.
+func isNativeRejected(err error) bool {
+	var remote *protocol.Error
+	return errors.As(err, &remote) && remote.Code == protocol.NativeRejected
+}
+
+// assertQueryCapabilityMatchesBehavior proves the capability report and the
+// command outcome agree: an optional interface the loaded library does not
+// export must be rejected with the stable unsupported code before any native
+// call, and a present one must execute with the normal zero-value "not found"
+// result. Absence is recorded as absence, never faked into a success path.
+func assertQueryCapabilityMatchesBehavior(t *testing.T, c *worker.Client, caps protocol.Capabilities) {
+	t.Helper()
+	ctx := context.Background()
+	_, keyErr := c.MapLevelKey(ctx, protocol.MapLevelKeyRequest{Key: ""})
+	_, nameErr := c.ItemName(ctx, protocol.ItemNameRequest{ID: ""})
+	if caps.MapLevelKey && keyErr != nil {
+		t.Fatalf("reported-present MapLevelKey must execute, not-found is a normal result: %v", keyErr)
 	}
-	if err := c.Ping(ctx); err != nil {
-		t.Fatal(err)
+	if !caps.MapLevelKey && !isUnsupported(keyErr) {
+		t.Fatalf("absent MapLevelKey must be stable unsupported: %v", keyErr)
 	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatalf("close: %v; diagnostics: %s", err, c.Diagnostics())
+	if caps.ItemName && nameErr != nil {
+		t.Fatalf("reported-present ItemName must execute, not-found is a normal result: %v", nameErr)
 	}
+	if !caps.ItemName && !isUnsupported(nameErr) {
+		t.Fatalf("absent ItemName must be stable unsupported: %v", nameErr)
+	}
+}
+
+func isUnsupported(err error) bool {
+	var remote *protocol.Error
+	return errors.As(err, &remote) && remote.Code == protocol.Unsupported
+}
+
+// drainClosedEvents reads the buffered observation after a clean close: the
+// terminal diagnostics snapshot, the native callbacks and the worker's own
+// operation events. The delivery order between these kinds is not part of the
+// frozen contract, so they are matched by name; the callback FIFO order itself
+// stays observable.
+func drainClosedEvents(t *testing.T, c *worker.Client) (protocol.InstanceDiagnostics, []protocol.Callback, []protocol.OperationResult) {
+	t.Helper()
+	var diagnostics *protocol.InstanceDiagnostics
 	var callbacks []protocol.Callback
+	var operations []protocol.OperationResult
 	for event := range c.Events() {
-		var callback protocol.Callback
-		if event.Name != protocol.CoreEvent || protocol.Decode(event.Payload, &callback) != nil {
-			t.Fatalf("unexpected event: %+v", event)
+		switch event.Name {
+		case protocol.DiagnosticsEvent:
+			if diagnostics != nil {
+				t.Fatalf("second diagnostics event: %+v", event)
+			}
+			var snap protocol.InstanceDiagnostics
+			if protocol.Decode(event.Payload, &snap) != nil {
+				t.Fatalf("undecodable diagnostics payload: %+v", event)
+			}
+			diagnostics = &snap
+		case protocol.CoreEvent:
+			var callback protocol.Callback
+			if protocol.Decode(event.Payload, &callback) != nil {
+				t.Fatalf("undecodable callback payload: %+v", event)
+			}
+			callbacks = append(callbacks, callback)
+		case protocol.OperationEvent:
+			var result protocol.OperationResult
+			if protocol.Decode(event.Payload, &result) != nil {
+				t.Fatalf("undecodable operation payload: %+v", event)
+			}
+			operations = append(operations, result)
+		default:
+			t.Fatalf("unexpected event %q: %+v", event.Name, event)
 		}
-		callbacks = append(callbacks, callback)
 	}
-	if len(callbacks) != 1 || callbacks[0].MessageID != 5 || callbacks[0].CoreSequence != 1 {
-		t.Fatalf("expected sole Destroyed callback, got %+v", callbacks)
+	if diagnostics == nil {
+		t.Fatal("clean close must deliver a terminal diagnostics snapshot")
 	}
-	t.Logf("platform=%s/%s Core=%s library_sha256=%s resource_version_sha256=%s; initialize/reject-unknown/append/update/status/destroy passed without device actions", runtime.GOOS, runtime.GOARCH, info.CoreVersion, info.LibrarySHA256, info.Resources[0].VersionSHA256)
+	return *diagnostics, callbacks, operations
 }
