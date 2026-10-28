@@ -28,6 +28,11 @@ func gap(task, note string) Mapping {
 	return Mapping{Status: "pending:" + task, Note: note}
 }
 
+// covered returns a fully done mapping with all five segments registered.
+func covered(dto, worker, client, test, note string) Mapping {
+	return Mapping{DTO: dto, Worker: worker, Client: client, Test: test, Status: "done", Note: note}
+}
+
 var frozenSymbols = []Symbol{
 	// ---- Capability methods re-exported through the Capabilities alias ----
 	{Kind: "capability", Owner: "Capabilities", Name: "AsyncAttachWindow", Detail: "func (Capabilities) AsyncAttachWindow() bool"},
@@ -192,7 +197,7 @@ var mappings = map[string]Mapping{
 		Client: "Client.Initialize",
 		Test:   "TestWorkerProcess,TestClientFullConversation",
 		Status: "done",
-		Note:   "Open 与 NewInstance 合并为单次 initialize；Limits 配置缺口单列于 type/field Limits（WKR-03），不在本条算作覆盖。",
+		Note:   "Open 与 NewInstance 合并为单次 initialize；Limits 配置的逐字段覆盖单列于 type/field Limits 条目。",
 	},
 	"entry Runtime.Version": {
 		DTO:    "RuntimeInfo.CoreVersion",
@@ -206,11 +211,18 @@ var mappings = map[string]Mapping{
 		DTO:    "RuntimeInfo.Capabilities",
 		Worker: "openEngine",
 		Client: "Client.Initialize",
-		Test:   "TestClientFullConversation",
-		Status: "pending:WKR-03",
-		Note:   "4 字段布尔传输已有；完整原生能力快照、协议操作与原生可用性的区分、独立副本语义由 WKR-03 补齐。",
+		Test:   "TestSessionAppliesLimitsContract,TestClientInitializeSnapshotIsLosslessAndDetached",
+		Status: "done",
+		Note:   "能力布尔是初始化时复制的原生符号在场只读快照副本，随 initialize 无损报告；worker 已实现命令由冻结协议表承载（未实现命令稳定 unsupported），与原生可用性分开报告，不从版本字符串或命令存在性推断。",
 	},
-	"entry Runtime.NullSize": gap("WKR-03", "DTO 已冻结（RuntimeInfo.NullSize，uint64 无损，锁定 profile 为 math.MaxUint64）；worker 填充与能力快照由 WKR-03 交付。"),
+	"entry Runtime.NullSize": {
+		DTO:    "RuntimeInfo.NullSize",
+		Worker: "openEngine",
+		Client: "Client.Initialize",
+		Test:   "TestSessionAppliesLimitsContract,TestClientInitializeSnapshotIsLosslessAndDetached",
+		Status: "done",
+		Note:   "worker 填充 rt.NullSize()（锁定 profile 经绑定核验为 math.MaxUint64），uint64 传输无损；客户端快照往返断言哨兵值精确到达。",
+	},
 	"entry Runtime.NewInstance": {
 		DTO:    "InitializeRequest.InstanceOptions",
 		Worker: "openEngine",
@@ -347,7 +359,7 @@ var mappings = map[string]Mapping{
 		Client: "Client.Initialize",
 		Test:   "TestClientFullConversation",
 		Status: "done",
-		Note:   "能力布尔随 initialize 报告；能力快照的完整区分由 entry Runtime.Capabilities（WKR-03）承载。",
+		Note:   "能力布尔随 initialize 报告；能力快照的完整区分由 entry Runtime.Capabilities 承载。",
 	},
 	"capability Capabilities.AsyncAttachWindow": {
 		DTO:    "Capabilities.AttachWindow",
@@ -355,7 +367,7 @@ var mappings = map[string]Mapping{
 		Client: "Client.Initialize",
 		Test:   "TestClientFullConversation",
 		Status: "done",
-		Note:   "能力布尔随 initialize 报告；能力快照的完整区分由 entry Runtime.Capabilities（WKR-03）承载。",
+		Note:   "能力布尔随 initialize 报告；能力快照的完整区分由 entry Runtime.Capabilities 承载。",
 	},
 	"capability Capabilities.MapLevelKey": {
 		DTO:    "Capabilities.MapLevelKey",
@@ -363,7 +375,7 @@ var mappings = map[string]Mapping{
 		Client: "Client.Initialize",
 		Test:   "TestClientFullConversation",
 		Status: "done",
-		Note:   "能力布尔随 initialize 报告；能力快照的完整区分由 entry Runtime.Capabilities（WKR-03）承载。",
+		Note:   "能力布尔随 initialize 报告；能力快照的完整区分由 entry Runtime.Capabilities 承载。",
 	},
 	"capability Capabilities.ItemName": {
 		DTO:    "Capabilities.ItemName",
@@ -371,7 +383,7 @@ var mappings = map[string]Mapping{
 		Client: "Client.Initialize",
 		Test:   "TestClientFullConversation",
 		Status: "done",
-		Note:   "能力布尔随 initialize 报告；能力快照的完整区分由 entry Runtime.Capabilities（WKR-03）承载。",
+		Note:   "能力布尔随 initialize 报告；能力快照的完整区分由 entry Runtime.Capabilities 承载。",
 	},
 
 	// ---- Types ----
@@ -403,9 +415,9 @@ var mappings = map[string]Mapping{
 		DTO:    "Capabilities",
 		Worker: "openEngine",
 		Client: "Client.Initialize",
-		Test:   "TestClientFullConversation",
-		Status: "pending:WKR-03",
-		Note:   "4 字段布尔传输已有；完整快照与「worker 已实现 vs 原生可用」的区分待 WKR-03。",
+		Test:   "TestSessionAppliesLimitsContract,TestClientInitializeSnapshotIsLosslessAndDetached",
+		Status: "done",
+		Note:   "协议侧四字段能力布尔是初始化时复制的原生符号在场只读快照副本；与 worker 已实现命令（冻结协议表，未实现命令稳定 unsupported）分开报告，不从版本字符串或命令存在性推断。",
 	},
 	"type AsyncID": {
 		DTO:    "OperationAccepted.AsyncID,OperationResult.AsyncID",
@@ -451,7 +463,7 @@ var mappings = map[string]Mapping{
 		Client: "Client.Initialize",
 		Test:   "TestWorkerProcess,TestRealCoreWorkerNoDevice",
 		Status: "done",
-		Note:   "路径、资源顺序、静态选项、extras 已承载；Limits 字段缺口单列（type/field Limits，WKR-03）。",
+		Note:   "路径、资源顺序、静态选项、extras 已承载；Limits 字段覆盖单列（type/field Limits）。",
 	},
 	"type InstanceConfig": {
 		DTO:    "InitializeRequest.InstanceOptions",
@@ -490,9 +502,23 @@ var mappings = map[string]Mapping{
 		Status: "done",
 		Note:   "JSON 原文透传，不重编码。",
 	},
-	"type Limits":       gap("WKR-03", "DTO 已冻结（protocol.Limits 16 字段，nil=整套默认、非 nil=完整显式、0 不静默补默认，wire 上限见 CheckWireLimits）；worker 校验与应用由 WKR-03 交付。"),
-	"type BufferLimits": gap("WKR-03", "DTO 已冻结（protocol.BufferLimits 三元组，单位随使用字段）；应用由 WKR-03 交付。"),
-	"type MapLevelKey":  gap("WKR-07", "结果 DTO 已冻结（protocol.MapLevelKeyResult 四字段，零值即未找到）；实现由 WKR-07 交付。"),
+	"type Limits": {
+		DTO:    "InitializeRequest.Limits,Limits",
+		Worker: "effectiveLimits,bindingLimits,openEngine",
+		Client: "Client.Initialize",
+		Test:   "TestEffectiveLimitsSelectsWholeDefaultOrExplicitCopy,TestSessionAppliesLimitsContract,TestOpenEngineRejectsIllegalLimitsBeforeNativeLoad,TestWorkerProcess",
+		Status: "done",
+		Note:   "nil=整套默认（worker 物化锁定 profile 的整套默认值并交绑定逐项校验），非 nil=完整显式、0 不静默补默认；wire 预算由 CheckWireLimits 在触碰原生库前以 limit_exceeded+有效上限拒绝，绑定范围/跨字段校验失败即初始化失败并终止会话；快照为脱离请求的独立副本。",
+	},
+	"type BufferLimits": {
+		DTO:    "BufferLimits",
+		Worker: "bindingBufferLimits,bindingLimits",
+		Client: "Client.Initialize",
+		Test:   "TestLimitsMappingTransfersEveryField",
+		Status: "done",
+		Note:   "三元组（Initial/Max/GrowthRetries）逐字段映射到绑定容量探测策略，单位随使用字段（字节或元素）。",
+	},
+	"type MapLevelKey": gap("WKR-07", "结果 DTO 已冻结（protocol.MapLevelKeyResult 四字段，零值即未找到）；实现由 WKR-07 交付。"),
 	"type InstanceDiagnostics": {
 		DTO:    "InstanceDiagnostics",
 		Status: "pending:WKR-08",
@@ -555,7 +581,14 @@ var mappings = map[string]Mapping{
 		DTO: "InitializeRequest.ConnectionExtras", Worker: "openEngine", Client: "Client.Initialize",
 		Test: "TestClientFullConversation", Status: "done",
 	},
-	"field RuntimeConfig.Limits": gap("WKR-03", "DTO 已冻结（InitializeRequest.Limits）；随冻结的 InitializeRequest.Limits（nil=整套默认、非 nil=完整显式）传输；worker 校验与应用由 WKR-03 交付。"),
+	"field RuntimeConfig.Limits": {
+		DTO:    "InitializeRequest.Limits",
+		Worker: "bindingConfig,effectiveLimits",
+		Client: "Client.Initialize",
+		Test:   "TestInitializeConfigMappingTransfersEveryField,TestEffectiveLimitsSelectsWholeDefaultOrExplicitCopy",
+		Status: "done",
+		Note:   "随冻结的 InitializeRequest.Limits 传输（nil=整套默认、非 nil=完整显式）；映射后交绑定整体校验与深拷贝冻结。",
+	},
 	"field StaticOption.Key": {
 		DTO: "Option.Key", Worker: "openEngine", Client: "Client.Initialize",
 		Test: "TestClientFullConversation", Status: "done",
@@ -640,25 +673,25 @@ var mappings = map[string]Mapping{
 	"field InstanceDiagnostics.FirstFault":     gap("WKR-08", "DTO 已冻结（InstanceDiagnostics.FirstFault）；随冻结的 InstanceDiagnostics.FirstFault（结构化 Error，正常关闭缺席）传输；交付由 WKR-08 实现。"),
 	"field InstanceDiagnostics.RawPrefix":      gap("WKR-08", "DTO 已冻结（InstanceDiagnostics.RawPrefix）；随冻结的 InstanceDiagnostics.RawPrefix（标准 base64，保留非 UTF-8/JSON 原始字节）传输；交付由 WKR-08 实现。"),
 	"field InstanceDiagnostics.StopDiagnostic": gap("WKR-08", "DTO 已冻结（InstanceDiagnostics.StopDiagnostic）；随冻结的 InstanceDiagnostics.StopDiagnostic（结构化 Error，可无故障存在）传输；交付由 WKR-08 实现。"),
-	"field Limits.InputStringBytes":            gap("WKR-03", "DTO 已冻结（Limits.InputStringBytes）；随冻结的 protocol.Limits.InputStringBytes 传输；应用由 WKR-03 交付。"),
-	"field Limits.InputJSONBytes":              gap("WKR-03", "DTO 已冻结（Limits.InputJSONBytes）；随冻结的 protocol.Limits.InputJSONBytes 传输（wire 上限 4 MiB，超限初始化前拒绝）；应用由 WKR-03 交付。"),
-	"field Limits.ConfigEntries":               gap("WKR-03", "DTO 已冻结（Limits.ConfigEntries）；随冻结的 protocol.Limits.ConfigEntries 传输；应用由 WKR-03 交付。"),
-	"field Limits.ConfigBytes":                 gap("WKR-03", "DTO 已冻结（Limits.ConfigBytes）；随冻结的 protocol.Limits.ConfigBytes 传输（wire 上限 4 MiB，超限初始化前拒绝）；应用由 WKR-03 交付。"),
-	"field Limits.ImagePNG":                    gap("WKR-03", "DTO 已冻结（Limits.ImagePNG）；随冻结的 protocol.Limits.ImagePNG 传输（默认 Max 32 MiB，wire 上限 128 MiB）；应用由 WKR-03 交付。"),
-	"field Limits.ImageBGR":                    gap("WKR-03", "DTO 已冻结（Limits.ImageBGR）；随冻结的 protocol.Limits.ImageBGR 传输（默认 Max 64 MiB，wire 上限 128 MiB）；应用由 WKR-03 交付。"),
-	"field Limits.UUID":                        gap("WKR-03", "DTO 已冻结（Limits.UUID）；随冻结的 protocol.Limits.UUID 传输；应用由 WKR-03 交付。"),
-	"field Limits.Tasks":                       gap("WKR-03", "DTO 已冻结（Limits.Tasks）；随冻结的 protocol.Limits.Tasks 传输（元素上限 65536 为 wire 预算）；应用由 WKR-03 交付。"),
-	"field Limits.CallbackBytes":               gap("WKR-03", "DTO 已冻结（Limits.CallbackBytes）；随冻结的 protocol.Limits.CallbackBytes 传输（wire 上限 4 MiB）；应用由 WKR-03 交付。"),
-	"field Limits.InternalEvents":              gap("WKR-03", "DTO 已冻结（Limits.InternalEvents）；随冻结的 protocol.Limits.InternalEvents 传输；应用由 WKR-03 交付。"),
-	"field Limits.InternalBytes":               gap("WKR-03", "DTO 已冻结（Limits.InternalBytes）；随冻结的 protocol.Limits.InternalBytes 传输；应用由 WKR-03 交付。"),
-	"field Limits.PublicEvents":                gap("WKR-03", "DTO 已冻结（Limits.PublicEvents）；随冻结的 protocol.Limits.PublicEvents 传输；应用由 WKR-03 交付。"),
-	"field Limits.PublicBytes":                 gap("WKR-03", "DTO 已冻结（Limits.PublicBytes）；随冻结的 protocol.Limits.PublicBytes 传输；应用由 WKR-03 交付。"),
-	"field Limits.PendingOperations":           gap("WKR-03", "DTO 已冻结（Limits.PendingOperations）；随冻结的 protocol.Limits.PendingOperations 传输；应用由 WKR-03 交付。"),
-	"field Limits.EarlyResults":                gap("WKR-03", "DTO 已冻结（Limits.EarlyResults）；随冻结的 protocol.Limits.EarlyResults 传输；应用由 WKR-03 交付。"),
-	"field Limits.EarlyBytes":                  gap("WKR-03", "DTO 已冻结（Limits.EarlyBytes）；随冻结的 protocol.Limits.EarlyBytes 传输；应用由 WKR-03 交付。"),
-	"field BufferLimits.Initial":               gap("WKR-03", "DTO 已冻结（BufferLimits.Initial）；随冻结的 protocol.BufferLimits.Initial 传输；应用由 WKR-03 交付。"),
-	"field BufferLimits.Max":                   gap("WKR-03", "DTO 已冻结（BufferLimits.Max）；随冻结的 protocol.BufferLimits.Max 传输；应用由 WKR-03 交付。"),
-	"field BufferLimits.GrowthRetries":         gap("WKR-03", "DTO 已冻结（BufferLimits.GrowthRetries）；随冻结的 protocol.BufferLimits.GrowthRetries 传输；应用由 WKR-03 交付。"),
+	"field Limits.InputStringBytes":            covered("Limits.InputStringBytes", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField", "随冻结的 protocol.Limits.InputStringBytes 逐字段映射并经绑定应用。"),
+	"field Limits.InputJSONBytes":              covered("Limits.InputJSONBytes", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField,TestWireLimitsRejectsUndeliverableConfigurations,TestSessionAppliesLimitsContract", "随冻结的 protocol.Limits.InputJSONBytes 逐字段映射并经绑定应用；wire 上限 4 MiB，超限在触碰原生库前拒绝。"),
+	"field Limits.ConfigEntries":               covered("Limits.ConfigEntries", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField", "随冻结的 protocol.Limits.ConfigEntries 逐字段映射并经绑定应用。"),
+	"field Limits.ConfigBytes":                 covered("Limits.ConfigBytes", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField,TestWireLimitsRejectsUndeliverableConfigurations,TestSessionAppliesLimitsContract", "随冻结的 protocol.Limits.ConfigBytes 逐字段映射并经绑定应用；wire 上限 4 MiB，超限在触碰原生库前拒绝。"),
+	"field Limits.ImagePNG":                    covered("Limits.ImagePNG", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField,TestWireLimitsRejectsUndeliverableConfigurations,TestSessionAppliesLimitsContract", "随冻结的 protocol.Limits.ImagePNG 整组映射并经绑定应用；默认 Max 32 MiB，wire 上限 128 MiB。"),
+	"field Limits.ImageBGR":                    covered("Limits.ImageBGR", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField,TestWireLimitsRejectsUndeliverableConfigurations,TestSessionAppliesLimitsContract", "随冻结的 protocol.Limits.ImageBGR 整组映射并经绑定应用；默认 Max 64 MiB，wire 上限 128 MiB。"),
+	"field Limits.UUID":                        covered("Limits.UUID", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField", "随冻结的 protocol.Limits.UUID 整组映射并经绑定应用。"),
+	"field Limits.Tasks":                       covered("Limits.Tasks", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField,TestWireLimitsRejectsUndeliverableConfigurations,TestSessionAppliesLimitsContract", "随冻结的 protocol.Limits.Tasks 整组映射并经绑定应用；元素上限 65536 为 wire 预算。"),
+	"field Limits.CallbackBytes":               covered("Limits.CallbackBytes", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField,TestWireLimitsRejectsUndeliverableConfigurations,TestSessionAppliesLimitsContract", "随冻结的 protocol.Limits.CallbackBytes 逐字段映射并经绑定应用；wire 上限 4 MiB。"),
+	"field Limits.InternalEvents":              covered("Limits.InternalEvents", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField", "随冻结的 protocol.Limits.InternalEvents 逐字段映射并经绑定应用。"),
+	"field Limits.InternalBytes":               covered("Limits.InternalBytes", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField", "随冻结的 protocol.Limits.InternalBytes 逐字段映射并经绑定应用。"),
+	"field Limits.PublicEvents":                covered("Limits.PublicEvents", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField", "随冻结的 protocol.Limits.PublicEvents 逐字段映射并经绑定应用。"),
+	"field Limits.PublicBytes":                 covered("Limits.PublicBytes", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField", "随冻结的 protocol.Limits.PublicBytes 逐字段映射并经绑定应用。"),
+	"field Limits.PendingOperations":           covered("Limits.PendingOperations", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField", "随冻结的 protocol.Limits.PendingOperations 逐字段映射并经绑定应用。"),
+	"field Limits.EarlyResults":                covered("Limits.EarlyResults", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField,TestOpenEngineRejectsIllegalLimitsBeforeNativeLoad", "随冻结的 protocol.Limits.EarlyResults 映射并经绑定应用；绑定固定为 1，其他值拒绝。"),
+	"field Limits.EarlyBytes":                  covered("Limits.EarlyBytes", "bindingLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField", "随冻结的 protocol.Limits.EarlyBytes 逐字段映射并经绑定应用。"),
+	"field BufferLimits.Initial":               covered("BufferLimits.Initial", "bindingBufferLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField", "随冻结的 protocol.BufferLimits.Initial 逐字段映射到绑定容量探测策略。"),
+	"field BufferLimits.Max":                   covered("BufferLimits.Max", "bindingBufferLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField", "随冻结的 protocol.BufferLimits.Max 逐字段映射到绑定容量探测策略。"),
+	"field BufferLimits.GrowthRetries":         covered("BufferLimits.GrowthRetries", "bindingBufferLimits", "Client.Initialize", "TestLimitsMappingTransfersEveryField", "随冻结的 protocol.BufferLimits.GrowthRetries 逐字段映射到绑定容量探测策略。"),
 
 	// ---- Constants ----
 	"const Win32ScreencapNone":                 gap("WKR-05", "随 AttachWindow 传输（WKR-05）按位组合透传。"),
