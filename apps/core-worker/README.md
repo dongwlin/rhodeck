@@ -104,9 +104,9 @@ implemented, a task type is accepted, or an action will succeed.
 | `attach_window` | `hwnd` uint64, `screencap_method`, `mouse_method`, `keyboard_method` uint64 masks | Nonzero `async_id`: accepted only; a handle beyond the platform pointer width is `invalid_input`, a missing symbol or platform is `unsupported` — never an ADB fallback | implemented |
 | `get_image_png` / `get_image_bgr` | absent or `{}` | `ImageTransfer` describing one owned snapshot of the cached image | implemented |
 | `image_chunk` | `transfer_id`, `offset`, `length` | `ImageChunkResponse` with exactly the requested bytes | implemented |
-| `log` | `level`, `message` | Call accepted; void return carries no completion fact | reserved |
-| `map_level_key` | `key` | Four-field result; zero values mean "not found", not an error | reserved |
-| `item_name` | `id` | `name`; the empty string means "not found", not an error | reserved |
+| `log` | `level`, `message` | Call accepted; void return carries no completion fact | implemented |
+| `map_level_key` | `key` | Four-field result; zero values mean "not found", not an error | implemented |
+| `item_name` | `id` | `name`; the empty string means "not found", not an error | implemented |
 
 State-changing native calls are serialized. `ping` does not enter MaaCore;
 responsiveness proves neither native responsiveness nor task completion.

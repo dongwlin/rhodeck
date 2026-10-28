@@ -32,8 +32,8 @@ process launch. Its context bounds startup only; `Close` owns the established
 session lifetime. `ExpectedWorkerVersion` can enforce an exact build version.
 
 Use the typed Initialize/Connect/Click/Screencap/AttachWindow/AppendTask/
-SetTaskParams/Start/Stop/BackToHome/Status/UUID/GetImagePNG/GetImageBGR/Ping
-methods. Calls are
+SetTaskParams/Start/Stop/BackToHome/Status/UUID/Log/MapLevelKey/ItemName/
+GetImagePNG/GetImageBGR/Ping methods. Calls are
 concurrent-safe; a single writer preserves request ID order, and responses can
 arrive in any order. The four async submissions return an `*Operation` whose
 `Wait` reports the native terminal state (see the frozen client contract below);
@@ -41,6 +41,11 @@ task and other screen-action completion must still be interpreted from native
 callbacks — the supervisor does not infer success from status or
 acknowledgments. `UUID` reads the device UUID from the Core cache without
 connecting; the empty string and an empty task list are normal results.
+`Log` feeds the process-level native log; a nil error only states that the
+void call returned. `MapLevelKey`/`ItemName` run the experiment queries; the
+zero-valued level result, an empty item name, and the native "Unknown" are
+normal results, and a missing optional symbol arrives as the stable
+unsupported rejection without any native call.
 `GetImagePNG`/`GetImageBGR` return one fully assembled, independently owned
 snapshot of the cached image; they never trigger a screencap, so a fresh
 image requires waiting for a Screencap operation's real success first.
