@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -14,6 +15,41 @@ import (
 
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
+
+// fixtureLimits gives every Limits and BufferLimits field a distinct value so
+// the snapshot test catches any loss or mixing on the way through the client.
+func fixtureLimits() *protocol.Limits {
+	return &protocol.Limits{
+		InputStringBytes:  12345,
+		InputJSONBytes:    23456,
+		ConfigEntries:     34567,
+		ConfigBytes:       45678,
+		ImagePNG:          protocol.BufferLimits{Initial: 111, Max: 222, GrowthRetries: 3},
+		ImageBGR:          protocol.BufferLimits{Initial: 444, Max: 555, GrowthRetries: 6},
+		UUID:              protocol.BufferLimits{Initial: 77, Max: 88, GrowthRetries: 9},
+		Tasks:             protocol.BufferLimits{Initial: 10, Max: 20, GrowthRetries: 30},
+		CallbackBytes:     11111,
+		InternalEvents:    22222,
+		InternalBytes:     33333,
+		PublicEvents:      44444,
+		PublicBytes:       55555,
+		PendingOperations: 66666,
+		EarlyResults:      1,
+		EarlyBytes:        77777,
+	}
+}
+
+func fixtureRuntimeInfo() protocol.RuntimeInfo {
+	return protocol.RuntimeInfo{
+		SnapshotID:    "fixture",
+		CoreVersion:   "fixture-core",
+		LibrarySHA256: strings.Repeat("a", 64),
+		Resources:     []protocol.Resource{{Root: "fixture-root"}},
+		Capabilities:  protocol.Capabilities{ImageBGR: true, AttachWindow: false, MapLevelKey: true, ItemName: false},
+		Limits:        fixtureLimits(),
+		NullSize:      math.MaxUint64,
+	}
+}
 
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("RHODECK_TEST_WORKER_MODE"); mode != "" {
@@ -93,7 +129,18 @@ func helper(mode string) int {
 		}
 		switch req.Name {
 		case protocol.Initialize:
-			respond(protocol.RuntimeInfo{SnapshotID: "fixture", CoreVersion: "fixture-core", LibrarySHA256: strings.Repeat("a", 64), Resources: []protocol.Resource{{Root: "fixture-root"}}})
+			if mode == "thininfo" {
+				respond(protocol.RuntimeInfo{SnapshotID: "fixture", CoreVersion: "fixture-core", LibrarySHA256: strings.Repeat("a", 64), Resources: []protocol.Resource{{Root: "fixture-root"}}})
+				continue
+			}
+			if mode == "fatlimits" {
+				info := fixtureRuntimeInfo()
+				info.Limits = fixtureLimits()
+				info.Limits.ConfigBytes = protocol.MaxConfigBytes + 1
+				respond(info)
+				continue
+			}
+			respond(fixtureRuntimeInfo())
 		case protocol.Connect:
 			respond(protocol.OperationAccepted{AsyncID: 41})
 			if mode == "missingoperation" {
@@ -262,6 +309,62 @@ func TestClientFullConversation(t *testing.T) {
 	}
 	if err := c.Close(ctx); err != nil {
 		t.Fatalf("repeated close: %v", err)
+	}
+}
+
+// TestClientInitializeSnapshotIsLosslessAndDetached proves the initialize
+// snapshot crosses the client without loss — the MaxUint64 null size, every
+// Limits/BufferLimits field, and the capability booleans — and that the
+// caller's copy is independent: deep mutation neither damages the session nor
+// reaches the worker.
+func TestClientInitializeSnapshotIsLosslessAndDetached(t *testing.T) {
+	c := launchFixture(t, "flow")
+	ctx := context.Background()
+	info, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.NullSize != math.MaxUint64 {
+		t.Fatalf("null_size = %d, want the locked sentinel", info.NullSize)
+	}
+	wantCaps := protocol.Capabilities{ImageBGR: true, AttachWindow: false, MapLevelKey: true, ItemName: false}
+	if info.Capabilities != wantCaps {
+		t.Fatalf("capabilities = %+v, want %+v", info.Capabilities, wantCaps)
+	}
+	if limits := fixtureLimits(); info.Limits == nil || *info.Limits != *limits {
+		t.Fatalf("limits = %+v, want %+v", info.Limits, *limits)
+	}
+	info.Limits.InputJSONBytes = 7
+	info.Limits.ImagePNG.Max = 7
+	info.Limits.Tasks.GrowthRetries = 7
+	info.Resources[0].Root = "mutated"
+	info.CoreVersion = "mutated"
+	info.Capabilities.ImageBGR = false
+	if err := c.Ping(ctx); err != nil {
+		t.Fatalf("mutated snapshot damaged the session: %v", err)
+	}
+	task, err := c.AppendTask(ctx, protocol.TaskRequest{Type: "FutureTask", Params: json.RawMessage(`{"unknown":900719925474099312345}`)})
+	if err != nil || task.TaskID != 23 {
+		t.Fatalf("append after mutation: %+v, %v", task, err)
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireReaped(t, c)
+}
+
+// TestClientRejectsIncompleteRuntimeSnapshot proves the client enforces the
+// frozen initialize contract: a snapshot without the applied limit set and
+// null size, or reporting limits above the wire budgets, is a protocol
+// failure and terminates the session.
+func TestClientRejectsIncompleteRuntimeSnapshot(t *testing.T) {
+	for _, mode := range []string{"thininfo", "fatlimits"} {
+		t.Run(mode, func(t *testing.T) {
+			c := launchFixture(t, mode)
+			_, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "fixture"})
+			requireFailure(t, err, true)
+			requireReaped(t, c)
+		})
 	}
 }
 

@@ -327,8 +327,14 @@ func validateResponse(m protocol.Message) error {
 	}
 	switch r := target.(type) {
 	case *protocol.RuntimeInfo:
-		if r.CoreVersion == "" || r.SnapshotID == "" || len(r.LibrarySHA256) != 64 || len(r.Resources) == 0 {
+		// The frozen initialize contract always reports the applied limit set
+		// and the native null_size sentinel; an omitted set or a set above the
+		// wire budgets means the peer cannot deliver what it accepted.
+		if r.CoreVersion == "" || r.SnapshotID == "" || len(r.LibrarySHA256) != 64 || len(r.Resources) == 0 || r.NullSize == 0 || r.Limits == nil {
 			return errors.New("worker: incomplete runtime information")
+		}
+		if err := protocol.CheckWireLimits(r.Limits); err != nil {
+			return err
 		}
 	case *protocol.TaskAccepted:
 		if r.TaskID == 0 {

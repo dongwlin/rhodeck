@@ -37,6 +37,18 @@ and responses can arrive in any order. Connect returns acceptance and later emit
 an `operation` event. Task completion must be interpreted from native callbacks;
 the supervisor does not infer success from status or acknowledgments.
 
+`Initialize` returns the worker's read-only runtime snapshot: the native Core
+version, the library SHA256, one digest per available `resource/version.json`,
+the optional-symbol capabilities, the effective limit set the worker applies
+(the whole default set when the request omitted `limits`), and the native
+`null_size` sentinel. The value is a detached copy: mutating it cannot affect
+the worker or later operations. Capabilities describe native symbol presence
+only — never that a wire command is implemented, a task type is accepted, or an
+action will succeed; implemented commands are defined by the frozen protocol
+table, and unimplemented ones fail with stable `unsupported`. A snapshot
+missing the limit set or null size, or reporting limits above the wire
+budgets, is a protocol failure.
+
 ### Frozen client contract for the reserved command set
 
 The protocol freezes the v1 command/event tables (see the
