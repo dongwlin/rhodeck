@@ -25,43 +25,43 @@ func TestInstanceConfigValidationRejectsInvalidContent(t *testing.T) {
 		options   []InstanceOption
 		wantField string
 	}{
-		{"key 为 0", []InstanceOption{{Key: 1, Value: "ok"}, {Key: 0, Value: "invalid"}}, "Options[1].Key"},
-		{"key 重复", []InstanceOption{{Key: 2, Value: "a"}, {Key: 2, Value: "b"}}, "Options[1]"},
-		{"value 内嵌 NUL", []InstanceOption{{Key: 1, Value: "v" + nul}}, "Options[0].Value"},
-		{"value 非法 UTF-8", []InstanceOption{{Key: 1, Value: invalidUTF8}}, "Options[0].Value"},
-		{"单 value 超 InputStringBytes", []InstanceOption{{Key: 1, Value: strings.Repeat("a", 65_537)}}, "Options[0].Value"},
+		{"key is 0", []InstanceOption{{Key: 1, Value: "ok"}, {Key: 0, Value: "invalid"}}, "Options[1].Key"},
+		{"key duplicated", []InstanceOption{{Key: 2, Value: "a"}, {Key: 2, Value: "b"}}, "Options[1]"},
+		{"value embedded NUL", []InstanceOption{{Key: 1, Value: "v" + nul}}, "Options[0].Value"},
+		{"value invalid UTF-8", []InstanceOption{{Key: 1, Value: invalidUTF8}}, "Options[0].Value"},
+		{"single value exceeds InputStringBytes", []InstanceOption{{Key: 1, Value: strings.Repeat("a", 65_537)}}, "Options[0].Value"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			snap, err := snapshotInstanceConfig(InstanceConfig{Options: tc.options}, defaultLimits())
 			if len(snap.options) != 0 {
-				t.Fatalf("校验失败不得返回快照, got %+v", snap)
+				t.Fatalf("a failed validation must not return a snapshot, got %+v", snap)
 			}
 			if err == nil {
-				t.Fatal("校验失败必须返回错误")
+				t.Fatal("a failed validation must return an error")
 			}
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
 			}
 			if !strings.Contains(err.Error(), tc.wantField) {
-				t.Errorf("错误文本 %q 未包含字段路径 %q", err.Error(), tc.wantField)
+				t.Errorf("error text %q does not contain field path %q", err.Error(), tc.wantField)
 			}
 		})
 	}
 
-	t.Run("项数超 ConfigEntries", func(t *testing.T) {
+	t.Run("entry count exceeds ConfigEntries", func(t *testing.T) {
 		options := make([]InstanceOption, defaultLimits().ConfigEntries+1)
 		for i := range options {
 			options[i] = InstanceOption{Key: int32(i + 1), Value: "v"}
 		}
 		_, err := snapshotInstanceConfig(InstanceConfig{Options: options}, defaultLimits())
 		if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "ConfigEntries") {
-			t.Fatalf("项数超 ConfigEntries 必须拒绝: %v", err)
+			t.Fatalf("an entry count over ConfigEntries must be rejected: %v", err)
 		}
 	})
 
-	t.Run("value 合计超 ConfigBytes", func(t *testing.T) {
+	t.Run("value total exceeds ConfigBytes", func(t *testing.T) {
 		// 65 个恰好 65,536 字节(不超单串预算)的 value 合计
 		// 4,259,840,超过默认 ConfigBytes 4,194,304。
 		options := make([]InstanceOption, 65)
@@ -70,7 +70,7 @@ func TestInstanceConfigValidationRejectsInvalidContent(t *testing.T) {
 		}
 		_, err := snapshotInstanceConfig(InstanceConfig{Options: options}, defaultLimits())
 		if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "ConfigBytes") {
-			t.Fatalf("文本合计超 ConfigBytes 必须拒绝: %v", err)
+			t.Fatalf("a text total over ConfigBytes must be rejected: %v", err)
 		}
 	})
 }
@@ -87,10 +87,10 @@ func TestInstanceConfigAcceptsUnknownKeysAndEmptyValues(t *testing.T) {
 	}}
 	snap, err := snapshotInstanceConfig(cfg, defaultLimits())
 	if err != nil {
-		t.Fatalf("未知非零 key 与空 value 应当被接受: %v", err)
+		t.Fatalf("unknown non-zero keys and empty values should be accepted: %v", err)
 	}
 	if len(snap.options) != len(cfg.Options) || snap.options[1] != cfg.Options[1] {
-		t.Errorf("实例选项快照不符: %+v", snap.options)
+		t.Errorf("instance option snapshot mismatch: %+v", snap.options)
 	}
 
 	options := make([]InstanceOption, defaultLimits().ConfigEntries)
@@ -98,7 +98,7 @@ func TestInstanceConfigAcceptsUnknownKeysAndEmptyValues(t *testing.T) {
 		options[i] = InstanceOption{Key: int32(i + 1), Value: "v"}
 	}
 	if _, err := snapshotInstanceConfig(InstanceConfig{Options: options}, defaultLimits()); err != nil {
-		t.Fatalf("合计项数恰为 ConfigEntries 应当被接受: %v", err)
+		t.Fatalf("an entry count of exactly ConfigEntries should be accepted: %v", err)
 	}
 }
 
@@ -109,7 +109,7 @@ func TestInstanceConfigSnapshotIsDeepCopy(t *testing.T) {
 
 	snap, err := snapshotInstanceConfig(cfg, defaultLimits())
 	if err != nil {
-		t.Fatalf("合法配置不得校验失败: %v", err)
+		t.Fatalf("a valid configuration must not fail validation: %v", err)
 	}
 
 	cfg.Options[0].Value = "tampered"
@@ -117,7 +117,7 @@ func TestInstanceConfigSnapshotIsDeepCopy(t *testing.T) {
 	cfg.Options = append(cfg.Options, InstanceOption{Key: 9, Value: "extra"})
 
 	if len(snap.options) != 1 || snap.options[0] != (InstanceOption{Key: 3, Value: "orig"}) {
-		t.Errorf("实例选项快照被改写: %+v", snap.options)
+		t.Errorf("instance option snapshot was tampered with: %+v", snap.options)
 	}
 }
 
@@ -132,27 +132,27 @@ func TestConnectConfigValidationRejectsInvalidInput(t *testing.T) {
 		cfg       ConnectConfig
 		wantField string
 	}{
-		{"ADBPath 为空", ConnectConfig{Address: "127.0.0.1:5555"}, "ADBPath"},
-		{"ADBPath 相对路径", ConnectConfig{ADBPath: "adb", Address: "127.0.0.1:5555"}, "ADBPath"},
-		{"ADBPath 内嵌 NUL", ConnectConfig{ADBPath: testAbsolutePath("adb") + nul, Address: "127.0.0.1:5555"}, "ADBPath"},
-		{"ADBPath 非法 UTF-8", ConnectConfig{ADBPath: testAbsolutePath("adb") + invalidUTF8, Address: "127.0.0.1:5555"}, "ADBPath"},
-		{"Address 为空", ConnectConfig{ADBPath: testAbsolutePath("adb")}, "Address"},
-		{"Address 内嵌 NUL", ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: "127.0.0.1" + nul}, "Address"},
-		{"Config 内嵌 NUL", ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: "127.0.0.1:5555", Config: "{" + nul + "}"}, "Config"},
-		{"Config 非法 UTF-8", ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: "127.0.0.1:5555", Config: invalidUTF8}, "Config"},
+		{"ADBPath is empty", ConnectConfig{Address: "127.0.0.1:5555"}, "ADBPath"},
+		{"ADBPath relative path", ConnectConfig{ADBPath: "adb", Address: "127.0.0.1:5555"}, "ADBPath"},
+		{"ADBPath embedded NUL", ConnectConfig{ADBPath: testAbsolutePath("adb") + nul, Address: "127.0.0.1:5555"}, "ADBPath"},
+		{"ADBPath invalid UTF-8", ConnectConfig{ADBPath: testAbsolutePath("adb") + invalidUTF8, Address: "127.0.0.1:5555"}, "ADBPath"},
+		{"Address is empty", ConnectConfig{ADBPath: testAbsolutePath("adb")}, "Address"},
+		{"Address embedded NUL", ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: "127.0.0.1" + nul}, "Address"},
+		{"Config embedded NUL", ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: "127.0.0.1:5555", Config: "{" + nul + "}"}, "Config"},
+		{"Config invalid UTF-8", ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: "127.0.0.1:5555", Config: invalidUTF8}, "Config"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := snapshotConnectInput(tc.cfg, defaultLimits())
 			if err == nil {
-				t.Fatal("校验失败必须返回错误")
+				t.Fatal("a failed validation must return an error")
 			}
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
 			}
 			if !strings.Contains(err.Error(), tc.wantField) {
-				t.Errorf("错误文本 %q 未包含字段路径 %q", err.Error(), tc.wantField)
+				t.Errorf("error text %q does not contain field path %q", err.Error(), tc.wantField)
 			}
 		})
 	}
@@ -165,10 +165,10 @@ func TestConnectConfigAcceptsEmptyConfigAndBudget(t *testing.T) {
 	cfg := ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: "127.0.0.1:5555", Config: ""}
 	snap, err := snapshotConnectInput(cfg, defaultLimits())
 	if err != nil {
-		t.Fatalf("空 Config 应当被接受: %v", err)
+		t.Fatalf("an empty Config should be accepted: %v", err)
 	}
 	if snap.adbPath != cfg.ADBPath || snap.address != cfg.Address || snap.config != "" {
-		t.Errorf("连接输入快照不符: %+v", snap)
+		t.Errorf("connect input snapshot mismatch: %+v", snap)
 	}
 
 	// 三串各 40 字节(不超单串预算),合计 120 超过收窄后的
@@ -180,14 +180,14 @@ func TestConnectConfigAcceptsEmptyConfigAndBudget(t *testing.T) {
 	full := ConnectConfig{ADBPath: testAbsolutePathWithLength(40), Address: strings.Repeat("b", 40), Config: strings.Repeat("c", 40)}
 	_, err = snapshotConnectInput(full, limits)
 	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "connect input text bytes total") {
-		t.Fatalf("连接输入文本合计超 ConfigBytes 必须拒绝: %v", err)
+		t.Fatalf("a connect input text total over ConfigBytes must be rejected: %v", err)
 	}
 
 	// 单串预算独立执行:恰达 65,537 字节的 ADBPath 超默认
 	// InputStringBytes。
 	_, err = snapshotConnectInput(ConnectConfig{ADBPath: testAbsolutePathWithLength(65_537), Address: "x"}, defaultLimits())
 	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "InputStringBytes") {
-		t.Fatalf("ADBPath 超单串预算必须拒绝: %v", err)
+		t.Fatalf("an ADBPath over the single-string budget must be rejected: %v", err)
 	}
 }
 
@@ -204,19 +204,19 @@ func TestTaskInputRejectsInvalidInputDistinguishably(t *testing.T) {
 		params     json.RawMessage
 		wantSubstr string
 	}{
-		{"taskType 为空", "", json.RawMessage(`{}`), "taskType must not be empty"},
-		{"taskType 内嵌 NUL", "Fighting" + nul, json.RawMessage(`{}`), "taskType contains an embedded NUL byte"},
-		{"taskType 非法 UTF-8", invalidUTF8, json.RawMessage(`{}`), "taskType is not valid UTF-8"},
-		{"taskType 超单串预算", strings.Repeat("a", 65_537), json.RawMessage(`{}`), "taskType length"},
-		{"params 为 nil", "Fighting", nil, "params is not valid JSON"},
-		{"params 为空白", "Fighting", json.RawMessage(`   `), "params is not valid JSON"},
-		{"params 为 null", "Fighting", json.RawMessage(`null`), "params must be a JSON object"},
-		{"params 为数组", "Fighting", json.RawMessage(`[1,2]`), "params must be a JSON object"},
-		{"params 为标量", "Fighting", json.RawMessage(`42`), "params must be a JSON object"},
-		{"params 截断", "Fighting", json.RawMessage(`{"a":`), "params is not a complete JSON object"},
-		{"params 尾随第二个值", "Fighting", json.RawMessage(`{} {}`), "params has trailing content"},
-		{"params 值内实际 NUL", "Fighting", json.RawMessage("{\"a\":\"\x00\"}"), "params contains a literal NUL byte"},
-		{"params 键内实际 NUL", "Fighting", json.RawMessage("{\"a\x00\":1}"), "params contains a literal NUL byte"},
+		{"taskType is empty", "", json.RawMessage(`{}`), "taskType must not be empty"},
+		{"taskType embedded NUL", "Fighting" + nul, json.RawMessage(`{}`), "taskType contains an embedded NUL byte"},
+		{"taskType invalid UTF-8", invalidUTF8, json.RawMessage(`{}`), "taskType is not valid UTF-8"},
+		{"taskType exceeds the single-string budget", strings.Repeat("a", 65_537), json.RawMessage(`{}`), "taskType length"},
+		{"params is nil", "Fighting", nil, "params is not valid JSON"},
+		{"params is whitespace", "Fighting", json.RawMessage(`   `), "params is not valid JSON"},
+		{"params is null", "Fighting", json.RawMessage(`null`), "params must be a JSON object"},
+		{"params is an array", "Fighting", json.RawMessage(`[1,2]`), "params must be a JSON object"},
+		{"params is a scalar", "Fighting", json.RawMessage(`42`), "params must be a JSON object"},
+		{"params truncated", "Fighting", json.RawMessage(`{"a":`), "params is not a complete JSON object"},
+		{"params trailing second value", "Fighting", json.RawMessage(`{} {}`), "params has trailing content"},
+		{"params literal NUL in a value", "Fighting", json.RawMessage("{\"a\":\"\x00\"}"), "params contains a literal NUL byte"},
+		{"params literal NUL in a key", "Fighting", json.RawMessage("{\"a\x00\":1}"), "params contains a literal NUL byte"},
 	}
 
 	var representative [3]string
@@ -225,33 +225,33 @@ func TestTaskInputRejectsInvalidInputDistinguishably(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateTaskInput(tc.taskType, tc.params, defaultLimits())
 			if err == nil {
-				t.Fatal("校验失败必须返回错误")
+				t.Fatal("a failed validation must return an error")
 			}
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
 			}
 			if !strings.Contains(err.Error(), tc.wantSubstr) {
-				t.Errorf("错误文本 %q 未包含可辨识诊断 %q", err.Error(), tc.wantSubstr)
+				t.Errorf("error text %q does not contain the distinguishable diagnostic %q", err.Error(), tc.wantSubstr)
 			}
 			// 收集三个代表性失败,验证诊断彼此可区分。
 			switch tc.name {
-			case "taskType 内嵌 NUL":
+			case "taskType embedded NUL":
 				representative[0] = err.Error()
 				seen++
-			case "params 值内实际 NUL":
+			case "params literal NUL in a value":
 				representative[1] = err.Error()
 				seen++
-			case "params 截断":
+			case "params truncated":
 				representative[2] = err.Error()
 				seen++
 			}
 		})
 	}
 	if seen != 3 {
-		t.Fatalf("代表性用例收集不全: %d", seen)
+		t.Fatalf("representative cases incompletely collected: %d", seen)
 	}
 	if representative[0] == representative[1] || representative[1] == representative[2] || representative[0] == representative[2] {
-		t.Errorf("内嵌 NUL 与非法 JSON 的诊断必须可区分: %q / %q / %q",
+		t.Errorf("diagnostics for embedded NUL and invalid JSON must be distinguishable: %q / %q / %q",
 			representative[0], representative[1], representative[2])
 	}
 }
@@ -264,25 +264,25 @@ func TestTaskInputPreservesUnknownAndBigIntegerVerbatim(t *testing.T) {
 	raw := json.RawMessage(`{"unknown_field":{"nested":[1,{"x":9007199254740993}]},"esc":"\u0000","big":12345678901234567890}`)
 
 	if err := validateTaskInput(taskType, raw, defaultLimits()); err != nil {
-		t.Fatalf("未知任务类型与大整数 params 应当被接受: %v", err)
+		t.Fatalf("unknown task types and big-integer params should be accepted: %v", err)
 	}
 	snap, err := snapshotTaskInput(taskType, raw, defaultLimits())
 	if err != nil {
-		t.Fatalf("快照不得失败: %v", err)
+		t.Fatalf("snapshot must not fail: %v", err)
 	}
 	if snap.taskType != taskType {
-		t.Errorf("taskType 被改写: %q", snap.taskType)
+		t.Errorf("taskType was rewritten: %q", snap.taskType)
 	}
 	if string(snap.params) != string(raw) {
-		t.Errorf("params 原文被改写:\n got %q\nwant %q", string(snap.params), string(raw))
+		t.Errorf("params raw JSON was rewritten:\n got %q\nwant %q", string(snap.params), string(raw))
 	}
 
 	// 重复校验与快照不改变原输入。
 	if err := validateTaskInput(taskType, raw, defaultLimits()); err != nil {
-		t.Errorf("重复校验不得失败: %v", err)
+		t.Errorf("repeated validation must not fail: %v", err)
 	}
 	if string(raw) != `{"unknown_field":{"nested":[1,{"x":9007199254740993}]},"esc":"\u0000","big":12345678901234567890}` {
-		t.Errorf("原输入被改写: %q", string(raw))
+		t.Errorf("the original input was rewritten: %q", string(raw))
 	}
 }
 
@@ -293,14 +293,14 @@ func TestTaskInputSnapshotIsDeepCopyAndBudget(t *testing.T) {
 	raw := json.RawMessage(`{"orig":9007199254740993}`)
 	snap, err := snapshotTaskInput("Fighting", raw, defaultLimits())
 	if err != nil {
-		t.Fatalf("合法输入不得失败: %v", err)
+		t.Fatalf("valid input must not fail: %v", err)
 	}
 
 	for i := range raw {
 		raw[i] = 'X'
 	}
 	if string(snap.params) != `{"orig":9007199254740993}` {
-		t.Errorf("任务输入快照被改写: %q", string(snap.params))
+		t.Errorf("task input snapshot was tampered with: %q", string(snap.params))
 	}
 
 	// 60 + 60 = 120 字节(各自不超收窄后的单串/单份预算 64),
@@ -311,7 +311,7 @@ func TestTaskInputSnapshotIsDeepCopyAndBudget(t *testing.T) {
 	limits.ConfigBytes = 100
 	err = validateTaskInput(strings.Repeat("a", 60), json.RawMessage(`{"b":"`+strings.Repeat("c", 52)+`"}`), limits)
 	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "task input text bytes total") {
-		t.Fatalf("任务输入文本合计超 ConfigBytes 必须拒绝: %v", err)
+		t.Fatalf("a task input text total over ConfigBytes must be rejected: %v", err)
 	}
 }
 

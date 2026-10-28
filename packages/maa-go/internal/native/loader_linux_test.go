@@ -25,10 +25,10 @@ func TestLoadFlagsFrozen(t *testing.T) {
 		t.Errorf("loadFlags = %#x, want 0x2 (RTLD_NOW|RTLD_LOCAL)", loadFlags)
 	}
 	if loadFlags&purego.RTLD_GLOBAL != 0 {
-		t.Errorf("loadFlags = %#x, 不得包含 RTLD_GLOBAL (冻结策略:不扩大符号可见性)", loadFlags)
+		t.Errorf("loadFlags = %#x, must not contain RTLD_GLOBAL (frozen policy: do not widen symbol visibility)", loadFlags)
 	}
 	if loadFlags&purego.RTLD_LAZY != 0 {
-		t.Errorf("loadFlags = %#x, 不得包含 RTLD_LAZY (冻结策略:加载期完成全部重定位)", loadFlags)
+		t.Errorf("loadFlags = %#x, must not contain RTLD_LAZY (frozen policy: complete all relocations at load time)", loadFlags)
 	}
 }
 
@@ -41,17 +41,17 @@ func TestOpenMissingLibraryReportsSystemCause(t *testing.T) {
 
 	lib, err := newLoader(dlopenPrimitives{}, abiProfile).Open(missing)
 	if lib != nil {
-		t.Fatalf("打开不存在的库不得返回 Library, got %+v", lib)
+		t.Fatalf("opening a nonexistent library must not return a Library, got %+v", lib)
 	}
 	var lle *LibraryLoadError
 	if !errors.As(err, &lle) {
-		t.Fatalf("errors.As 未得到 *LibraryLoadError, got %T: %v", err, err)
+		t.Fatalf("errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
 	}
 	if lle.Err == nil {
-		t.Fatal("必须保留底层加载错误")
+		t.Fatal("the underlying load error must be preserved")
 	}
 	if !strings.Contains(lle.Err.Error(), "No such file or directory") {
-		t.Errorf("底层错误文本 = %q, want it to contain %q", lle.Err.Error(), "No such file or directory")
+		t.Errorf("underlying error text = %q, want it to contain %q", lle.Err.Error(), "No such file or directory")
 	}
 	if lle.Path != missing {
 		t.Errorf("Path = %q, want %q", lle.Path, missing)
@@ -74,19 +74,19 @@ func TestOpenMissingLibraryReportsSystemCause(t *testing.T) {
 func TestOpenRejectsInvalidELF(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "not-an-elf.so")
 	if err := os.WriteFile(path, []byte("this file is not an ELF object, just plain bytes"), 0o755); err != nil {
-		t.Fatalf("写入夹具文件失败: %v", err)
+		t.Fatalf("failed to write the fixture file: %v", err)
 	}
 
 	lib, err := newLoader(dlopenPrimitives{}, abiProfile).Open(path)
 	if lib != nil {
-		t.Fatalf("打开非 ELF 文件不得返回 Library, got %+v", lib)
+		t.Fatalf("opening a non-ELF file must not return a Library, got %+v", lib)
 	}
 	var lle *LibraryLoadError
 	if !errors.As(err, &lle) {
-		t.Fatalf("errors.As 未得到 *LibraryLoadError, got %T: %v", err, err)
+		t.Fatalf("errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
 	}
 	if lle.Err == nil {
-		t.Error("必须保留底层加载错误")
+		t.Error("the underlying load error must be preserved")
 	}
 }
 
@@ -108,12 +108,12 @@ func TestOpenAndLookupRealSystemLibrary(t *testing.T) {
 		}
 	}
 	if found == "" {
-		t.Skip("本机不存在候选 libm.so.6,跳过真实 loader 冒烟测试;跳过不计为通过")
+		t.Skip("no candidate libm.so.6 exists on this machine; skipping the real loader smoke test; a skip does not count as a pass")
 	}
 
 	lib, err := newLoader(dlopenPrimitives{}, abiProfile).Open(found)
 	if err != nil {
-		t.Fatalf("打开真实系统库 %s 失败: %v", found, err)
+		t.Fatalf("failed to open the real system library %s: %v", found, err)
 	}
 	if lib.Path() != found {
 		t.Errorf("Library.Path() = %q, want %q", lib.Path(), found)
@@ -124,20 +124,20 @@ func TestOpenAndLookupRealSystemLibrary(t *testing.T) {
 
 	sqrtAddr, err := lib.Lookup("sqrt")
 	if err != nil {
-		t.Fatalf("Lookup(sqrt) 返回意外错误: %v", err)
+		t.Fatalf("Lookup(sqrt) returned an unexpected error: %v", err)
 	}
 	if sqrtAddr == 0 {
-		t.Fatal("Lookup(sqrt) 返回零地址")
+		t.Fatal("Lookup(sqrt) returned a null address")
 	}
 
 	const absent = "AsstNoSuchSymbolRhodeck"
 	_, err = lib.Lookup(absent)
 	var sle *SymbolLookupError
 	if !errors.As(err, &sle) {
-		t.Fatalf("errors.As 未得到 *SymbolLookupError, got %T: %v", err, err)
+		t.Fatalf("errors.As did not yield a *SymbolLookupError, got %T: %v", err, err)
 	}
 	if sle.Symbol != absent || sle.LibraryPath != found || sle.Profile != abiProfile {
-		t.Errorf("诊断字段不符: %+v", sle)
+		t.Errorf("diagnostic fields mismatch: %+v", sle)
 	}
 }
 
@@ -151,24 +151,24 @@ func TestNewLoaderProductionWiring(t *testing.T) {
 
 	ldr := NewLoader()
 	if ldr == nil {
-		t.Fatal("NewLoader 必须返回生产加载器")
+		t.Fatal("NewLoader must return the production loader")
 	}
 	if ldr.profile != abiProfile {
-		t.Errorf("生产加载器的 ABI 组合标识 = %q, want %q", ldr.profile, abiProfile)
+		t.Errorf("production loader ABI profile = %q, want %q", ldr.profile, abiProfile)
 	}
 
 	lib, err := ldr.Open(missing)
 	if lib != nil {
-		t.Fatalf("打开不存在的库不得返回 Library, got %+v", lib)
+		t.Fatalf("opening a nonexistent library must not return a Library, got %+v", lib)
 	}
 	var lle *LibraryLoadError
 	if !errors.As(err, &lle) {
-		t.Fatalf("errors.As 未得到 *LibraryLoadError, got %T: %v", err, err)
+		t.Fatalf("errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
 	}
 	if lle.Path != missing {
 		t.Errorf("Path = %q, want %q", lle.Path, missing)
 	}
 	if lle.Err == nil || !strings.Contains(lle.Err.Error(), "No such file or directory") {
-		t.Errorf("底层错误 = %v, want 保留系统 loader 的「文件不存在」原因", lle.Err)
+		t.Errorf("underlying error = %v, want the system loader's \"No such file or directory\" cause preserved", lle.Err)
 	}
 }

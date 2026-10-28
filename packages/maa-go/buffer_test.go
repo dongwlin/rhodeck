@@ -30,7 +30,7 @@ func logRead[T any](t *testing.T, log *probeLog[T], respond func(buf []T) uint64
 	return func(buf []T) uint64 {
 		log.calls++
 		if len(buf) == 0 {
-			t.Error("read 收到空 buffer(len=0):违反非空探测 buffer 契约")
+			t.Error("read received an empty buffer (len=0): violates the non-empty probe buffer contract")
 			return 0
 		}
 		log.caps = append(log.caps, len(buf))
@@ -50,7 +50,7 @@ func sentinelRead[T any](t *testing.T, log *probeLog[T], nullSize uint64) func(b
 func assertCaps[T any](t *testing.T, log *probeLog[T], want []int) {
 	t.Helper()
 	if !slices.Equal(log.caps, want) {
-		t.Fatalf("探测容量序列 = %v, want %v", log.caps, want)
+		t.Fatalf("probe capacity sequence = %v, want %v", log.caps, want)
 	}
 }
 
@@ -70,13 +70,13 @@ func TestReadOutputBytesReturnsIndependentCopy(t *testing.T) {
 
 	got, err := readOutputBytes("GetUUID", read, math.MaxUint64, limits)
 	if err != nil {
-		t.Fatalf("精确返回不得失败: %v", err)
+		t.Fatalf("exact return must not fail: %v", err)
 	}
 	if !slices.Equal(got, []byte("ABCDEFGH")) {
-		t.Fatalf("返回内容 = %q, want 逐字节相等的已知内容", got)
+		t.Fatalf("returned content = %q, want the known content byte-for-byte equal", got)
 	}
 	if &got[0] == log.firsts[0] {
-		t.Fatal("返回值与探测 buffer 共享首元素地址:返回前必须复制为独立 Go 数据")
+		t.Fatal("returned value shares the first element address with a probe buffer: it must be copied into independent Go data before returning")
 	}
 
 	// 改写返回值后再调一次:第二次结果必须仍是 read 写入的已知
@@ -86,13 +86,13 @@ func TestReadOutputBytesReturnsIndependentCopy(t *testing.T) {
 	}
 	again, err := readOutputBytes("GetUUID", read, math.MaxUint64, limits)
 	if err != nil {
-		t.Fatalf("第二次读取不得失败: %v", err)
+		t.Fatalf("second read must not fail: %v", err)
 	}
 	if !slices.Equal(again, []byte("ABCDEFGH")) {
-		t.Fatalf("第二次结果被污染 = %q, want 独立副本", again)
+		t.Fatalf("second result was polluted = %q, want an independent copy", again)
 	}
 	if &again[0] == log.firsts[1] {
-		t.Fatal("第二次返回值与探测 buffer 共享首元素地址")
+		t.Fatal("second returned value shares the first element address with a probe buffer")
 	}
 	assertCaps(t, &log, []int{8, 8})
 }
@@ -101,7 +101,7 @@ func TestReadOutputBytesReturnsIndependentCopy(t *testing.T) {
 // 值边界:ret == capacity 恰好成功(不误判超容量);合法 0 在实际
 // 非空 buffer 上返回非 nil 空切片且恰调用一次。
 func TestReadOutputBytesBoundaryAndZeroLength(t *testing.T) {
-	t.Run("ret==capacity 恰好成功", func(t *testing.T) {
+	t.Run("ret==capacity exact success", func(t *testing.T) {
 		var log probeLog[byte]
 		read := logRead(t, &log, func(buf []byte) uint64 {
 			for i := range buf {
@@ -111,7 +111,7 @@ func TestReadOutputBytesBoundaryAndZeroLength(t *testing.T) {
 		})
 		got, err := readOutputBytes("GetImagePNG", read, math.MaxUint64, BufferLimits{Initial: 16, Max: 64, GrowthRetries: 2})
 		if err != nil {
-			t.Fatalf("ret==capacity 是合法上限,不得误判超容量: %v", err)
+			t.Fatalf("ret==capacity is a legal upper bound and must not be misjudged as over-capacity: %v", err)
 		}
 		if len(got) != 16 {
 			t.Fatalf("len = %d, want 16", len(got))
@@ -119,23 +119,23 @@ func TestReadOutputBytesBoundaryAndZeroLength(t *testing.T) {
 		assertCaps(t, &log, []int{16})
 	})
 
-	t.Run("合法 0 返回非 nil 空切片", func(t *testing.T) {
+	t.Run("legal 0 returns a non-nil empty slice", func(t *testing.T) {
 		// 契约「合法的 0 长度在实际非空 buffer 上返回空内容」:
 		// buffer 非空已由 logRead 在 read 内断言,此处钉住结果端。
 		var log probeLog[byte]
 		read := logRead(t, &log, func(buf []byte) uint64 { return 0 })
 		got, err := readOutputBytes("GetUUID", read, math.MaxUint64, BufferLimits{Initial: 8, Max: 8, GrowthRetries: 0})
 		if err != nil {
-			t.Fatalf("合法 0 不得失败: %v", err)
+			t.Fatalf("legal 0 must not fail: %v", err)
 		}
 		if got == nil {
-			t.Fatal("合法 0 必须返回非 nil 空切片,不是 nil")
+			t.Fatal("legal 0 must return a non-nil empty slice, not nil")
 		}
 		if len(got) != 0 {
 			t.Fatalf("len = %d, want 0", len(got))
 		}
 		if log.calls != 1 {
-			t.Fatalf("合法 0 不得触发扩容,调用 %d 次, want 1", log.calls)
+			t.Fatalf("legal 0 must not trigger growth, %d calls, want 1", log.calls)
 		}
 	})
 }
@@ -144,7 +144,7 @@ func TestReadOutputBytesBoundaryAndZeroLength(t *testing.T) {
 // 路径:只有 NullSize 触发下一次探测,next = min(Max, 2*current)——
 // 正常翻倍;current > Max/2 时先用除法判断再直接夹到 Max。
 func TestReadOutputBytesGrowthDoublesThenClampsToMax(t *testing.T) {
-	t.Run("容量序列恰为 1,2,4,8 翻倍", func(t *testing.T) {
+	t.Run("capacity sequence exactly 1,2,4,8 doubling", func(t *testing.T) {
 		var log probeLog[byte]
 		read := logRead(t, &log, func(buf []byte) uint64 {
 			if len(buf) < 8 {
@@ -157,16 +157,16 @@ func TestReadOutputBytesGrowthDoublesThenClampsToMax(t *testing.T) {
 		})
 		got, err := readOutputBytes("GetUUID", read, math.MaxUint64, BufferLimits{Initial: 1, Max: 16, GrowthRetries: 16})
 		if err != nil {
-			t.Fatalf("扩容后成功读取不得失败: %v", err)
+			t.Fatalf("successful read after growth must not fail: %v", err)
 		}
 		assertCaps(t, &log, []int{1, 2, 4, 8})
 		want := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 		if !slices.Equal(got, want) {
-			t.Fatalf("内容 = %v, want %v(只复制最后一次有效区间)", got, want)
+			t.Fatalf("content = %v, want %v (only the last valid range is copied)", got, want)
 		}
 	})
 
-	t.Run("Initial > Max/2 时直接夹到 Max", func(t *testing.T) {
+	t.Run("Initial > Max/2 clamps directly to Max", func(t *testing.T) {
 		// 3 > 5/2:不得先乘 2 得 6 越过 Max,必须直接夹到 5。
 		var log probeLog[byte]
 		read := logRead(t, &log, func(buf []byte) uint64 {
@@ -177,7 +177,7 @@ func TestReadOutputBytesGrowthDoublesThenClampsToMax(t *testing.T) {
 		})
 		got, err := readOutputBytes("GetImagePNG", read, math.MaxUint64, BufferLimits{Initial: 3, Max: 5, GrowthRetries: 16})
 		if err != nil {
-			t.Fatalf("夹取路径上的成功读取不得失败: %v", err)
+			t.Fatalf("successful read on the clamping path must not fail: %v", err)
 		}
 		assertCaps(t, &log, []int{3, 5})
 		if len(got) != 5 {
@@ -192,7 +192,7 @@ func TestReadOutputBytesGrowthDoublesThenClampsToMax(t *testing.T) {
 // 调用数,总调用数 ≤ 1 + GrowthRetries;已达 Max 即停,不消耗剩余
 // 重试;Initial==Max 与 GrowthRetries==0 都只调用一次。
 func TestReadOutputBytesStopsAtRetryAndMaxLimits(t *testing.T) {
-	t.Run("GrowthRetries 耗尽后恰 1+3 次调用", func(t *testing.T) {
+	t.Run("GrowthRetries exhausted: exactly 1+3 calls", func(t *testing.T) {
 		var log probeLog[byte]
 		_, err := readOutputBytes("GetUUID", sentinelRead(t, &log, math.MaxUint64), math.MaxUint64, BufferLimits{Initial: 1, Max: 1 << 20, GrowthRetries: 3})
 		if !errors.Is(err, ErrBufferLimit) {
@@ -200,11 +200,11 @@ func TestReadOutputBytesStopsAtRetryAndMaxLimits(t *testing.T) {
 		}
 		assertCaps(t, &log, []int{1, 2, 4, 8})
 		if log.calls != 4 {
-			t.Fatalf("调用 %d 次, want 恰 4(1+GrowthRetries),不得再多", log.calls)
+			t.Fatalf("%d calls, want exactly 4 (1+GrowthRetries), not more", log.calls)
 		}
 	})
 
-	t.Run("达到 Max 后不消耗剩余重试", func(t *testing.T) {
+	t.Run("reaching Max stops without consuming remaining retries", func(t *testing.T) {
 		var log probeLog[byte]
 		_, err := readOutputBytes("GetUUID", sentinelRead(t, &log, math.MaxUint64), math.MaxUint64, BufferLimits{Initial: 4, Max: 8, GrowthRetries: 16})
 		if !errors.Is(err, ErrBufferLimit) {
@@ -212,22 +212,22 @@ func TestReadOutputBytesStopsAtRetryAndMaxLimits(t *testing.T) {
 		}
 		assertCaps(t, &log, []int{4, 8})
 		if log.calls != 2 {
-			t.Fatalf("已达 Max 即停,调用 %d 次, want 恰 2,不因剩余重试继续", log.calls)
+			t.Fatalf("stops once Max is reached, %d calls, want exactly 2, not continuing on remaining retries", log.calls)
 		}
 	})
 
-	t.Run("Initial==Max 只调用一次", func(t *testing.T) {
+	t.Run("Initial==Max only one call", func(t *testing.T) {
 		var log probeLog[byte]
 		_, err := readOutputBytes("GetUUID", sentinelRead(t, &log, math.MaxUint64), math.MaxUint64, BufferLimits{Initial: 4, Max: 4, GrowthRetries: 16})
 		if !errors.Is(err, ErrBufferLimit) {
 			t.Fatalf("errors.Is(err, ErrBufferLimit) = false; err = %v", err)
 		}
 		if log.calls != 1 {
-			t.Fatalf("Initial==Max 必须只调用一次,实际 %d", log.calls)
+			t.Fatalf("Initial==Max must call exactly once, got %d", log.calls)
 		}
 	})
 
-	t.Run("GrowthRetries==0 只调用一次", func(t *testing.T) {
+	t.Run("GrowthRetries==0 only one call", func(t *testing.T) {
 		var log probeLog[byte]
 		_, err := readOutputBytes("GetUUID", sentinelRead(t, &log, math.MaxUint64), math.MaxUint64, BufferLimits{Initial: 1, Max: 64, GrowthRetries: 0})
 		if !errors.Is(err, ErrBufferLimit) {
@@ -235,7 +235,7 @@ func TestReadOutputBytesStopsAtRetryAndMaxLimits(t *testing.T) {
 		}
 		assertCaps(t, &log, []int{1})
 		if log.calls != 1 {
-			t.Fatalf("GrowthRetries==0 必须只调用一次,实际 %d", log.calls)
+			t.Fatalf("GrowthRetries==0 must call exactly once, got %d", log.calls)
 		}
 	})
 }
@@ -250,10 +250,10 @@ func TestReadOutputBytesNullSizeCheckedBeforeConversion(t *testing.T) {
 	read := logRead(t, &log, func(buf []byte) uint64 { return math.MaxUint64 })
 	_, err := readOutputBytes("GetUUID", read, math.MaxUint64, BufferLimits{Initial: 8, Max: 16, GrowthRetries: 4})
 	if err == nil {
-		t.Fatal("恒哨兵必须以错误结束")
+		t.Fatal("a constant sentinel must end with an error")
 	}
 	if errors.Is(err, ErrProtocol) {
-		t.Fatalf("哨兵返回不得走「超过实际容量」分支: %v", err)
+		t.Fatalf("sentinel return must not take the \"exceeds actual capacity\" branch: %v", err)
 	}
 	if !errors.Is(err, ErrBufferLimit) {
 		t.Fatalf("errors.Is(err, ErrBufferLimit) = false; err = %v", err)
@@ -273,7 +273,7 @@ func TestReadOutputBytesRejectsOverCapacityReturn(t *testing.T) {
 	}
 	assertCaps(t, &log, []int{8})
 	if log.calls != 1 {
-		t.Fatalf("协议破坏后必须立即终止,调用 %d 次, want 1(不扩容)", log.calls)
+		t.Fatalf("must terminate immediately after a protocol violation, %d calls, want 1 (no growth)", log.calls)
 	}
 }
 
@@ -283,7 +283,7 @@ func TestReadOutputBytesRejectsOverCapacityReturn(t *testing.T) {
 // 的固定语义;并且不把哨兵转换为十进制分配长度;两个接口的单位文本
 // 各自正确、互不混用。
 func TestReadOutputBytesExhaustionDiagnostics(t *testing.T) {
-	t.Run("bytes 接口诊断要素齐全", func(t *testing.T) {
+	t.Run("bytes interface diagnostics contain all elements", func(t *testing.T) {
 		var log probeLog[byte]
 		read := sentinelRead(t, &log, math.MaxUint64)
 		_, err := readOutputBytes("GetUUID", read, math.MaxUint64, BufferLimits{Initial: 2, Max: 16, GrowthRetries: 1})
@@ -302,16 +302,16 @@ func TestReadOutputBytesExhaustionDiagnostics(t *testing.T) {
 			"may be a native state/parameter rejection or insufficient capacity",
 		} {
 			if !strings.Contains(text, want) {
-				t.Errorf("诊断文本缺要素 %q:\n%s", want, text)
+				t.Errorf("diagnostic text lacks element %q:\n%s", want, text)
 			}
 		}
 		// 哨兵不得被转换为十进制分配长度(2^64-1 的十进制串)。
 		if strings.Contains(text, "18446744073709551615") {
-			t.Errorf("诊断不得把哨兵转换为十进制分配长度:\n%s", text)
+			t.Errorf("diagnostics must not convert the sentinel into a decimal allocation length:\n%s", text)
 		}
 	})
 
-	t.Run("int32 elements 接口单位文本", func(t *testing.T) {
+	t.Run("int32 elements interface unit text", func(t *testing.T) {
 		var log probeLog[int32]
 		read := sentinelRead(t, &log, math.MaxUint64)
 		_, err := readOutputInt32s("GetTasksList", read, math.MaxUint64, BufferLimits{Initial: 2, Max: 8, GrowthRetries: 1})
@@ -321,11 +321,11 @@ func TestReadOutputBytesExhaustionDiagnostics(t *testing.T) {
 		text := err.Error()
 		for _, want := range []string{"GetTasksList", "int32 elements", "native return NullSize"} {
 			if !strings.Contains(text, want) {
-				t.Errorf("诊断文本缺要素 %q:\n%s", want, text)
+				t.Errorf("diagnostic text lacks element %q:\n%s", want, text)
 			}
 		}
 		if strings.Contains(text, "bytes") {
-			t.Errorf("元素接口诊断不得出现字节单位:\n%s", text)
+			t.Errorf("element interface diagnostics must not mention the byte unit:\n%s", text)
 		}
 	})
 }
@@ -335,7 +335,7 @@ func TestReadOutputBytesExhaustionDiagnostics(t *testing.T) {
 // 镜像:read 收到恰为元素容量的 []int32、按元素写入与返回;
 // ret==元素容量与合法 0 与字节侧一一对应。
 func TestReadOutputInt32sMeasuresInElements(t *testing.T) {
-	t.Run("read 收到元素容量的 []int32", func(t *testing.T) {
+	t.Run("read receives []int32 sized in element capacity", func(t *testing.T) {
 		// 闭包参数在编译期锁定为 []int32;容量按元素计:Initial=4
 		// 意味着 len(buf)==4 个元素,而不是 4 字节(1 个元素)。
 		var log probeLog[int32]
@@ -347,40 +347,40 @@ func TestReadOutputInt32sMeasuresInElements(t *testing.T) {
 		})
 		got, err := readOutputInt32s("GetTasksList", read, math.MaxUint64, BufferLimits{Initial: 4, Max: 8, GrowthRetries: 2})
 		if err != nil {
-			t.Fatalf("元素接口读取不得失败: %v", err)
+			t.Fatalf("element interface read must not fail: %v", err)
 		}
 		assertCaps(t, &log, []int{4})
 		want := []int32{1, 2, 3, 4}
 		if !slices.Equal(got, want) {
-			t.Fatalf("元素内容 = %v, want %v", got, want)
+			t.Fatalf("element content = %v, want %v", got, want)
 		}
 	})
 
-	t.Run("ret==元素容量恰好成功", func(t *testing.T) {
+	t.Run("ret==element capacity exact success", func(t *testing.T) {
 		var log probeLog[int32]
 		read := logRead(t, &log, func(buf []int32) uint64 { return uint64(len(buf)) })
 		got, err := readOutputInt32s("GetTasksList", read, math.MaxUint64, BufferLimits{Initial: 6, Max: 12, GrowthRetries: 2})
 		if err != nil {
-			t.Fatalf("ret==元素容量是合法上限,不得误判超容量: %v", err)
+			t.Fatalf("ret==element capacity is a legal upper bound and must not be misjudged as over-capacity: %v", err)
 		}
 		if len(got) != 6 {
-			t.Fatalf("len = %d 元素, want 6", len(got))
+			t.Fatalf("len = %d elements, want 6", len(got))
 		}
 		assertCaps(t, &log, []int{6})
 	})
 
-	t.Run("合法 0 返回非 nil 空切片", func(t *testing.T) {
+	t.Run("legal 0 returns a non-nil empty slice", func(t *testing.T) {
 		var log probeLog[int32]
 		read := logRead(t, &log, func(buf []int32) uint64 { return 0 })
 		got, err := readOutputInt32s("GetTasksList", read, math.MaxUint64, BufferLimits{Initial: 4, Max: 8, GrowthRetries: 0})
 		if err != nil {
-			t.Fatalf("合法 0 不得失败: %v", err)
+			t.Fatalf("legal 0 must not fail: %v", err)
 		}
 		if got == nil || len(got) != 0 {
-			t.Fatalf("合法 0 必须返回非 nil 空切片, got %#v", got)
+			t.Fatalf("legal 0 must return a non-nil empty slice, got %#v", got)
 		}
 		if log.calls != 1 {
-			t.Fatalf("合法 0 不得触发扩容,调用 %d 次, want 1", log.calls)
+			t.Fatalf("legal 0 must not trigger growth, %d calls, want 1", log.calls)
 		}
 	})
 }
@@ -391,7 +391,7 @@ func TestReadOutputInt32sMeasuresInElements(t *testing.T) {
 // 绝不真的分配、read 一次都不被调用——守卫若失效,下面的分配会
 // 瞬间耗尽内存,本用例必然失败。
 func TestReadOutputGuardsGoIntBeforeAllocation(t *testing.T) {
-	t.Run("int32 元素 1<<61 个超出 capacity*4 <= MaxInt", func(t *testing.T) {
+	t.Run("1<<61 int32 elements exceeds capacity*4 <= MaxInt", func(t *testing.T) {
 		var log probeLog[int32]
 		read := logRead(t, &log, func(buf []int32) uint64 { return 0 })
 		_, err := readOutputInt32s("GetTasksList", read, math.MaxUint64, BufferLimits{Initial: 1 << 61, Max: 1 << 61, GrowthRetries: 0})
@@ -399,11 +399,11 @@ func TestReadOutputGuardsGoIntBeforeAllocation(t *testing.T) {
 			t.Fatalf("errors.Is(err, ErrProtocol) = false; err = %v", err)
 		}
 		if log.calls != 0 {
-			t.Fatalf("守卫必须在 read 之前生效,实际调用 %d 次", log.calls)
+			t.Fatalf("the guard must take effect before read, got %d calls", log.calls)
 		}
 	})
 
-	t.Run("字节 Initial=1<<63 超出 Go int", func(t *testing.T) {
+	t.Run("bytes Initial=1<<63 exceeds Go int", func(t *testing.T) {
 		var log probeLog[byte]
 		read := logRead(t, &log, func(buf []byte) uint64 { return 0 })
 		_, err := readOutputBytes("GetImagePNG", read, math.MaxUint64, BufferLimits{Initial: 1 << 63, Max: 1 << 63, GrowthRetries: 0})
@@ -411,7 +411,7 @@ func TestReadOutputGuardsGoIntBeforeAllocation(t *testing.T) {
 			t.Fatalf("errors.Is(err, ErrProtocol) = false; err = %v", err)
 		}
 		if log.calls != 0 {
-			t.Fatalf("守卫必须在 read 之前生效,实际调用 %d 次", log.calls)
+			t.Fatalf("the guard must take effect before read, got %d calls", log.calls)
 		}
 	})
 }
@@ -428,7 +428,7 @@ func TestReadOutputRejectsInvalidLimits(t *testing.T) {
 			t.Fatalf("errors.Is(err, ErrProtocol) = false; err = %v", err)
 		}
 		if log.calls != 0 {
-			t.Fatalf("非法 limits 下 read 绝不被调用,实际 %d 次", log.calls)
+			t.Fatalf("read must never be called with invalid limits, got %d calls", log.calls)
 		}
 	})
 
@@ -440,7 +440,7 @@ func TestReadOutputRejectsInvalidLimits(t *testing.T) {
 			t.Fatalf("errors.Is(err, ErrProtocol) = false; err = %v", err)
 		}
 		if log.calls != 0 {
-			t.Fatalf("非法 limits 下 read 绝不被调用,实际 %d 次", log.calls)
+			t.Fatalf("read must never be called with invalid limits, got %d calls", log.calls)
 		}
 	})
 }
@@ -450,14 +450,14 @@ func TestReadOutputRejectsInvalidLimits(t *testing.T) {
 // profile 哨兵在 Open 时核验后保存):非默认的小哨兵值同样触发
 // NullSize 路径,而返回 0 仍为合法空结果。
 func TestReadOutputCustomNullSizeIsParameterNotConstant(t *testing.T) {
-	t.Run("小哨兵值走 NullSize 停止路径", func(t *testing.T) {
+	t.Run("small sentinel value takes the NullSize stop path", func(t *testing.T) {
 		// nullSize=999 大于容量 8:若哨兵参数不被识别,999 会被误判
 		// 为超容量 ErrProtocol;契约要求按哨兵进入扩容/停止路径。
 		var log probeLog[byte]
 		read := logRead(t, &log, func(buf []byte) uint64 { return 999 })
 		_, err := readOutputBytes("GetUUID", read, 999, BufferLimits{Initial: 8, Max: 16, GrowthRetries: 4})
 		if errors.Is(err, ErrProtocol) {
-			t.Fatalf("传入哨兵 999 不得按超容量处理: %v", err)
+			t.Fatalf("the passed-in sentinel 999 must not be treated as over-capacity: %v", err)
 		}
 		if !errors.Is(err, ErrBufferLimit) {
 			t.Fatalf("errors.Is(err, ErrBufferLimit) = false; err = %v", err)
@@ -465,25 +465,25 @@ func TestReadOutputCustomNullSizeIsParameterNotConstant(t *testing.T) {
 		assertCaps(t, &log, []int{8, 16})
 		text := err.Error()
 		if !strings.Contains(text, "NullSize") {
-			t.Errorf("哨兵返回值应显示为 NullSize 字样:\n%s", text)
+			t.Errorf("the sentinel return value should be shown as NullSize:\n%s", text)
 		}
 		if strings.Contains(text, "999") {
-			t.Errorf("诊断不得把哨兵转换为十进制数值:\n%s", text)
+			t.Errorf("diagnostics must not convert the sentinel into a decimal number:\n%s", text)
 		}
 	})
 
-	t.Run("返回 0 仍为合法空结果", func(t *testing.T) {
+	t.Run("returning 0 is still a legal empty result", func(t *testing.T) {
 		var log probeLog[byte]
 		read := logRead(t, &log, func(buf []byte) uint64 { return 0 })
 		got, err := readOutputBytes("GetUUID", read, 999, BufferLimits{Initial: 8, Max: 16, GrowthRetries: 4})
 		if err != nil {
-			t.Fatalf("0 不是哨兵,必须按合法空结果处理: %v", err)
+			t.Fatalf("0 is not a sentinel and must be handled as a legal empty result: %v", err)
 		}
 		if got == nil || len(got) != 0 {
-			t.Fatalf("合法 0 必须返回非 nil 空切片, got %#v", got)
+			t.Fatalf("legal 0 must return a non-nil empty slice, got %#v", got)
 		}
 		if log.calls != 1 {
-			t.Fatalf("合法 0 不得触发扩容,调用 %d 次, want 1", log.calls)
+			t.Fatalf("legal 0 must not trigger growth, %d calls, want 1", log.calls)
 		}
 	})
 }

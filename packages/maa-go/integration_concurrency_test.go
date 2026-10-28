@@ -34,7 +34,7 @@ func TestIntegrationCloseWithQueuedAsyncAndSyncDestroyed(t *testing.T) {
 	// 生线程持有查表结果跨越整个关闭流程)。
 	lateDeliver := native.LookupCallbackDelivery(token)
 	if lateDeliver == nil {
-		t.Fatal("token 未在注册表登记,无法构造迟到投递探针")
+		t.Fatal("token not registered in the registry, cannot construct the late delivery probe")
 	}
 
 	// A:已准入并在 raw 门禁段内执行(onAsyncConnect 屏障保持其在途)。
@@ -62,11 +62,11 @@ func TestIntegrationCloseWithQueuedAsyncAndSyncDestroyed(t *testing.T) {
 		opChB <- op
 		errChB <- err
 	}()
-	waitUntil(t, "两笔调用均已准入", func() bool { return inFlightCalls(s) == 2 })
+	waitUntil(t, "both calls admitted", func() bool { return inFlightCalls(s) == 2 })
 	// A 在 raw 段内尚未返回(预留未接合)、B 在门禁前已预留:两份预留
 	// 都横跨关闭选主,均计入容量占用。
 	if n, r := pendingOccupancy(s), pendingReservedOf(s); n != 0 || r != 2 {
-		t.Fatalf("B 在门禁前排队时 pending 占用 = (%d, %d), want (0, 2)(两份预留均未登记)", n, r)
+		t.Fatalf("pending occupancy while B is queued before the gate = (%d, %d), want (0, 2) (neither reservation registered)", n, r)
 	}
 
 	// Destroy 期间同步投递 Destroyed(锁定 Core 的真实形态:Destroy
@@ -83,21 +83,21 @@ func TestIntegrationCloseWithQueuedAsyncAndSyncDestroyed(t *testing.T) {
 
 	closeErr := make(chan error, 1)
 	go func() { closeErr <- inst.Close() }()
-	waitUntil(t, "close 完成选主转入 closing", func() bool { return s.currentPhase() == phaseClosing })
+	waitUntil(t, "close finished the election and entered closing", func() bool { return s.currentPhase() == phaseClosing })
 
 	// 新调用被拒绝(closing),且不触达 native。
 	before := rig.caller.total()
 	if _, err := inst.Click(3, 4); !errors.Is(err, native.ErrClosing) {
-		t.Fatalf("closing 中的新调用 = %v, want errors.Is native.ErrClosing", err)
+		t.Fatalf("new call during closing = %v, want errors.Is native.ErrClosing", err)
 	}
 	if got := rig.caller.total(); got != before {
-		t.Errorf("closing 中被拒的调用触达 native %d → %d 次, want 不变", before, got)
+		t.Errorf("the call rejected during closing reached native %d → %d times, want unchanged", before, got)
 	}
 
 	// 负面观察窗:A、B 均在途(含门禁前的排队者),Stop/Destroy 不得
 	// 发生。
 	<-time.After(notWithin)
-	assertNoStopDestroy(t, rig.closer, "在途调用(含门禁前排队者)未退出时")
+	assertNoStopDestroy(t, rig.closer, "while in-flight calls (including the caller queued before the gate) have not exited")
 
 	// 放行 A:B 转入门禁段并照常登记(先于关闭准入的提交不被撤销)。
 	// 两笔提交的登记不由中间状态断言(它们与关闭前进并发,瞬时占用
@@ -106,14 +106,14 @@ func TestIntegrationCloseWithQueuedAsyncAndSyncDestroyed(t *testing.T) {
 	close(releaseA)
 	opA := <-opChA
 	if err := <-errChA; err != nil {
-		t.Fatalf("A 的 Connect = %v, want nil", err)
+		t.Fatalf("A's Connect = %v, want nil", err)
 	}
 	opB := <-opChB
 	if err := <-errChB; err != nil {
-		t.Fatalf("B 的 Click = %v, want nil(closing 中照常登记)", err)
+		t.Fatalf("B's Click = %v, want nil (registered as usual during closing)", err)
 	}
 	if opB.ID() != 2 {
-		t.Fatalf("B 的提交 ID = %d, want 2", opB.ID())
+		t.Fatalf("B's submission ID = %d, want 2", opB.ID())
 	}
 
 	// 关闭收敛:一次 Stop、一次 Destroy,Destroy 同步 Destroyed 不锁死。
@@ -124,7 +124,7 @@ func TestIntegrationCloseWithQueuedAsyncAndSyncDestroyed(t *testing.T) {
 	select {
 	case <-destroyedDelivered:
 	default:
-		t.Fatal("Destroy 期间的同步 Destroyed 投递未发生")
+		t.Fatal("the synchronous Destroyed delivery during Destroy did not happen")
 	}
 
 	// 观察到 Close 返回后立即读取稳定终态:无完成的提交以 ErrClosed
@@ -132,47 +132,47 @@ func TestIntegrationCloseWithQueuedAsyncAndSyncDestroyed(t *testing.T) {
 	select {
 	case <-s.done():
 	default:
-		t.Error("Close 返回后 Done 未关闭")
+		t.Error("Done not closed after Close returned")
 	}
 	if got := s.finalError(); got != nil {
-		t.Errorf("最终错误 = %v, want nil(正常 Stop/Destroy 且无故障)", got)
+		t.Errorf("final error = %v, want nil (normal Stop/Destroy with no fault)", got)
 	}
 	for i, op := range []*Operation{opA, opB} {
 		res, err := waitOperationGuarded(t, op, context.Background())
 		if !errors.Is(err, native.ErrClosed) {
-			t.Errorf("提交 %d 的等待错误 = %v, want errors.Is native.ErrClosed", i, err)
+			t.Errorf("wait error of submission %d = %v, want errors.Is native.ErrClosed", i, err)
 		}
 		if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-			t.Errorf("提交 %d 的关闭结算必须无结果: %+v", i, res)
+			t.Errorf("close settlement of submission %d must carry no result: %+v", i, res)
 		}
 		if got := op.ID(); got != AsyncID(i+1) {
-			t.Errorf("已接受 Operation %d 的 ID 关闭后 = %d, want 保持可读 %d", i, got, i+1)
+			t.Errorf("accepted Operation %d ID after close = %d, want kept readable %d", i, got, i+1)
 		}
 	}
 	if n := pendingOccupancy(s); n != 0 {
-		t.Errorf("关闭清空后 pending 占用 = %d, want 0(容量已回收)", n)
+		t.Errorf("pending occupancy after close drained it = %d, want 0 (capacity reclaimed)", n)
 	}
 
 	// Destroyed 事件在关闭后仍可读(缓冲);Events 已关闭。
 	ev := mustReadEvent(t, inst.inst.disp.events())
 	if ev.MessageID != destroyedMessageID {
-		t.Errorf("缓冲事件 MessageID = %d, want Destroyed(%d)", ev.MessageID, destroyedMessageID)
+		t.Errorf("buffered event MessageID = %d, want Destroyed(%d)", ev.MessageID, destroyedMessageID)
 	}
 	if _, ok := <-inst.inst.disp.events(); ok {
-		t.Error("Close 后 Events 应已关闭")
+		t.Error("Events should be closed after Close")
 	}
 
 	// 关门后迟到的原生线程投递:未获 callback lease,绝不读取原生
 	// details(nil 探针——路径若错误读取会按 ErrProtocol 记故障)。
 	lateDeliver(66, nil)
 	if s.currentFault() != nil {
-		t.Errorf("未准入的迟到投递不得记录故障(nil 探针被读取),得到首因 %v", s.currentFault())
+		t.Errorf("the unadmitted late delivery must not record a fault (the nil probe was read), got first cause %v", s.currentFault())
 	}
 	if lost := s.currentLostEvents(); lost != 0 {
-		t.Errorf("丢失计数 = %d, want 0(未准入的消息不计丢失)", lost)
+		t.Errorf("lost count = %d, want 0 (unadmitted messages are not counted as lost)", lost)
 	}
 	if n := inFlightCallbacks(s); n != 0 {
-		t.Errorf("迟到投递后的在途 callback = %d, want 0", n)
+		t.Errorf("in-flight callbacks after the late delivery = %d, want 0", n)
 	}
 }
 
@@ -201,19 +201,19 @@ func TestIntegrationCompletionFaultMatrix(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if res, err := waitOperationGuarded(t, op1, ctx); !errors.Is(err, context.Canceled) || res.ID != 0 {
-		t.Fatalf("完成前的取消等待 = (%+v, %v), want (零值, context.Canceled)", res, err)
+		t.Fatalf("cancelled wait before completion = (%+v, %v), want (zero value, context.Canceled)", res, err)
 	}
 	if n := pendingOccupancy(s); n != 1 {
-		t.Fatalf("取消后 pending 占用 = %d, want 1(取消不提前回收)", n)
+		t.Fatalf("pending occupancy after cancel = %d, want 1 (cancel does not reclaim early)", n)
 	}
 	op1Details := `{"ret":false,"cost":9007199254740993}`
 	deliverAsyncInfo(t, token, 1, "Screencap", op1Details)
 	res1, err1 := waitOperationGuarded(t, op1, context.Background())
 	if !errors.Is(err1, native.ErrNativeRejected) {
-		t.Fatalf("晚到 ret=false 的等待错误 = %v, want errors.Is ErrNativeRejected", err1)
+		t.Fatalf("wait error for the late ret=false = %v, want errors.Is ErrNativeRejected", err1)
 	}
 	if res1.ID != 1 || res1.What != "Screencap" || res1.OK || string(res1.Details) != op1Details {
-		t.Fatalf("晚到失败结果 = %+v, want {1 Screencap false %s}", res1, op1Details)
+		t.Fatalf("late failure result = %+v, want {1 Screencap false %s}", res1, op1Details)
 	}
 
 	// ② Connect(id 2):完成在 raw 窗口内早到(未知字段与大整数原文),
@@ -221,7 +221,7 @@ func TestIntegrationCompletionFaultMatrix(t *testing.T) {
 	op2Details := `{"ret":true,"future":{"nested":[1,2,3]},"big":9007199254740993}`
 	rig.caller.onAsyncConnect = func(uintptr) {
 		deliverAsyncInfo(t, token, 2, "Connect", op2Details)
-		waitUntil(t, "早到结果已临存进窗口", func() bool {
+		waitUntil(t, "early result staged in the window", func() bool {
 			v := earlyWindowOf(s)
 			return v.open && v.has && v.id == 2 && v.what == "Connect"
 		})
@@ -232,10 +232,10 @@ func TestIntegrationCompletionFaultMatrix(t *testing.T) {
 	}
 	res2, err2 := waitOperationGuarded(t, op2, context.Background())
 	if err2 != nil || res2.ID != 2 || res2.What != "Connect" || !res2.OK || string(res2.Details) != op2Details {
-		t.Fatalf("早到接合结果 = (%+v, %v), want {2 Connect true %s}", res2, err2, op2Details)
+		t.Fatalf("early-join result = (%+v, %v), want {2 Connect true %s}", res2, err2, op2Details)
 	}
 	if v := earlyWindowOf(s); v.open || v.has {
-		t.Errorf("接合后早到窗口未清空: %+v", v)
+		t.Errorf("early window not cleared after the join: %+v", v)
 	}
 
 	// ③ Click(id 3):完成消息是截断的非法 JSON——无法关联的完成不得
@@ -247,29 +247,29 @@ func TestIntegrationCompletionFaultMatrix(t *testing.T) {
 	}
 	invalidPayload := []byte(`{"what":"Click","async_call_id":3,`)
 	native.LookupCallbackDelivery(token)(int32(asyncCallInfoMessageID), callbackCBytes(string(invalidPayload)))
-	waitUntil(t, "非法完成已触发首因", func() bool { return s.currentFault() != nil })
+	waitUntil(t, "the illegal completion triggered the first cause", func() bool { return s.currentFault() != nil })
 	fault := s.currentFault()
 	if !errors.Is(fault, native.ErrProtocol) {
-		t.Fatalf("首因 = %v, want errors.Is ErrProtocol", fault)
+		t.Fatalf("first cause = %v, want errors.Is ErrProtocol", fault)
 	}
 	res3, err3 := waitOperationGuarded(t, op3, context.Background())
 	if err3 == nil || !errors.Is(err3, fault) || !errors.Is(err3, native.ErrProtocol) {
-		t.Fatalf("无法关联完成的结算错误 = %v, want 与首因同一身份且沿链可达 ErrProtocol", err3)
+		t.Fatalf("settlement error of the uncorrelatable completion = %v, want the same identity as the first cause with ErrProtocol reachable along the chain", err3)
 	}
 	if res3.ID != 0 || res3.OK || res3.Details != nil {
-		t.Fatalf("无法关联完成的结算必须无结果: %+v", res3)
+		t.Fatalf("settlement of the uncorrelatable completion must carry no result: %+v", res3)
 	}
 	snap := s.faultDiagnostics()
 	if !bytes.Equal(snap.rawPrefix, invalidPayload) {
-		t.Fatalf("原文前缀 = %q, want 逐字节保留的 %q", snap.rawPrefix, invalidPayload)
+		t.Fatalf("raw prefix = %q, want byte-for-byte preserved %q", snap.rawPrefix, invalidPayload)
 	}
 	if n, r := pendingOccupancy(s), pendingReservedOf(s); n != 0 || r != 0 {
-		t.Fatalf("故障扫描后 pending 占用 = (%d, %d), want (0, 0)", n, r)
+		t.Fatalf("pending occupancy after the fault scan = (%d, %d), want (0, 0)", n, r)
 	}
 	select {
 	case <-s.faultNotify():
 	default:
-		t.Error("首次故障的通知未关闭")
+		t.Error("the first-fault notification is not closed")
 	}
 
 	// ④ 同一 ID 的重复完成在故障后到达:不能伪造成新的成功(首因保
@@ -288,54 +288,54 @@ func TestIntegrationCompletionFaultMatrix(t *testing.T) {
 	} {
 		ev := mustReadEvent(t, inst.inst.disp.events())
 		if ev.MessageID != asyncCallInfoMessageID {
-			t.Errorf("公开事件 %d 的 MessageID = %d, want AsyncCallInfo(%d)", i, ev.MessageID, asyncCallInfoMessageID)
+			t.Errorf("public event %d MessageID = %d, want AsyncCallInfo(%d)", i, ev.MessageID, asyncCallInfoMessageID)
 		}
 		if !bytes.Equal(ev.JSON, want.raw) {
-			t.Errorf("公开事件 %d 原文 = %s, want 逐字节相等的 %s", i, ev.JSON, want.raw)
+			t.Errorf("public event %d raw = %s, want byte-for-byte equal %s", i, ev.JSON, want.raw)
 		}
 	}
 
 	// 重复完成处理完成后的终态断言:首因保留、op3 终态未被二次结算、
 	// 界内已复制的原文零丢失。
 	if got := s.currentFault(); got != fault {
-		t.Fatalf("重复完成改写了首因: %v, want 首因 %v", got, fault)
+		t.Fatalf("the duplicate completion overwrote the first cause: %v, want first cause %v", got, fault)
 	}
 	res3b, err3b := waitOperationGuarded(t, op3, context.Background())
 	if err3b != err3 {
-		t.Fatalf("重复完成二次结算了终态: (%+v, %v), want 与首次结算同一存储值", res3b, err3b)
+		t.Fatalf("the duplicate completion settled the terminal state a second time: (%+v, %v), want the same stored value as the first settlement", res3b, err3b)
 	}
 	if lost := s.currentLostEvents(); lost != 0 {
-		t.Errorf("丢失计数 = %d, want 0(界内已复制的原文仍逐条交付)", lost)
+		t.Errorf("lost count = %d, want 0 (in-budget copied raw messages are still delivered one by one)", lost)
 	}
 
 	// ⑤ faulted 拒绝新提交,错误与首因共享同一错误身份。
 	if op, err := inst.Screencap(); op != nil || !errors.Is(err, fault) {
-		t.Fatalf("faulted 中的新提交 = (%+v, %v), want 沿链可达首因", op, err)
+		t.Fatalf("new submission during faulted = (%+v, %v), want the first cause reachable along the chain", op, err)
 	}
 
 	// ⑥ Close:返回首因身份,native 正常返回(一次 Stop、一次
 	// Destroy),尾段不覆盖已发布终态;多次 Close 同一终态。
 	if err := inst.Close(); err == nil || !errors.Is(err, fault) {
-		t.Fatalf("Close = %v, want 与首因同一身份", err)
+		t.Fatalf("Close = %v, want the same identity as the first cause", err)
 	}
 	assertSingleStopDestroy(t, rig.closer, handle)
 	if err := inst.Close(); err == nil || !errors.Is(err, fault) {
-		t.Errorf("幂等 Close = %v, want 同一终态", err)
+		t.Errorf("idempotent Close = %v, want the same terminal state", err)
 	}
 	if n := pendingOccupancy(s); n != 0 {
-		t.Errorf("关闭后 pending 占用 = %d, want 0", n)
+		t.Errorf("pending occupancy after close = %d, want 0", n)
 	}
 	if _, err := waitOperationGuarded(t, op1, context.Background()); !errors.Is(err, native.ErrNativeRejected) {
-		t.Errorf("关闭后 op1 的终态被改写: %v, want 仍是原生失败", err)
+		t.Errorf("op1 terminal state rewritten after close: %v, want still the native failure", err)
 	}
 	if _, err := waitOperationGuarded(t, op2, context.Background()); err != nil {
-		t.Errorf("关闭后 op2 的成功终态被改写: %v", err)
+		t.Errorf("op2 success terminal state rewritten after close: %v", err)
 	}
 	if _, err := waitOperationGuarded(t, op3, context.Background()); err == nil || !errors.Is(err, fault) {
-		t.Errorf("关闭后 op3 的终态 = %v, want 与首因同一身份", err)
+		t.Errorf("op3 terminal state after close = %v, want the same identity as the first cause", err)
 	}
 	if _, ok := <-inst.inst.disp.events(); ok {
-		t.Error("Close 后 Events 应已关闭")
+		t.Error("Events should be closed after Close")
 	}
 }
 
@@ -347,7 +347,7 @@ func TestIntegrationCompletionFaultMatrix(t *testing.T) {
 // sticky;Close 在 native 正常返回下完成,返回首因身份,已确认的完成
 // 结果不被溢出改写、未完成项按首因结项,缓冲事件关闭后仍逐字节可读。
 func TestIntegrationCapacityLimitsWithStalledConsumer(t *testing.T) {
-	t.Run("单条消息超过 CallbackBytes 在预留点拒绝", func(t *testing.T) {
+	t.Run("single message exceeding CallbackBytes rejected at the reservation point", func(t *testing.T) {
 		inst, rig := newAsyncRig(t, 0xB620, func(l *Limits) { l.CallbackBytes = 96 })
 		token := rig.creator.exToken(0)
 		s := inst.inst.state
@@ -356,32 +356,32 @@ func TestIntegrationCapacityLimitsWithStalledConsumer(t *testing.T) {
 		native.LookupCallbackDelivery(token)(80, callbackCBytes(string(oversized)))
 		fault := s.currentFault()
 		if fault == nil || !errors.Is(fault, native.ErrEventOverflow) {
-			t.Fatalf("单条超限的首因 = %v, want errors.Is ErrEventOverflow", fault)
+			t.Fatalf("first cause of the single-message overflow = %v, want errors.Is ErrEventOverflow", fault)
 		}
 		if lost := s.currentLostEvents(); lost != 1 {
-			t.Errorf("丢失计数 = %d, want 1(单条超限未交付)", lost)
+			t.Errorf("lost count = %d, want 1 (the oversized message was not delivered)", lost)
 		}
 		if n, b := internalBudgetHold(inst.inst.disp); n != 0 || b != 0 {
-			t.Errorf("内部预算占用 = (%d, %d), want (0, 0)(预留点拒绝,不占额度)", n, b)
+			t.Errorf("internal budget occupancy = (%d, %d), want (0, 0) (rejected at the reservation point, no budget consumed)", n, b)
 		}
 		// 非阻塞检查(实例未关闭,通道开放):超限消息不得产生公开事件。
 		select {
 		case ev := <-inst.inst.disp.events():
-			t.Errorf("超限消息不得产生公开事件: %v", ev)
+			t.Errorf("an oversized message must not produce a public event: %v", ev)
 		default:
 		}
 		// 故障后新提交被拒,错误链可达首因。
 		if op, err := inst.Screencap(); op != nil || !errors.Is(err, fault) {
-			t.Fatalf("溢出故障后的提交 = (%+v, %v), want 沿链可达首因", op, err)
+			t.Fatalf("submission after the overflow fault = (%+v, %v), want the first cause reachable along the chain", op, err)
 		}
 		// Close 在 native 正常返回下完成,返回首因身份,销毁恰一次。
 		if err := inst.Close(); err == nil || !errors.Is(err, native.ErrEventOverflow) {
-			t.Fatalf("Close = %v, want 与首因同一身份", err)
+			t.Fatalf("Close = %v, want the same identity as the first cause", err)
 		}
 		assertSingleStopDestroy(t, rig.closer, 0xB620)
 	})
 
-	t.Run("公开缓冲字节预算在消费者停读时溢出且故障通知可见", func(t *testing.T) {
+	t.Run("public buffer byte budget overflows while the consumer stalls reading, with the fault notification visible", func(t *testing.T) {
 		// 预算满足 validateLimits 的全部交叉校验(CallbackBytes ≤
 		// InternalBytes/PublicBytes/EarlyBytes),与真实 Open 快照同一
 		// 纪律;PublicBytes 收紧到两条完成消息之后必然溢出。
@@ -421,61 +421,61 @@ func TestIntegrationCapacityLimitsWithStalledConsumer(t *testing.T) {
 		for i := 0; i < 4; i++ {
 			deliverUnknown()
 		}
-		waitUntil(t, "四条溢出已全部按条计入丢失", func() bool {
+		waitUntil(t, "all four overflows counted as lost one by one", func() bool {
 			return s.currentLostEvents() == 4
 		})
 		fault := s.currentFault()
 		if fault == nil || !errors.Is(fault, native.ErrEventOverflow) {
-			t.Fatalf("首因 = %v, want errors.Is ErrEventOverflow", fault)
+			t.Fatalf("first cause = %v, want errors.Is ErrEventOverflow", fault)
 		}
 
 		// 故障通知独立于 Events:未读任何事件即可观察到已关闭。
 		select {
 		case <-s.faultNotify():
 		default:
-			t.Error("溢出故障的通知未关闭(消费者完全停读下仍必须可见)")
+			t.Error("overflow fault notification not closed (must remain visible even with the consumer fully stalled)")
 		}
 		// 首因 sticky:重复溢出只累计丢失,不覆盖首因。
 		if s.currentFault() != fault {
-			t.Errorf("首因被后到溢出覆盖: %v", s.currentFault())
+			t.Errorf("the first cause was overwritten by a later overflow: %v", s.currentFault())
 		}
 
 		// Close 在 native 正常返回的前提下完成;返回首因身份,销毁恰
 		// 一次;pending 得到结算。
 		if err := inst.Close(); err == nil || !errors.Is(err, native.ErrEventOverflow) {
-			t.Fatalf("Close = %v, want 与首因同一身份", err)
+			t.Fatalf("Close = %v, want the same identity as the first cause", err)
 		}
 		assertSingleStopDestroy(t, rig.closer, 0xB621)
 		if n := pendingOccupancy(s); n != 0 {
-			t.Errorf("关闭结算后 pending 占用 = %d, want 0", n)
+			t.Errorf("pending occupancy after the close settlement = %d, want 0", n)
 		}
 		// 已确认的完成结果不被随后的溢出改写;未完成项按首因结项。
 		res1, err1 := waitOperationGuarded(t, op1, context.Background())
 		if err1 != nil || res1.ID != 1 || res1.What != "Screencap" || !res1.OK {
-			t.Fatalf("op1 终态 = (%+v, %v), want 成功结果不被溢出改写", res1, err1)
+			t.Fatalf("op1 terminal state = (%+v, %v), want the success result not rewritten by the overflow", res1, err1)
 		}
 		res2, err2 := waitOperationGuarded(t, op2, context.Background())
 		if err2 != nil || res2.ID != 2 || !res2.OK {
-			t.Fatalf("op2 终态 = (%+v, %v), want 成功结果不被溢出改写", res2, err2)
+			t.Fatalf("op2 terminal state = (%+v, %v), want the success result not rewritten by the overflow", res2, err2)
 		}
 		res3, err3 := waitOperationGuarded(t, op3, context.Background())
 		if err3 == nil || !errors.Is(err3, fault) {
-			t.Fatalf("op3 结算错误 = %v, want 与首因同一身份", err3)
+			t.Fatalf("op3 settlement error = %v, want the same identity as the first cause", err3)
 		}
 		if res3.ID != 0 || res3.OK {
-			t.Errorf("op3 的故障结算必须无结果: %+v", res3)
+			t.Errorf("op3 fault settlement must carry no result: %+v", res3)
 		}
 		// 已在公开缓冲中的两条事件关闭后仍可读且逐字节一致;随后已关闭。
 		ev1 := mustReadEvent(t, inst.inst.disp.events())
 		ev2 := mustReadEvent(t, inst.inst.disp.events())
 		if !bytes.Equal(ev1.JSON, asyncCallInfoPayload(1, "Screencap", `{"ret":true}`)) {
-			t.Errorf("缓冲事件 1 = %s, want 完成原文逐字节一致", ev1.JSON)
+			t.Errorf("buffered event 1 = %s, want byte-for-byte identical to the completion raw", ev1.JSON)
 		}
 		if !bytes.Equal(ev2.JSON, asyncCallInfoPayload(2, "Connect", `{"ret":true}`)) {
-			t.Errorf("缓冲事件 2 = %s, want 完成原文逐字节一致", ev2.JSON)
+			t.Errorf("buffered event 2 = %s, want byte-for-byte identical to the completion raw", ev2.JSON)
 		}
 		if _, ok := <-inst.inst.disp.events(); ok {
-			t.Error("Close 后 Events 应已关闭")
+			t.Error("Events should be closed after Close")
 		}
 	})
 }
@@ -500,7 +500,7 @@ func TestIntegrationStableTerminalStatesAndSnapshotIsolation(t *testing.T) {
 	op2Details := `{"ret":true,"cost":9007199254740993}`
 	rig.caller.onAsyncConnect = func(uintptr) {
 		deliverAsyncInfo(t, token, 2, "Connect", op2Details)
-		waitUntil(t, "早到结果已临存进窗口", func() bool {
+		waitUntil(t, "early result staged in the window", func() bool {
 			v := earlyWindowOf(s)
 			return v.open && v.has && v.id == 2
 		})
@@ -514,11 +514,11 @@ func TestIntegrationStableTerminalStatesAndSnapshotIsolation(t *testing.T) {
 	// 结果各自独立,原地改写互不污染。
 	res2, err2 := waitOperationGuarded(t, op2, context.Background())
 	if err2 != nil || res2.ID != 2 || !res2.OK {
-		t.Fatalf("op2 终态 = (%+v, %v), want 早到接合成功", res2, err2)
+		t.Fatalf("op2 terminal state = (%+v, %v), want early-join success", res2, err2)
 	}
 	ev2 := mustReadEvent(t, inst.inst.disp.events())
 	if ev2.MessageID != asyncCallInfoMessageID {
-		t.Fatalf("公开事件 MessageID = %d, want AsyncCallInfo(%d)", ev2.MessageID, asyncCallInfoMessageID)
+		t.Fatalf("public event MessageID = %d, want AsyncCallInfo(%d)", ev2.MessageID, asyncCallInfoMessageID)
 	}
 	for i := range ev2.JSON {
 		ev2.JSON[i] = 'x'
@@ -528,7 +528,7 @@ func TestIntegrationStableTerminalStatesAndSnapshotIsolation(t *testing.T) {
 	}
 	res2again, err2again := waitOperationGuarded(t, op2, context.Background())
 	if err2again != nil || string(res2again.Details) != op2Details {
-		t.Fatalf("改写副本后的再次等待 = (%+v, %v), want 缓存终态不受污染", res2again, err2again)
+		t.Fatalf("re-wait after mutating the copy = (%+v, %v), want the cached terminal state unpolluted", res2again, err2again)
 	}
 
 	// op1 晚到 ret=false 完成结算;改写过的先前副本不影响后续投递的
@@ -537,14 +537,14 @@ func TestIntegrationStableTerminalStatesAndSnapshotIsolation(t *testing.T) {
 	deliverAsyncInfo(t, token, 1, "Screencap", op1Details)
 	res1, err1 := waitOperationGuarded(t, op1, context.Background())
 	if !errors.Is(err1, native.ErrNativeRejected) || res1.ID != 1 || res1.OK {
-		t.Fatalf("op1 终态 = (%+v, %v), want 原生失败", res1, err1)
+		t.Fatalf("op1 terminal state = (%+v, %v), want the native failure", res1, err1)
 	}
 	if string(res1.Details) != op1Details {
-		t.Fatalf("op1 结果 = %s, want 逐字节保留的 %s", res1.Details, op1Details)
+		t.Fatalf("op1 result = %s, want byte-for-byte preserved %s", res1.Details, op1Details)
 	}
 	ev1 := mustReadEvent(t, inst.inst.disp.events())
 	if !bytes.Equal(ev1.JSON, asyncCallInfoPayload(1, "Screencap", op1Details)) {
-		t.Fatalf("后续投递事件 = %s, want 逐字节相等的 %s(先前副本改写不得穿透)", ev1.JSON, asyncCallInfoPayload(1, "Screencap", op1Details))
+		t.Fatalf("subsequently delivered event = %s, want byte-for-byte equal %s (the earlier copy mutation must not leak through)", ev1.JSON, asyncCallInfoPayload(1, "Screencap", op1Details))
 	}
 
 	// 关闭:多次 Close 同一稳定终态;Done 关闭后立即读取稳定 Err 与
@@ -556,23 +556,23 @@ func TestIntegrationStableTerminalStatesAndSnapshotIsolation(t *testing.T) {
 	select {
 	case <-s.done():
 	default:
-		t.Error("Close 返回后 Done 未关闭")
+		t.Error("Done not closed after Close returned")
 	}
 	if got := s.finalError(); got != nil {
-		t.Errorf("最终错误 = %v, want nil", got)
+		t.Errorf("final error = %v, want nil", got)
 	}
 	if err := inst.Close(); err != nil {
-		t.Errorf("幂等 Close = %v, want 与首次同一终态 nil", err)
+		t.Errorf("idempotent Close = %v, want the same terminal state nil as the first call", err)
 	}
 	if _, ok := <-inst.inst.disp.events(); ok {
-		t.Error("Close 后 Events 应已关闭")
+		t.Error("Events should be closed after Close")
 	}
 	res1b, err1b := waitOperationGuarded(t, op1, context.Background())
 	if !errors.Is(err1b, native.ErrNativeRejected) || res1b.ID != 1 || string(res1b.Details) != op1Details {
-		t.Errorf("关闭后 op1 终态 = (%+v, %v), want 与关闭前一致", res1b, err1b)
+		t.Errorf("op1 terminal state after close = (%+v, %v), want identical to before the close", res1b, err1b)
 	}
 	res2b, err2b := waitOperationGuarded(t, op2, context.Background())
 	if err2b != nil || res2b.ID != 2 || string(res2b.Details) != op2Details {
-		t.Errorf("关闭后 op2 终态 = (%+v, %v), want 与关闭前一致", res2b, err2b)
+		t.Errorf("op2 terminal state after close = (%+v, %v), want identical to before the close", res2b, err2b)
 	}
 }

@@ -41,7 +41,7 @@ func TestReadEntriesProbeWithNonEmptyBuffers(t *testing.T) {
 	const handle = uintptr(0x1A00)
 	inst, rig := newReadRig(t, handle)
 
-	t.Run("PNG 按字节传 Initial 容量并逐字返回内容", func(t *testing.T) {
+	t.Run("png passes Initial capacity in bytes and returns content verbatim", func(t *testing.T) {
 		pngContent := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D}
 		rig.caller.imageRespond = func(call fakeOutputCall) uint64 {
 			// writeOutputBytes 内的 outputByteBuffer 守卫非空契约。
@@ -52,18 +52,18 @@ func TestReadEntriesProbeWithNonEmptyBuffers(t *testing.T) {
 			t.Fatalf("GetImagePNG = %v, want nil", err)
 		}
 		if !slices.Equal(png, pngContent) {
-			t.Fatalf("GetImagePNG = %v, want 逐字节相等的已知内容", png)
+			t.Fatalf("GetImagePNG = %v, want the known content byte-for-byte equal", png)
 		}
 		rec := rig.caller.outputRecordByName(0, "getImage")
 		if rec.handle != handle {
-			t.Errorf("GetImagePNG 收到 handle %#x, want %#x", rec.handle, handle)
+			t.Errorf("GetImagePNG received handle %#x, want %#x", rec.handle, handle)
 		}
 		if rec.buffSize != 8 {
-			t.Errorf("GetImagePNG 探测容量 = %d, want Initial 8(字节,不以 nil/0 查询容量)", rec.buffSize)
+			t.Errorf("GetImagePNG probe capacity = %d, want Initial 8 (bytes, not querying capacity with nil/0)", rec.buffSize)
 		}
 	})
 
-	t.Run("UUID 按字节传 Initial 容量", func(t *testing.T) {
+	t.Run("uuid passes Initial capacity in bytes", func(t *testing.T) {
 		uuidContent := []byte("device-uuid")
 		rig.caller.uuidRespond = func(call fakeOutputCall) uint64 {
 			return writeOutputBytes(call, uuidContent)
@@ -77,14 +77,14 @@ func TestReadEntriesProbeWithNonEmptyBuffers(t *testing.T) {
 		}
 		rec := rig.caller.outputRecordByName(0, "getUUID")
 		if rec.handle != handle {
-			t.Errorf("UUID 收到 handle %#x, want %#x", rec.handle, handle)
+			t.Errorf("UUID received handle %#x, want %#x", rec.handle, handle)
 		}
 		if rec.buffSize != 16 {
-			t.Errorf("UUID 探测容量 = %d, want Initial 16(字节)", rec.buffSize)
+			t.Errorf("UUID probe capacity = %d, want Initial 16 (bytes)", rec.buffSize)
 		}
 	})
 
-	t.Run("Tasks 按元素传 Initial 容量且返回值按元素计", func(t *testing.T) {
+	t.Run("tasks passes Initial capacity in elements and the return value is counted in elements", func(t *testing.T) {
 		wantIDs := []int32{12, -5, 7}
 		rig.caller.tasksRespond = func(call fakeOutputCall) uint64 {
 			// 容量若被当作字节数,此处收到的将是 16(4 元素 ×4)而不是 4。
@@ -95,18 +95,18 @@ func TestReadEntriesProbeWithNonEmptyBuffers(t *testing.T) {
 			t.Fatalf("Tasks = %v, want nil", err)
 		}
 		if !slices.Equal(tasks, []TaskID{12, -5, 7}) {
-			t.Fatalf("Tasks = %v, want [12 -5 7](int32 符号位保留)", tasks)
+			t.Fatalf("Tasks = %v, want [12 -5 7] (int32 sign bit preserved)", tasks)
 		}
 		rec := rig.caller.outputRecordByName(0, "getTasksList")
 		if rec.handle != handle {
-			t.Errorf("Tasks 收到 handle %#x, want %#x", rec.handle, handle)
+			t.Errorf("Tasks received handle %#x, want %#x", rec.handle, handle)
 		}
 		if rec.buffSize != 4 {
-			t.Errorf("Tasks 探测容量 = %d, want Initial 4(元素数,不是 16 字节)", rec.buffSize)
+			t.Errorf("Tasks probe capacity = %d, want Initial 4 (element count, not 16 bytes)", rec.buffSize)
 		}
 		// 返回值 3 按元素计:结果恰 3 个 TaskID,而非 3 字节或 3×4。
 		if len(tasks) != 3 {
-			t.Errorf("Tasks 长度 = %d, want 3(返回值按元素数处理)", len(tasks))
+			t.Errorf("Tasks length = %d, want 3 (return value treated as element count)", len(tasks))
 		}
 	})
 }
@@ -118,7 +118,7 @@ func TestReadEntriesProbeWithNonEmptyBuffers(t *testing.T) {
 func TestUUIDReadsOnlyReturnLength(t *testing.T) {
 	const handle = uintptr(0x1A10)
 
-	t.Run("短于容量的内容不夹带毒化尾部", func(t *testing.T) {
+	t.Run("content shorter than capacity carries no poisoned tail", func(t *testing.T) {
 		inst, rig := newReadRig(t, handle)
 		content := []byte("uuid-1234") // 9 字节,容量 16:毒化 7 字节且无 NUL
 		rig.caller.uuidRespond = func(call fakeOutputCall) uint64 {
@@ -129,15 +129,15 @@ func TestUUIDReadsOnlyReturnLength(t *testing.T) {
 			t.Fatalf("UUID = %v, want nil", err)
 		}
 		if uuid != string(content) {
-			t.Fatalf("UUID = %q(%d 字节), want 只含返回长度的 %q(9 字节)",
+			t.Fatalf("UUID = %q (%d bytes), want %q containing only the returned length (9 bytes)",
 				uuid, len(uuid), string(content))
 		}
 		if strings.ContainsRune(uuid, rune(fakeOutputPoison)) {
-			t.Fatalf("UUID 结果夹带毒化尾部 %q:超出返回长度读取", uuid)
+			t.Fatalf("UUID result carries a poisoned tail %q: read beyond the returned length", uuid)
 		}
 	})
 
-	t.Run("ret==容量边界逐字成功", func(t *testing.T) {
+	t.Run("ret==capacity boundary succeeds verbatim", func(t *testing.T) {
 		inst, rig := newReadRig(t, handle+1)
 		content := []byte("0123456789abcdef") // 恰 16 字节 == Initial 容量
 		rig.caller.uuidRespond = func(call fakeOutputCall) uint64 {
@@ -145,7 +145,7 @@ func TestUUIDReadsOnlyReturnLength(t *testing.T) {
 		}
 		uuid, err := inst.UUID()
 		if err != nil {
-			t.Fatalf("ret==容量不得误判: %v", err)
+			t.Fatalf("ret==capacity must not be misjudged: %v", err)
 		}
 		if uuid != string(content) {
 			t.Fatalf("UUID = %q, want %q", uuid, string(content))
@@ -163,8 +163,8 @@ func TestUUIDContentValidation(t *testing.T) {
 		what    string
 		content []byte
 	}{
-		{"内容含 NUL", []byte("ab\x00cd")},
-		{"非法 UTF-8", []byte{0xff, 0xfe, 0x01}},
+		{"content contains NUL", []byte("ab\x00cd")},
+		{"invalid UTF-8", []byte{0xff, 0xfe, 0x01}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.what, func(t *testing.T) {
@@ -174,23 +174,23 @@ func TestUUIDContentValidation(t *testing.T) {
 			}
 			uuid, err := inst.UUID()
 			if uuid != "" {
-				t.Fatalf("协议破坏不得返回内容: %q", uuid)
+				t.Fatalf("a protocol violation must not return content: %q", uuid)
 			}
 			if !errors.Is(err, native.ErrProtocol) {
 				t.Fatalf("%s: err = %v, want errors.Is ErrProtocol", tc.what, err)
 			}
 			if errors.Is(err, native.ErrBufferLimit) || errors.Is(err, native.ErrNativeRejected) {
-				t.Errorf("%s: 错误混入相邻类别: %v", tc.what, err)
+				t.Errorf("%s: error mixed in an adjacent category: %v", tc.what, err)
 			}
 			if got := rig.caller.count("getUUID"); got != 1 {
-				t.Errorf("协议破坏后调用次数 = %d, want 1(立即终止,不扩容重试)", got)
+				t.Errorf("call count after the protocol violation = %d, want 1 (terminates immediately, no growth retries)", got)
 			}
 			// 本次调用的诊断错误不改变实例阶段:后续调用照常接受。
 			if got := inst.inst.state.currentPhase(); got != phaseReady {
-				t.Errorf("阶段 = %d, want 仍为 ready", got)
+				t.Errorf("phase = %d, want still ready", got)
 			}
 			if inst.inst.state.currentFault() != nil {
-				t.Errorf("首因 = %v, want nil(读取侧协议破坏不使实例故障)", inst.inst.state.currentFault())
+				t.Errorf("first cause = %v, want nil (a read-side protocol violation does not fault the instance)", inst.inst.state.currentFault())
 			}
 		})
 	}
@@ -251,12 +251,12 @@ func TestReadEntriesNullSizeExhaustion(t *testing.T) {
 			text := err.Error()
 			for _, want := range tc.wantText {
 				if !strings.Contains(text, want) {
-					t.Errorf("诊断文本缺要素 %q:\n%s", want, text)
+					t.Errorf("diagnostic text missing element %q:\n%s", want, text)
 				}
 			}
 			for _, ban := range tc.banText {
 				if strings.Contains(text, ban) {
-					t.Errorf("诊断文本不得出现 %q(不把哨兵转换为分配长度/不混用单位):\n%s", ban, text)
+					t.Errorf("diagnostic text must not contain %q (the sentinel must not be converted to an allocation length / units must not be mixed):\n%s", ban, text)
 				}
 			}
 			// 探测容量序列与调用次数:各接口按自身单位翻倍,达 Max 即停。
@@ -265,10 +265,10 @@ func TestReadEntriesNullSizeExhaustion(t *testing.T) {
 				caps = append(caps, int(rig.caller.outputRecordByName(i, tc.name).buffSize))
 			}
 			if !slices.Equal(caps, tc.wantCaps) {
-				t.Errorf("探测容量序列 = %v, want %v", caps, tc.wantCaps)
+				t.Errorf("probe capacity sequence = %v, want %v", caps, tc.wantCaps)
 			}
 			if got := rig.caller.count(tc.name); got != len(tc.wantCaps) {
-				t.Errorf("调用次数 = %d, want %d(达 Max 即停,不消耗剩余重试)", got, len(tc.wantCaps))
+				t.Errorf("call count = %d, want %d (stops at Max without consuming remaining retries)", got, len(tc.wantCaps))
 			}
 		})
 	}
@@ -319,7 +319,7 @@ func TestReadEntriesRejectsOvercapacityReturn(t *testing.T) {
 				t.Fatalf("%s: err = %v, want errors.Is ErrProtocol", tc.what, err)
 			}
 			if got := rig.caller.count(tc.name); got != 1 {
-				t.Errorf("协议破坏后调用次数 = %d, want 1(立即终止,不扩容)", got)
+				t.Errorf("call count after the protocol violation = %d, want 1 (terminates immediately, no growth)", got)
 			}
 		})
 	}
@@ -330,43 +330,43 @@ func TestReadEntriesRejectsOvercapacityReturn(t *testing.T) {
 // nil 空切片、UUID 为空串,恰一次调用、不触发扩容;未连接设备时图
 // 像 getter 也可能合法返回 0,binding 不将其伪造成截图成功或失败。
 func TestReadEntriesLegalZeroLength(t *testing.T) {
-	t.Run("PNG 返回非 nil 空切片", func(t *testing.T) {
+	t.Run("png returns a non-nil empty slice", func(t *testing.T) {
 		inst, rig := newReadRig(t, 0x1A50)
 		png, err := inst.GetImagePNG()
 		if err != nil {
-			t.Fatalf("合法 0 不得失败: %v", err)
+			t.Fatalf("legal 0 must not fail: %v", err)
 		}
 		if png == nil || len(png) != 0 {
-			t.Fatalf("合法 0 必须返回非 nil 空切片, got %#v", png)
+			t.Fatalf("legal 0 must return a non-nil empty slice, got %#v", png)
 		}
 		if got := rig.caller.count("getImage"); got != 1 {
-			t.Errorf("合法 0 不得触发扩容,调用 %d 次, want 1", got)
+			t.Errorf("legal 0 must not trigger growth, called %d times, want 1", got)
 		}
 	})
-	t.Run("UUID 返回空串", func(t *testing.T) {
+	t.Run("uuid returns an empty string", func(t *testing.T) {
 		inst, rig := newReadRig(t, 0x1A51)
 		uuid, err := inst.UUID()
 		if err != nil {
-			t.Fatalf("合法 0 不得失败: %v", err)
+			t.Fatalf("legal 0 must not fail: %v", err)
 		}
 		if uuid != "" {
-			t.Fatalf("合法 0 必须返回空串, got %q", uuid)
+			t.Fatalf("legal 0 must return an empty string, got %q", uuid)
 		}
 		if got := rig.caller.count("getUUID"); got != 1 {
-			t.Errorf("合法 0 不得触发扩容,调用 %d 次, want 1", got)
+			t.Errorf("legal 0 must not trigger growth, called %d times, want 1", got)
 		}
 	})
-	t.Run("Tasks 返回非 nil 空切片", func(t *testing.T) {
+	t.Run("tasks returns a non-nil empty slice", func(t *testing.T) {
 		inst, rig := newReadRig(t, 0x1A52)
 		tasks, err := inst.Tasks()
 		if err != nil {
-			t.Fatalf("合法 0 不得失败: %v", err)
+			t.Fatalf("legal 0 must not fail: %v", err)
 		}
 		if tasks == nil || len(tasks) != 0 {
-			t.Fatalf("合法 0 必须返回非 nil 空切片, got %#v", tasks)
+			t.Fatalf("legal 0 must return a non-nil empty slice, got %#v", tasks)
 		}
 		if got := rig.caller.count("getTasksList"); got != 1 {
-			t.Errorf("合法 0 不得触发扩容,调用 %d 次, want 1", got)
+			t.Errorf("legal 0 must not trigger growth, called %d times, want 1", got)
 		}
 	})
 }
@@ -382,13 +382,13 @@ func TestGetImagePNGDoesNotScreencapOrPinFrame(t *testing.T) {
 	inst, rig := newReadRig(t, handle)
 
 	if _, err := inst.GetImagePNG(); err != nil {
-		t.Fatalf("GetImagePNG = %v, want nil(未配置脚本即合法 0)", err)
+		t.Fatalf("GetImagePNG = %v, want nil (no script configured means legal 0)", err)
 	}
 	if got := rig.caller.count("asyncScreencap"); got != 0 {
-		t.Fatalf("读取 PNG 触发了隐式截图 %d 次, want 0", got)
+		t.Fatalf("reading PNG triggered an implicit screencap %d times, want 0", got)
 	}
 	if got := rig.caller.calls(); len(got) != 1 || got[0] != "getImage" {
-		t.Fatalf("读取 PNG 的原生调用序列 = %v, want 恰 [getImage]", got)
+		t.Fatalf("native call sequence of the PNG read = %v, want exactly [getImage]", got)
 	}
 
 	// 扩容重试不承诺同一帧:第一次探测写入旧帧并返回哨兵,第二次探测
@@ -408,13 +408,13 @@ func TestGetImagePNGDoesNotScreencapOrPinFrame(t *testing.T) {
 	}
 	png, err := inst.GetImagePNG()
 	if err != nil {
-		t.Fatalf("重试后的读取 = %v, want nil", err)
+		t.Fatalf("read after retry = %v, want nil", err)
 	}
 	if !slices.Equal(png, newFrame) {
-		t.Fatalf("重试后的结果 = %q, want 恰为第二次有效区间 %q(不发布首次旧内容)", png, newFrame)
+		t.Fatalf("result after retry = %q, want exactly the second valid range %q (the first stale content is not published)", png, newFrame)
 	}
 	if attempts != 2 {
-		t.Errorf("探测次数 = %d, want 2", attempts)
+		t.Errorf("probe count = %d, want 2", attempts)
 	}
 }
 
@@ -432,15 +432,15 @@ func TestReadSnapshotsSurviveNativeAndCallerWrites(t *testing.T) {
 		}
 		snap, err := inst.GetImagePNG()
 		if err != nil {
-			t.Fatalf("首次读取 = %v, want nil", err)
+			t.Fatalf("first read = %v, want nil", err)
 		}
 		if !slices.Equal(snap, first) {
-			t.Fatalf("首次快照 = %q, want %q", snap, first)
+			t.Fatalf("first snapshot = %q, want %q", snap, first)
 		}
 		// 原生在返回后改写缓存:快照不受影响。
 		overwriteOutput(rig.caller.outputRecordByName(0, "getImage"))
 		if !slices.Equal(snap, first) {
-			t.Fatalf("原生改写后快照被穿透 = %q, want %q(返回前已复制)", snap, first)
+			t.Fatalf("snapshot penetrated after the native overwrite = %q, want %q (copied before return)", snap, first)
 		}
 
 		// 后续读取取得新内容;调用者改写旧快照不影响它。
@@ -450,20 +450,20 @@ func TestReadSnapshotsSurviveNativeAndCallerWrites(t *testing.T) {
 		}
 		again, err := inst.GetImagePNG()
 		if err != nil {
-			t.Fatalf("第二次读取 = %v, want nil", err)
+			t.Fatalf("second read = %v, want nil", err)
 		}
 		if !slices.Equal(again, second) {
-			t.Fatalf("第二次结果被污染 = %q, want %q", again, second)
+			t.Fatalf("second result polluted = %q, want %q", again, second)
 		}
 		for i := range snap {
 			snap[i] = 0
 		}
 		third, err := inst.GetImagePNG()
 		if err != nil {
-			t.Fatalf("第三次读取 = %v, want nil", err)
+			t.Fatalf("third read = %v, want nil", err)
 		}
 		if !slices.Equal(third, second) {
-			t.Fatalf("改写旧快照影响后续结果 = %q, want %q", third, second)
+			t.Fatalf("rewriting the old snapshot affected later results = %q, want %q", third, second)
 		}
 	})
 
@@ -475,14 +475,14 @@ func TestReadSnapshotsSurviveNativeAndCallerWrites(t *testing.T) {
 		}
 		snap, err := inst.UUID()
 		if err != nil {
-			t.Fatalf("首次读取 = %v, want nil", err)
+			t.Fatalf("first read = %v, want nil", err)
 		}
 		if snap != string(first) {
-			t.Fatalf("首次快照 = %q, want %q", snap, string(first))
+			t.Fatalf("first snapshot = %q, want %q", snap, string(first))
 		}
 		overwriteOutput(rig.caller.outputRecordByName(0, "getUUID"))
 		if snap != string(first) {
-			t.Fatalf("原生改写后快照被穿透 = %q, want %q", snap, string(first))
+			t.Fatalf("snapshot penetrated after the native overwrite = %q, want %q", snap, string(first))
 		}
 	})
 
@@ -493,15 +493,15 @@ func TestReadSnapshotsSurviveNativeAndCallerWrites(t *testing.T) {
 		}
 		snap, err := inst.Tasks()
 		if err != nil {
-			t.Fatalf("首次读取 = %v, want nil", err)
+			t.Fatalf("first read = %v, want nil", err)
 		}
 		if !slices.Equal(snap, []TaskID{12, -5, 7}) {
-			t.Fatalf("首次快照 = %v, want [12 -5 7]", snap)
+			t.Fatalf("first snapshot = %v, want [12 -5 7]", snap)
 		}
 		// 原生在返回后改写缓存:快照不受影响。
 		overwriteOutput(rig.caller.outputRecordByName(0, "getTasksList"))
 		if !slices.Equal(snap, []TaskID{12, -5, 7}) {
-			t.Fatalf("原生改写后快照被穿透 = %v, want [12 -5 7]", snap)
+			t.Fatalf("snapshot penetrated after the native overwrite = %v, want [12 -5 7]", snap)
 		}
 		// 后续读取取得新列表;调用者改写旧快照不影响它。
 		rig.caller.tasksRespond = func(call fakeOutputCall) uint64 {
@@ -509,18 +509,18 @@ func TestReadSnapshotsSurviveNativeAndCallerWrites(t *testing.T) {
 		}
 		again, err := inst.Tasks()
 		if err != nil {
-			t.Fatalf("第二次读取 = %v, want nil", err)
+			t.Fatalf("second read = %v, want nil", err)
 		}
 		if !slices.Equal(again, []TaskID{1, 2}) {
-			t.Fatalf("第二次结果被污染 = %v, want [1 2]", again)
+			t.Fatalf("second result polluted = %v, want [1 2]", again)
 		}
 		snap[0] = 0
 		third, err := inst.Tasks()
 		if err != nil {
-			t.Fatalf("第三次读取 = %v, want nil", err)
+			t.Fatalf("third read = %v, want nil", err)
 		}
 		if !slices.Equal(third, []TaskID{1, 2}) {
-			t.Fatalf("改写旧快照影响后续结果 = %v, want [1 2]", third)
+			t.Fatalf("rewriting the old snapshot affected later results = %v, want [1 2]", third)
 		}
 	})
 }
@@ -532,7 +532,7 @@ func TestReadSnapshotsSurviveNativeAndCallerWrites(t *testing.T) {
 // 后关闭才前进——lease 覆盖探测分配、raw 调用(含重试)与复制全过
 // 程,在途读取不被关闭漏掉或撤销。
 func TestReadEntriesShareLeaseAndRawGate(t *testing.T) {
-	t.Run("读取占据 raw 门禁时其他调用排队", func(t *testing.T) {
+	t.Run("other calls queue while a read holds the raw gate", func(t *testing.T) {
 		const handle = uintptr(0x1A80)
 		inst, rig := newReadRig(t, handle)
 		entered := make(chan struct{})
@@ -552,10 +552,10 @@ func TestReadEntriesShareLeaseAndRawGate(t *testing.T) {
 
 		errRunning := make(chan error, 1)
 		go func() { _, err := inst.Running(); errRunning <- err }()
-		waitUntil(t, "Running 已准入并在门禁前排队", func() bool { return inFlightCalls(inst.inst.state) == 2 })
+		waitUntil(t, "Running admitted and queued before the gate", func() bool { return inFlightCalls(inst.inst.state) == 2 })
 		<-time.After(notWithin)
 		if got := rig.caller.count("running"); got != 0 {
-			t.Fatalf("同一 raw 门禁被读取占据时 Running 已进入 native %d 次", got)
+			t.Fatalf("Running entered native %d times while the same raw gate is held by the read", got)
 		}
 
 		close(release)
@@ -572,12 +572,12 @@ func TestReadEntriesShareLeaseAndRawGate(t *testing.T) {
 					t.Fatalf("%s = %v, want nil", wait.what, err)
 				}
 			case <-time.After(hangGuard):
-				t.Fatalf("%s 未在防挂死上限内完成", wait.what)
+				t.Fatalf("%s did not complete within the hang-guard deadline", wait.what)
 			}
 		}
 	})
 
-	t.Run("在途读取退出前关闭不销毁", func(t *testing.T) {
+	t.Run("close does not destroy before the in-flight read exits", func(t *testing.T) {
 		const handle = uintptr(0x1A81)
 		inst, rig := newReadRig(t, handle)
 		entered := make(chan struct{})
@@ -597,23 +597,23 @@ func TestReadEntriesShareLeaseAndRawGate(t *testing.T) {
 
 		closeErr := make(chan error, 1)
 		go func() { closeErr <- inst.Close() }()
-		waitUntil(t, "close 完成选主转入 closing", func() bool { return inst.inst.state.currentPhase() == phaseClosing })
+		waitUntil(t, "close won the election and transitioned to closing", func() bool { return inst.inst.state.currentPhase() == phaseClosing })
 		<-time.After(notWithin)
 		if got := rig.closer.count("stop"); got != 0 {
-			t.Fatalf("在途读取未退出时 Stop 已被调用 %d 次", got)
+			t.Fatalf("Stop called %d times while the in-flight read has not exited", got)
 		}
 		if got := rig.closer.count("destroy"); got != 0 {
-			t.Fatalf("在途读取未退出时 Destroy 已被调用 %d 次", got)
+			t.Fatalf("Destroy called %d times while the in-flight read has not exited", got)
 		}
 
 		close(release)
 		select {
 		case err := <-errRead:
 			if err != nil {
-				t.Fatalf("先于关闭准入的读取 = %v, want nil(已准入调用不被关闭撤销)", err)
+				t.Fatalf("read admitted before close = %v, want nil (admitted calls are not revoked by close)", err)
 			}
 		case <-time.After(hangGuard):
-			t.Fatal("读取未在防挂死上限内完成")
+			t.Fatal("the read did not complete within the hang-guard deadline")
 		}
 		select {
 		case err := <-closeErr:
@@ -621,10 +621,10 @@ func TestReadEntriesShareLeaseAndRawGate(t *testing.T) {
 				t.Fatalf("Close = %v, want nil", err)
 			}
 		case <-time.After(hangGuard):
-			t.Fatal("Close 未在防挂死上限内完成")
+			t.Fatal("Close did not complete within the hang-guard deadline")
 		}
 		if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-			t.Fatalf("native 调用序列 = %v, want [stop destroy]", seq)
+			t.Fatalf("native call sequence = %v, want [stop destroy]", seq)
 		}
 	})
 }
@@ -641,36 +641,36 @@ func TestReadEntriesRejectByLifecycle(t *testing.T) {
 		return []error{errPNG, errUUID, errTasks}
 	}
 
-	t.Run("closed 阶段拒绝全部入口且无原生副作用", func(t *testing.T) {
+	t.Run("closed phase rejects all entries with no native side effects", func(t *testing.T) {
 		inst, rig := newReadRig(t, 0x1A90)
 		if err := inst.Close(); err != nil {
 			t.Fatalf("Close = %v, want nil", err)
 		}
 		for i, err := range allReads(inst) {
 			if !errors.Is(err, native.ErrClosed) {
-				t.Errorf("读取入口 %d = %v, want errors.Is native.ErrClosed", i, err)
+				t.Errorf("read entry %d = %v, want errors.Is native.ErrClosed", i, err)
 			}
 		}
 		if got := rig.caller.total(); got != 0 {
-			t.Errorf("closed 后业务调用次数 = %d, want 0(不绕过状态调用)", got)
+			t.Errorf("business call count after closed = %d, want 0 (does not bypass the state calls)", got)
 		}
 	})
 
-	t.Run("faulted 阶段拒绝全部入口且错误链可达首因", func(t *testing.T) {
+	t.Run("faulted phase rejects all entries with the first cause reachable along the chain", func(t *testing.T) {
 		inst, rig := newReadRig(t, 0x1A91)
 		cause := errors.New("fake: first fault")
 		inst.inst.state.recordFault(cause)
 		for i, err := range allReads(inst) {
 			if !errors.Is(err, cause) {
-				t.Errorf("读取入口 %d = %v, want 沿错误链可达首因", i, err)
+				t.Errorf("read entry %d = %v, want the first cause reachable along the error chain", i, err)
 			}
 		}
 		if got := rig.caller.total(); got != 0 {
-			t.Errorf("faulted 后业务调用次数 = %d, want 0", got)
+			t.Errorf("business call count after faulted = %d, want 0", got)
 		}
 	})
 
-	t.Run("closing 阶段拒绝全部入口", func(t *testing.T) {
+	t.Run("closing phase rejects all entries", func(t *testing.T) {
 		inst, rig := newReadRig(t, 0x1A92)
 		entered := make(chan struct{})
 		release := make(chan struct{})
@@ -683,11 +683,11 @@ func TestReadEntriesRejectByLifecycle(t *testing.T) {
 		<-entered // 关闭所有者已进入一次 Stop(closing 已生效)。
 		for i, err := range allReads(inst) {
 			if !errors.Is(err, native.ErrClosing) {
-				t.Errorf("closing 中读取入口 %d = %v, want errors.Is native.ErrClosing", i, err)
+				t.Errorf("read entry %d during closing = %v, want errors.Is native.ErrClosing", i, err)
 			}
 		}
 		if got := rig.caller.total(); got != 0 {
-			t.Errorf("closing 中业务调用次数 = %d, want 0", got)
+			t.Errorf("business call count during closing = %d, want 0", got)
 		}
 		close(release)
 		select {
@@ -696,7 +696,7 @@ func TestReadEntriesRejectByLifecycle(t *testing.T) {
 				t.Fatalf("Close = %v, want nil", err)
 			}
 		case <-time.After(hangGuard):
-			t.Fatal("Close 未在防挂死上限内完成")
+			t.Fatal("Close did not complete within the hang-guard deadline")
 		}
 	})
 }
@@ -707,29 +707,29 @@ func TestReadEntriesRejectByLifecycle(t *testing.T) {
 // 一探测契约(实际非空 buffer、扩容、独立快照)。
 func TestGetImageBGRCapabilityGate(t *testing.T) {
 	const handle = uintptr(0x1A20)
-	t.Run("能力缺席返回 ErrUnsupported 且不触达 native", func(t *testing.T) {
+	t.Run("missing capability returns ErrUnsupported without reaching native", func(t *testing.T) {
 		inst, rig := newReadRig(t, handle)
 		// newReadRig 的能力快照为零值:ImageBgr 关闭。
 		bgr, err := inst.GetImageBGR()
 		if bgr != nil {
-			t.Errorf("能力缺席时 GetImageBGR = %v, want nil", bgr)
+			t.Errorf("GetImageBGR with the capability absent = %v, want nil", bgr)
 		}
 		if !errors.Is(err, native.ErrUnsupported) {
-			t.Fatalf("能力缺席时错误 = %v, want ErrUnsupported", err)
+			t.Fatalf("error with the capability absent = %v, want ErrUnsupported", err)
 		}
 		if n := len(rig.caller.outputRecordAll("getImageBgr")); n != 0 {
-			t.Errorf("能力缺席时 getImageBgr 被调用 %d 次, want 0(准入前拒绝)", n)
+			t.Errorf("getImageBgr called %d times with the capability absent, want 0 (rejected before admission)", n)
 		}
 	})
-	t.Run("能力在场按 Initial 容量探测并返回独立快照", func(t *testing.T) {
+	t.Run("capability present probes with the Initial capacity and returns an independent snapshot", func(t *testing.T) {
 		inst, rig := newReadRig(t, handle)
 		rig.rt.caps = native.CapabilitiesForTest(false, true, false, false, false)
 		rig.caller.imageBgrRespond = func(call fakeOutputCall) uint64 {
 			if call.handle != handle {
-				t.Errorf("GetImageBGR 收到 handle %#x, want %#x", call.handle, handle)
+				t.Errorf("GetImageBGR received handle %#x, want %#x", call.handle, handle)
 			}
 			if call.buffSize != 12 {
-				t.Errorf("GetImageBGR 首次探测容量 = %d, want Limits.ImageBGR.Initial 12(字节)", call.buffSize)
+				t.Errorf("GetImageBGR first probe capacity = %d, want Limits.ImageBGR.Initial 12 (bytes)", call.buffSize)
 			}
 			return writeOutputBytes(call, []byte{0x00, 0x11, 0x22, 0x33})
 		}
@@ -738,7 +738,7 @@ func TestGetImageBGRCapabilityGate(t *testing.T) {
 			t.Fatalf("GetImageBGR = %v, want nil", err)
 		}
 		if !slices.Equal(bgr, []byte{0x00, 0x11, 0x22, 0x33}) {
-			t.Fatalf("GetImageBGR = %v, want 已知 BGR 内容", bgr)
+			t.Fatalf("GetImageBGR = %v, want the known BGR content", bgr)
 		}
 		// 快照独立性:原地改写结果不影响后续读取。
 		for i := range bgr {
@@ -749,13 +749,13 @@ func TestGetImageBGRCapabilityGate(t *testing.T) {
 		}
 		again, err := inst.GetImageBGR()
 		if err != nil {
-			t.Fatalf("第二次 GetImageBGR = %v, want nil", err)
+			t.Fatalf("second GetImageBGR = %v, want nil", err)
 		}
 		if !slices.Equal(again, []byte{0x00, 0x11, 0x22, 0x33}) {
-			t.Fatalf("改写快照后第二次读取 = %v, want 原内容(快照独立)", again)
+			t.Fatalf("second read after rewriting the snapshot = %v, want the original content (independent snapshot)", again)
 		}
 	})
-	t.Run("探测耗尽返回 ErrBufferLimit", func(t *testing.T) {
+	t.Run("probe exhaustion returns ErrBufferLimit", func(t *testing.T) {
 		inst, rig := newReadRig(t, handle)
 		rig.rt.caps = native.CapabilitiesForTest(false, true, false, false, false)
 		rig.caller.imageBgrRespond = func(call fakeOutputCall) uint64 {
@@ -763,10 +763,10 @@ func TestGetImageBGRCapabilityGate(t *testing.T) {
 		}
 		_, err := inst.GetImageBGR()
 		if !errors.Is(err, native.ErrBufferLimit) {
-			t.Fatalf("探测耗尽错误 = %v, want ErrBufferLimit", err)
+			t.Fatalf("probe exhaustion error = %v, want ErrBufferLimit", err)
 		}
 		if !strings.Contains(err.Error(), "GetImageBgr") {
-			t.Errorf("耗尽诊断应携带接口名 GetImageBgr: %v", err)
+			t.Errorf("exhaustion diagnostics should carry the interface name GetImageBgr: %v", err)
 		}
 	})
 }

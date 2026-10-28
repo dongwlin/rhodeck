@@ -119,7 +119,7 @@ func newCloseRigWithSettle(t *testing.T, handle uintptr, b dispatchBudgets, sett
 	target := newCallbackTarget(s, d, b.callbackBytes)
 	token, err := native.RegisterCallbackTarget(target.deliver)
 	if err != nil {
-		t.Fatalf("经生产入口注册 target.deliver 不得失败: %v", err)
+		t.Fatalf("registering target.deliver via the production entry must not fail: %v", err)
 	}
 	closer := newFakeInstanceCloser()
 	in := newInstance(s, d, token, closer)
@@ -150,7 +150,7 @@ func runClose(t *testing.T, in *instance) error {
 	case err := <-errCh:
 		return err
 	case <-time.After(hangGuard):
-		t.Fatal("close 未在防挂死上限内完成:关闭流程疑似挂死")
+		t.Fatal("close did not complete within the hang-guard deadline: the close flow is suspected hung")
 		return nil
 	}
 }
@@ -163,7 +163,7 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 	deadline := time.Now().Add(hangGuard)
 	for !cond() {
 		if time.Now().After(deadline) {
-			t.Fatalf("%s 未在防挂死上限内成立", what)
+			t.Fatalf("%s did not hold within the hang-guard deadline", what)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -176,7 +176,7 @@ func assertClosedChannels(t *testing.T, rig *closeRig) {
 	select {
 	case <-rig.s.done():
 	default:
-		t.Error("close 完成后 closeDone/Done 未关闭")
+		t.Error("closeDone/Done not closed after close completed")
 	}
 	for {
 		select {
@@ -185,7 +185,7 @@ func assertClosedChannels(t *testing.T, rig *closeRig) {
 				return
 			}
 		case <-time.After(hangGuard):
-			t.Fatal("读取公开事件超时(防挂死上限触发)")
+			t.Fatal("timed out reading public events (hang-guard deadline hit)")
 		}
 	}
 }
@@ -202,18 +202,18 @@ func TestNewInstanceContract(t *testing.T) {
 	target := newCallbackTarget(s, d, b.callbackBytes)
 	token, err := native.RegisterCallbackTarget(target.deliver)
 	if err != nil {
-		t.Fatalf("注册不得失败: %v", err)
+		t.Fatalf("registration must not fail: %v", err)
 	}
 	defer native.UnregisterCallbackTarget(token)
 	closer := newFakeInstanceCloser()
 
 	if got := newInstance(s, d, token, closer); got == nil || got.state != s || got.disp != d || got.token != token {
-		t.Fatalf("newInstance 组装字段不符: %+v", got)
+		t.Fatalf("newInstance assembled fields mismatch: %+v", got)
 	}
 	assertPanics(t, "nil state", func() { newInstance(nil, d, token, closer) })
 	assertPanics(t, "nil dispatcher", func() { newInstance(s, nil, token, closer) })
 	assertPanics(t, "nil closer", func() { newInstance(s, d, token, nil) })
-	assertPanics(t, "零 token", func() { newInstance(s, d, 0, closer) })
+	assertPanics(t, "zero token", func() { newInstance(s, d, 0, closer) })
 }
 
 // TestInstanceCloseConcurrentSingleDestroy 验证「并发多次
@@ -223,7 +223,7 @@ func TestNewInstanceContract(t *testing.T) {
 // 者)取得同一最终错误存储值(正常 nil、首因同一错误值);closed 后
 // 的幂等 close 不再触发 native 调用。
 func TestInstanceCloseConcurrentSingleDestroy(t *testing.T) {
-	t.Run("并发多次 Close 恰一次 Stop/Destroy 且同终态", func(t *testing.T) {
+	t.Run("concurrent closes perform exactly one Stop/Destroy with the same final state", func(t *testing.T) {
 		const handle = uintptr(0xC100)
 		rig := newCloseRig(t, handle, generousBudgets())
 
@@ -240,42 +240,42 @@ func TestInstanceCloseConcurrentSingleDestroy(t *testing.T) {
 		wg.Wait()
 
 		if got := rig.closer.count("stop"); got != 1 {
-			t.Fatalf("Stop 调用次数 = %d, want 恰 1", got)
+			t.Fatalf("Stop call count = %d, want exactly 1", got)
 		}
 		if got := rig.closer.count("destroy"); got != 1 {
-			t.Fatalf("Destroy 调用次数 = %d, want 恰 1", got)
+			t.Fatalf("Destroy call count = %d, want exactly 1", got)
 		}
 		if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-			t.Fatalf("native 调用序列 = %v, want [stop destroy](一次 Stop 再一次 Destroy)", seq)
+			t.Fatalf("native call sequence = %v, want [stop destroy] (one Stop then one Destroy)", seq)
 		}
 		if got := rig.closer.stopHandles[0]; got != handle {
-			t.Errorf("Stop 收到 handle %#x, want %#x", got, handle)
+			t.Errorf("Stop received handle %#x, want %#x", got, handle)
 		}
 		if got := rig.closer.destroyHandles[0]; got != handle {
-			t.Errorf("Destroy 收到 handle %#x, want %#x", got, handle)
+			t.Errorf("Destroy received handle %#x, want %#x", got, handle)
 		}
 		for i, err := range errs {
 			if err != nil {
-				t.Errorf("Close %d = %v, want nil(正常 Stop/Destroy 且无故障)", i, err)
+				t.Errorf("Close %d = %v, want nil (normal Stop/Destroy with no fault)", i, err)
 			}
 		}
 
 		// closed 后的幂等 close:同一终态,不再触发 native 调用。
 		if err := rig.in.close(); err != nil {
-			t.Errorf("幂等 close = %v, want nil", err)
+			t.Errorf("idempotent close = %v, want nil", err)
 		}
 		if got := rig.closer.count("destroy"); got != 1 {
-			t.Errorf("幂等 close 后 Destroy 次数 = %d, want 仍为 1", got)
+			t.Errorf("Destroy count after the idempotent close = %d, want still 1", got)
 		}
 		assertClosedChannels(t, rig)
 		if got := rig.s.currentPhase(); got != phaseClosed {
-			t.Errorf("close 后阶段 = %d, want closed", got)
+			t.Errorf("phase after close = %d, want closed", got)
 		}
 	})
 
-	t.Run("并发关闭共享首因终态", func(t *testing.T) {
+	t.Run("concurrent closes share the first-cause final state", func(t *testing.T) {
 		rig := newCloseRig(t, 0xC101, generousBudgets())
-		cause := fmt.Errorf("业务期事件溢出: %w", native.ErrEventOverflow)
+		cause := fmt.Errorf("business-phase event overflow: %w", native.ErrEventOverflow)
 		rig.s.recordFault(cause)
 
 		const n = 8
@@ -294,7 +294,7 @@ func TestInstanceCloseConcurrentSingleDestroy(t *testing.T) {
 			// 同一最终错误存储:所有申请者取得与首因同一错误值,首因
 			// 身份沿错误链可达,不混入其他哨兵。
 			if err != cause {
-				t.Errorf("Close %d = %v, want 与首因同一存储值 %v", i, err, cause)
+				t.Errorf("Close %d = %v, want the same stored value as the first cause %v", i, err, cause)
 			}
 			if !errors.Is(err, native.ErrEventOverflow) {
 				t.Errorf("Close %d: errors.Is(err, native.ErrEventOverflow) = false; err = %v", i, err)
@@ -302,7 +302,7 @@ func TestInstanceCloseConcurrentSingleDestroy(t *testing.T) {
 		}
 		// faulted 进入关闭仍无条件执行一次 Stop/Destroy()。
 		if got := rig.closer.count("destroy"); got != 1 {
-			t.Errorf("faulted 关闭的 Destroy 次数 = %d, want 恰 1", got)
+			t.Errorf("Destroy count of the faulted close = %d, want exactly 1", got)
 		}
 	})
 }
@@ -320,9 +320,9 @@ func TestInstanceCloseWaitsCallsBeforeDestroy(t *testing.T) {
 
 	// A:已准入并进入 raw 段(执行中);B:已准入、将在门禁前排队,
 	// 进入门禁段后由屏障保持在途,直到用例放行。
-	leaseA := mustAdmit(t, s, "调用 A")
+	leaseA := mustAdmit(t, s, "call A")
 	s.raw.enter()
-	leaseB := mustAdmit(t, s, "调用 B")
+	leaseB := mustAdmit(t, s, "call B")
 	bInRaw := make(chan struct{})
 	releaseB := make(chan struct{})
 	go func() {
@@ -337,19 +337,19 @@ func TestInstanceCloseWaitsCallsBeforeDestroy(t *testing.T) {
 	go func() { closeErr <- rig.in.close() }()
 
 	// 等待选主完成(阶段转 closing),把调度延迟与被测行为分离。
-	waitUntil(t, "close 完成选主转入 closing", func() bool { return s.currentPhase() == phaseClosing })
+	waitUntil(t, "close won the election and transitioned to closing", func() bool { return s.currentPhase() == phaseClosing })
 
 	// 负面断言一:A、B 均在途,Stop/Destroy 不得发生。
 	<-time.After(notWithin)
 	if got := rig.closer.count("stop"); got != 0 {
-		t.Fatalf("在途调用未退出时 Stop 已被调用 %d 次", got)
+		t.Fatalf("Stop called %d times while in-flight calls have not exited", got)
 	}
 	if got := rig.closer.count("destroy"); got != 0 {
-		t.Fatalf("在途调用未退出时 Destroy 已被调用 %d 次", got)
+		t.Fatalf("Destroy called %d times while in-flight calls have not exited", got)
 	}
 	// closing 后新业务调用被拒绝(包装 native.ErrClosing)。
-	if _, err := s.admitCall("closing 中的新调用"); !errors.Is(err, native.ErrClosing) {
-		t.Fatalf("closing 中的新调用 = %v, want errors.Is native.ErrClosing", err)
+	if _, err := s.admitCall("new call during closing"); !errors.Is(err, native.ErrClosing) {
+		t.Fatalf("new call during closing = %v, want errors.Is native.ErrClosing", err)
 	}
 
 	// A 完成 raw 段并释放;排队者 B 转入门禁段(排队者被等待覆盖)。
@@ -358,16 +358,16 @@ func TestInstanceCloseWaitsCallsBeforeDestroy(t *testing.T) {
 	select {
 	case <-bInRaw:
 	case <-time.After(hangGuard):
-		t.Fatal("A 释放后 B 未获得 raw 门禁(防挂死上限触发)")
+		t.Fatal("B did not acquire the raw gate after A released (hang-guard deadline hit)")
 	}
 
 	// 负面断言二:B 仍在途,Stop/Destroy 仍不得发生。
 	<-time.After(notWithin)
 	if got := rig.closer.count("stop"); got != 0 {
-		t.Fatalf("排队调用 B 未退出时 Stop 已被调用 %d 次", got)
+		t.Fatalf("Stop called %d times while queued call B has not exited", got)
 	}
 	if got := rig.closer.count("destroy"); got != 0 {
-		t.Fatalf("排队调用 B 未退出时 Destroy 已被调用 %d 次", got)
+		t.Fatalf("Destroy called %d times while queued call B has not exited", got)
 	}
 
 	// B 退出后关闭才前进:先 Stop 后 Destroy 各恰一次,handle 逐字
@@ -379,18 +379,18 @@ func TestInstanceCloseWaitsCallsBeforeDestroy(t *testing.T) {
 			t.Fatalf("close = %v, want nil", err)
 		}
 	case <-time.After(hangGuard):
-		t.Fatal("B 释放后 close 未在防挂死上限内完成")
+		t.Fatal("close did not complete within the hang-guard deadline after B released")
 	}
 	if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-		t.Fatalf("native 调用序列 = %v, want [stop destroy]", seq)
+		t.Fatalf("native call sequence = %v, want [stop destroy]", seq)
 	}
 	if got := rig.closer.destroyHandles[0]; got != handle {
-		t.Errorf("Destroy 收到 handle %#x, want %#x", got, handle)
+		t.Errorf("Destroy received handle %#x, want %#x", got, handle)
 	}
 
 	// closed 后新业务调用包装 native.ErrClosed。
-	if _, err := s.admitCall("closed 后的新调用"); !errors.Is(err, native.ErrClosed) {
-		t.Fatalf("closed 后的新调用 = %v, want errors.Is native.ErrClosed", err)
+	if _, err := s.admitCall("new call after closed"); !errors.Is(err, native.ErrClosed) {
+		t.Fatalf("new call after closed = %v, want errors.Is native.ErrClosed", err)
 	}
 }
 
@@ -403,7 +403,7 @@ func TestInstanceCloseWaitsCallsBeforeDestroy(t *testing.T) {
 // 完全不投递 Destroyed 时 close 照常完成——Destroyed 只是诊断事件,
 // 不是关闭完成的条件。
 func TestInstanceCloseSyncCallbackDuringNativeCalls(t *testing.T) {
-	t.Run("Stop 期间不持状态锁与 callback/分发器锁", func(t *testing.T) {
+	t.Run("holds no state or callback/dispatcher lock during Stop", func(t *testing.T) {
 		rig := newCloseRig(t, 0xC300, generousBudgets())
 		s := rig.s
 
@@ -423,10 +423,10 @@ func TestInstanceCloseSyncCallbackDuringNativeCalls(t *testing.T) {
 		select {
 		case got := <-phaseCh:
 			if got != phaseClosing {
-				t.Errorf("stop 期间 currentPhase() = %d, want closing", got)
+				t.Errorf("currentPhase() during stop = %d, want closing", got)
 			}
 		case <-time.After(hangGuard):
-			t.Fatal("stop 期间另一 goroutine 的状态锁操作未完成:实现疑似持状态锁跨 native 调用")
+			t.Fatal("the state-lock operation of another goroutine did not complete during stop: the implementation is suspected of holding the state lock across native calls")
 		}
 
 		// 探针二:callback 准入 + 分发器入队(native stop 调用挂起期
@@ -439,7 +439,7 @@ func TestInstanceCloseSyncCallbackDuringNativeCalls(t *testing.T) {
 		select {
 		case <-delivered:
 		case <-time.After(hangGuard):
-			t.Fatal("stop 期间的 callback 投递未完成:实现疑似持 callback/分发器/注册表锁跨 native 调用")
+			t.Fatal("callback delivery during stop did not complete: the implementation is suspected of holding the callback/dispatcher/registry lock across native calls")
 		}
 
 		close(releaseStop)
@@ -449,14 +449,14 @@ func TestInstanceCloseSyncCallbackDuringNativeCalls(t *testing.T) {
 		// stop 期间投递的事件关闭后仍可读,Events 随后已关闭。
 		ev := mustReadEvent(t, rig.d.events())
 		if ev.MessageID != 60 {
-			t.Errorf("事件 MessageID = %d, want 60", ev.MessageID)
+			t.Errorf("event MessageID = %d, want 60", ev.MessageID)
 		}
 		if _, ok := <-rig.d.events(); ok {
-			t.Error("close 后 Events 应已关闭")
+			t.Error("Events should be closed after close")
 		}
 	})
 
-	t.Run("Destroy 同步触发 Destroyed 不锁死", func(t *testing.T) {
+	t.Run("Destroy synchronously triggering Destroyed does not deadlock", func(t *testing.T) {
 		rig := newCloseRig(t, 0xC301, generousBudgets())
 
 		destroyEntered := make(chan struct{})
@@ -474,34 +474,34 @@ func TestInstanceCloseSyncCallbackDuringNativeCalls(t *testing.T) {
 		close(releaseDestroy)
 
 		if err := <-closeErr; err != nil {
-			t.Fatalf("close = %v, want nil(同步 Destroyed 不得锁死关闭)", err)
+			t.Fatalf("close = %v, want nil (a synchronous Destroyed must not deadlock close)", err)
 		}
 		// Destroyed 事件关闭后仍可读;Events 随后已关闭。
 		ev := mustReadEvent(t, rig.d.events())
 		if ev.MessageID != destroyedMessageID {
-			t.Errorf("事件 MessageID = %d, want Destroyed(%d)", ev.MessageID, destroyedMessageID)
+			t.Errorf("event MessageID = %d, want Destroyed(%d)", ev.MessageID, destroyedMessageID)
 		}
 		if _, ok := <-rig.d.events(); ok {
-			t.Error("close 后 Events 应已关闭")
+			t.Error("Events should be closed after close")
 		}
 	})
 
-	t.Run("Destroyed 不是关闭完成的唯一条件", func(t *testing.T) {
+	t.Run("Destroyed is not the sole condition for close completion", func(t *testing.T) {
 		rig := newCloseRig(t, 0xC302, generousBudgets())
 		// fake Destroy 不投递任何回调:close 仍必须完成。
 		if err := runClose(t, rig.in); err != nil {
-			t.Fatalf("close = %v, want nil(无 Destroyed 也应完成关闭)", err)
+			t.Fatalf("close = %v, want nil (close should complete without Destroyed too)", err)
 		}
 		select {
 		case <-rig.s.done():
 		default:
-			t.Fatal("close 返回后 Done 未关闭")
+			t.Fatal("Done not closed after close returned")
 		}
 		if got := rig.s.currentPhase(); got != phaseClosed {
-			t.Errorf("阶段 = %d, want closed", got)
+			t.Errorf("phase = %d, want closed", got)
 		}
 		if _, ok := <-rig.d.events(); ok {
-			t.Error("Events 应已关闭且为空(无 Destroyed 事件)")
+			t.Error("Events should be closed and empty (no Destroyed event)")
 		}
 	})
 }
@@ -514,7 +514,7 @@ func TestInstanceCloseSyncCallbackDuringNativeCalls(t *testing.T) {
 // 准入 callback 未退出时 close 不完成(关门等待被它挡住),退出后才
 // 收敛——token 与通道的清理不可能早于该时点。
 func TestInstanceCloseGateAndTokenAfterDestroy(t *testing.T) {
-	t.Run("callback 门在 Destroy 返回期间仍开放", func(t *testing.T) {
+	t.Run("callback gate stays open while Destroy returns", func(t *testing.T) {
 		rig := newCloseRig(t, 0xC400, generousBudgets())
 		rig.closer.onDestroy = func(handle uintptr) {
 			// Destroy 返回前同步投递:门必须仍开放,消息照常入队。
@@ -527,18 +527,18 @@ func TestInstanceCloseGateAndTokenAfterDestroy(t *testing.T) {
 		// 到 Destroy 返回之前,该投递被拒收,事件缺失即暴露失序。
 		ev := mustReadEvent(t, rig.d.events())
 		if ev.MessageID != destroyedMessageID {
-			t.Errorf("事件 MessageID = %d, want Destroyed(%d)", ev.MessageID, destroyedMessageID)
+			t.Errorf("event MessageID = %d, want Destroyed(%d)", ev.MessageID, destroyedMessageID)
 		}
 		if _, ok := <-rig.d.events(); ok {
-			t.Error("close 后 Events 应已关闭")
+			t.Error("Events should be closed after close")
 		}
 		// close 完成后:门已关闭,新 callback 一律拒绝。
 		if _, ok := rig.s.admitCallback(); ok {
-			t.Error("close 返回后 callback 准入门仍开放")
+			t.Error("callback admission gate still open after close returned")
 		}
 	})
 
-	t.Run("最后一个已准入 callback 退出前 close 不完成", func(t *testing.T) {
+	t.Run("close does not complete before the last admitted callback exits", func(t *testing.T) {
 		rig := newCloseRig(t, 0xC401, generousBudgets())
 		s := rig.s
 
@@ -548,14 +548,14 @@ func TestInstanceCloseGateAndTokenAfterDestroy(t *testing.T) {
 		go func() {
 			rig.target.deliver(61, callbackCBytes(`{"what":"InFlight"}`))
 		}()
-		waitUntil(t, "在途 callback 取得 lease", func() bool { return inFlightCallbacks(s) == 1 })
+		waitUntil(t, "in-flight callback acquired the lease", func() bool { return inFlightCallbacks(s) == 1 })
 
 		closeErr := make(chan error, 1)
 		go func() { closeErr <- rig.in.close() }()
 
 		// 等待 close 流程关门(进入等待退空段),把调度延迟与被测行为
 		// 分离;此刻在途 callback 仍持 lease。
-		waitUntil(t, "close 关闭 callback 准入门", func() bool {
+		waitUntil(t, "close closed the callback admission gate", func() bool {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			return s.callbackGateClosed
@@ -566,12 +566,12 @@ func TestInstanceCloseGateAndTokenAfterDestroy(t *testing.T) {
 		<-time.After(notWithin)
 		select {
 		case err := <-closeErr:
-			t.Fatalf("在途 callback 未退出时 close 提前返回: %v", err)
+			t.Fatalf("close returned early while the in-flight callback has not exited: %v", err)
 		default:
 		}
 		// 关门后新准入一律失败,而在途者仍持 lease 不受影响。
 		if _, ok := s.admitCallback(); ok {
-			t.Error("关门后 admitCallback 必须失败")
+			t.Error("admitCallback must fail after the gate closed")
 		}
 
 		// 放行:复制、入队、退出 lease;关闭流程随之收敛(入队发生在
@@ -583,29 +583,29 @@ func TestInstanceCloseGateAndTokenAfterDestroy(t *testing.T) {
 				t.Fatalf("close = %v, want nil", err)
 			}
 		case <-time.After(hangGuard):
-			t.Fatal("callback 退出后 close 未在防挂死上限内完成")
+			t.Fatal("close did not complete within the hang-guard deadline after the callback exited")
 		}
 
 		// token 已由流程移除:重复注销按注册表契约 panic(正向证明)。
-		assertPanics(t, "close 已移除 token 后重复注销", func() {
+		assertPanics(t, "double unregister after close removed the token", func() {
 			native.UnregisterCallbackTarget(rig.token)
 		})
 		// 在途 callback 的消息排空期间已投递,关闭后仍可读;Events 随
 		// 后已关闭;终态发布完成。
 		ev := mustReadEvent(t, rig.d.events())
 		if ev.MessageID != 61 {
-			t.Errorf("事件 MessageID = %d, want 61", ev.MessageID)
+			t.Errorf("event MessageID = %d, want 61", ev.MessageID)
 		}
 		if _, ok := <-rig.d.events(); ok {
-			t.Error("close 后 Events 应已关闭")
+			t.Error("Events should be closed after close")
 		}
 		if got := s.currentPhase(); got != phaseClosed {
-			t.Errorf("阶段 = %d, want closed", got)
+			t.Errorf("phase = %d, want closed", got)
 		}
 		select {
 		case <-s.done():
 		default:
-			t.Error("close 完成后 closeDone 未关闭")
+			t.Error("closeDone not closed after close completed")
 		}
 	})
 }
@@ -626,8 +626,8 @@ func TestInstanceCloseWithStalledEventConsumer(t *testing.T) {
 	// 两笔 pending Operation:一笔带可确认完成消息,一笔无完成。
 	idSettled := AsyncID(7)
 	idClosed := AsyncID(8)
-	opSettled := mustAdmitPending(t, s, idSettled, "已完成提交")
-	opClosed := mustAdmitPending(t, s, idClosed, "未完成提交")
+	opSettled := mustAdmitPending(t, s, idSettled, "settled submission")
+	opClosed := mustAdmitPending(t, s, idClosed, "unsettled submission")
 
 	enqueue(t, rig.d, asyncCallInfoMessageID, asyncCallInfoPayload(idSettled, "Screencap", `{"ret":true}`))
 	enqueue(t, rig.d, 99, []byte(`{"what":"UnknownOne"}`))
@@ -640,24 +640,24 @@ func TestInstanceCloseWithStalledEventConsumer(t *testing.T) {
 	select {
 	case finalErr = <-closeErr:
 	case <-time.After(hangGuard):
-		t.Fatal("外部停读 Events 时 close 未在防挂死上限内完成:排空疑似在等待读者")
+		t.Fatal("close did not complete within the hang-guard deadline with Events reads externally stopped: the drain is suspected of waiting on readers")
 	}
 
 	// 溢出按契约成为首因并成为 Close 错误;丢失计数为 2;故障通知独立
 	// 于 Events 有空间与否,已关闭。
 	if finalErr == nil {
-		t.Fatal("公开排空溢出必须成为 Close 错误,不得伪装完整交付")
+		t.Fatal("the public drain overflow must become the Close error and must not masquerade as complete delivery")
 	}
 	if !errors.Is(finalErr, native.ErrEventOverflow) {
 		t.Errorf("errors.Is(finalErr, native.ErrEventOverflow) = false; err = %v", finalErr)
 	}
 	if lost := s.currentLostEvents(); lost != 2 {
-		t.Errorf("丢失计数 = %d, want 2", lost)
+		t.Errorf("lost count = %d, want 2", lost)
 	}
 	select {
 	case <-s.faultNotify():
 	default:
-		t.Error("溢出故障的通知未关闭")
+		t.Error("the overflow fault notification is not closed")
 	}
 
 	// 观察到 Done 即见稳定终态:Done 已关闭,Err 与 finalErr 同一存储
@@ -665,10 +665,10 @@ func TestInstanceCloseWithStalledEventConsumer(t *testing.T) {
 	select {
 	case <-s.done():
 	default:
-		t.Error("close 返回后 closeDone 未关闭")
+		t.Error("closeDone not closed after close returned")
 	}
 	if got := s.finalError(); got != finalErr {
-		t.Errorf("finalError() = %v, want 与 Close 返回同一存储值 %v", got, finalErr)
+		t.Errorf("finalError() = %v, want the same stored value as the Close return %v", got, finalErr)
 	}
 
 	// 全部 Operation 终态立即稳定:已确认的成功结果不被随后的溢出
@@ -676,36 +676,36 @@ func TestInstanceCloseWithStalledEventConsumer(t *testing.T) {
 	// 终错误同一存储值;等待无需任何额外延迟。
 	res, werr := waitGuarded(t, opSettled, context.Background())
 	if werr != nil {
-		t.Fatalf("已确认完成的等待 = %v, want nil(成功终态不被溢出改写)", werr)
+		t.Fatalf("wait of the confirmed completion = %v, want nil (the successful final state is not rewritten by the overflow)", werr)
 	}
 	if res.ID != idSettled || res.What != "Screencap" || !res.OK {
-		t.Fatalf("结算结果 = %+v, want {7 Screencap true}", res)
+		t.Fatalf("settlement result = %+v, want {7 Screencap true}", res)
 	}
 	_, werr = waitGuarded(t, opClosed, context.Background())
 	if werr == nil {
-		t.Fatal("未完成项必须已按首因结项,不得仍可等待")
+		t.Fatal("the unsettled item must already be closed out under the first cause and must not remain waitable")
 	}
 	if !errors.Is(werr, native.ErrEventOverflow) {
-		t.Errorf("errors.Is(未完成项结算错误, native.ErrEventOverflow) = false; err = %v", werr)
+		t.Errorf("errors.Is(unsettled item settlement error, native.ErrEventOverflow) = false; err = %v", werr)
 	}
 	if werr != finalErr {
-		t.Errorf("未完成项结算错误 = %v, want 与最终错误同一存储值 %v", werr, finalErr)
+		t.Errorf("unsettled item settlement error = %v, want the same stored value as the final error %v", werr, finalErr)
 	}
 	if n := pendingOccupancy(s); n != 0 {
-		t.Errorf("pending 占用 = %d, want 0(全部结项)", n)
+		t.Errorf("pending occupancy = %d, want 0 (all closed out)", n)
 	}
 
 	// 已在公开缓冲中的事件关闭后仍可读:恰为第 1 条(完成消息)。
 	ev := mustReadEvent(t, rig.d.events())
 	if ev.MessageID != asyncCallInfoMessageID {
-		t.Errorf("缓冲事件 MessageID = %d, want AsyncCallInfo(%d)", ev.MessageID, asyncCallInfoMessageID)
+		t.Errorf("buffered event MessageID = %d, want AsyncCallInfo(%d)", ev.MessageID, asyncCallInfoMessageID)
 	}
 	if _, ok := <-rig.d.events(); ok {
-		t.Error("close 后 Events 应已关闭")
+		t.Error("Events should be closed after close")
 	}
 	// faulted 进入关闭仍无条件执行一次 Stop/Destroy()。
 	if got := rig.closer.count("destroy"); got != 1 {
-		t.Errorf("Destroy 次数 = %d, want 恰 1", got)
+		t.Errorf("Destroy count = %d, want exactly 1", got)
 	}
 }
 
@@ -718,55 +718,55 @@ func TestInstanceCloseWithStalledEventConsumer(t *testing.T) {
 // 不关闭、错误不发布——不存在自设超时后宣称回收完成的路径,并发第
 // 二申请等待同一 closeDone。
 func TestInstanceCloseErrorComposition(t *testing.T) {
-	t.Run("Stop 拒绝成为 Close 原因,不制造成功码", func(t *testing.T) {
+	t.Run("Stop rejection becomes the Close cause with no success code fabricated", func(t *testing.T) {
 		rig := newCloseRig(t, 0xC600, generousBudgets())
 		rig.closer.stopRet = 0
 		id := AsyncID(9)
-		op := mustAdmitPending(t, rig.s, id, "未完成提交")
+		op := mustAdmitPending(t, rig.s, id, "unsettled submission")
 
 		err := runClose(t, rig.in)
 		if err == nil {
-			t.Fatal("Stop 返回 0 时 Close 不得返回 nil:不得从 Destroy 的 void 返回制造成功码")
+			t.Fatal("Close must not return nil when Stop returns 0: a success code must not be fabricated from the void return of Destroy")
 		}
 		if !errors.Is(err, native.ErrNativeRejected) {
 			t.Errorf("errors.Is(err, native.ErrNativeRejected) = false; err = %v", err)
 		}
 		for _, want := range []string{"AsstStop", "0 (false)"} {
 			if !strings.Contains(err.Error(), want) {
-				t.Errorf("停止诊断应含接口与原始 bool %q:\n%s", want, err.Error())
+				t.Errorf("the stop diagnostic should contain the interface and raw bool %q:\n%s", want, err.Error())
 			}
 		}
 		// 拒绝后继续 Destroy(),各恰一次。
 		if got := rig.closer.count("stop"); got != 1 || rig.closer.count("destroy") != 1 {
-			t.Errorf("Stop/Destroy 次数 = %d/%d, want 1/1", rig.closer.count("stop"), rig.closer.count("destroy"))
+			t.Errorf("Stop/Destroy count = %d/%d, want 1/1", rig.closer.count("stop"), rig.closer.count("destroy"))
 		}
 		// 剩余 Operation 不被结为成功:以 ErrClosed 结项(第 5 步)。
 		_, werr := waitGuarded(t, op, context.Background())
 		if !errors.Is(werr, native.ErrClosed) {
-			t.Errorf("errors.Is(剩余 Operation 结算错误, native.ErrClosed) = false; err = %v", werr)
+			t.Errorf("errors.Is(remaining Operation settlement error, native.ErrClosed) = false; err = %v", werr)
 		}
 	})
 
-	t.Run("首因为主因,停止拒绝为附加诊断,两者可辨", func(t *testing.T) {
+	t.Run("first cause as the primary cause, stop rejection as an additional diagnostic, both discernible", func(t *testing.T) {
 		rig := newCloseRig(t, 0xC601, generousBudgets())
-		cause := fmt.Errorf("业务期协议破坏: %w", native.ErrProtocol)
+		cause := fmt.Errorf("business-phase protocol violation: %w", native.ErrProtocol)
 		rig.s.recordFault(cause)
 		rig.closer.stopRet = 0
 
 		err := runClose(t, rig.in)
 		if err == nil {
-			t.Fatal("首因加停止拒绝时 Close 不得返回 nil")
+			t.Fatal("Close must not return nil with the first cause plus stop rejection")
 		}
 		// 两者均沿错误链可辨:首因身份保留,停止拒绝可达。
 		if !errors.Is(err, cause) || !errors.Is(err, native.ErrProtocol) {
-			t.Errorf("最终错误必须保留首因身份: err = %v", err)
+			t.Errorf("the final error must preserve the first-cause identity: err = %v", err)
 		}
 		if !errors.Is(err, native.ErrNativeRejected) {
-			t.Errorf("停止拒绝诊断必须沿错误链可辨: err = %v", err)
+			t.Errorf("the stop-rejection diagnostic must be discernible along the error chain: err = %v", err)
 		}
 	})
 
-	t.Run("Destroy 卡住时 close 不自设超时,并发申请等待同一 closeDone", func(t *testing.T) {
+	t.Run("close sets no timeout of its own while Destroy is stuck; concurrent requests wait on the same closeDone", func(t *testing.T) {
 		rig := newCloseRig(t, 0xC602, generousBudgets())
 		destroyEntered := make(chan struct{})
 		releaseDestroy := make(chan struct{})
@@ -778,7 +778,7 @@ func TestInstanceCloseErrorComposition(t *testing.T) {
 		go func() { closeErr <- rig.in.close() }()
 		<-destroyEntered
 		// 确认 close 已进入 native 段(Stop 已发生)后进入观察窗。
-		waitUntil(t, "close 到达 native 停止段", func() bool { return rig.closer.count("stop") == 1 })
+		waitUntil(t, "close reached the native stop section", func() bool { return rig.closer.count("stop") == 1 })
 
 		// 负面观察窗:Destroy 未返回期间 close 不返回、Done 不关闭、
 		// 最终错误不发布——不存在「超时后宣称原生资源已安全回收」的
@@ -786,16 +786,16 @@ func TestInstanceCloseErrorComposition(t *testing.T) {
 		<-time.After(notWithin)
 		select {
 		case err := <-closeErr:
-			t.Fatalf("Destroy 未返回时 close 提前返回: %v(不得自设强制回收超时)", err)
+			t.Fatalf("close returned early while Destroy has not returned: %v (no self-imposed forced-reclaim timeout allowed)", err)
 		default:
 		}
 		select {
 		case <-rig.s.done():
-			t.Fatal("Destroy 未返回时 closeDone 已关闭:伪装关闭完成")
+			t.Fatal("closeDone closed while Destroy has not returned: masquerading close completion")
 		default:
 		}
 		if err := rig.s.finalError(); err != nil {
-			t.Errorf("Destroy 未返回时最终错误已发布: %v", err)
+			t.Errorf("final error published while Destroy has not returned: %v", err)
 		}
 
 		// 并发第二申请:等待同一 closeDone,同样不得提前返回。
@@ -804,7 +804,7 @@ func TestInstanceCloseErrorComposition(t *testing.T) {
 		<-time.After(notWithin)
 		select {
 		case err := <-closeErr2:
-			t.Fatalf("并发第二申请未等待同一 closeDone:提前返回 %v", err)
+			t.Fatalf("the concurrent second request did not wait on the same closeDone: returned early %v", err)
 		default:
 		}
 
@@ -816,11 +816,11 @@ func TestInstanceCloseErrorComposition(t *testing.T) {
 					t.Errorf("close %d = %v, want nil", i, err)
 				}
 			case <-time.After(hangGuard):
-				t.Fatal("释放后 close 未在防挂死上限内完成")
+				t.Fatal("close did not complete within the hang-guard deadline after release")
 			}
 		}
 		if got := rig.closer.count("destroy"); got != 1 {
-			t.Errorf("Destroy 次数 = %d, want 恰 1", got)
+			t.Errorf("Destroy count = %d, want exactly 1", got)
 		}
 	})
 }
@@ -835,28 +835,28 @@ func TestInstanceCloseZeroHandleSkipsStopDestroy(t *testing.T) {
 		t.Fatalf("close = %v, want nil", err)
 	}
 	if got := rig.closer.count("stop"); got != 0 {
-		t.Errorf("CreateEx=0 路径的 Stop 次数 = %d, want 0", got)
+		t.Errorf("Stop count on the CreateEx=0 path = %d, want 0", got)
 	}
 	if got := rig.closer.count("destroy"); got != 0 {
-		t.Errorf("CreateEx=0 路径的 Destroy 次数 = %d, want 0", got)
+		t.Errorf("Destroy count on the CreateEx=0 path = %d, want 0", got)
 	}
 	// 其余清理照常:门已关闭、token 已移除、Events 已关闭、终态发布。
 	if _, ok := rig.s.admitCallback(); ok {
-		t.Error("close 后 callback 准入门仍开放")
+		t.Error("callback admission gate still open after close")
 	}
-	assertPanics(t, "close 已移除 token 后重复注销", func() {
+	assertPanics(t, "double unregister after close removed the token", func() {
 		native.UnregisterCallbackTarget(rig.token)
 	})
 	if _, ok := <-rig.d.events(); ok {
-		t.Error("Events 应已关闭且为空")
+		t.Error("Events should be closed and empty")
 	}
 	if got := rig.s.currentPhase(); got != phaseClosed {
-		t.Errorf("阶段 = %d, want closed", got)
+		t.Errorf("phase = %d, want closed", got)
 	}
 	select {
 	case <-rig.s.done():
 	default:
-		t.Error("close 完成后 closeDone 未关闭")
+		t.Error("closeDone not closed after close completed")
 	}
 }
 
@@ -890,8 +890,8 @@ func TestInstanceCloseEventsClosedAfterSettlementAndPublication(t *testing.T) {
 
 	// opSettled:带可确认完成消息,结算后拦停在投递之前;op:无完成
 	// 消息,留给剩余结算,是顺序断言的观察对象。
-	opSettled := mustAdmitPending(t, rig.s, AsyncID(20), "可确认完成提交")
-	op := mustAdmitPending(t, rig.s, AsyncID(21), "关闭时未完成任务")
+	opSettled := mustAdmitPending(t, rig.s, AsyncID(20), "confirmable completion submission")
+	op := mustAdmitPending(t, rig.s, AsyncID(21), "task unfinished at close")
 	enqueue(t, rig.d, asyncCallInfoMessageID, asyncCallInfoPayload(AsyncID(20), "Screencap", `{"ret":true}`))
 	<-reached // 分发器已完成可确认结算,拦停在投递之前(不持任何锁)
 
@@ -901,7 +901,7 @@ func TestInstanceCloseEventsClosedAfterSettlementAndPublication(t *testing.T) {
 	// 等待关闭流程越过入口关闭:此刻它已请求排空并停在 waitProcessed
 	// 的通道接收上——分发器仍被结算屏障拦停,停止点不可能到达,流程
 	// 此后不再触碰状态锁,加锁无竞争。
-	waitUntil(t, "关闭流程越过入口关闭", func() bool {
+	waitUntil(t, "close flow passed the intake closure", func() bool {
 		rig.d.mu.Lock()
 		defer rig.d.mu.Unlock()
 		return rig.d.intakeClosed
@@ -920,7 +920,7 @@ func TestInstanceCloseEventsClosedAfterSettlementAndPublication(t *testing.T) {
 	case <-rig.d.processed:
 	case <-time.After(hangGuard):
 		rig.s.mu.Unlock()
-		t.Fatal("发送者停止点未在防挂死上限内到达")
+		t.Fatal("the sender stop point was not reached within the hang-guard deadline")
 	}
 	// 观察窗(仍持状态锁):正确实现中,剩余结算、终态发布与
 	// closeEvents 都被状态锁挡在冻结点之后,持有期间 Events 不可能被
@@ -933,10 +933,10 @@ func TestInstanceCloseEventsClosedAfterSettlementAndPublication(t *testing.T) {
 	// 缓冲后必须仍然开放——带缓冲的已关闭通道会先交出缓冲项(ok=
 	// true),故以排空到 ok=false 或 default 为准判别。
 	if n := len(rig.s.pending); n != 1 {
-		t.Errorf("冻结点 pending 占用 = %d, want 1(仅剩无完成消息的未结项)", n)
+		t.Errorf("pending occupancy at the freeze point = %d, want 1 (only the unsettled item without a completion message remains)", n)
 	}
 	if rig.s.finalErr != nil {
-		t.Errorf("冻结点最终错误 = %v, want nil(尚未发布)", rig.s.finalErr)
+		t.Errorf("final error at the freeze point = %v, want nil (not yet published)", rig.s.finalErr)
 	}
 	eventsOpen := true
 	for eventsOpen {
@@ -944,7 +944,7 @@ func TestInstanceCloseEventsClosedAfterSettlementAndPublication(t *testing.T) {
 		case _, ok := <-rig.d.events():
 			eventsOpen = ok
 			if !ok {
-				t.Error("剩余结算与终态发布之前 Events 不得被关闭(冻结顺序)")
+				t.Error("Events must not be closed before remaining settlement and final-state publication (frozen order)")
 			}
 		default:
 			eventsOpen = false // 已空且未关闭:顺序正确
@@ -957,21 +957,21 @@ func TestInstanceCloseEventsClosedAfterSettlementAndPublication(t *testing.T) {
 	select {
 	case err := <-closeErr:
 		if !errors.Is(err, native.ErrNativeRejected) {
-			t.Fatalf("close = %v, want 含 ErrNativeRejected 的停止诊断(stopRet=0 令最终错误可观察)", err)
+			t.Fatalf("close = %v, want a stop diagnostic containing ErrNativeRejected (stopRet=0 makes the final error observable)", err)
 		}
 	case <-time.After(hangGuard):
-		t.Fatal("放行后 close 未在防挂死上限内完成")
+		t.Fatal("close did not complete within the hang-guard deadline after release")
 	}
 
 	// close 返回后复核终态稳定:未完成项已按 ErrClosed 结项,可确认
 	// 结果不因随后公开排空而改写,Events 已由通道所有者关闭,缓冲中
 	// 的事件(冻结点若未读走)关闭后仍可读。
 	if _, werr := waitGuarded(t, op, context.Background()); !errors.Is(werr, native.ErrClosed) {
-		t.Errorf("未完成项结算错误 = %v, want 包装 native.ErrClosed", werr)
+		t.Errorf("unsettled item settlement error = %v, want wrapping native.ErrClosed", werr)
 	}
 	res, werr := waitGuarded(t, opSettled, context.Background())
 	if werr != nil || !res.OK || res.ID != AsyncID(20) {
-		t.Errorf("可确认结果 = %+v, %v; want 成功终态不被改写", res, werr)
+		t.Errorf("confirmable result = %+v, %v; want the successful final state not rewritten", res, werr)
 	}
 	for {
 		select {
@@ -980,13 +980,13 @@ func TestInstanceCloseEventsClosedAfterSettlementAndPublication(t *testing.T) {
 				continue // 冻结点未读走的缓冲事件关闭后仍可读
 			}
 		case <-time.After(hangGuard):
-			t.Fatal("排空公开缓冲超时(防挂死上限触发)")
+			t.Fatal("timed out draining the public buffer (hang-guard deadline hit)")
 		}
 		break // ok=false:已关闭且排空,终态成立
 	}
 	select {
 	case <-rig.s.done():
 	default:
-		t.Error("close 返回后 Done 未关闭")
+		t.Error("Done not closed after close returned")
 	}
 }

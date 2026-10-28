@@ -89,6 +89,6 @@ type exclusionSpec struct {
 // exclusions 是唯一的排除清单,恰好 2 条 deprecated 项;不得新增
 // 排除项,已有项不得改绑或失效。
 var exclusions = []exclusionSpec{
-	{Name: "AsstConnect", Header: "AsstCaller.h", Reason: "上游 deprecated 注释；同步连接由 AsyncConnect 代替"},
-	{Name: "AsstAttachWindow", Header: "AsstCaller.h", Reason: "上游 deprecated 注释；同步绑定由 AsyncAttachWindow 代替"},
+	{Name: "AsstConnect", Header: "AsstCaller.h", Reason: "upstream deprecated comment; synchronous connect replaced by AsyncConnect"},
+	{Name: "AsstAttachWindow", Header: "AsstCaller.h", Reason: "upstream deprecated comment; synchronous attach replaced by AsyncAttachWindow"},
 }

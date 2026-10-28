@@ -92,18 +92,18 @@ func TestRealCoreNoDeviceChain(t *testing.T) {
 		noDeviceUserDirEnv:  userDir,
 	})
 	if out.err != nil {
-		t.Fatalf("chain 子进程失败(非零退出/信号/超时一律视为失败,不重试):\n%s",
+		t.Fatalf("chain child failed (non-zero exit/signal/timeout are all treated as failure, no retry):\n%s",
 			childDiagnostics(noDeviceModeChain, out))
 	}
 	if err := verifyCoreNoDeviceChildMetadata(out.stdout); err != nil {
-		t.Fatalf("chain 子进程 stdout 元数据复验失败(与子进程内断言独立):\n%v\n%s",
+		t.Fatalf("chain child stdout metadata re-verification failed (independent of the assertions inside the child):\n%v\n%s",
 			err, childDiagnostics(noDeviceModeChain, out))
 	}
-	t.Logf("chain 子进程内部断言全部通过:\n%s", out.stdout)
+	t.Logf("chain child internal assertions all passed:\n%s", out.stdout)
 	if out.stderr != "" {
-		t.Logf("chain 子进程 stderr:\n%s", out.stderr)
+		t.Logf("chain child stderr:\n%s", out.stderr)
 	}
-	t.Logf("锁定基线:tarball SHA256=%s,core SHA256=%s,resource/version.json SHA256=%s,core version=%s",
+	t.Logf("locked baseline: tarball SHA256=%s, core SHA256=%s, resource/version.json SHA256=%s, core version=%s",
 		lockedTarballSHA256, lockedCoreSHA256, lockedVersionSHA256, lockedCoreVersion)
 }
 
@@ -121,21 +121,21 @@ func TestRealCoreNoDeviceExecutorTimeoutKillReportedAsFailure(t *testing.T) {
 	}
 	out := runCoreNoDeviceChild(t, noDeviceHangChildTimeout, noDeviceModeHang, nil)
 	if out.err == nil {
-		t.Fatalf("挂起子进程在 %s 超时后必须被报告为失败,实际退出码 0:\n%s",
+		t.Fatalf("hang child must be reported as failed after the %s timeout, actual exit code 0:\n%s",
 			noDeviceHangChildTimeout, childDiagnostics(noDeviceModeHang, out))
 	}
 	if !out.timedOut {
-		t.Fatalf("失败必须可辨识为超时终止(timedOut=false, err=%v):\n%s",
+		t.Fatalf("the failure must be identifiable as timeout termination (timedOut=false, err=%v):\n%s",
 			out.err, childDiagnostics(noDeviceModeHang, out))
 	}
 	if !out.signaled {
-		t.Fatalf("超时终止必须经信号杀死子进程(signaled=false, err=%v):\n%s",
+		t.Fatalf("timeout termination must kill the child via a signal (signaled=false, err=%v):\n%s",
 			out.err, childDiagnostics(noDeviceModeHang, out))
 	}
 	if !strings.Contains(out.stdout, noDeviceHangMarker) {
-		t.Fatalf("超时诊断必须保留子进程已产出的输出:\n%s", childDiagnostics(noDeviceModeHang, out))
+		t.Fatalf("timeout diagnostics must preserve the output the child already produced:\n%s", childDiagnostics(noDeviceModeHang, out))
 	}
-	t.Logf("挂起子进程按预期在 %s 超时被 SIGKILL,执行器报告为失败并保留诊断:\n%s",
+	t.Logf("hang child was SIGKILLed on the %s timeout as expected; the executor reported failure and preserved diagnostics:\n%s",
 		noDeviceHangChildTimeout, childDiagnostics(noDeviceModeHang, out))
 }
 
@@ -157,7 +157,7 @@ func TestRealCoreNoDeviceMissingNativeDepsReportedAsFailure(t *testing.T) {
 	isolated := t.TempDir()
 	isolatedLib := filepath.Join(isolated, lockedCoreSOName)
 	if err := copyFile(libPath, isolatedLib); err != nil {
-		t.Fatalf("复制 libMaaCore.so 到隔离目录失败: %v", err)
+		t.Fatalf("failed to copy libMaaCore.so into the isolated directory: %v", err)
 	}
 
 	out := runCoreNoDeviceChild(t, noDeviceDepsChildTimeout, noDeviceModeMissingDeps, map[string]string{
@@ -165,14 +165,14 @@ func TestRealCoreNoDeviceMissingNativeDepsReportedAsFailure(t *testing.T) {
 		noDeviceUserDirEnv: t.TempDir(),
 	})
 	if out.err != nil {
-		t.Fatalf("missing-deps 子进程失败(其内部断言未全部通过):\n%s",
+		t.Fatalf("missing-deps child failed (its internal assertions did not all pass):\n%s",
 			childDiagnostics(noDeviceModeMissingDeps, out))
 	}
 	if !strings.Contains(out.stdout, noDeviceDepsMarker) {
-		t.Fatalf("missing-deps 子进程退出码 0,但 stdout 缺少成功标记:\n%s",
+		t.Fatalf("missing-deps child exited with exit code 0, but stdout lacks the success marker:\n%s",
 			childDiagnostics(noDeviceModeMissingDeps, out))
 	}
-	t.Logf("missing-deps 子进程内部断言全部通过:\n%s", out.stdout)
+	t.Logf("missing-deps child internal assertions all passed:\n%s", out.stdout)
 }
 
 // runCoreNoDeviceChainChild 是 noDeviceModeChain 子进程入口:真实锁定库上的
@@ -186,7 +186,7 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 		{noDeviceLibPathEnv, libPath}, {noDeviceResourceEnv, resourceRoot}, {noDeviceUserDirEnv, userDir},
 	} {
 		if !filepath.IsAbs(e.value) {
-			t.Fatalf("%s = %q 不是绝对路径", e.name, e.value)
+			t.Fatalf("%s = %q is not an absolute path", e.name, e.value)
 		}
 	}
 
@@ -201,17 +201,17 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 		t.Fatalf("Open(%s) failed: %v", libPath, err)
 	}
 	if got := rt.Version(); got != lockedCoreVersion {
-		t.Fatalf("Version() = %q, want %q (锁定基线)", got, lockedCoreVersion)
+		t.Fatalf("Version() = %q, want %q (locked baseline)", got, lockedCoreVersion)
 	}
 	if got := rt.NullSize(); got != math.MaxUint64 {
-		t.Fatalf("NullSize() = %#x, want %#x (锁定 profile 哨兵)", got, uint64(math.MaxUint64))
+		t.Fatalf("NullSize() = %#x, want %#x (locked profile sentinel)", got, uint64(math.MaxUint64))
 	}
 	if entries, err := os.ReadDir(userDir); err == nil {
 		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
-		t.Logf("Open 后用户目录条目(仅名称): %v", names)
+		t.Logf("user directory entries after Open (names only): %v", names)
 	}
 	caps := rt.Capabilities()
 	t.Logf("Open ok: version=%s nullSize=%#x capabilities Create=%v ImageBgr=%v AsyncAttachWindow=%v",
@@ -223,7 +223,7 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 	if err != nil || inst == nil {
 		t.Fatalf("NewInstance failed: err=%v, inst=%v", err, inst)
 	}
-	t.Logf("NewInstance ok: CreateEx 返回有效句柄并发布 ready 实例")
+	t.Logf("NewInstance ok: CreateEx returned a valid handle and published a ready instance")
 
 	// 3. 未连接 Screencap:提交被接受(非零 ID)不等于截图成功;最终
 	//    结果由真实 AsyncCallInfo 按 async_call_id 关联结算为原生失败。
@@ -238,26 +238,26 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 	res, waitErr := op.Wait(waitCtx)
 	cancel()
 	if waitErr == nil {
-		t.Fatalf("未连接的 Screencap 报告成功 %+v:提交成功不得被解释为截图成功", res)
+		t.Fatalf("unconnected Screencap reported success %+v: submission success must not be interpreted as a successful screenshot", res)
 	}
 	if !errors.Is(waitErr, ErrNativeRejected) {
-		t.Fatalf("未连接 Screencap 的 Wait 错误 = %v, want errors.Is ErrNativeRejected", waitErr)
+		t.Fatalf("unconnected Screencap Wait error = %v, want errors.Is ErrNativeRejected", waitErr)
 	}
 	if res.OK {
 		t.Fatalf("AsyncResult.OK = true, unconnected screencap must fail")
 	}
 	if res.What != asyncWhatScreencap {
-		t.Fatalf("AsyncResult.What = %q, want %q (锁定 Core call_proc 冻结值)", res.What, asyncWhatScreencap)
+		t.Fatalf("AsyncResult.What = %q, want %q (frozen value from the locked Core call_proc)", res.What, asyncWhatScreencap)
 	}
 	if res.ID != op.ID() {
-		t.Fatalf("AsyncResult.ID = %d, want 提交 ID %d (async_call_id 关联破坏)", res.ID, op.ID())
+		t.Fatalf("AsyncResult.ID = %d, want the submitted ID %d (async_call_id correlation broken)", res.ID, op.ID())
 	}
 	var det struct {
 		Ret  *bool  `json:"ret"`
 		Cost *int64 `json:"cost"`
 	}
 	if err := json.Unmarshal(res.Details, &det); err != nil {
-		t.Fatalf("AsyncResult.Details 解码失败: %v (raw: %s)", err, res.Details)
+		t.Fatalf("failed to decode AsyncResult.Details: %v (raw: %s)", err, res.Details)
 	}
 	if det.Ret == nil || *det.Ret {
 		t.Fatalf("details.ret = %s, want false", res.Details)
@@ -266,71 +266,71 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 	if det.Cost != nil {
 		cost = *det.Cost
 	}
-	t.Logf("未连接 Screencap 的真实 AsyncCallInfo 已关联: id=%d what=%s ok=false ret=false cost=%dms details=%s",
+	t.Logf("real AsyncCallInfo of the unconnected Screencap correlated: id=%d what=%s ok=false ret=false cost=%dms details=%s",
 		res.ID, res.What, cost, res.Details)
 
 	// 4. 仅追加不执行的任务并读取列表:不 Start、不 Connect、不执行
 	//    游戏操作;Connected()==false 佐证全程无连接。
 	id1, err := inst.AppendTask(noDeviceTaskType, json.RawMessage(`{"enable":true}`))
 	if err != nil || id1 == 0 {
-		t.Fatalf("AppendTask#1 = (%d, %v), want (非零, nil)", id1, err)
+		t.Fatalf("AppendTask#1 = (%d, %v), want (non-zero, nil)", id1, err)
 	}
 	id2, err := inst.AppendTask(noDeviceTaskType, json.RawMessage(`{"enable":true}`))
 	if err != nil || id2 == 0 {
-		t.Fatalf("AppendTask#2 = (%d, %v), want (非零, nil)", id2, err)
+		t.Fatalf("AppendTask#2 = (%d, %v), want (non-zero, nil)", id2, err)
 	}
 	if id2 == id1 {
-		t.Fatalf("两次 AppendTask 返回同一 TaskID %d", id1)
+		t.Fatalf("the two AppendTask calls returned the same TaskID %d", id1)
 	}
 	connected, err := inst.Connected()
 	if err != nil {
 		t.Fatalf("Connected() error: %v", err)
 	}
 	if connected {
-		t.Fatalf("Connected() = true, 未调用 Connect 时不得报告已连接")
+		t.Fatalf("Connected() = true, must not report connected when Connect was never called")
 	}
 	tasks, err := inst.Tasks()
 	if err != nil {
 		t.Fatalf("Tasks() error: %v", err)
 	}
 	if len(tasks) != 2 || !slices.Contains(tasks, id1) || !slices.Contains(tasks, id2) {
-		t.Fatalf("Tasks() = %v, want 恰含已入队 {%d, %d} 的 2 元列表(顺序由 Core 决定,不核对次序)",
+		t.Fatalf("Tasks() = %v, want a 2-element list containing exactly the enqueued {%d, %d} (order decided by Core, order not checked)",
 			tasks, id1, id2)
 	}
-	t.Logf("仅追加未执行: tasks=%v (Award×2, 无 Start/Connect), Connected=false", tasks)
+	t.Logf("appended but not executed: tasks=%v (Award×2, no Start/Connect), Connected=false", tasks)
 
 	// 5. Instance.Close:真实一次 Stop(未启动实例返回 true)与一次
 	//    Destroy(C void);Destroyed 在 Destroy 调用线程同步触发,经
 	//    仍开放的准入门入队,由关闭流程排空后投递公开缓冲。
 	if err := inst.Close(); err != nil {
-		t.Fatalf("Instance.Close = %v, want nil (未启动实例的正常关闭)", err)
+		t.Fatalf("Instance.Close = %v, want nil (normal close of a never-started instance)", err)
 	}
 
 	// 5a. Destroyed 的诊断顺序:排空后的公开缓冲恰为 [AsyncCallInfo,
 	//     Destroyed],本地序号单调递增;公开 Events 通道已随关闭关闭。
 	evs := readDrainedEvents(t, inst)
 	if len(evs) != 2 {
-		t.Fatalf("Close 后公开事件缓冲 = %d 条 (%s), want 恰为 [AsyncCallInfo, Destroyed] 两条",
+		t.Fatalf("public event buffer after Close = %d events (%s), want exactly the two [AsyncCallInfo, Destroyed]",
 			len(evs), renderEvents(evs))
 	}
 	if evs[0].MessageID != asyncCallInfoMessageID {
-		t.Fatalf("公开事件[0] messageID = %d, want AsyncCallInfo(%d): %s",
+		t.Fatalf("public event[0] messageID = %d, want AsyncCallInfo(%d): %s",
 			evs[0].MessageID, asyncCallInfoMessageID, renderEvents(evs))
 	}
 	if evs[1].MessageID != noDeviceDestroyedMessageID {
-		t.Fatalf("公开事件[1] messageID = %d, want Destroyed(%d): %s",
+		t.Fatalf("public event[1] messageID = %d, want Destroyed(%d): %s",
 			evs[1].MessageID, noDeviceDestroyedMessageID, renderEvents(evs))
 	}
 	if evs[0].Sequence != 1 || evs[1].Sequence != 2 || evs[0].Sequence >= evs[1].Sequence {
-		t.Fatalf("公开事件本地序号 = (%d, %d), want (1, 2) 单调递增", evs[0].Sequence, evs[1].Sequence)
+		t.Fatalf("public event local sequences = (%d, %d), want (1, 2) monotonically increasing", evs[0].Sequence, evs[1].Sequence)
 	}
-	t.Logf("Destroyed 诊断顺序确认: AsyncCallInfo(seq=%d, json=%s) → Destroyed(seq=%d, json=%s), 之后通道已关闭",
+	t.Logf("Destroyed diagnostic order confirmed: AsyncCallInfo(seq=%d, json=%s) -> Destroyed(seq=%d, json=%s), channel closed afterwards",
 		evs[0].Sequence, evs[0].JSON, evs[1].Sequence, evs[1].JSON)
 
 	// 5b. Destroy 返回后 callback 契约:关门、退空、移除 token 之后,
 	//     真实注册表不再把迟到的原生回调路由到本实例。
 	if native.LookupCallbackDelivery(inst.inst.token) != nil {
-		t.Fatalf("Close 后 callback token %d 仍可查到投递函数, 迟到回调契约被破坏", inst.inst.token)
+		t.Fatalf("callback token %d still resolves to a delivery function after Close, the late-callback contract is broken", inst.inst.token)
 	}
 
 	// 5c. 实例关闭后 Operation 仍可等待,取得同一保存终态的独立副本。
@@ -338,10 +338,10 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 	res2, replayErr := op.Wait(replayCtx)
 	cancel()
 	if !errors.Is(replayErr, ErrNativeRejected) {
-		t.Fatalf("关闭后重复 Wait 错误 = %v, want errors.Is ErrNativeRejected", replayErr)
+		t.Fatalf("repeated Wait after close error = %v, want errors.Is ErrNativeRejected", replayErr)
 	}
 	if res2.ID != res.ID || res2.What != res.What || res2.OK != res.OK || !bytes.Equal(res2.Details, res.Details) {
-		t.Fatalf("关闭后重复 Wait 结果漂移: first=%+v replay=%+v", res, res2)
+		t.Fatalf("repeated Wait after close drifted: first=%+v replay=%+v", res, res2)
 	}
 
 	// 6. Runtime.Close:实例已终止使用,重复 Close 直接返回已存储结果
@@ -350,7 +350,7 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 		t.Fatalf("Runtime.Close = %v, want nil", err)
 	}
 	if _, err := rt.NewInstance(InstanceConfig{}); !errors.Is(err, ErrRuntimeTerminated) {
-		t.Fatalf("Runtime 终止后的 NewInstance 错误 = %v, want errors.Is ErrRuntimeTerminated", err)
+		t.Fatalf("NewInstance error after Runtime termination = %v, want errors.Is ErrRuntimeTerminated", err)
 	}
 
 	// 7. 全部断言通过后才打印 OK 标记(父进程复验其字段)。
@@ -369,7 +369,7 @@ func runCoreNoDeviceMissingDepsChild(t *testing.T) {
 		{noDeviceLibPathEnv, libPath}, {noDeviceUserDirEnv, userDir},
 	} {
 		if !filepath.IsAbs(e.value) {
-			t.Fatalf("%s = %q 不是绝对路径", e.name, e.value)
+			t.Fatalf("%s = %q is not an absolute path", e.name, e.value)
 		}
 	}
 
@@ -380,26 +380,26 @@ func runCoreNoDeviceMissingDepsChild(t *testing.T) {
 	}
 	rt, err := Open(cfg)
 	if rt != nil || err == nil {
-		t.Fatalf("隔离目录(缺捆绑依赖)的 Open = (%v, %v), want (nil, error)", rt, err)
+		t.Fatalf("Open on the isolated directory (missing bundled deps) = (%v, %v), want (nil, error)", rt, err)
 	}
 	var lle *LibraryLoadError
 	if !errors.As(err, &lle) {
-		t.Fatalf("errors.As 未命中 *LibraryLoadError, got %T: %v", err, err)
+		t.Fatalf("errors.As did not match *LibraryLoadError, got %T: %v", err, err)
 	}
 	if lle.Path != libPath {
 		t.Fatalf("LibraryLoadError.Path = %q, want %q", lle.Path, libPath)
 	}
 	if errors.Is(err, ErrRuntimeTerminated) {
-		t.Fatalf("原始错误不得包成 ErrRuntimeTerminated: %v", err)
+		t.Fatalf("original error must not be wrapped into ErrRuntimeTerminated: %v", err)
 	}
 	rt2, err2 := Open(cfg)
 	if rt2 != nil {
-		t.Fatalf("二次 Open 不得返回 Runtime: %v", rt2)
+		t.Fatalf("second Open must not return a Runtime: %v", rt2)
 	}
 	if !errors.Is(err2, ErrRuntimeTerminated) {
-		t.Fatalf("二次 Open 的错误 = %v, want errors.Is ErrRuntimeTerminated", err2)
+		t.Fatalf("second Open error = %v, want errors.Is ErrRuntimeTerminated", err2)
 	}
-	t.Logf("原生依赖缺失可见失败: %v; 二次 Open: errors.Is(ErrRuntimeTerminated)=true", err)
+	t.Logf("missing native deps visibly failed: %v; second Open: errors.Is(ErrRuntimeTerminated)=true", err)
 	fmt.Printf("%s errors_as_library_load_error=true second_open_runtime_terminated=true\n", noDeviceDepsMarker)
 }
 
@@ -413,7 +413,7 @@ func runCoreNoDeviceChild(t *testing.T, timeout time.Duration, mode string, extr
 	t.Helper()
 	exe, err := filepath.Abs(os.Args[0])
 	if err != nil {
-		t.Fatalf("定位测试二进制 %q 失败: %v", os.Args[0], err)
+		t.Fatalf("failed to locate the test binary %q: %v", os.Args[0], err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -475,7 +475,7 @@ func readDrainedEvents(t *testing.T, inst *Instance) []Event {
 			}
 			evs = append(evs, ev)
 		case <-time.After(noDeviceDrainGuardTimeout):
-			t.Fatalf("Close 返回后 %s 内公开 Events 通道仍未关闭(已读 %d 条), 关闭契约被破坏",
+			t.Fatalf("public Events channel still not closed within %s after Close returned (%d events read), the close contract is broken",
 				noDeviceDrainGuardTimeout, len(evs))
 		}
 	}
@@ -525,27 +525,27 @@ func verifyCoreNoDeviceChildMetadata(stdout string) error {
 		break
 	}
 	if !found {
-		return fmt.Errorf("stdout 缺少 %s 元数据行", noDeviceOKMarker)
+		return fmt.Errorf("stdout missing %s metadata line", noDeviceOKMarker)
 	}
 	if version != lockedCoreVersion {
-		return fmt.Errorf("stdout 复验 Version = %q, want %q (锁定基线)", version, lockedCoreVersion)
+		return fmt.Errorf("stdout re-verification Version = %q, want %q (locked baseline)", version, lockedCoreVersion)
 	}
 	gotNullSize, err := strconv.ParseUint(nullSize, 10, 64)
 	if err != nil {
-		return fmt.Errorf("stdout 复验 nullSize %q 不是十进制 uint64: %w", nullSize, err)
+		return fmt.Errorf("stdout re-verification nullSize %q is not a decimal uint64: %w", nullSize, err)
 	}
 	if gotNullSize != math.MaxUint64 {
-		return fmt.Errorf("stdout 复验 NullSize = %d (0x%x), want %d (0x%x, 锁定 profile 哨兵)",
+		return fmt.Errorf("stdout re-verification NullSize = %d (0x%x), want %d (0x%x, locked profile sentinel)",
 			gotNullSize, gotNullSize, uint64(math.MaxUint64), uint64(math.MaxUint64))
 	}
 	if what != asyncWhatScreencap {
-		return fmt.Errorf("stdout 复验 screencap_what = %q, want %q", what, asyncWhatScreencap)
+		return fmt.Errorf("stdout re-verification screencap_what = %q, want %q", what, asyncWhatScreencap)
 	}
 	if okField != "false" {
-		return fmt.Errorf("stdout 复验 screencap_ok = %q, want false", okField)
+		return fmt.Errorf("stdout re-verification screencap_ok = %q, want false", okField)
 	}
 	if tasksCount != "2" {
-		return fmt.Errorf("stdout 复验 tasks = %q, want 2", tasksCount)
+		return fmt.Errorf("stdout re-verification tasks = %q, want 2", tasksCount)
 	}
 	return nil
 }

@@ -34,7 +34,7 @@ func assertPanics(t *testing.T, what string, f func()) {
 	t.Helper()
 	defer func() {
 		if recover() == nil {
-			t.Errorf("%s 必须按契约 panic", what)
+			t.Errorf("%s must panic per the contract", what)
 		}
 	}()
 	f()
@@ -60,7 +60,7 @@ func mustAdmit(t *testing.T, s *instanceState, what string) callLease {
 	t.Helper()
 	l, err := s.admitCall(what)
 	if err != nil {
-		t.Fatalf("准入 %q 不得失败: %v", what, err)
+		t.Fatalf("admitting %q must not fail: %v", what, err)
 	}
 	return l
 }
@@ -69,7 +69,7 @@ func mustAdmit(t *testing.T, s *instanceState, what string) callLease {
 func mustElectClose(t *testing.T, s *instanceState) {
 	t.Helper()
 	if !s.electClose() {
-		t.Fatal("首个关闭申请必须胜出成为所有者")
+		t.Fatal("the first close request must win and become the owner")
 	}
 }
 
@@ -108,10 +108,10 @@ func releaseAndAssertDrained(t *testing.T, s *instanceState, l callLease) {
 	select {
 	case <-drained:
 	case <-time.After(hangGuard):
-		t.Fatal("lease 释放后 waitCallsDrained 未收敛(防挂死上限触发)")
+		t.Fatal("waitCallsDrained did not converge after the lease was released (hang-guard limit hit)")
 	}
 	if n := inFlightCalls(s); n != 0 {
-		t.Fatalf("释放后在途调用计数 = %d, want 0", n)
+		t.Fatalf("in-flight call count after release = %d, want 0", n)
 	}
 }
 
@@ -122,43 +122,43 @@ func releaseAndAssertDrained(t *testing.T, s *instanceState, l callLease) {
 // 可达首个故障的底层哨兵),并用先行准入的 lease 证明已准入调用在
 // 这些阶段照常释放、计数归零。
 func TestInstanceStateRejectsCallsByPhase(t *testing.T) {
-	t.Run("closing 拒绝并包装 ErrClosing", func(t *testing.T) {
+	t.Run("closing rejects and wraps ErrClosing", func(t *testing.T) {
 		s := newInstanceState(0x1001, 128, 1_048_576)
 		s.publishReady()
-		inflight := mustAdmit(t, s, "先行准入")
+		inflight := mustAdmit(t, s, "admitted beforehand")
 		mustElectClose(t, s)
 
-		_, err := s.admitCall("closing 中的新调用")
+		_, err := s.admitCall("new call during closing")
 		if err == nil {
-			t.Fatal("closing 必须拒绝新业务调用")
+			t.Fatal("closing must reject new business calls")
 		}
 		if !errors.Is(err, native.ErrClosing) {
 			t.Errorf("errors.Is(err, native.ErrClosing) = false; err = %v", err)
 		}
 		// 逐一排除相邻哨兵:类别不得与 closed/协议破坏混淆。
 		if errors.Is(err, native.ErrClosed) {
-			t.Errorf("closing 拒绝不得误标为 ErrClosed: %v", err)
+			t.Errorf("the closing rejection must not be mislabelled as ErrClosed: %v", err)
 		}
 		if errors.Is(err, native.ErrProtocol) {
-			t.Errorf("closing 拒绝不得误标为 ErrProtocol: %v", err)
+			t.Errorf("the closing rejection must not be mislabelled as ErrProtocol: %v", err)
 		}
-		if !strings.Contains(err.Error(), "closing 中的新调用") {
-			t.Errorf("拒绝错误应携带 what 上下文文本:\n%s", err.Error())
+		if !strings.Contains(err.Error(), "new call during closing") {
+			t.Errorf("the rejection error should carry the what context text:\n%s", err.Error())
 		}
 
 		releaseAndAssertDrained(t, s, inflight)
 	})
 
-	t.Run("faulted 拒绝并沿错误链到达首因", func(t *testing.T) {
+	t.Run("faulted rejects and reaches the first cause along the error chain", func(t *testing.T) {
 		s := newInstanceState(0x1002, 128, 1_048_576)
 		s.publishReady()
-		inflight := mustAdmit(t, s, "先行准入")
-		cause := fmt.Errorf("事件队列溢出被包装: %w", native.ErrEventOverflow)
+		inflight := mustAdmit(t, s, "admitted beforehand")
+		cause := fmt.Errorf("event queue overflow wrapped: %w", native.ErrEventOverflow)
 		s.recordFault(cause)
 
-		_, err := s.admitCall("faulted 中的新调用")
+		_, err := s.admitCall("new call during faulted")
 		if err == nil {
-			t.Fatal("faulted 必须拒绝新业务调用")
+			t.Fatal("faulted must reject new business calls")
 		}
 		// errors.Is 沿 %w 链可达真正故障的底层哨兵。
 		if !errors.Is(err, native.ErrEventOverflow) {
@@ -169,34 +169,34 @@ func TestInstanceStateRejectsCallsByPhase(t *testing.T) {
 			t.Errorf("errors.Is(err, cause) = false; err = %v", err)
 		}
 		if errors.Is(err, native.ErrClosing) || errors.Is(err, native.ErrClosed) {
-			t.Errorf("faulted 拒绝不得误标为 closing/closed: %v", err)
+			t.Errorf("the faulted rejection must not be mislabelled as closing/closed: %v", err)
 		}
 
 		releaseAndAssertDrained(t, s, inflight)
 	})
 
-	t.Run("closed 拒绝并包装 ErrClosed", func(t *testing.T) {
+	t.Run("closed rejects and wraps ErrClosed", func(t *testing.T) {
 		s := newInstanceState(0x1003, 128, 1_048_576)
 		s.publishReady()
 		// 先行准入的 lease 在整个关闭过程中持有,直到 closed 之后
 		// 才释放:钉住「已准入 lease 在 closed 阶段仍可正常释放」。
-		inflight := mustAdmit(t, s, "先行准入")
+		inflight := mustAdmit(t, s, "admitted beforehand")
 		mustElectClose(t, s)
 		finishClose(t, s, nil)
 
-		_, err := s.admitCall("closed 中的新调用")
+		_, err := s.admitCall("new call during closed")
 		if err == nil {
-			t.Fatal("closed 必须拒绝新业务调用")
+			t.Fatal("closed must reject new business calls")
 		}
 		if !errors.Is(err, native.ErrClosed) {
 			t.Errorf("errors.Is(err, native.ErrClosed) = false; err = %v", err)
 		}
 		if errors.Is(err, native.ErrClosing) {
-			t.Errorf("closed 拒绝不得误标为 ErrClosing: %v", err)
+			t.Errorf("the closed rejection must not be mislabelled as ErrClosing: %v", err)
 		}
 		// 正常关闭(无故障)的最终错误为 nil。
 		if got := s.waitClose(); got != nil {
-			t.Errorf("正常关闭的 waitClose() = %v, want nil", got)
+			t.Errorf("waitClose() of a normal close = %v, want nil", got)
 		}
 
 		releaseAndAssertDrained(t, s, inflight)
@@ -214,13 +214,13 @@ func TestCloseWaitsForCallsQueuedBeforeRawGate(t *testing.T) {
 	s.publishReady()
 
 	// A:已准入并进入 raw 段(占据门禁)。
-	leaseA := mustAdmit(t, s, "调用 A")
+	leaseA := mustAdmit(t, s, "call A")
 	s.raw.enter()
 
 	// B:已准入、将在门禁前排队。A 全程未退出,B 必然还在门禁前。
-	leaseB := mustAdmit(t, s, "调用 B")
+	leaseB := mustAdmit(t, s, "call B")
 	if n := inFlightCalls(s); n != 2 {
-		t.Fatalf("两笔调用准入后在途计数 = %d, want 2", n)
+		t.Fatalf("in-flight count after both calls admitted = %d, want 2", n)
 	}
 	bInRaw := make(chan struct{})
 	bFinish := make(chan struct{})
@@ -243,13 +243,13 @@ func TestCloseWaitsForCallsQueuedBeforeRawGate(t *testing.T) {
 	// 负面断言一:A、B 均未释放,关闭等待必须仍阻塞。
 	select {
 	case <-drained:
-		t.Fatal("在途调用未释放时 waitCallsDrained 提前返回:漏掉在途调用")
+		t.Fatal("waitCallsDrained returned early while in-flight calls were unreleased: it missed an in-flight call")
 	case <-time.After(notWithin):
 	}
 
 	// 等待期间在途计数必须包含尚在门禁前排队的 B。
 	if n := inFlightCalls(s); n != 2 {
-		t.Fatalf("关闭等待期间在途计数 = %d, want 2(含 raw 门禁前的排队者)", n)
+		t.Fatalf("in-flight count during the close wait = %d, want 2 (including the caller queued before the raw gate)", n)
 	}
 
 	// A 完成 raw 段并释放 lease。
@@ -259,7 +259,7 @@ func TestCloseWaitsForCallsQueuedBeforeRawGate(t *testing.T) {
 	// 负面断言二:B 仍在途(排队转准入段、未释放),等待必须继续。
 	select {
 	case <-drained:
-		t.Fatal("调用 B 尚未释放时 waitCallsDrained 提前返回:漏掉排队者")
+		t.Fatal("waitCallsDrained returned early while call B was unreleased: it missed the queued caller")
 	case <-time.After(notWithin):
 	}
 
@@ -270,13 +270,13 @@ func TestCloseWaitsForCallsQueuedBeforeRawGate(t *testing.T) {
 	select {
 	case <-drained:
 	case <-time.After(hangGuard):
-		t.Fatal("全部 lease 释放后 waitCallsDrained 仍未收敛(防挂死上限触发)")
+		t.Fatal("waitCallsDrained still did not converge after all leases were released (hang-guard limit hit)")
 	}
 	if n := inFlightCalls(s); n != 0 {
-		t.Fatalf("收敛后在途计数 = %d, want 0", n)
+		t.Fatalf("in-flight count after convergence = %d, want 0", n)
 	}
 	if got := s.currentPhase(); got != phaseClosing {
-		t.Fatalf("关闭等待收敛后阶段 = %d, want closing(终态发布归后续流程)", got)
+		t.Fatalf("phase after the close wait converged = %d, want closing (terminal state publication belongs to the later flow)", got)
 	}
 }
 
@@ -288,7 +288,7 @@ func TestCloseWaitsForCallsQueuedBeforeRawGate(t *testing.T) {
 func TestStateLockNotHeldAcrossRawSection(t *testing.T) {
 	s := newInstanceState(0x5EED, 128, 1_048_576)
 	s.publishReady()
-	leaseA := mustAdmit(t, s, "raw 段调用")
+	leaseA := mustAdmit(t, s, "raw-section call")
 	s.raw.enter()
 
 	// raw 段内:另一 goroutine 的状态锁操作必须能完成。
@@ -297,10 +297,10 @@ func TestStateLockNotHeldAcrossRawSection(t *testing.T) {
 	select {
 	case got := <-phaseCh:
 		if got != phaseReady {
-			t.Fatalf("raw 段内 currentPhase() = %d, want ready", got)
+			t.Fatalf("currentPhase() inside the raw section = %d, want ready", got)
 		}
 	case <-time.After(hangGuard):
-		t.Fatal("raw 段内另一 goroutine 的状态锁操作未在限时内完成:实现疑似在 raw 调用期间持有状态锁")
+		t.Fatal("another goroutine's state lock operation inside the raw section did not complete in time: the implementation appears to hold the state lock across raw calls")
 	}
 
 	// 进入关闭:等待清零阻塞在 A 未释放上。
@@ -315,26 +315,26 @@ func TestStateLockNotHeldAcrossRawSection(t *testing.T) {
 	// admitCall 与阶段读取都必须能完成。
 	probe := make(chan error, 1)
 	go func() {
-		_, err := s.admitCall("等待清零期间的探测")
+		_, err := s.admitCall("probe while waiting for the drain")
 		probe <- err
 	}()
 	select {
 	case err := <-probe:
 		if !errors.Is(err, native.ErrClosing) {
-			t.Fatalf("closing 中的探测 = %v, want errors.Is native.ErrClosing", err)
+			t.Fatalf("probe during closing = %v, want errors.Is native.ErrClosing", err)
 		}
 	case <-time.After(hangGuard):
-		t.Fatal("等待清零期间另一 goroutine 的 admitCall 未在限时内完成:实现疑似在等待在途清零时持有状态锁")
+		t.Fatal("another goroutine's admitCall while waiting for the drain did not complete in time: the implementation appears to hold the state lock while waiting for in-flight calls to drain")
 	}
 	phaseCh2 := make(chan instancePhase, 1)
 	go func() { phaseCh2 <- s.currentPhase() }()
 	select {
 	case got := <-phaseCh2:
 		if got != phaseClosing {
-			t.Fatalf("等待清零期间 currentPhase() = %d, want closing", got)
+			t.Fatalf("currentPhase() while waiting for the drain = %d, want closing", got)
 		}
 	case <-time.After(hangGuard):
-		t.Fatal("等待清零期间另一 goroutine 的 currentPhase 未在限时内完成:实现疑似在等待在途清零时持有状态锁")
+		t.Fatal("another goroutine's currentPhase while waiting for the drain did not complete in time: the implementation appears to hold the state lock while waiting for in-flight calls to drain")
 	}
 
 	// A 完成 raw 段并释放,关闭等待收敛。
@@ -343,7 +343,7 @@ func TestStateLockNotHeldAcrossRawSection(t *testing.T) {
 	select {
 	case <-drained:
 	case <-time.After(hangGuard):
-		t.Fatal("lease 释放后 waitCallsDrained 未收敛(防挂死上限触发)")
+		t.Fatal("waitCallsDrained did not converge after the lease was released (hang-guard limit hit)")
 	}
 }
 
@@ -353,7 +353,7 @@ func TestStateLockNotHeldAcrossRawSection(t *testing.T) {
 // 经 waitClose 取得同一份最终错误(同一错误值、同一底层哨兵),并共
 // 享同一已关闭的 closeDone;closed 后的幂等申请仍不为所有者。
 func TestConcurrentElectCloseSingleOwner(t *testing.T) {
-	t.Run("ready 并发申请恰一所有者共享终态", func(t *testing.T) {
+	t.Run("concurrent requests in ready elect exactly one owner sharing the terminal state", func(t *testing.T) {
 		s := newInstanceState(0x2001, 128, 1_048_576)
 		s.publishReady()
 		closeCh := s.done()
@@ -374,13 +374,13 @@ func TestConcurrentElectCloseSingleOwner(t *testing.T) {
 		}
 		wg.Wait()
 		if wins.Load() != 1 {
-			t.Fatalf("选主胜出者 = %d, want 恰 1", wins.Load())
+			t.Fatalf("election winners = %d, want exactly 1", wins.Load())
 		}
 		if got := s.currentPhase(); got != phaseClosing {
-			t.Fatalf("选主后阶段 = %d, want closing", got)
+			t.Fatalf("phase after the election = %d, want closing", got)
 		}
 
-		finalErr := fmt.Errorf("停止诊断: %w", native.ErrProtocol)
+		finalErr := fmt.Errorf("stop diagnostic: %w", native.ErrProtocol)
 		// 全部失败者先行等待同一 closeDone;随后代行所有者发布终态。
 		var waitWG sync.WaitGroup
 		loserErrs := make([]error, 0, n)
@@ -402,38 +402,38 @@ func TestConcurrentElectCloseSingleOwner(t *testing.T) {
 		waitWG.Wait()
 
 		if len(loserErrs) != n-1 {
-			t.Fatalf("失败者数 = %d, want %d", len(loserErrs), n-1)
+			t.Fatalf("loser count = %d, want %d", len(loserErrs), n-1)
 		}
 		for i, err := range loserErrs {
 			// 同一最终错误存储:失败者拿到的就是所有者发布的同一错误值。
 			if err != finalErr {
-				t.Errorf("失败者 %d 的最终错误 = %v, want 与所有者同一存储的 %v", i, err, finalErr)
+				t.Errorf("loser %d final error = %v, want the same stored %v as the owner", i, err, finalErr)
 			}
 			if !errors.Is(err, native.ErrProtocol) {
-				t.Errorf("失败者 %d: errors.Is(err, native.ErrProtocol) = false; err = %v", i, err)
+				t.Errorf("loser %d: errors.Is(err, native.ErrProtocol) = false; err = %v", i, err)
 			}
 		}
 		select {
 		case <-closeCh:
 		default:
-			t.Fatal("所有者发布终态后 closeDone 未关闭")
+			t.Fatal("closeDone not closed after the owner published the terminal state")
 		}
 		if s.done() != closeCh {
-			t.Fatal("done() 返回了不同的通道:closeDone 不共享")
+			t.Fatal("done() returned a different channel: closeDone is not shared")
 		}
 		if got := s.currentPhase(); got != phaseClosed {
-			t.Fatalf("发布后阶段 = %d, want closed", got)
+			t.Fatalf("phase after publication = %d, want closed", got)
 		}
 		// closed 后的幂等申请仍不成为所有者。
 		if s.electClose() {
-			t.Error("closed 后重复申请不得成为所有者")
+			t.Error("a repeated request after closed must not become the owner")
 		}
 	})
 
-	t.Run("faulted 并发申请恰一所有者共享首因终态", func(t *testing.T) {
+	t.Run("concurrent requests in faulted elect exactly one owner sharing the first-cause terminal state", func(t *testing.T) {
 		s := newInstanceState(0x2002, 128, 1_048_576)
 		s.publishReady()
-		cause := fmt.Errorf("事件溢出: %w", native.ErrEventOverflow)
+		cause := fmt.Errorf("event overflow: %w", native.ErrEventOverflow)
 		s.recordFault(cause)
 
 		const n = 8
@@ -450,7 +450,7 @@ func TestConcurrentElectCloseSingleOwner(t *testing.T) {
 		}
 		wg.Wait()
 		if wins.Load() != 1 {
-			t.Fatalf("faulted 阶段选主胜出者 = %d, want 恰 1", wins.Load())
+			t.Fatalf("election winners in the faulted phase = %d, want exactly 1", wins.Load())
 		}
 
 		var waitWG sync.WaitGroup
@@ -471,10 +471,10 @@ func TestConcurrentElectCloseSingleOwner(t *testing.T) {
 
 		for i, err := range loserErrs {
 			if err != cause {
-				t.Errorf("失败者 %d 的最终错误 = %v, want 首因 %v", i, err, cause)
+				t.Errorf("loser %d final error = %v, want first cause %v", i, err, cause)
 			}
 			if !errors.Is(err, native.ErrEventOverflow) {
-				t.Errorf("失败者 %d: errors.Is(err, native.ErrEventOverflow) = false; err = %v", i, err)
+				t.Errorf("loser %d: errors.Is(err, native.ErrEventOverflow) = false; err = %v", i, err)
 			}
 		}
 	})
@@ -488,9 +488,9 @@ func TestPublishFinalErrorFirstWriteWins(t *testing.T) {
 	s.publishReady()
 	mustElectClose(t, s)
 
-	first := fmt.Errorf("首份最终错误: %w", native.ErrProtocol)
+	first := fmt.Errorf("first final error: %w", native.ErrProtocol)
 	s.publishFinalError(first)
-	second := fmt.Errorf("后到的诊断: %w", native.ErrClosing)
+	second := fmt.Errorf("later diagnostic: %w", native.ErrClosing)
 	s.publishFinalError(second)
 
 	s.closeCallbackGate()
@@ -498,10 +498,10 @@ func TestPublishFinalErrorFirstWriteWins(t *testing.T) {
 	s.publishCloseDone()
 	got := s.waitClose()
 	if got != first {
-		t.Fatalf("waitClose() = %v, want 首次发布的 %v(不得被覆盖)", got, first)
+		t.Fatalf("waitClose() = %v, want the first published %v (must not be overwritten)", got, first)
 	}
 	if errors.Is(got, native.ErrClosing) {
-		t.Errorf("最终错误不得混入后到诊断: %v", got)
+		t.Errorf("the final error must not mix in the later diagnostic: %v", got)
 	}
 }
 
@@ -516,17 +516,17 @@ func TestCloseCompletionFollowsFinalState(t *testing.T) {
 	s.publishClosed()
 	select {
 	case <-s.done():
-		t.Fatal("closed 状态发布不得提前通知 Events 已关闭")
+		t.Fatal("publishing the closed state must not notify Events closed early")
 	default:
 	}
 	if s.currentError() != nil {
-		t.Fatal("正常最终错误被后续发布改写")
+		t.Fatal("the normal final error was rewritten by a later publication")
 	}
 	s.publishCloseDone()
 	if err := s.waitClose(); err != nil {
 		t.Fatalf("waitClose = %v, want nil", err)
 	}
-	assertPanics(t, "重复通知关闭完成", s.publishCloseDone)
+	assertPanics(t, "duplicate close-completion notification", s.publishCloseDone)
 }
 
 func TestStopDiagnosticIsVisibleWithoutFault(t *testing.T) {
@@ -536,19 +536,19 @@ func TestStopDiagnosticIsVisibleWithoutFault(t *testing.T) {
 	diagnostic := fmt.Errorf("AsstStop returned 0 (false): %w", native.ErrNativeRejected)
 	s.recordStopDiagnostic(diagnostic)
 	if got := s.currentError(); got != diagnostic {
-		t.Fatalf("关闭中错误 = %v, want Stop 诊断", got)
+		t.Fatalf("error during close = %v, want the Stop diagnostic", got)
 	}
 	if got := s.faultDiagnostics(); got.stopDiagnostic != diagnostic || got.firstFault != nil {
-		t.Fatalf("关闭中诊断 = %+v", got)
+		t.Fatalf("diagnostics during close = %+v", got)
 	}
 	select {
 	case <-s.faultNotify():
-		t.Fatal("关闭 Stop 拒绝不得触发首次故障通知")
+		t.Fatal("a Stop rejection during close must not trigger the first-fault notification")
 	default:
 	}
 	finishClose(t, s, s.currentError())
 	if got := s.currentError(); got != s.waitClose() || got != diagnostic {
-		t.Fatalf("完成后的错误 = %v, want 稳定 Stop 诊断", got)
+		t.Fatalf("error after completion = %v, want the stable Stop diagnostic", got)
 	}
 }
 
@@ -558,56 +558,56 @@ func TestStopDiagnosticIsVisibleWithoutFault(t *testing.T) {
 // CreateEx=0 路径(handle=0)无关闭句柄;状态内唯一 handle 字段在
 // 构造→发布→关闭全程值一致、不被旁路修改。
 func TestInstanceStateSingleGatedHandle(t *testing.T) {
-	t.Run("handle 全程唯一且凭 lease 读取", func(t *testing.T) {
+	t.Run("handle unique throughout and read only via a lease", func(t *testing.T) {
 		const h = uintptr(0x3001)
 		s := newInstanceState(h, 128, 1_048_576)
 		if got := stateHandle(s); got != h {
-			t.Fatalf("构造后 handle = %#x, want %#x", got, h)
+			t.Fatalf("handle after construction = %#x, want %#x", got, h)
 		}
 		s.publishReady()
 		if got := stateHandle(s); got != h {
-			t.Fatalf("发布 ready 后 handle = %#x, want %#x", got, h)
+			t.Fatalf("handle after publishing ready = %#x, want %#x", got, h)
 		}
-		l := mustAdmit(t, s, "handle 读取")
+		l := mustAdmit(t, s, "handle read")
 		if got := l.handle(); got != h {
 			t.Fatalf("lease.handle() = %#x, want %#x", got, h)
 		}
 		mustElectClose(t, s)
 		if got := stateHandle(s); got != h {
-			t.Fatalf("closing 阶段 handle = %#x, want %#x", got, h)
+			t.Fatalf("handle in the closing phase = %#x, want %#x", got, h)
 		}
 		finishClose(t, s, nil)
 		if got := stateHandle(s); got != h {
-			t.Fatalf("closed 后 handle = %#x, want %#x(不得被旁路改写)", got, h)
+			t.Fatalf("handle after closed = %#x, want %#x (must not be rewritten by a side channel)", got, h)
 		}
 	})
 
-	t.Run("closeHandle 仅在调用清零后可取", func(t *testing.T) {
+	t.Run("closeHandle obtainable only after calls drain", func(t *testing.T) {
 		const h = uintptr(0x3002)
 		s := newInstanceState(h, 128, 1_048_576)
 		s.publishReady()
-		l := mustAdmit(t, s, "占用在途")
+		l := mustAdmit(t, s, "holding in flight")
 		mustElectClose(t, s)
 
 		// 在途计数非零时读取关闭句柄是内部不变量破坏。
-		assertPanics(t, "在途未清零时读取 closeHandle", func() { s.closeHandle() })
+		assertPanics(t, "closeHandle read while in-flight calls have not drained", func() { s.closeHandle() })
 
 		releaseAndAssertDrained(t, s, l)
 		got, ok := s.closeHandle()
 		if !ok {
-			t.Fatalf("清零后 closeHandle 的 ok = false, want true(handle=%#x)", h)
+			t.Fatalf("closeHandle ok after draining = false, want true (handle=%#x)", h)
 		}
 		if got != h {
 			t.Fatalf("closeHandle() = %#x, want %#x", got, h)
 		}
 	})
 
-	t.Run("CreateEx=0 路径 handle=0 无关闭句柄", func(t *testing.T) {
+	t.Run("CreateEx=0 path with handle=0 has no close handle", func(t *testing.T) {
 		s := newInstanceState(0, 128, 1_048_576)
 		s.publishReady()
-		l := mustAdmit(t, s, "零句柄实例的调用")
+		l := mustAdmit(t, s, "call on the zero-handle instance")
 		// 0 无效、不解引用:业务路径读到 0 即内部不变量破坏。
-		assertPanics(t, "零句柄实例的 lease.handle()", func() { l.handle() })
+		assertPanics(t, "lease.handle() on the zero-handle instance", func() { l.handle() })
 		l.release()
 
 		mustElectClose(t, s)
@@ -615,10 +615,10 @@ func TestInstanceStateSingleGatedHandle(t *testing.T) {
 		finishClose(t, s, nil)
 		got, ok := s.closeHandle()
 		if ok {
-			t.Fatalf("CreateEx=0 路径 closeHandle 的 ok = true, want false")
+			t.Fatalf("CreateEx=0 path closeHandle ok = true, want false")
 		}
 		if got != 0 {
-			t.Fatalf("CreateEx=0 路径 closeHandle() = %#x, want 0", got)
+			t.Fatalf("CreateEx=0 path closeHandle() = %#x, want 0", got)
 		}
 	})
 }
@@ -627,66 +627,66 @@ func TestInstanceStateSingleGatedHandle(t *testing.T) {
 // 两次故障只保留首个;closing 期间 recordFault 只记因不改阶段;
 // closed 后再有故障源是内部不变量破坏;无因故障不被接受。
 func TestRecordFaultStickySemantics(t *testing.T) {
-	t.Run("两次故障保留首个", func(t *testing.T) {
+	t.Run("two faults keep the first", func(t *testing.T) {
 		s := newInstanceState(0x4001, 128, 1_048_576)
 		s.publishReady()
-		first := fmt.Errorf("首个故障: %w", native.ErrProtocol)
-		second := fmt.Errorf("第二个故障: %w", native.ErrEventOverflow)
+		first := fmt.Errorf("first fault: %w", native.ErrProtocol)
+		second := fmt.Errorf("second fault: %w", native.ErrEventOverflow)
 		s.recordFault(first)
 		s.recordFault(second)
 
 		if got := s.currentFault(); !errors.Is(got, first) {
-			t.Fatalf("currentFault() = %v, want 首因 %v", got, first)
+			t.Fatalf("currentFault() = %v, want first cause %v", got, first)
 		}
 		if got := s.currentFault(); errors.Is(got, native.ErrEventOverflow) {
-			t.Fatalf("首因被后到故障覆盖: %v", got)
+			t.Fatalf("the first cause was overwritten by the later fault: %v", got)
 		}
-		_, err := s.admitCall("faulted 后的新调用")
+		_, err := s.admitCall("new call after faulted")
 		if !errors.Is(err, first) || !errors.Is(err, native.ErrProtocol) {
-			t.Fatalf("拒绝错误应沿链到达首因: err = %v", err)
+			t.Fatalf("the rejection error should reach the first cause along the chain: err = %v", err)
 		}
 		if errors.Is(err, native.ErrEventOverflow) {
-			t.Fatalf("拒绝错误混入了后到故障: %v", err)
+			t.Fatalf("the rejection error mixed in the later fault: %v", err)
 		}
 	})
 
-	t.Run("closing 期间只记因不改阶段", func(t *testing.T) {
+	t.Run("during closing only the cause is recorded, the phase unchanged", func(t *testing.T) {
 		s := newInstanceState(0x4002, 128, 1_048_576)
 		s.publishReady()
-		inflight := mustAdmit(t, s, "先行准入")
+		inflight := mustAdmit(t, s, "admitted beforehand")
 		mustElectClose(t, s)
 
-		cause := fmt.Errorf("关闭期间故障: %w", native.ErrProtocol)
+		cause := fmt.Errorf("fault during close: %w", native.ErrProtocol)
 		s.recordFault(cause)
 		if got := s.currentPhase(); got != phaseClosing {
-			t.Fatalf("closing 期间 recordFault 后阶段 = %d, want closing(只记因不改阶段)", got)
+			t.Fatalf("phase after recordFault during closing = %d, want closing (only the cause is recorded, the phase unchanged)", got)
 		}
 		if got := s.currentFault(); !errors.Is(got, cause) {
-			t.Fatalf("currentFault() = %v, want 新记首因 %v", got, cause)
+			t.Fatalf("currentFault() = %v, want the newly recorded first cause %v", got, cause)
 		}
 		// 阶段未变:新调用仍按 closing 拒绝。
-		_, err := s.admitCall("closing 故障后的新调用")
+		_, err := s.admitCall("new call after the closing fault")
 		if !errors.Is(err, native.ErrClosing) {
 			t.Fatalf("errors.Is(err, native.ErrClosing) = false; err = %v", err)
 		}
 		// 所有者随后发布的最终错误携带首因。
 		finishClose(t, s, cause)
 		if got := s.waitClose(); !errors.Is(got, cause) {
-			t.Fatalf("waitClose() = %v, want 含首因 %v", got, cause)
+			t.Fatalf("waitClose() = %v, want it to contain the first cause %v", got, cause)
 		}
 		// 已准入调用在关闭全过程后照常释放。
 		releaseAndAssertDrained(t, s, inflight)
 	})
 
-	t.Run("closed 后记录故障 panic", func(t *testing.T) {
+	t.Run("recording a fault after closed panics", func(t *testing.T) {
 		s := newClosedState(t, 0x4003)
-		assertPanics(t, "closed 后 recordFault", func() { s.recordFault(native.ErrProtocol) })
+		assertPanics(t, "recordFault after closed", func() { s.recordFault(native.ErrProtocol) })
 	})
 
-	t.Run("无因故障 panic", func(t *testing.T) {
+	t.Run("fault without a cause panics", func(t *testing.T) {
 		s := newInstanceState(0x4004, 128, 1_048_576)
 		s.publishReady()
-		assertPanics(t, "cause 为 nil 的 recordFault", func() { s.recordFault(nil) })
+		assertPanics(t, "recordFault with nil cause", func() { s.recordFault(nil) })
 	})
 }
 
@@ -697,60 +697,60 @@ func TestRecordFaultStickySemantics(t *testing.T) {
 func TestInstanceStateIllegalTransitionsPanic(t *testing.T) {
 	t.Run("initializing admitCall panic", func(t *testing.T) {
 		s := newInstanceState(0x5001, 128, 1_048_576)
-		assertPanics(t, "initializing 阶段 admitCall", func() { _, _ = s.admitCall("未发布实例") })
+		assertPanics(t, "admitCall in the initializing phase", func() { _, _ = s.admitCall("unpublished instance") })
 	})
 
 	t.Run("initializing electClose panic", func(t *testing.T) {
 		s := newInstanceState(0x5002, 128, 1_048_576)
-		assertPanics(t, "initializing 阶段 electClose", func() { _ = s.electClose() })
+		assertPanics(t, "electClose in the initializing phase", func() { _ = s.electClose() })
 	})
 
-	t.Run("publishReady 重复发布 panic", func(t *testing.T) {
+	t.Run("publishReady duplicate publication panics", func(t *testing.T) {
 		s := newInstanceState(0x5003, 128, 1_048_576)
 		s.publishReady()
-		assertPanics(t, "ready 后 publishReady", func() { s.publishReady() })
+		assertPanics(t, "publishReady after ready", func() { s.publishReady() })
 	})
 
-	t.Run("closing 后 publishReady panic", func(t *testing.T) {
+	t.Run("publishReady after closing panics", func(t *testing.T) {
 		s := newInstanceState(0x5004, 128, 1_048_576)
 		s.publishReady()
 		mustElectClose(t, s)
-		assertPanics(t, "closing 后 publishReady", func() { s.publishReady() })
+		assertPanics(t, "publishReady after closing", func() { s.publishReady() })
 	})
 
-	t.Run("ready 阶段发布最终错误 panic", func(t *testing.T) {
+	t.Run("publishing the final error in the ready phase panics", func(t *testing.T) {
 		s := newInstanceState(0x5005, 128, 1_048_576)
 		s.publishReady()
-		assertPanics(t, "ready 阶段 publishFinalError", func() { s.publishFinalError(nil) })
+		assertPanics(t, "publishFinalError in the ready phase", func() { s.publishFinalError(nil) })
 	})
 
-	t.Run("closed 后发布最终错误 panic", func(t *testing.T) {
+	t.Run("publishing the final error after closed panics", func(t *testing.T) {
 		s := newClosedState(t, 0x5006)
-		assertPanics(t, "closed 后 publishFinalError", func() { s.publishFinalError(nil) })
+		assertPanics(t, "publishFinalError after closed", func() { s.publishFinalError(nil) })
 	})
 
-	t.Run("closed 后重复发布终态 panic", func(t *testing.T) {
+	t.Run("duplicate terminal state publication after closed panics", func(t *testing.T) {
 		s := newClosedState(t, 0x5007)
-		assertPanics(t, "closed 后 publishClosed", func() { s.publishClosed() })
+		assertPanics(t, "publishClosed after closed", func() { s.publishClosed() })
 	})
 
-	t.Run("faulted 无首因 admitCall panic", func(t *testing.T) {
+	t.Run("admitCall in faulted without a first cause panics", func(t *testing.T) {
 		s := newInstanceState(0x5008, 128, 1_048_576)
 		s.publishReady()
 		// 白盒:直接置位阶段,模拟不变量已被破坏的内部状态。
 		s.mu.Lock()
 		s.phase = phaseFaulted
 		s.mu.Unlock()
-		assertPanics(t, "faulted 无首因的 admitCall", func() { _, _ = s.admitCall("不变量破坏") })
+		assertPanics(t, "admitCall in faulted without a first cause", func() { _, _ = s.admitCall("invariant broken") })
 	})
 
-	t.Run("未知阶段 recordFault panic", func(t *testing.T) {
+	t.Run("recordFault in an unknown phase panics", func(t *testing.T) {
 		s := newInstanceState(0x5009, 128, 1_048_576)
 		s.publishReady()
 		s.mu.Lock()
 		s.phase = instancePhase(200)
 		s.mu.Unlock()
-		assertPanics(t, "未知阶段 recordFault", func() { s.recordFault(native.ErrProtocol) })
+		assertPanics(t, "recordFault in an unknown phase", func() { s.recordFault(native.ErrProtocol) })
 	})
 }
 
@@ -759,24 +759,24 @@ func TestInstanceStateIllegalTransitionsPanic(t *testing.T) {
 // 关门至多一次;waitCallbacksDrained 等已准入 callback 退出;
 // publishClosed 前必须已关门且已准入 callback 清空。
 func TestCallbackGateBasics(t *testing.T) {
-	t.Run("门开准入且 closing 仍开放,关门后拒绝", func(t *testing.T) {
+	t.Run("admits while open with closing still open, rejects after the gate closes", func(t *testing.T) {
 		s := newInstanceState(0x6001, 128, 1_048_576)
 		s.publishReady()
 		l1, ok := s.admitCallback()
 		if !ok {
-			t.Fatal("门开时 admitCallback 必须成功")
+			t.Fatal("admitCallback must succeed while the gate is open")
 		}
 		mustElectClose(t, s)
 		l2, ok := s.admitCallback()
 		if !ok {
-			t.Fatal("closing 阶段门仍开放,admitCallback 必须成功")
+			t.Fatal("the gate is still open in the closing phase; admitCallback must succeed")
 		}
 		l1.release()
 		l2.release()
 
 		s.closeCallbackGate()
 		if _, ok := s.admitCallback(); ok {
-			t.Fatal("关门后 admitCallback 必须失败")
+			t.Fatal("admitCallback must fail after the gate is closed")
 		}
 		s.waitCallbacksDrained()
 		// 已显式关门,此处只做所有者的错误与终态发布。
@@ -785,19 +785,19 @@ func TestCallbackGateBasics(t *testing.T) {
 		s.publishCloseDone()
 	})
 
-	t.Run("重复关门 panic", func(t *testing.T) {
+	t.Run("closing the gate twice panics", func(t *testing.T) {
 		s := newInstanceState(0x6002, 128, 1_048_576)
 		s.publishReady()
 		s.closeCallbackGate()
-		assertPanics(t, "重复 closeCallbackGate", func() { s.closeCallbackGate() })
+		assertPanics(t, "duplicate closeCallbackGate", func() { s.closeCallbackGate() })
 	})
 
-	t.Run("waitCallbacksDrained 等已准入 callback 退出", func(t *testing.T) {
+	t.Run("waitCallbacksDrained waits for admitted callbacks to exit", func(t *testing.T) {
 		s := newInstanceState(0x6003, 128, 1_048_576)
 		s.publishReady()
 		l, ok := s.admitCallback()
 		if !ok {
-			t.Fatal("门开时 admitCallback 必须成功")
+			t.Fatal("admitCallback must succeed while the gate is open")
 		}
 		drained := make(chan struct{})
 		go func() {
@@ -808,7 +808,7 @@ func TestCallbackGateBasics(t *testing.T) {
 		// 负面断言:callback 在途时不得返回。
 		select {
 		case <-drained:
-			t.Fatal("callback 在途时 waitCallbacksDrained 提前返回")
+			t.Fatal("waitCallbacksDrained returned early while a callback was in flight")
 		case <-time.After(notWithin):
 		}
 
@@ -816,24 +816,24 @@ func TestCallbackGateBasics(t *testing.T) {
 		select {
 		case <-drained:
 		case <-time.After(hangGuard):
-			t.Fatal("callback 退出后 waitCallbacksDrained 未收敛(防挂死上限触发)")
+			t.Fatal("waitCallbacksDrained did not converge after the callback exited (hang-guard limit hit)")
 		}
 	})
 
-	t.Run("publishClosed 前必须关门且清空", func(t *testing.T) {
+	t.Run("the gate must be closed and drained before publishClosed", func(t *testing.T) {
 		s := newInstanceState(0x6004, 128, 1_048_576)
 		s.publishReady()
 		mustElectClose(t, s)
 
 		// 门开着不得发布终态。
-		assertPanics(t, "callback 门开着 publishClosed", func() { s.publishClosed() })
+		assertPanics(t, "publishClosed with the callback gate open", func() { s.publishClosed() })
 		// 门开着仍可准入;关门后仍有在途 callback 不得发布终态。
 		l, ok := s.admitCallback()
 		if !ok {
-			t.Fatal("closing 阶段门仍开放,admitCallback 必须成功")
+			t.Fatal("the gate is still open in the closing phase; admitCallback must succeed")
 		}
 		s.closeCallbackGate()
-		assertPanics(t, "callback 在途 publishClosed", func() { s.publishClosed() })
+		assertPanics(t, "publishClosed with a callback in flight", func() { s.publishClosed() })
 
 		l.release()
 		s.waitCallbacksDrained()
@@ -841,7 +841,7 @@ func TestCallbackGateBasics(t *testing.T) {
 		s.publishClosed()
 		s.publishCloseDone()
 		if got := s.currentPhase(); got != phaseClosed {
-			t.Fatalf("关门清空后 publishClosed 后阶段 = %d, want closed", got)
+			t.Fatalf("phase after publishClosed following the gate close and drain = %d, want closed", got)
 		}
 	})
 }

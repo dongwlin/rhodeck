@@ -28,11 +28,11 @@ func TestCallbackTrampolineStableAcrossConcurrentReads(t *testing.T) {
 	close(addresses)
 	want := CallbackTrampoline()
 	if want == 0 {
-		t.Fatal("callback trampoline 地址必须非零")
+		t.Fatal("the callback trampoline address must be non-zero")
 	}
 	for got := range addresses {
 		if got != want {
-			t.Fatalf("并发读取 trampoline 地址 = %#x, want %#x", got, want)
+			t.Fatalf("concurrent trampoline address read = %#x, want %#x", got, want)
 		}
 	}
 }
@@ -40,7 +40,7 @@ func TestCallbackTrampolineStableAcrossConcurrentReads(t *testing.T) {
 func TestNativeCallbackDispatchAndPanicBoundary(t *testing.T) {
 	// lastCallbackFault 是进程级槽，故本用例及子用例不使用 t.Parallel。
 	saveFaultSlot(t)
-	t.Run("精确分发注册 token", func(t *testing.T) {
+	t.Run("exact dispatch to the registered token", func(t *testing.T) {
 		lastCallbackFault.Store(nil)
 		recorder := &cbDeliveryRecorder{}
 		token := mustRegister(t, recorder.deliver)
@@ -52,13 +52,13 @@ func TestNativeCallbackDispatchAndPanicBoundary(t *testing.T) {
 		nativeCallback(msg, pointer, token)
 		deliveries := recorder.snapshot()
 		if len(deliveries) != 1 || deliveries[0].msg != msg || deliveries[0].ptr != pointer {
-			t.Fatalf("nativeCallback 分发 = %+v, want 精确透传消息与指针一次", deliveries)
+			t.Fatalf("nativeCallback dispatch = %+v, want the message and pointer passed through exactly once", deliveries)
 		}
 		if fault := lastCallbackFault.Load(); fault != nil {
-			t.Fatalf("正常分发记录了边界故障：%+v", fault)
+			t.Fatalf("a normal dispatch recorded a boundary fault: %+v", fault)
 		}
 	})
-	t.Run("投递 panic 记录后正常返回", func(t *testing.T) {
+	t.Run("delivery panic records fault then returns normally", func(t *testing.T) {
 		lastCallbackFault.Store(nil)
 		const probe = "native-callback-go-panic-probe"
 		const msg = int32(-97)
@@ -67,7 +67,7 @@ func TestNativeCallbackDispatchAndPanicBoundary(t *testing.T) {
 		token := mustRegister(t, func(gotMsg int32, gotPointer *byte) {
 			invoked = true
 			if gotMsg != msg || gotPointer != pointer {
-				t.Errorf("panic 投递参数 = (%d, %p), want (%d, %p)", gotMsg, gotPointer, msg, pointer)
+				t.Errorf("panic delivery arguments = (%d, %p), want (%d, %p)", gotMsg, gotPointer, msg, pointer)
 			}
 			panic(probe)
 		})
@@ -75,14 +75,14 @@ func TestNativeCallbackDispatchAndPanicBoundary(t *testing.T) {
 		// 不在测试中 recover：panic 若越过装配层，本用例直接失败。
 		nativeCallback(msg, pointer, token)
 		if !invoked {
-			t.Fatal("nativeCallback 未调用注册的 delivery")
+			t.Fatal("nativeCallback did not call the registered delivery")
 		}
 		fault := lastCallbackFault.Load()
 		if fault == nil {
-			t.Fatal("delivery panic 后没有可观察的边界故障")
+			t.Fatal("no observable boundary fault after the delivery panic")
 		}
 		if fault.Kind != callbackFaultPanic || fault.Msg != msg || fault.Token != token || !strings.Contains(fault.Detail, probe) {
-			t.Fatalf("panic 故障 = %+v, want 原始消息/token/panic 内容", fault)
+			t.Fatalf("panic fault = %+v, want the original message/token/panic content", fault)
 		}
 	})
 }

@@ -74,35 +74,35 @@ func TestAPITableInitCallForwarding(t *testing.T) {
 	}
 
 	if got := table.GetVersion(); got != &versionBytes[0] {
-		t.Errorf("GetVersion 返回 %p, want 借用指针原样透传", got)
+		t.Errorf("GetVersion returned %p, want the borrowed pointer passed through as-is", got)
 	}
 	if !versionCalled {
-		t.Error("GetVersion 未转发到 AsstGetVersion 字段")
+		t.Error("GetVersion did not forward to the AsstGetVersion field")
 	}
 	if got := table.GetNullSize(); got != ^uint64(0) || !nullSizeCalled {
-		t.Errorf("GetNullSize = %#x(called=%v), want 原样转发返回值", got, nullSizeCalled)
+		t.Errorf("GetNullSize = %#x (called=%v), want the return value forwarded as-is", got, nullSizeCalled)
 	}
 	if ret := table.SetUserDir(cStringPtrForTest("/home/user/.maa")); ret != 1 {
-		t.Errorf("SetUserDir 返回 %d, want 1", ret)
+		t.Errorf("SetUserDir returned %d, want 1", ret)
 	}
 	if len(userDirCalls) != 1 || userDirCalls[0] != "/home/user/.maa" {
-		t.Errorf("SetUserDir 收到的参数 = %v, want [/home/user/.maa]", userDirCalls)
+		t.Errorf("SetUserDir received arguments = %v, want [/home/user/.maa]", userDirCalls)
 	}
 	if ret := table.SetStaticOption(1, cStringPtrForTest("cpu_ocr")); ret != 0 {
-		t.Errorf("SetStaticOption 返回 %d, want 0(失败码原样返回)", ret)
+		t.Errorf("SetStaticOption returned %d, want 0 (failure code returned as-is)", ret)
 	}
 	if len(staticCalls) != 1 || staticCalls[0].key != 1 || staticCalls[0].first != "cpu_ocr" {
-		t.Errorf("SetStaticOption 收到的参数 = %+v, want [{key:1 first:cpu_ocr}]", staticCalls)
+		t.Errorf("SetStaticOption received arguments = %+v, want [{key:1 first:cpu_ocr}]", staticCalls)
 	}
 	if ret := table.LoadResource(cStringPtrForTest("/opt/maa/resource")); ret != 1 {
-		t.Errorf("LoadResource 返回 %d, want 1", ret)
+		t.Errorf("LoadResource returned %d, want 1", ret)
 	}
 	if len(resourceCalls) != 1 || resourceCalls[0] != "/opt/maa/resource" {
-		t.Errorf("LoadResource 收到的参数 = %v, want [/opt/maa/resource]", resourceCalls)
+		t.Errorf("LoadResource received arguments = %v, want [/opt/maa/resource]", resourceCalls)
 	}
 	table.SetConnectionExtras(cStringPtrForTest("sink"), cStringPtrForTest(`{"a":1}`))
 	if len(extrasCalls) != 1 || extrasCalls[0].first != "sink" || extrasCalls[0].second != `{"a":1}` {
-		t.Errorf("SetConnectionExtras 收到的参数 = %+v, want [{first:sink second:{\"a\":1}}]", extrasCalls)
+		t.Errorf("SetConnectionExtras received arguments = %+v, want [{first:sink second:{\"a\":1}}]", extrasCalls)
 	}
 }
 
@@ -152,37 +152,37 @@ func TestAPITableOptionalCallForwarding(t *testing.T) {
 	}
 
 	if got := table.GetImageBgr(0x31, unsafe.Pointer(&returnedBgr[0]), 12); got != 12 {
-		t.Errorf("GetImageBgr 返回 %d, want 12", got)
+		t.Errorf("GetImageBgr returned %d, want 12", got)
 	}
 	if bgrHandle != 0x31 || bgrBuff != unsafe.Pointer(&returnedBgr[0]) || bgrSize != 12 {
-		t.Errorf("GetImageBgr 收到的参数 = %#x %p %d, want 0x31 同指针 12", bgrHandle, bgrBuff, bgrSize)
+		t.Errorf("GetImageBgr received arguments = %#x %p %d, want 0x31 same pointer 12", bgrHandle, bgrBuff, bgrSize)
 	}
 
 	if got := table.AsyncAttachWindow(0x32, 0x51, 1<<2, 1<<1, 1, 0); got != 77 {
-		t.Errorf("AsyncAttachWindow 返回 %d, want 77", got)
+		t.Errorf("AsyncAttachWindow returned %d, want 77", got)
 	}
 	wantAttach := []uintptr{0x32, 0x51, 1 << 2, 1 << 1, 1, 0}
 	if len(attachCalls) != len(wantAttach) {
-		t.Fatalf("AsyncAttachWindow 收到 %d 个分量, want %d", len(attachCalls), len(wantAttach))
+		t.Fatalf("AsyncAttachWindow received %d components, want %d", len(attachCalls), len(wantAttach))
 	}
 	for i := range wantAttach {
 		if attachCalls[i] != wantAttach[i] {
-			t.Errorf("AsyncAttachWindow 分量 #%d = %#x, want %#x(六参数槽位逐字转发)", i, attachCalls[i], wantAttach[i])
+			t.Errorf("AsyncAttachWindow component #%d = %#x, want %#x (six-parameter slots forwarded verbatim)", i, attachCalls[i], wantAttach[i])
 		}
 	}
 
 	if got := table.GetMapLevelKey(cStringPtrForTest("abifx-hit")); got.StageID != nil {
-		t.Errorf("GetMapLevelKey 返回 %+v, want 零值 struct 原样透传", got)
+		t.Errorf("GetMapLevelKey returned %+v, want the zero struct passed through as-is", got)
 	}
 	if levelKeyGot != "abifx-hit" {
-		t.Errorf("GetMapLevelKey 收到的 key = %q, want abifx-hit", levelKeyGot)
+		t.Errorf("GetMapLevelKey received key = %q, want abifx-hit", levelKeyGot)
 	}
 
 	if got := table.GetItemName(cStringPtrForTest("abifx-item")); got != &returnedName[0] {
-		t.Errorf("GetItemName 返回 %p, want 借用指针原样透传", got)
+		t.Errorf("GetItemName returned %p, want the borrowed pointer passed through as-is", got)
 	}
 	if itemNameGot != "abifx-item" {
-		t.Errorf("GetItemName 收到的 id = %q, want abifx-item", itemNameGot)
+		t.Errorf("GetItemName received id = %q, want abifx-item", itemNameGot)
 	}
 	_ = returnedBgr
 }

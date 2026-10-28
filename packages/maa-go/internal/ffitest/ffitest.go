@@ -110,13 +110,13 @@ func Register(mode string, run func() int) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	if mode == "" {
-		panic("ffitest: Register 拒绝空模式名")
+		panic("ffitest: Register rejects an empty mode name")
 	}
 	if run == nil {
-		panic(fmt.Sprintf("ffitest: Register(%q) 的 run 为 nil", mode))
+		panic(fmt.Sprintf("ffitest: Register(%q) has a nil run", mode))
 	}
 	if _, dup := registry.modes[mode]; dup {
-		panic(fmt.Sprintf("ffitest: 模式 %q 重复注册", mode))
+		panic(fmt.Sprintf("ffitest: mode %q is registered twice", mode))
 	}
 	registry.modes[mode] = run
 }
@@ -142,7 +142,7 @@ func Dispatch() (code int, handled bool) {
 	registry.mu.Unlock()
 	if run == nil {
 		fmt.Fprintf(os.Stderr,
-			"ffitest: 子进程模式 %q 未注册(%s);检查用例的 Options.Mode 与 init() 注册是否一致\n",
+			"ffitest: child-process mode %q is not registered (%s); check the case's Options.Mode against its init() registration\n",
 			mode, ChildModeEnv)
 		return ExitUnknownMode, true
 	}
@@ -209,13 +209,13 @@ func (o Outcome) Diagnostics() string {
 	}
 	switch {
 	case o.Err == nil:
-		fmt.Fprintf(&b, "%s退出码 0\n", prefix)
+		fmt.Fprintf(&b, "%sexit code 0\n", prefix)
 	case o.TimedOut:
-		fmt.Fprintf(&b, "%s超时被杀死(context deadline exceeded): %v\n", prefix, o.Err)
+		fmt.Fprintf(&b, "%skilled on timeout (context deadline exceeded): %v\n", prefix, o.Err)
 	case o.Signaled:
-		fmt.Fprintf(&b, "%s被信号杀死: %v\n", prefix, o.Err)
+		fmt.Fprintf(&b, "%skilled by signal: %v\n", prefix, o.Err)
 	default:
-		fmt.Fprintf(&b, "%s非零退出(退出码 %d): %v\n", prefix, o.ExitCode, o.Err)
+		fmt.Fprintf(&b, "%snon-zero exit (exit code %d): %v\n", prefix, o.ExitCode, o.Err)
 	}
 	fmt.Fprintf(&b, "--- stdout ---\n%s\n--- stderr ---\n%s", o.Stdout, o.Stderr)
 	return b.String()
@@ -235,12 +235,12 @@ func (o Outcome) Diagnostics() string {
 func Run(t *testing.T, opts Options) Outcome {
 	t.Helper()
 	if opts.Timeout <= 0 {
-		panic(fmt.Sprintf("ffitest: Run(%q) 的 Timeout 必须 >0,得到 %s(超时强制是核心契约,不允许无超时执行)",
+		panic(fmt.Sprintf("ffitest: Run(%q) requires Timeout >0, got %s (timeout enforcement is the core contract; execution without a timeout is not allowed)",
 			opts.Mode, opts.Timeout))
 	}
 	exe, err := filepath.Abs(os.Args[0])
 	if err != nil {
-		t.Fatalf("定位测试二进制 %q 失败: %v", os.Args[0], err)
+		t.Fatalf("failed to locate the test binary %q: %v", os.Args[0], err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
 	defer cancel()

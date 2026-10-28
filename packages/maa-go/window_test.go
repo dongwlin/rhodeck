@@ -26,16 +26,16 @@ func TestAttachWindowCapabilityGate(t *testing.T) {
 	// 的真实形态)。
 	op, err := inst.AttachWindow(0x10010, Win32ScreencapGDI, Win32InputPostMessage, Win32InputSeize)
 	if op != nil {
-		t.Fatalf("能力缺席时 AttachWindow = (%+v, nil), want nil Operation", op)
+		t.Fatalf("AttachWindow with a missing capability = (%+v, nil), want nil Operation", op)
 	}
 	if !errors.Is(err, native.ErrUnsupported) {
-		t.Fatalf("能力缺席时错误 = %v, want ErrUnsupported", err)
+		t.Fatalf("error with a missing capability = %v, want ErrUnsupported", err)
 	}
 	if n := len(rig.caller.asyncCalls); n != 0 {
-		t.Errorf("能力缺席时 asyncAttachWindow 被调用 %d 次, want 0(准入前拒绝)", n)
+		t.Errorf("asyncAttachWindow called %d times with a missing capability, want 0 (rejected before admission)", n)
 	}
 	if n := int(pendingReservedOf(inst.inst.state)); n != 0 {
-		t.Errorf("能力缺席时 pending 预留 = %d, want 0(不占槽位)", n)
+		t.Errorf("pending reservation with a missing capability = %d, want 0 (no slot consumed)", n)
 	}
 }
 
@@ -45,7 +45,7 @@ func TestAttachWindowCapabilityGate(t *testing.T) {
 func TestAttachWindowSubmitsAndJoins(t *testing.T) {
 	const handle = uintptr(0xF2B0)
 
-	t.Run("六参数逐字转发且早到接合", func(t *testing.T) {
+	t.Run("six parameters forwarded verbatim with early join", func(t *testing.T) {
 		inst, rig := newAsyncRig(t, handle, nil)
 		rig.rt.caps = native.CapabilitiesForTest(false, false, true, false, false)
 		rig.caller.asyncRets = map[string]int32{"asyncAttachWindow": 7}
@@ -54,7 +54,7 @@ func TestAttachWindowSubmitsAndJoins(t *testing.T) {
 
 		rig.caller.onAsyncAttach = func(uintptr) {
 			deliverAsyncInfo(t, token, 7, "AttachWindow", `{"ret":true}`)
-			waitUntil(t, "早到结果已临存进窗口", func() bool {
+			waitUntil(t, "early result staged in the window", func() bool {
 				v := earlyWindowOf(s)
 				return v.open && v.has && v.id == 7 && v.what == "AttachWindow"
 			})
@@ -65,31 +65,31 @@ func TestAttachWindowSubmitsAndJoins(t *testing.T) {
 			t.Fatalf("AttachWindow = %v, want nil", err)
 		}
 		if op.ID() != 7 {
-			t.Fatalf("AttachWindow 返回 ID = %d, want 7", op.ID())
+			t.Fatalf("AttachWindow returned ID = %d, want 7", op.ID())
 		}
 		rec := rig.caller.asyncRecordByName(0, "asyncAttachWindow")
 		if rec.attach == nil {
-			t.Fatalf("记录缺少 attach 明细: %+v", rec)
+			t.Fatalf("the record is missing the attach detail: %+v", rec)
 		}
 		if rec.attach.handle != handle || rec.attach.hwnd != 0x20020 ||
 			rec.attach.screencapMethod != uint64(Win32ScreencapDXGIDesktopDup) ||
 			rec.attach.mouseMethod != uint64(Win32InputSendMessage|Win32InputPostMessage) ||
 			rec.attach.keyboardMethod != uint64(Win32InputLegacyEvent) {
-			t.Fatalf("AttachWindow 转发参数 = %+v, want 六参数逐字透传", rec.attach)
+			t.Fatalf("AttachWindow forwarded parameters = %+v, want all six parameters passed through verbatim", rec.attach)
 		}
 		if rec.attach.block != 0 {
-			t.Errorf("AttachWindow block = %d, want 0(冻结 block=false)", rec.attach.block)
+			t.Errorf("AttachWindow block = %d, want 0 (frozen block=false)", rec.attach.block)
 		}
 		res, err := waitOperationGuarded(t, op, context.Background())
 		if err != nil {
-			t.Fatalf("早到接合后的等待 = %v, want nil", err)
+			t.Fatalf("wait after the early join = %v, want nil", err)
 		}
 		if res.ID != 7 || res.What != "AttachWindow" || !res.OK {
-			t.Fatalf("早到接合结果 = %+v, want AttachWindow 完成终态", res)
+			t.Fatalf("early-join result = %+v, want the AttachWindow completion terminal state", res)
 		}
 	})
 
-	t.Run("晚到结果按 ID 结算", func(t *testing.T) {
+	t.Run("late result settled by ID", func(t *testing.T) {
 		inst, rig := newAsyncRig(t, handle, nil)
 		rig.rt.caps = native.CapabilitiesForTest(false, false, true, false, false)
 		token := rig.creator.exToken(0)
@@ -101,10 +101,10 @@ func TestAttachWindowSubmitsAndJoins(t *testing.T) {
 		deliverAsyncInfo(t, token, op.ID(), "AttachWindow", `{"ret":true,"cost":9}`)
 		res, err := waitOperationGuarded(t, op, context.Background())
 		if err != nil {
-			t.Fatalf("晚到结算等待 = %v, want nil", err)
+			t.Fatalf("late settlement wait = %v, want nil", err)
 		}
 		if res.What != "AttachWindow" || !res.OK || string(res.Details) != `{"ret":true,"cost":9}` {
-			t.Fatalf("晚到结算结果 = %+v, want AttachWindow 完成终态", res)
+			t.Fatalf("late settlement result = %+v, want the AttachWindow completion terminal state", res)
 		}
 	})
 }

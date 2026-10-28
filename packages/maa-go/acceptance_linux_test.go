@@ -126,14 +126,14 @@ func cleanupUnpackedResources() {
 func requireUnpackedResources(t *testing.T) (libPath, resourceRoot string) {
 	t.Helper()
 	if runtime.GOARCH != "amd64" {
-		t.Skipf("真实库验收受阻:当前架构 %s 不在锁定基线(linux amd64)内", runtime.GOARCH)
+		t.Skipf("real-library admission blocked: architecture %s is not in the locked baseline (linux amd64)", runtime.GOARCH)
 	}
 	unpackState.once.Do(unpackLockedRelease)
 	if errors.Is(unpackState.err, errTarballMissing) {
-		t.Skipf("真实库验收受阻:锁定发行包缺失(%s)", tarballPath())
+		t.Skipf("real-library admission blocked: locked release tarball missing (%s)", tarballPath())
 	}
 	if unpackState.err != nil {
-		t.Fatalf("锁定发行包解包/校验失败: %v", unpackState.err)
+		t.Fatalf("locked release tarball unpack/verification failed: %v", unpackState.err)
 	}
 	return unpackState.libPath, unpackState.root
 }
@@ -148,7 +148,7 @@ func requireUnpackedResources(t *testing.T) (libPath, resourceRoot string) {
 func unpackLockedRelease() {
 	tarball := tarballPath()
 	if tarball == "" {
-		unpackState.err = fmt.Errorf("%w: 无法定位用户主目录", errTarballMissing)
+		unpackState.err = fmt.Errorf("%w: cannot locate the user home directory", errTarballMissing)
 		return
 	}
 	if _, err := os.Stat(tarball); err != nil {
@@ -167,7 +167,7 @@ func unpackLockedRelease() {
 		return
 	}
 	if got != lockedTarballSHA256 {
-		unpackState.err = fmt.Errorf("发行包 SHA256 = %s, want %s (锁定基线被破坏)", got, lockedTarballSHA256)
+		unpackState.err = fmt.Errorf("release tarball SHA256 = %s, want %s (locked baseline broken)", got, lockedTarballSHA256)
 		return
 	}
 
@@ -183,11 +183,11 @@ func unpackLockedRelease() {
 		return
 	}
 	if unpackState.libPath == "" {
-		unpackState.err = fmt.Errorf("发行包内未找到 %s", lockedCoreSOName)
+		unpackState.err = fmt.Errorf("%s not found in the release tarball", lockedCoreSOName)
 		return
 	}
 	if !sawLockedVersionJSON {
-		unpackState.err = fmt.Errorf("发行包内未找到 %s", lockedVersionRelPath)
+		unpackState.err = fmt.Errorf("%s not found in the release tarball", lockedVersionRelPath)
 		return
 	}
 }
@@ -234,7 +234,7 @@ func extractLockedMembers(root, tarball string) error {
 		case tar.TypeReg:
 			dest, err := safeJoin(root, name)
 			if err != nil {
-				return fmt.Errorf("成员 %s 路径非法: %w", name, err)
+				return fmt.Errorf("member %s has an illegal path: %w", name, err)
 			}
 			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 				return fmt.Errorf("mkdir for %s: %w", name, err)
@@ -256,7 +256,7 @@ func extractLockedMembers(root, tarball string) error {
 				sawLockedVersionJSON = true
 			}
 		default:
-			return fmt.Errorf("成员 %s 类型 %q 超出锁定基线(仅普通文件与目录)", name, hdr.Typeflag)
+			return fmt.Errorf("member %s has type %q outside the locked baseline (only regular files and directories)", name, hdr.Typeflag)
 		}
 	}
 }
@@ -301,7 +301,7 @@ func extractFile(r io.Reader, dest string, mode fs.FileMode, want string) error 
 		return err
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != want {
-		return fmt.Errorf("SHA256 = %s, want %s (锁定基线被破坏)", got, want)
+		return fmt.Errorf("SHA256 = %s, want %s (locked baseline broken)", got, want)
 	}
 	return nil
 }
@@ -341,7 +341,7 @@ func runCoreOpenChild(t *testing.T, timeout time.Duration, mode string, extraEnv
 	t.Helper()
 	exe, err := filepath.Abs(os.Args[0])
 	if err != nil {
-		t.Fatalf("定位测试二进制 %q 失败: %v", os.Args[0], err)
+		t.Fatalf("failed to locate the test binary %q: %v", os.Args[0], err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -394,13 +394,13 @@ func childDiagnostics(mode string, out childOutcome) string {
 	var b strings.Builder
 	switch {
 	case out.err == nil:
-		fmt.Fprintf(&b, "mode=%s 退出码 0\n", mode)
+		fmt.Fprintf(&b, "mode=%s exit code 0\n", mode)
 	case out.timedOut:
-		fmt.Fprintf(&b, "mode=%s 超时被杀死(context deadline exceeded): %v\n", mode, out.err)
+		fmt.Fprintf(&b, "mode=%s killed on timeout (context deadline exceeded): %v\n", mode, out.err)
 	case out.signaled:
-		fmt.Fprintf(&b, "mode=%s 被信号杀死: %v\n", mode, out.err)
+		fmt.Fprintf(&b, "mode=%s killed by signal: %v\n", mode, out.err)
 	default:
-		fmt.Fprintf(&b, "mode=%s 非零退出(退出码 %d): %v\n", mode, out.exitCode, out.err)
+		fmt.Fprintf(&b, "mode=%s non-zero exit (exit code %d): %v\n", mode, out.exitCode, out.err)
 	}
 	fmt.Fprintf(&b, "--- stdout ---\n%s\n--- stderr ---\n%s", out.stdout, out.stderr)
 	return b.String()
@@ -414,19 +414,19 @@ func childDiagnostics(mode string, out childOutcome) string {
 func verifySuccessChildMetadata(stdout string) error {
 	line, ok := successMetadataLine(stdout)
 	if !ok {
-		return fmt.Errorf("stdout 缺少 %s version=... nullSize=... 元数据行", successMarker)
+		return fmt.Errorf("stdout missing %s version=... nullSize=... metadata line", successMarker)
 	}
 	fields := strings.Fields(line)
 	gotVersion := strings.TrimPrefix(fields[1], "version=")
 	if gotVersion != lockedCoreVersion {
-		return fmt.Errorf("stdout 复验 Version = %q, want %q (锁定基线)", gotVersion, lockedCoreVersion)
+		return fmt.Errorf("stdout re-verification Version = %q, want %q (locked baseline)", gotVersion, lockedCoreVersion)
 	}
 	gotNullSize, err := strconv.ParseUint(strings.TrimPrefix(fields[2], "nullSize="), 10, 64)
 	if err != nil {
-		return fmt.Errorf("stdout 复验 nullSize %q 不是十进制 uint64: %w", fields[2], err)
+		return fmt.Errorf("stdout re-verification nullSize %q is not a decimal uint64: %w", fields[2], err)
 	}
 	if gotNullSize != math.MaxUint64 {
-		return fmt.Errorf("stdout 复验 NullSize = %d (0x%x), want %d (0x%x, 锁定 profile 哨兵)",
+		return fmt.Errorf("stdout re-verification NullSize = %d (0x%x), want %d (0x%x, locked profile sentinel)",
 			gotNullSize, gotNullSize, uint64(math.MaxUint64), uint64(math.MaxUint64))
 	}
 	return nil
@@ -466,20 +466,20 @@ func TestRealCoreOpenSucceedsInFreshProcess(t *testing.T) {
 			userDirEnv:      userDir,
 		})
 		if out.err != nil {
-			t.Fatalf("success 子进程第 %d 次运行失败(非零退出/信号/超时一律视为失败):\n%s",
+			t.Fatalf("success child run %d failed (non-zero exit/signal/timeout are all treated as failure):\n%s",
 				attempt, childDiagnostics(childModeSuccess, out))
 		}
 		if !strings.Contains(out.stdout, successMarker) || !strings.Contains(out.stdout, "capabilities ") {
-			t.Fatalf("success 子进程第 %d 次退出码 0,但 stdout 缺少成功标记:\n%s",
+			t.Fatalf("success child run %d exited with exit code 0, but stdout lacks the success marker:\n%s",
 				attempt, childDiagnostics(childModeSuccess, out))
 		}
 		if err := verifySuccessChildMetadata(out.stdout); err != nil {
-			t.Fatalf("success 子进程第 %d 次 stdout 元数据复验失败(与子进程内断言独立):\n%v\n%s",
+			t.Fatalf("success child run %d stdout metadata re-verification failed (independent of the assertions inside the child):\n%v\n%s",
 				attempt, err, childDiagnostics(childModeSuccess, out))
 		}
-		t.Logf("success 子进程第 %d 次运行成功:\n%s", attempt, out.stdout)
+		t.Logf("success child run %d succeeded:\n%s", attempt, out.stdout)
 		if out.stderr != "" {
-			t.Logf("success 子进程第 %d 次 stderr:\n%s", attempt, out.stderr)
+			t.Logf("success child run %d stderr:\n%s", attempt, out.stderr)
 		}
 	}
 }
@@ -495,14 +495,14 @@ func TestRealCoreOpenSucceedsInFreshProcess(t *testing.T) {
 func TestRealCoreMissingLibTerminatesProcessLifecycle(t *testing.T) {
 	out := runCoreOpenChild(t, missingChildTimeout, childModeMissing, nil)
 	if out.err != nil {
-		t.Fatalf("missing-lib 子进程失败(其内部断言未全部通过):\n%s",
+		t.Fatalf("missing-lib child failed (its internal assertions did not all pass):\n%s",
 			childDiagnostics(childModeMissing, out))
 	}
 	if !strings.Contains(out.stdout, missingOKMarker) {
-		t.Fatalf("missing-lib 子进程退出码 0,但 stdout 缺少成功标记:\n%s",
+		t.Fatalf("missing-lib child exited with exit code 0, but stdout lacks the success marker:\n%s",
 			childDiagnostics(childModeMissing, out))
 	}
-	t.Logf("missing-lib 子进程内部断言全部通过:\n%s", out.stdout)
+	t.Logf("missing-lib child internal assertions all passed:\n%s", out.stdout)
 }
 
 // TestRealCoreTimeoutKillReportedAsFailure 验收执行器的超时
@@ -512,22 +512,22 @@ func TestRealCoreMissingLibTerminatesProcessLifecycle(t *testing.T) {
 func TestRealCoreTimeoutKillReportedAsFailure(t *testing.T) {
 	out := runCoreOpenChild(t, hangChildTimeout, childModeHang, nil)
 	if out.err == nil {
-		t.Fatalf("挂起子进程在 %s 超时后必须被报告为失败,实际退出码 0:\n%s",
+		t.Fatalf("hang child must be reported as failed after the %s timeout, actual exit code 0:\n%s",
 			hangChildTimeout, childDiagnostics(childModeHang, out))
 	}
 	if !out.timedOut {
-		t.Fatalf("失败必须可辨识为超时终止(timedOut=false, err=%v):\n%s",
+		t.Fatalf("the failure must be identifiable as timeout termination (timedOut=false, err=%v):\n%s",
 			out.err, childDiagnostics(childModeHang, out))
 	}
 	if !out.signaled {
-		t.Fatalf("超时终止必须经信号杀死子进程(signaled=false, err=%v):\n%s",
+		t.Fatalf("timeout termination must kill the child via a signal (signaled=false, err=%v):\n%s",
 			out.err, childDiagnostics(childModeHang, out))
 	}
 	if !strings.Contains(out.stdout, hangMarker) {
-		t.Fatalf("超时诊断必须保留子进程已产出的输出:\n%s",
+		t.Fatalf("timeout diagnostics must preserve the output the child already produced:\n%s",
 			childDiagnostics(childModeHang, out))
 	}
-	t.Logf("挂起子进程按预期在 %s 超时被 SIGKILL,执行器报告为失败并保留诊断:\n%s",
+	t.Logf("hang child was SIGKILLed on the %s timeout as expected; the executor reported failure and preserved diagnostics:\n%s",
 		hangChildTimeout, childDiagnostics(childModeHang, out))
 }
 
@@ -545,7 +545,7 @@ func runSuccessChild() int {
 		userDirEnv:      userDir,
 	} {
 		if !filepath.IsAbs(value) {
-			fmt.Fprintf(os.Stderr, "success child: %s = %q 不是绝对路径\n", name, value)
+			fmt.Fprintf(os.Stderr, "success child: %s = %q is not an absolute path\n", name, value)
 			return 1
 		}
 	}
@@ -564,7 +564,7 @@ func runSuccessChild() int {
 		return 1
 	}
 	if got := rt.NullSize(); got != math.MaxUint64 {
-		fmt.Fprintf(os.Stderr, "success child: NullSize() = %#x, want %#x (锁定 profile 哨兵)\n", got, uint64(math.MaxUint64))
+		fmt.Fprintf(os.Stderr, "success child: NullSize() = %#x, want %#x (locked profile sentinel)\n", got, uint64(math.MaxUint64))
 		return 1
 	}
 	caps := rt.Capabilities()
@@ -600,7 +600,7 @@ func runMissingLibChild() int {
 	}
 	var lle *LibraryLoadError
 	if !errors.As(err, &lle) {
-		fmt.Fprintf(os.Stderr, "missing-lib child: errors.As 未命中 *LibraryLoadError, got %T: %v\n", err, err)
+		fmt.Fprintf(os.Stderr, "missing-lib child: errors.As did not match *LibraryLoadError, got %T: %v\n", err, err)
 		return 1
 	}
 	if lle.Path != missingLib {
@@ -608,17 +608,17 @@ func runMissingLibChild() int {
 		return 1
 	}
 	if errors.Is(err, ErrRuntimeTerminated) {
-		fmt.Fprintf(os.Stderr, "missing-lib child: 原始错误不得包成 ErrRuntimeTerminated: %v\n", err)
+		fmt.Fprintf(os.Stderr, "missing-lib child: original error must not be wrapped into ErrRuntimeTerminated: %v\n", err)
 		return 1
 	}
 
 	rt2, err2 := Open(cfg)
 	if rt2 != nil {
-		fmt.Fprintf(os.Stderr, "missing-lib child: 二次 Open 不得返回 Runtime: %v\n", rt2)
+		fmt.Fprintf(os.Stderr, "missing-lib child: second Open must not return a Runtime: %v\n", rt2)
 		return 1
 	}
 	if !errors.Is(err2, ErrRuntimeTerminated) {
-		fmt.Fprintf(os.Stderr, "missing-lib child: 二次 Open 的错误 = %v, want errors.Is ErrRuntimeTerminated\n", err2)
+		fmt.Fprintf(os.Stderr, "missing-lib child: second Open error = %v, want errors.Is ErrRuntimeTerminated\n", err2)
 		return 1
 	}
 	fmt.Printf("%s first=%v; second: errors.Is(ErrRuntimeTerminated)=true\n", missingOKMarker, err)

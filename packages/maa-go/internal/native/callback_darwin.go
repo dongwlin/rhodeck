@@ -43,7 +43,7 @@ func nativeCallback(msg int32, detailsJSON *byte, customArg uintptr) {
 				Kind:   callbackFaultPanic,
 				Msg:    msg,
 				Token:  customArg,
-				Detail: fmt.Sprintf("callback 内 Go panic 已被 native 边界 recover(不宣称 recover 原生崩溃或 C++ 异常): %v", r),
+				Detail: fmt.Sprintf("Go panic inside the callback recovered at the native boundary (no claim of recovering native crashes or C++ exceptions): %v", r),
 			})
 		}
 	}()

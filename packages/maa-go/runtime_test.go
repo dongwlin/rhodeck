@@ -211,24 +211,24 @@ func TestOpenValidationFailureDoesNotConsumeLifecycle(t *testing.T) {
 	cfg.LibraryPath = "relative/libMaaCore.so"
 	rt, err := open(cfg, env, gate)
 	if rt != nil {
-		t.Fatal("校验失败不得返回 Runtime")
+		t.Fatal("a validation failure must not return a Runtime")
 	}
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
 	}
 	if !strings.Contains(err.Error(), "LibraryPath") {
-		t.Errorf("错误文本 %q 未包含字段路径", err.Error())
+		t.Errorf("error text %q does not contain the field path", err.Error())
 	}
 	if n := env.loadCount(); n != 0 {
-		t.Errorf("loadLibrary 被调用 %d 次, want 0(校验失败不得进入原生加载)", n)
+		t.Errorf("loadLibrary called %d times, want 0 (a validation failure must not enter native loading)", n)
 	}
 
 	rt, err = open(validRuntimeConfig(), env, gate)
 	if err != nil || rt == nil {
-		t.Fatalf("校验失败后同一 gate 必须仍可成功 Open: rt=%v err=%v", rt, err)
+		t.Fatalf("the same gate must still Open successfully after a validation failure: rt=%v err=%v", rt, err)
 	}
 	if gate.state != lifecycleReady || gate.active != rt {
-		t.Errorf("gate 状态 = %d active=%v, want ready 且记录该 Runtime", gate.state, gate.active)
+		t.Errorf("gate state = %d active=%v, want ready with this Runtime recorded", gate.state, gate.active)
 	}
 }
 
@@ -239,13 +239,13 @@ func TestPublicOpenRejectsInvalidConfig(t *testing.T) {
 	cfg.UserDir = "relative/dir"
 	rt, err := Open(cfg)
 	if rt != nil {
-		t.Fatal("公开 Open 对无效配置不得返回 Runtime")
+		t.Fatal("the public Open must not return a Runtime for an invalid config")
 	}
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
 	}
 	if !strings.Contains(err.Error(), "UserDir") {
-		t.Errorf("错误文本 %q 未包含字段路径", err.Error())
+		t.Errorf("error text %q does not contain the field path", err.Error())
 	}
 }
 
@@ -268,10 +268,10 @@ func TestOpenSessionStepsAndMetadata(t *testing.T) {
 
 	rt, err := open(cfg, env, gate)
 	if err != nil {
-		t.Fatalf("happy path 不得失败: %v", err)
+		t.Fatalf("the happy path must not fail: %v", err)
 	}
 	if rt == nil {
-		t.Fatal("happy path 必须返回 Runtime")
+		t.Fatal("the happy path must return a Runtime")
 	}
 
 	want := []fakeCall{
@@ -287,11 +287,11 @@ func TestOpenSessionStepsAndMetadata(t *testing.T) {
 	}
 	got := sess.recorded()
 	if len(got) != len(want) {
-		t.Fatalf("会话调用数 = %d, want %d:\n%+v", len(got), len(want), got)
+		t.Fatalf("session call count = %d, want %d:\n%+v", len(got), len(want), got)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Errorf("会话调用 #%d = %+v, want %+v(顺序与内容必须一致)", i, got[i], want[i])
+			t.Errorf("session call #%d = %+v, want %+v (order and content must match)", i, got[i], want[i])
 		}
 	}
 
@@ -300,11 +300,11 @@ func TestOpenSessionStepsAndMetadata(t *testing.T) {
 		t.Errorf("Version() = %q, want %q", v, "6.20.1")
 	}
 	if ns := rt.NullSize(); ns != profileNullSize {
-		t.Errorf("NullSize() = %#x, want 锁定 profile 哨兵 %#x", ns, uint64(profileNullSize))
+		t.Errorf("NullSize() = %#x, want the locked profile sentinel %#x", ns, uint64(profileNullSize))
 	}
 	caps := rt.Capabilities()
 	if caps.Create() || caps.ImageBgr() || caps.AsyncAttachWindow() {
-		t.Errorf("Capabilities() = (Create=%v ImageBgr=%v AsyncAttachWindow=%v), want 假会话注入的零值快照",
+		t.Errorf("Capabilities() = (Create=%v ImageBgr=%v AsyncAttachWindow=%v), want the zero-value snapshot injected by the fake session",
 			caps.Create(), caps.ImageBgr(), caps.AsyncAttachWindow())
 	}
 
@@ -316,16 +316,16 @@ func TestOpenSessionStepsAndMetadata(t *testing.T) {
 		_ = rt.Capabilities()
 	}
 	if after := len(sess.recorded()); after != before {
-		t.Errorf("重复读取元数据使会话调用数从 %d 增加到 %d", before, after)
+		t.Errorf("re-reading metadata increased the session call count from %d to %d", before, after)
 	}
 
 	// 白盒:发布后的 Runtime 持有限制快照;gate 处于 ready 并记录
 	// 该 Runtime。
 	if rt.limits != defaultLimits() {
-		t.Errorf("Runtime 的限制快照 = %+v, want 默认值", rt.limits)
+		t.Errorf("the Runtime limits snapshot = %+v, want the defaults", rt.limits)
 	}
 	if gate.state != lifecycleReady || gate.active != rt {
-		t.Errorf("gate 状态 = %d active=%v, want ready 且记录该 Runtime", gate.state, gate.active)
+		t.Errorf("gate state = %d active=%v, want ready with this Runtime recorded", gate.state, gate.active)
 	}
 }
 
@@ -347,10 +347,10 @@ func TestOpenAcceptsVersionAtScanWindowBoundary(t *testing.T) {
 
 	rt, err := open(validRuntimeConfig(), env, gate)
 	if err != nil || rt == nil {
-		t.Fatalf("扫描窗末端 NUL 的 Version 应当被接受: rt=%v err=%v", rt, err)
+		t.Fatalf("a Version with its NUL at the end of the scan window should be accepted: rt=%v err=%v", rt, err)
 	}
 	if got := rt.Version(); got != text {
-		t.Errorf("Version() 长度 = %d, want %d,且内容必须逐字节一致", len(got), versionBytesLimit)
+		t.Errorf("Version() length = %d, want %d, and the content must be byte-for-byte identical", len(got), versionBytesLimit)
 	}
 }
 
@@ -376,7 +376,7 @@ func TestOpenSnapshotIsDeepCopy(t *testing.T) {
 
 	rt, err := open(cfg, env, gate)
 	if err != nil || rt == nil {
-		t.Fatalf("Open 意外失败: rt=%v err=%v", rt, err)
+		t.Fatalf("Open failed unexpectedly: rt=%v err=%v", rt, err)
 	}
 
 	// Open 返回后修改原配置。
@@ -391,7 +391,7 @@ func TestOpenSnapshotIsDeepCopy(t *testing.T) {
 	cfg.Limits.InputStringBytes = 1
 
 	if rt.limits != wantLimits || rt.limits.InputStringBytes != 12_345 {
-		t.Errorf("Runtime 的限制快照被改写: got %+v, want %+v", rt.limits, wantLimits)
+		t.Errorf("the Runtime limits snapshot was rewritten: got %+v, want %+v", rt.limits, wantLimits)
 	}
 	want := []fakeCall{
 		{step: "version"},
@@ -403,11 +403,11 @@ func TestOpenSnapshotIsDeepCopy(t *testing.T) {
 	}
 	got := sess.recorded()
 	if len(got) != len(want) {
-		t.Fatalf("会话调用数 = %d, want %d:\n%+v", len(got), len(want), got)
+		t.Fatalf("session call count = %d, want %d:\n%+v", len(got), len(want), got)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Errorf("会话调用 #%d = %+v, want %+v(快照不得被后续修改影响)", i, got[i], want[i])
+			t.Errorf("session call #%d = %+v, want %+v (the snapshot must not be affected by later modifications)", i, got[i], want[i])
 		}
 	}
 }
@@ -451,31 +451,31 @@ func TestConcurrentOpenSingleReserve(t *testing.T) {
 		case errors.Is(errs[i], ErrRuntimeInUse):
 			// 其余调用必须得到占用错误。
 		default:
-			t.Errorf("goroutine %d 的错误 = %v, want ErrRuntimeInUse 或成功", i, errs[i])
+			t.Errorf("goroutine %d error = %v, want ErrRuntimeInUse or success", i, errs[i])
 		}
 	}
 	if winners != 1 {
-		t.Fatalf("成功进入原生初始化的数量 = %d, want 1", winners)
+		t.Fatalf("the count that entered native initialization = %d, want 1", winners)
 	}
 	if got := env.loadCount(); got != 1 {
-		t.Errorf("loadLibrary 调用次数 = %d, want 1", got)
+		t.Errorf("loadLibrary call count = %d, want 1", got)
 	}
 	for _, c := range env.session.recorded() {
 		if c.step == "setUserDir" && c.value != cfgs[winIdx].UserDir {
-			t.Fatalf("胜者的配置未被使用: setUserDir(%q), want %q", c.value, cfgs[winIdx].UserDir)
+			t.Fatalf("the winner's config was not used: setUserDir(%q), want %q", c.value, cfgs[winIdx].UserDir)
 		}
 	}
 
 	// gate 已 ready:重复 open 被拒绝,不复用已有对象。
 	rt, err := open(cfgs[0], env, gate)
 	if rt != nil {
-		t.Fatal("ready 后重复 open 不得返回 Runtime")
+		t.Fatal("a repeated open after ready must not return a Runtime")
 	}
 	if !errors.Is(err, ErrRuntimeInUse) {
 		t.Fatalf("errors.Is(err, ErrRuntimeInUse) = false; err = %v", err)
 	}
 	if got := env.loadCount(); got != 1 {
-		t.Errorf("被拒绝的 open 不得进入原生加载, loadLibrary 累计 = %d, want 1", got)
+		t.Errorf("a rejected open must not enter native loading; cumulative loadLibrary = %d, want 1", got)
 	}
 }
 
@@ -492,49 +492,49 @@ func TestOpenStepFailuresTerminateLifecycle(t *testing.T) {
 		check  func(t *testing.T, env *fakeEnv, err error)
 	}{
 		{
-			name: "loadLibrary 失败原样返回",
+			name: "loadLibrary failure returned as is",
 			inject: func(env *fakeEnv, sess *fakeSession) {
 				env.err = errStepSentinel
 			},
 			wantIs: errStepSentinel,
 			check: func(t *testing.T, env *fakeEnv, err error) {
 				if err != errStepSentinel {
-					t.Errorf("loadLibrary 失败必须原样返回 sentinel, got %T: %v", err, err)
+					t.Errorf("a loadLibrary failure must return the sentinel as is, got %T: %v", err, err)
 				}
 			},
 		},
 		{
-			name:   "version 空指针",
+			name:   "version null pointer",
 			inject: func(env *fakeEnv, sess *fakeSession) { sess.versionNull = true },
 			wantIs: ErrProtocol,
 		},
 		{
-			name:   "version 界内无 NUL",
+			name:   "version no NUL within bounds",
 			inject: func(env *fakeEnv, sess *fakeSession) { sess.versionNoNUL = true },
 			wantIs: ErrProtocol,
 		},
 		{
-			name:   "version 非法 UTF-8",
+			name:   "version invalid UTF-8",
 			inject: func(env *fakeEnv, sess *fakeSession) { sess.versionInvalid = true },
 			wantIs: ErrProtocol,
 		},
 		{
-			name:   "version 空串",
+			name:   "version empty string",
 			inject: func(env *fakeEnv, sess *fakeSession) { sess.versionEmpty = true },
 			wantIs: ErrProtocol,
 		},
 		{
-			name:   "nullSize 非 profile 哨兵",
+			name:   "nullSize not the profile sentinel",
 			inject: func(env *fakeEnv, sess *fakeSession) { sess.nullSizeValue = 42 },
 			wantIs: ErrProtocol,
 		},
 		{
-			name:   "SetUserDir 拒绝",
+			name:   "SetUserDir rejected",
 			inject: func(env *fakeEnv, sess *fakeSession) { sess.userDirRejected = true },
 			wantIs: ErrNativeRejected,
 		},
 		{
-			name: "第 2 个静态选项拒绝",
+			name: "2nd static option rejected",
 			inject: func(env *fakeEnv, sess *fakeSession) {
 				sess.staticOptionRejectN = 2
 			},
@@ -550,12 +550,12 @@ func TestOpenStepFailuresTerminateLifecycle(t *testing.T) {
 					}
 				}
 				if calls != 2 {
-					t.Errorf("setStaticOption 调用数 = %d, want 2(第 1 个成功、第 2 个拒绝)", calls)
+					t.Errorf("setStaticOption call count = %d, want 2 (1st succeeded, 2nd rejected)", calls)
 				}
 			},
 		},
 		{
-			name: "第 1 个资源根拒绝",
+			name: "1st resource root rejected",
 			inject: func(env *fakeEnv, sess *fakeSession) {
 				sess.resourceRejectN = 1
 			},
@@ -571,7 +571,7 @@ func TestOpenStepFailuresTerminateLifecycle(t *testing.T) {
 					}
 				}
 				if calls != 1 {
-					t.Errorf("loadResource 调用数 = %d, want 1(第 1 个拒绝后即中止)", calls)
+					t.Errorf("loadResource call count = %d, want 1 (aborted right after the 1st rejection)", calls)
 				}
 			},
 		},
@@ -591,10 +591,10 @@ func TestOpenStepFailuresTerminateLifecycle(t *testing.T) {
 
 			rt, err := open(cfg, env, gate)
 			if rt != nil {
-				t.Fatal("失败不得发布 Runtime")
+				t.Fatal("a failure must not publish a Runtime")
 			}
 			if err == nil {
-				t.Fatal("必须返回错误")
+				t.Fatal("an error must be returned")
 			}
 			if !errors.Is(err, tc.wantIs) {
 				t.Fatalf("errors.Is(err, %v) = false; err = %v", tc.wantIs, err)
@@ -602,7 +602,7 @@ func TestOpenStepFailuresTerminateLifecycle(t *testing.T) {
 			// 错误类别不得与 terminated 混淆:原始错误直接返回,
 			// terminated 只影响后续 Open。
 			if errors.Is(err, ErrRuntimeTerminated) && tc.wantIs != errStepSentinel {
-				t.Errorf("原始失败不得包成 ErrRuntimeTerminated: %v", err)
+				t.Errorf("the original failure must not be wrapped as ErrRuntimeTerminated: %v", err)
 			}
 			if tc.check != nil {
 				tc.check(t, env, err)
@@ -612,17 +612,17 @@ func TestOpenStepFailuresTerminateLifecycle(t *testing.T) {
 			// ErrRuntimeTerminated,且不再进入原生加载。
 			rt2, err2 := open(validRuntimeConfig(), env, gate)
 			if rt2 != nil {
-				t.Fatal("terminated 后不得再发布 Runtime")
+				t.Fatal("no Runtime may be published after terminated")
 			}
 			if !errors.Is(err2, ErrRuntimeTerminated) {
-				t.Fatalf("后续 open 的错误 = %v, want errors.Is ErrRuntimeTerminated", err2)
+				t.Fatalf("subsequent open error = %v, want errors.Is ErrRuntimeTerminated", err2)
 			}
 			if env.loadCount() != 1 {
-				t.Errorf("loadLibrary 累计调用 = %d, want 1(terminated 后不得重试)", env.loadCount())
+				t.Errorf("cumulative loadLibrary calls = %d, want 1 (no retry after terminated)", env.loadCount())
 			}
 			// terminated 错误附首个失败原因作诊断。
 			if !strings.Contains(err2.Error(), "first failure") {
-				t.Errorf("terminated 错误文本 %q 未附首个失败原因诊断", err2.Error())
+				t.Errorf("terminated error text %q does not carry the first-failure diagnostic", err2.Error())
 			}
 		})
 	}

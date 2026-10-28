@@ -686,7 +686,7 @@ func runNewInstance(t *testing.T, rt *Runtime, creator instanceCreator, closer i
 	case o := <-ch:
 		return o.inst, o.err
 	case <-time.After(hangGuard):
-		t.Fatal("NewInstance 未在防挂死上限内完成:创建事务疑似挂死")
+		t.Fatal("NewInstance did not complete within the hang-guard deadline: the creation transaction is suspected hung")
 		return nil, nil
 	}
 }
@@ -709,7 +709,7 @@ func runPublicNewInstance(t *testing.T, rt *Runtime, cfg InstanceConfig) (*Insta
 	case o := <-ch:
 		return o.inst, o.err
 	case <-time.After(hangGuard):
-		t.Fatal("NewInstance 未在防挂死上限内完成:创建事务疑似挂死")
+		t.Fatal("NewInstance did not complete within the hang-guard deadline: the creation transaction is suspected hung")
 		return nil, nil
 	}
 }
@@ -725,7 +725,7 @@ func waitLeaseReleased(t *testing.T, g *lifecycleGate) {
 	select {
 	case <-done:
 	case <-time.After(hangGuard):
-		t.Fatal("创建 lease 未在防挂死上限内释放:创建事务疑似未收尾")
+		t.Fatal("creation lease not released within the hang-guard deadline: the creation transaction is suspected unfinished")
 	}
 }
 
@@ -733,7 +733,7 @@ func waitLeaseReleased(t *testing.T, g *lifecycleGate) {
 // 由流程移除,失败后的活动 token 不被保留(token 永不复用)。
 func assertTokenGone(t *testing.T, token uintptr) {
 	t.Helper()
-	assertPanics(t, "token 已移除后重复注销", func() {
+	assertPanics(t, "double unregister after the token was removed", func() {
 		native.UnregisterCallbackTarget(token)
 	})
 }
@@ -745,22 +745,22 @@ func assertRuntimeTerminated(t *testing.T, rt *Runtime, gate *lifecycleGate, fir
 	t.Helper()
 	v := gateSnapshot(gate)
 	if v.state != lifecycleTerminated {
-		t.Errorf("门状态 = %d, want terminated", v.state)
+		t.Errorf("gate state = %d, want terminated", v.state)
 	}
 	if v.hasActive {
-		t.Error("终止使用后不应存在活动实例登记")
+		t.Error("no active instance registration should remain after termination")
 	}
 	// 公开 NewInstance(生产 creator):终止使用在预留处拒绝,先于一
 	// 切 creator 使用,无表可触碰;同时覆盖公开方法的委托路径。
 	_, err := runPublicNewInstance(t, rt, InstanceConfig{})
 	if !errors.Is(err, native.ErrRuntimeTerminated) {
-		t.Errorf("终止后 NewInstance = %v, want errors.Is native.ErrRuntimeTerminated", err)
+		t.Errorf("NewInstance after termination = %v, want errors.Is native.ErrRuntimeTerminated", err)
 	}
 	if err := gate.reserve(); !errors.Is(err, native.ErrRuntimeTerminated) {
-		t.Errorf("终止后 gate.reserve = %v, want errors.Is native.ErrRuntimeTerminated", err)
+		t.Errorf("gate.reserve after termination = %v, want errors.Is native.ErrRuntimeTerminated", err)
 	}
 	if firstFailureText != "" && !strings.Contains(err.Error(), firstFailureText) {
-		t.Errorf("终止诊断应附首个失败原因 %q:\n%s", firstFailureText, err.Error())
+		t.Errorf("termination diagnostics should attach the first failure cause %q:\n%s", firstFailureText, err.Error())
 	}
 }
 
@@ -770,56 +770,56 @@ func assertRuntimeTerminated(t *testing.T, rt *Runtime, gate *lifecycleGate, fir
 // panic;创建准入关闭后预留与发布都被拒;lease 未预留即释放或重复
 // 释放是编程错误 panic;无可等待 lease 的等待立即返回。
 func TestNewInstanceGateReservationContract(t *testing.T) {
-	t.Run("非 ready 状态拒绝预留", func(t *testing.T) {
+	t.Run("non-ready state rejects reservation", func(t *testing.T) {
 		g := &lifecycleGate{}
 		if err := g.reserveInstance(); !errors.Is(err, native.ErrRuntimeInUse) {
-			t.Errorf("idle 门预留 = %v, want errors.Is native.ErrRuntimeInUse", err)
+			t.Errorf("idle gate reservation = %v, want errors.Is native.ErrRuntimeInUse", err)
 		}
 	})
-	t.Run("预留唯一名额,二次预留拒绝", func(t *testing.T) {
+	t.Run("reserves the unique slot; a second reservation is rejected", func(t *testing.T) {
 		g := &lifecycleGate{state: lifecycleReady}
 		if err := g.reserveInstance(); err != nil {
-			t.Fatalf("首次预留不得失败: %v", err)
+			t.Fatalf("the first reservation must not fail: %v", err)
 		}
 		if err := g.reserveInstance(); !errors.Is(err, native.ErrRuntimeInUse) {
-			t.Errorf("二次预留 = %v, want errors.Is native.ErrRuntimeInUse", err)
+			t.Errorf("second reservation = %v, want errors.Is native.ErrRuntimeInUse", err)
 		}
 	})
-	t.Run("名额不符时发布是编程错误", func(t *testing.T) {
+	t.Run("publishing with a mismatched slot is a programming error", func(t *testing.T) {
 		g := &lifecycleGate{state: lifecycleReady}
-		assertPanics(t, "slot=none 时发布", func() {
+		assertPanics(t, "publish with slot=none", func() {
 			_ = g.publishInstance(&instance{})
 		})
 	})
-	t.Run("创建准入关闭后预留与发布都拒绝", func(t *testing.T) {
+	t.Run("reservation and publication both rejected after creation admission closes", func(t *testing.T) {
 		g := &lifecycleGate{state: lifecycleReady}
 		if !g.closeCreationAdmission() {
-			t.Fatal("首个创建准入关闭申请必须生效")
+			t.Fatal("the first creation-admission close request must take effect")
 		}
 		if g.closeCreationAdmission() {
-			t.Error("重复关闭创建准入应幂等返回 false")
+			t.Error("a repeated creation-admission close should idempotently return false")
 		}
 		if err := g.reserveInstance(); !errors.Is(err, native.ErrClosing) {
-			t.Errorf("准入关闭后预留 = %v, want errors.Is native.ErrClosing", err)
+			t.Errorf("reservation after admission closes = %v, want errors.Is native.ErrClosing", err)
 		}
 		g.mu.Lock()
 		g.slot = slotCreating
 		g.creationDone = make(chan struct{})
 		g.mu.Unlock()
 		if err := g.publishInstance(&instance{}); !errors.Is(err, native.ErrClosing) {
-			t.Errorf("准入关闭后发布 = %v, want errors.Is native.ErrClosing", err)
+			t.Errorf("publication after admission closes = %v, want errors.Is native.ErrClosing", err)
 		}
 	})
-	t.Run("lease 释放纪律", func(t *testing.T) {
+	t.Run("lease release discipline", func(t *testing.T) {
 		g := &lifecycleGate{state: lifecycleReady}
-		assertPanics(t, "未预留即释放 lease", func() { g.releaseCreationLease() })
+		assertPanics(t, "release the lease without reserving", func() { g.releaseCreationLease() })
 		if err := g.reserveInstance(); err != nil {
-			t.Fatalf("预留不得失败: %v", err)
+			t.Fatalf("reservation must not fail: %v", err)
 		}
 		g.releaseCreationLease()
-		assertPanics(t, "重复释放 lease", func() { g.releaseCreationLease() })
+		assertPanics(t, "double release of the lease", func() { g.releaseCreationLease() })
 	})
-	t.Run("无可等待 lease 的等待立即返回", func(t *testing.T) {
+	t.Run("wait with no lease to await returns immediately", func(t *testing.T) {
 		g := &lifecycleGate{state: lifecycleReady}
 		done := make(chan struct{})
 		go func() {
@@ -829,7 +829,7 @@ func TestNewInstanceGateReservationContract(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(notWithin):
-			t.Fatal("无 lease 的等待应立即返回")
+			t.Fatal("wait without a lease should return immediately")
 		}
 	})
 }
@@ -845,10 +845,10 @@ func TestNewInstanceValidationFailureDoesNotReserve(t *testing.T) {
 		cfg  InstanceConfig
 	}{
 		{"option key 0(Invalid)", InstanceConfig{Options: []InstanceOption{{Key: 0, Value: "x"}}}},
-		{"option key 重复", InstanceConfig{Options: []InstanceOption{{Key: 3, Value: "a"}, {Key: 3, Value: "b"}}}},
-		{"value 内嵌 NUL", InstanceConfig{Options: []InstanceOption{{Key: 3, Value: "a\x00b"}}}},
-		{"value 非法 UTF-8", InstanceConfig{Options: []InstanceOption{{Key: 3, Value: string([]byte{0xff, 0xfe})}}}},
-		{"value 超单字符串预算", InstanceConfig{Options: []InstanceOption{{Key: 3, Value: strings.Repeat("x", 65_537)}}}},
+		{"duplicate option key", InstanceConfig{Options: []InstanceOption{{Key: 3, Value: "a"}, {Key: 3, Value: "b"}}}},
+		{"embedded NUL in value", InstanceConfig{Options: []InstanceOption{{Key: 3, Value: "a\x00b"}}}},
+		{"invalid UTF-8 in value", InstanceConfig{Options: []InstanceOption{{Key: 3, Value: string([]byte{0xff, 0xfe})}}}},
+		{"value exceeds the single-string budget", InstanceConfig{Options: []InstanceOption{{Key: 3, Value: strings.Repeat("x", 65_537)}}}},
 	}
 	for _, tc := range bad {
 		_, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, tc.cfg)
@@ -856,17 +856,17 @@ func TestNewInstanceValidationFailureDoesNotReserve(t *testing.T) {
 			t.Errorf("%s: err = %v, want errors.Is native.ErrInvalidInput", tc.what, err)
 		}
 		if rig.creator.count("createEx") != 0 {
-			t.Fatalf("%s: 校验失败不得触达 CreateEx", tc.what)
+			t.Fatalf("%s: validation failure must not reach CreateEx", tc.what)
 		}
 		v := gateSnapshot(rig.gate)
 		if v.state != lifecycleReady || v.slot != slotNone || v.closeRequested || v.hasLease {
-			t.Errorf("%s: 校验失败消耗了生命周期门: %+v", tc.what, v)
+			t.Errorf("%s: validation failure consumed the lifecycle gate: %+v", tc.what, v)
 		}
 	}
 	// 修正输入后同门仍可成功创建:校验失败不消耗 Runtime。
 	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, InstanceConfig{Options: []InstanceOption{{Key: 3, Value: "ok"}}})
 	if err != nil {
-		t.Fatalf("校验失败后同门创建不得失败: %v", err)
+		t.Fatalf("creation on the same gate after a validation failure must not fail: %v", err)
 	}
 	rig.track(inst)
 	waitLeaseReleased(t, rig.gate)
@@ -891,39 +891,39 @@ func TestNewInstanceSuccessPublishesReady(t *testing.T) {
 
 	// CreateEx 参数:进程唯一 trampoline + 已登记 token()。
 	if got := rig.creator.exCallback(0); got != native.CallbackTrampoline() {
-		t.Errorf("CreateEx callback = %#x, want 进程唯一 trampoline %#x", got, native.CallbackTrampoline())
+		t.Errorf("CreateEx callback = %#x, want the process-unique trampoline %#x", got, native.CallbackTrampoline())
 	}
 	if token == 0 {
-		t.Fatal("CreateEx custom_arg 不得为 0")
+		t.Fatal("CreateEx custom_arg must not be 0")
 	}
 	// 实例选项按序应用,value 逐字透传(空串编码为空 C 字符串)。
 	if got := rig.creator.optionCount(); got != 2 {
-		t.Fatalf("SetInstanceOption 次数 = %d, want 2", got)
+		t.Fatalf("SetInstanceOption count = %d, want 2", got)
 	}
 	for i, want := range []fakeOptionCall{{handle: handle, key: 123, value: "opt-a"}, {handle: handle, key: -5, value: ""}} {
 		if got := rig.creator.optionRecord(i); got != want {
-			t.Errorf("选项调用 %d = %+v, want %+v", i, got, want)
+			t.Errorf("option call %d = %+v, want %+v", i, got, want)
 		}
 	}
 	// ready 发布与名额状态:状态 ready、句柄已登记、名额 active、活
 	// 动实例已登记、创建 lease 已释放(NewInstance 第 6、7 步)。
 	if got := inst.inst.state.currentPhase(); got != phaseReady {
-		t.Errorf("实例阶段 = %d, want ready", got)
+		t.Errorf("instance phase = %d, want ready", got)
 	}
 	if got := stateHandle(inst.inst.state); got != handle {
-		t.Errorf("实例 handle = %#x, want %#x", got, handle)
+		t.Errorf("instance handle = %#x, want %#x", got, handle)
 	}
 	if v := gateSnapshot(rig.gate); v.state != lifecycleReady || v.slot != slotActive || !v.hasActive || v.hasLease {
-		t.Errorf("发布后门视图 = %+v, want ready/active/有活动实例/lease 已释放", v)
+		t.Errorf("gate view after publish = %+v, want ready/active/active instance present/lease released", v)
 	}
 	waitLeaseReleased(t, rig.gate)
 
 	// 唯一名额已占用:再次创建被拒(首期单活动实例)。
 	if _, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, InstanceConfig{}); !errors.Is(err, native.ErrRuntimeInUse) {
-		t.Errorf("名额占用后再次创建 = %v, want errors.Is native.ErrRuntimeInUse", err)
+		t.Errorf("creation again with the slot occupied = %v, want errors.Is native.ErrRuntimeInUse", err)
 	}
 	if got := rig.creator.count("createEx"); got != 1 {
-		t.Errorf("CreateEx 次数 = %d, want 1(被拒不触达 native)", got)
+		t.Errorf("CreateEx count = %d, want 1 (rejection does not reach native)", got)
 	}
 
 	// 公开 Close:单次关闭流程,Stop/Destroy 恰好一次,Runtime 终止
@@ -932,14 +932,14 @@ func TestNewInstanceSuccessPublishesReady(t *testing.T) {
 		t.Fatalf("Close = %v, want nil", err)
 	}
 	if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-		t.Fatalf("native 调用序列 = %v, want [stop destroy]", seq)
+		t.Fatalf("native call sequence = %v, want [stop destroy]", seq)
 	}
 	if got := rig.closer.destroyHandles[0]; got != handle {
-		t.Errorf("Destroy 收到 handle %#x, want %#x", got, handle)
+		t.Errorf("Destroy received handle %#x, want %#x", got, handle)
 	}
 	assertTokenGone(t, token)
 	if got := inst.inst.state.currentPhase(); got != phaseClosed {
-		t.Errorf("关闭后实例阶段 = %d, want closed", got)
+		t.Errorf("instance phase after close = %d, want closed", got)
 	}
 	// terminated 附首个失败原因?正常关闭无失败原因,裸哨兵即可。
 	assertRuntimeTerminated(t, rig.rt, rig.gate, "")
@@ -955,7 +955,7 @@ func TestNewInstanceEarlyMessagesDuringCreateEx(t *testing.T) {
 	deliverEarly := func(token uintptr, msg int32, payload string, failures *[]string) {
 		deliver := native.LookupCallbackDelivery(token)
 		if deliver == nil {
-			*failures = append(*failures, fmt.Sprintf("token %d 未在注册表登记:注册表未先于 CreateEx 建立", token))
+			*failures = append(*failures, fmt.Sprintf("token %d not registered in the registry: the registry was not established before CreateEx", token))
 			return
 		}
 		deliver(msg, callbackCBytes(payload))
@@ -981,22 +981,22 @@ func TestNewInstanceEarlyMessagesDuringCreateEx(t *testing.T) {
 	}
 	rig.track(inst)
 	if len(failures) > 0 {
-		t.Fatalf("早到消息投递失败: %v", failures)
+		t.Fatalf("early message delivery failed: %v", failures)
 	}
 	// 早到消息不遗失:按投递顺序在公开事件缓冲可读(本地序号单调)。
 	ev1 := mustReadEvent(t, inst.inst.disp.events())
 	ev2 := mustReadEvent(t, inst.inst.disp.events())
 	if ev1.MessageID != 77 || ev2.MessageID != 78 {
-		t.Errorf("早到事件 = %d, %d, want 77, 78(按序不遗失)", ev1.MessageID, ev2.MessageID)
+		t.Errorf("early events = %d, %d, want 77, 78 (in order, none lost)", ev1.MessageID, ev2.MessageID)
 	}
 	if ev1.Sequence >= ev2.Sequence {
-		t.Errorf("本地事件序号非单调: %d >= %d", ev1.Sequence, ev2.Sequence)
+		t.Errorf("local event sequence not monotonic: %d >= %d", ev1.Sequence, ev2.Sequence)
 	}
 	// 失败后不保留活动 token 的对照面:成功实例的 token 在 Close 前仍
 	// 在注册表(查表可命中)。
 	token := rig.creator.exToken(0)
 	if native.LookupCallbackDelivery(token) == nil {
-		t.Error("已发布实例的 token 应仍在注册表中")
+		t.Error("the token of the published instance should still be in the registry")
 	}
 	if err := inst.Close(); err != nil {
 		t.Fatalf("Close = %v, want nil", err)
@@ -1012,29 +1012,29 @@ func TestNewInstanceCreateExZeroRollback(t *testing.T) {
 	rig := newCreateRig(t, 0) // handle=0:CreateEx 失败
 	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, InstanceConfig{})
 	if inst != nil {
-		t.Fatalf("CreateEx=0 不得返回实例: %+v", inst)
+		t.Fatalf("CreateEx=0 must not return an instance: %+v", inst)
 	}
 	if !errors.Is(err, native.ErrNativeRejected) {
 		t.Fatalf("err = %v, want errors.Is native.ErrNativeRejected", err)
 	}
 	for _, want := range []string{"AsstCreateEx", "0 (null handle)"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("错误应含 %q:\n%s", want, err.Error())
+			t.Errorf("the error should contain %q:\n%s", want, err.Error())
 		}
 	}
 	// 不调用无效 handle(CreateEx=0 的路径不调用 Stop/Destroy)。
 	if got := rig.closer.count("stop"); got != 0 {
-		t.Errorf("CreateEx=0 路径的 Stop 次数 = %d, want 0", got)
+		t.Errorf("Stop count on the CreateEx=0 path = %d, want 0", got)
 	}
 	if got := rig.closer.count("destroy"); got != 0 {
-		t.Errorf("CreateEx=0 路径的 Destroy 次数 = %d, want 0", got)
+		t.Errorf("Destroy count on the CreateEx=0 path = %d, want 0", got)
 	}
 	// 临时 callback 准入已关闭、token 已移除、分发循环已收敛、终态已
 	// 发布(清理临时 token 和 Go 状态)。
 	token := rig.creator.exToken(0)
 	assertTokenGone(t, token)
 	if got := rig.creator.optionCount(); got != 0 {
-		t.Errorf("CreateEx=0 路径的选项调用次数 = %d, want 0", got)
+		t.Errorf("option call count on the CreateEx=0 path = %d, want 0", got)
 	}
 	waitLeaseReleased(t, rig.gate)
 	assertRuntimeTerminated(t, rig.rt, rig.gate, "AsstCreateEx")
@@ -1053,27 +1053,27 @@ func TestNewInstanceOptionFailureRollsBackSingleClose(t *testing.T) {
 
 	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, cfg)
 	if inst != nil {
-		t.Fatalf("选项失败不得返回实例: %+v", inst)
+		t.Fatalf("option failure must not return an instance: %+v", inst)
 	}
 	if !errors.Is(err, native.ErrNativeRejected) {
 		t.Fatalf("err = %v, want errors.Is native.ErrNativeRejected", err)
 	}
 	for _, want := range []string{"SetInstanceOption", "key=-7"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("错误应含 %q:\n%s", want, err.Error())
+			t.Errorf("the error should contain %q:\n%s", want, err.Error())
 		}
 	}
 	// 按序应用在首个拒绝处停止:第 1 项成功,第 2 项被拒,第 3 项不
 	// 再调用。
 	if got := rig.creator.optionCount(); got != 2 {
-		t.Errorf("选项调用次数 = %d, want 2(首个拒绝后停止)", got)
+		t.Errorf("option call count = %d, want 2 (stops after the first rejection)", got)
 	}
 	// 单次关闭:一次 Stop、一次 Destroy,handle 逐字转发。
 	if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-		t.Fatalf("native 调用序列 = %v, want [stop destroy]", seq)
+		t.Fatalf("native call sequence = %v, want [stop destroy]", seq)
 	}
 	if got := rig.closer.destroyHandles[0]; got != handle {
-		t.Errorf("Destroy 收到 handle %#x, want %#x", got, handle)
+		t.Errorf("Destroy received handle %#x, want %#x", got, handle)
 	}
 	// 回滚完成才释放 lease;token 已移除;Runtime 终止使用。
 	token := rig.creator.exToken(0)
@@ -1088,7 +1088,7 @@ func TestNewInstanceOptionFailureRollsBackSingleClose(t *testing.T) {
 // 发布被拒,回滚执行一次 Stop、一次 Destroy,错误为首因,丢失计数与
 // 故障通知就位,Runtime 终止使用。
 func TestNewInstanceEarlyFaultFailsCreation(t *testing.T) {
-	t.Run("CreateEx 期间的早到故障", func(t *testing.T) {
+	t.Run("early fault during CreateEx", func(t *testing.T) {
 		const handle = uintptr(0xCE00)
 		rig := newCreateRig(t, handle)
 		rig.rt.limits.CallbackBytes = 16 // 收紧单条上限:32 字节无 NUL 即溢出故障
@@ -1101,7 +1101,7 @@ func TestNewInstanceEarlyFaultFailsCreation(t *testing.T) {
 
 		inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, cfg)
 		if inst != nil {
-			t.Fatalf("早到故障不得返回实例: %+v", inst)
+			t.Fatalf("an early fault must not return an instance: %+v", inst)
 		}
 		if !errors.Is(err, native.ErrEventOverflow) {
 			t.Fatalf("err = %v, want errors.Is native.ErrEventOverflow", err)
@@ -1109,13 +1109,13 @@ func TestNewInstanceEarlyFaultFailsCreation(t *testing.T) {
 		// 单次关闭照常执行(callback 已可接收,早到故障会使创建失
 		// 败并按既定规则清理)。
 		if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-			t.Fatalf("native 调用序列 = %v, want [stop destroy]", seq)
+			t.Fatalf("native call sequence = %v, want [stop destroy]", seq)
 		}
 		if got := rig.closer.destroyHandles[0]; got != handle {
-			t.Errorf("Destroy 收到 handle %#x, want %#x", got, handle)
+			t.Errorf("Destroy received handle %#x, want %#x", got, handle)
 		}
 		if got := rig.creator.optionCount(); got != 1 {
-			t.Errorf("选项调用次数 = %d, want 1(选项先于发布复核应用)", got)
+			t.Errorf("option call count = %d, want 1 (options applied before the publication recheck)", got)
 		}
 		// 溢出消息未投递、按溢出契约计丢失:错误身份(ErrEventOverflow
 		// 链)已钉住故障路径;丢失计数与首因前缀的可见面归公开诊断接线。
@@ -1125,7 +1125,7 @@ func TestNewInstanceEarlyFaultFailsCreation(t *testing.T) {
 		assertRuntimeTerminated(t, rig.rt, rig.gate, "CallbackBytes")
 	})
 
-	t.Run("选项应用中途的早到故障", func(t *testing.T) {
+	t.Run("early fault midway through option application", func(t *testing.T) {
 		const handle = uintptr(0xCE01)
 		rig := newCreateRig(t, handle)
 		rig.rt.limits.CallbackBytes = 16
@@ -1140,7 +1140,7 @@ func TestNewInstanceEarlyFaultFailsCreation(t *testing.T) {
 
 		inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, cfg)
 		if inst != nil {
-			t.Fatalf("早到故障不得返回实例: %+v", inst)
+			t.Fatalf("an early fault must not return an instance: %+v", inst)
 		}
 		if !errors.Is(err, native.ErrEventOverflow) {
 			t.Fatalf("err = %v, want errors.Is native.ErrEventOverflow", err)
@@ -1148,10 +1148,10 @@ func TestNewInstanceEarlyFaultFailsCreation(t *testing.T) {
 		// 中途故障不中断剩余选项的应用(步骤顺序:应用选项 → 复核
 		// 发布),发布点原子复核拦下故障。
 		if got := rig.creator.optionCount(); got != 2 {
-			t.Errorf("选项调用次数 = %d, want 2", got)
+			t.Errorf("option call count = %d, want 2", got)
 		}
 		if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-			t.Fatalf("native 调用序列 = %v, want [stop destroy]", seq)
+			t.Fatalf("native call sequence = %v, want [stop destroy]", seq)
 		}
 		waitLeaseReleased(t, rig.gate)
 		assertTokenGone(t, rig.creator.exToken(0))
@@ -1186,36 +1186,36 @@ func TestNewInstancePublishRejectedByRuntimeClose(t *testing.T) {
 	// Runtime.Close 侧(创建准入关闭, 接入完整等待):创建准
 	// 入关闭后,正在进行的创建事务不被打断,发布将被拒绝。
 	if !rig.gate.closeCreationAdmission() {
-		t.Fatal("首个创建准入关闭申请必须生效")
+		t.Fatal("the first creation-admission close request must take effect")
 	}
 	close(release)
 
 	select {
 	case err := <-errCh:
 		if inst != nil {
-			t.Fatalf("已 closing 时不得返回实例: %+v", inst)
+			t.Fatalf("must not return an instance while closing: %+v", inst)
 		}
 		if !errors.Is(err, native.ErrClosing) {
 			t.Fatalf("err = %v, want errors.Is native.ErrClosing", err)
 		}
 	case <-time.After(hangGuard):
-		t.Fatal("创建事务未在防挂死上限内收尾")
+		t.Fatal("the creation transaction did not finish within the hang-guard deadline")
 	}
 
 	// 由创建者完成回滚再释放 lease:lease 释放时(等待返回即证明)
 	// Stop/Destroy 已各执行一次、token 已移除——不存在未回滚先释放。
 	if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-		t.Fatalf("native 调用序列 = %v, want [stop destroy]", seq)
+		t.Fatalf("native call sequence = %v, want [stop destroy]", seq)
 	}
 	if got := rig.closer.destroyHandles[0]; got != handle {
-		t.Errorf("Destroy 收到 handle %#x, want %#x", got, handle)
+		t.Errorf("Destroy received handle %#x, want %#x", got, handle)
 	}
 	token := rig.creator.exToken(0)
 	waitLeaseReleased(t, rig.gate)
 	assertTokenGone(t, token)
 	// 未发布:名额保持 creating(名额不复用),无活动实例。
 	if v := gateSnapshot(rig.gate); v.hasActive || v.slot != slotCreating {
-		t.Errorf("发布被拒后的门视图 = %+v, want 无活动实例且名额不复用", v)
+		t.Errorf("gate view after the rejected publish = %+v, want no active instance and no slot reuse", v)
 	}
 	assertRuntimeTerminated(t, rig.rt, rig.gate, "close")
 }
@@ -1252,9 +1252,9 @@ func TestNewInstanceConcurrentCreationSingleReserve(t *testing.T) {
 	// 恰一个创建者到达 CreateEx(唯一名额);其余申请在名额预留处被
 	// 拒——被拒者不触达 native,等待其全部返回后再放行胜出者。
 	<-entered
-	waitUntil(t, "其余申请在名额预留处被拒", func() bool { return rejected.Load() == n-1 })
+	waitUntil(t, "remaining requests rejected at slot reservation", func() bool { return rejected.Load() == n-1 })
 	if got := rig.creator.count("createEx"); got != 1 {
-		t.Fatalf("CreateEx 次数 = %d, want 1(唯一名额)", got)
+		t.Fatalf("CreateEx count = %d, want 1 (unique slot)", got)
 	}
 	close(release)
 	wg.Wait()
@@ -1265,18 +1265,18 @@ func TestNewInstanceConcurrentCreationSingleReserve(t *testing.T) {
 		case err == nil:
 			won++
 			if insts[i] == nil {
-				t.Errorf("创建者 %d 返回 nil 实例与 nil 错误", i)
+				t.Errorf("creator %d returned a nil instance and a nil error", i)
 			}
 		case errors.Is(err, native.ErrRuntimeInUse):
 			if insts[i] != nil {
-				t.Errorf("被拒创建者 %d 不得取得实例", i)
+				t.Errorf("rejected creator %d must not obtain an instance", i)
 			}
 		default:
-			t.Errorf("创建者 %d = %v, want nil 或 ErrRuntimeInUse", i, err)
+			t.Errorf("creator %d = %v, want nil or ErrRuntimeInUse", i, err)
 		}
 	}
 	if won != 1 {
-		t.Fatalf("成功创建数 = %d, want 1", won)
+		t.Fatalf("successful creation count = %d, want 1", won)
 	}
 	waitLeaseReleased(t, rig.gate)
 	// 兜底收敛:胜出实例由 rig.cleanup 幂等 Close。
@@ -1308,7 +1308,7 @@ func TestInstanceCloseConcurrentTerminatesRuntime(t *testing.T) {
 	wg.Wait()
 
 	if got := rig.closer.count("destroy"); got != 1 {
-		t.Errorf("Destroy 次数 = %d, want 恰 1", got)
+		t.Errorf("Destroy count = %d, want exactly 1", got)
 	}
 	for i, e := range errs {
 		if e != nil {
@@ -1317,10 +1317,10 @@ func TestInstanceCloseConcurrentTerminatesRuntime(t *testing.T) {
 	}
 	// closed 后的幂等 Close:同一终态,不再触发 native。
 	if err := inst.Close(); err != nil {
-		t.Errorf("幂等 Close = %v, want nil", err)
+		t.Errorf("idempotent Close = %v, want nil", err)
 	}
 	if got := rig.closer.count("destroy"); got != 1 {
-		t.Errorf("幂等 Close 后 Destroy 次数 = %d, want 仍为 1", got)
+		t.Errorf("Destroy count after the idempotent Close = %d, want still 1", got)
 	}
 	assertTokenGone(t, token)
 	assertRuntimeTerminated(t, rig.rt, rig.gate, "")
@@ -1340,24 +1340,24 @@ func TestRollbackCreationWithoutTokenTail(t *testing.T) {
 	gate := &lifecycleGate{state: lifecycleReady}
 	rt := &Runtime{limits: defaultLimits(), gate: gate}
 	if err := gate.reserveInstance(); err != nil {
-		t.Fatalf("预留不得失败: %v", err)
+		t.Fatalf("reservation must not fail: %v", err)
 	}
 
 	cause := fmt.Errorf("fake: token registration failed: %w", native.ErrProtocol)
 	err := rollbackCreation(rt, s, d, 0, newFakeInstanceCloser(), cause)
 	if err != cause {
-		t.Fatalf("回滚错误 = %v, want 与创建失败主因同一存储值 %v", err, cause)
+		t.Fatalf("rollback error = %v, want the same stored value as the creation-failure cause %v", err, cause)
 	}
 	// 终态:无 native 调用(closer 未注入任何调用)、关门、Events 关
 	// 闭且为空、lease 已释放、Runtime 终止使用。
 	if _, ok := s.admitCallback(); ok {
-		t.Error("回滚后 callback 准入门仍开放")
+		t.Error("callback admission gate still open after rollback")
 	}
 	if _, ok := <-d.events(); ok {
-		t.Error("回滚后 Events 应已关闭且为空")
+		t.Error("Events should be closed and empty after rollback")
 	}
 	if got := s.currentPhase(); got != phaseClosed {
-		t.Errorf("回滚后实例阶段 = %d, want closed", got)
+		t.Errorf("instance phase after rollback = %d, want closed", got)
 	}
 	waitLeaseReleased(t, gate)
 	assertRuntimeTerminated(t, rt, gate, "token registration failed")

@@ -24,11 +24,11 @@ import (
 func TestPublicPackageExportsNoRawFuncVariables(t *testing.T) {
 	dir, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("os.Getwd 失败,无法定位公开包目录: %v", err)
+		t.Fatalf("os.Getwd failed, cannot locate the public package directory: %v", err)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("读取公开包目录 %s 失败: %v", dir, err)
+		t.Fatalf("failed to read the public package directory %s: %v", dir, err)
 	}
 	var names []string
 	for _, entry := range entries {
@@ -39,7 +39,7 @@ func TestPublicPackageExportsNoRawFuncVariables(t *testing.T) {
 		names = append(names, name)
 	}
 	if len(names) == 0 {
-		t.Fatal("公开包目录内未找到任何非测试 Go 源文件")
+		t.Fatal("no non-test Go source files found in the public package directory")
 	}
 
 	for _, name := range names {
@@ -47,7 +47,7 @@ func TestPublicPackageExportsNoRawFuncVariables(t *testing.T) {
 			path := filepath.Join(dir, name)
 			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 			if err != nil {
-				t.Fatalf("解析 %s 失败: %v", path, err)
+				t.Fatalf("failed to parse %s: %v", path, err)
 			}
 			for _, decl := range file.Decls {
 				switch d := decl.(type) {
@@ -68,7 +68,7 @@ func TestPublicPackageExportsNoRawFuncVariables(t *testing.T) {
 							}
 							for _, id := range vs.Names {
 								if ast.IsExported(id.Name) {
-									t.Errorf("导出包级 %s %q 的显式类型为函数类型,公开包不得导出可复制的 raw 函数变量", kind, id.Name)
+									t.Errorf("exported package-level %s %q has an explicit function type; the public package must not export copyable raw function variables", kind, id.Name)
 								}
 							}
 						}
@@ -85,7 +85,7 @@ func TestPublicPackageExportsNoRawFuncVariables(t *testing.T) {
 								}
 								for _, id := range field.Names {
 									if ast.IsExported(id.Name) {
-										t.Errorf("导出结构体 %s 的导出字段 %q 类型为函数类型,不得导出可复制的 raw 函数", ts.Name.Name, id.Name)
+										t.Errorf("exported field %q of exported struct %s has a function type; copyable raw functions must not be exported", ts.Name.Name, id.Name)
 									}
 								}
 							}
@@ -97,7 +97,7 @@ func TestPublicPackageExportsNoRawFuncVariables(t *testing.T) {
 					}
 					for _, result := range d.Type.Results.List {
 						if _, isFunc := result.Type.(*ast.FuncType); isFunc {
-							t.Errorf("导出函数/方法 %q 的结果类型为函数类型,不得导出可复制的 raw 函数", d.Name.Name)
+							t.Errorf("exported function/method %q has a function result type; copyable raw functions must not be exported", d.Name.Name)
 						}
 					}
 				}

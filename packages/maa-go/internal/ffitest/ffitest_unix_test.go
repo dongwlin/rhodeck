@@ -45,18 +45,18 @@ func runSignalChild() int {
 func TestRunSignalDeath(t *testing.T) {
 	out := ffitest.Run(t, ffitest.Options{Mode: modeSignal, Timeout: childTimeout})
 	if out.Err == nil {
-		t.Fatalf("SIGKILL 死亡必须被报告为失败:\n%s", out.Diagnostics())
+		t.Fatalf("SIGKILL death must be reported as a failure:\n%s", out.Diagnostics())
 	}
 	if !out.Signaled {
-		t.Fatalf("信号死亡必须以 Signaled 报告(Signaled=false, err=%v):\n%s", out.Err, out.Diagnostics())
+		t.Fatalf("signal death must be reported via Signaled (Signaled=false, err=%v):\n%s", out.Err, out.Diagnostics())
 	}
 	if out.ExitCode != -1 {
-		t.Fatalf("被信号杀死时 ExitCode = %d, want -1:\n%s", out.ExitCode, out.Diagnostics())
+		t.Fatalf("ExitCode = %d when killed by signal, want -1:\n%s", out.ExitCode, out.Diagnostics())
 	}
 	if out.TimedOut {
-		t.Fatalf("信号死亡不得误报为超时:\n%s", out.Diagnostics())
+		t.Fatalf("signal death must not be misreported as a timeout:\n%s", out.Diagnostics())
 	}
 	if !strings.Contains(out.Stdout, signalMarker) {
-		t.Fatalf("信号死亡的输出必须保留已产出的标记:\n%s", out.Diagnostics())
+		t.Fatalf("signal death output must preserve the marker already produced:\n%s", out.Diagnostics())
 	}
 }

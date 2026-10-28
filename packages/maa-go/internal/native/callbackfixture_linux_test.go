@@ -70,13 +70,13 @@ const (
 	cbFixtureTokenC = uintptr(0x3333)
 
 	// roundtrip 组:三条互不相同的 details(含未知字段与超大整数)。
-	cbFixtureDetailsA = `{"seq":0,"futureField":{"list":[1,"two",{"deep":true}]},"note":"线程A"}`
+	cbFixtureDetailsA = `{"seq":0,"futureField":{"list":[1,"two",{"deep":true}]},"note":"threadA"}`
 	cbFixtureDetailsB = `{"seq":1,"big":9007199254740993,"futureField":{"arr":[null,false]}}`
 	cbFixtureDetailsC = `{"seq":2,"huge":12345678901234567890,"negBig":-9007199254740993}`
 
 	// snapshot 组:未知字段(futureField 嵌套对象/数组)与超过 2^53
 	// 的正/负大整数逐字符保留;json.Number 抽查以证明可精确解码。
-	callbackSnapshotPayload = `{"futureField":{"nested":[1,2,{"deep":"快照"}]},"big":9007199254740993,"huge":12345678901234567890,"negBig":-9007199254740993}`
+	callbackSnapshotPayload = `{"futureField":{"nested":[1,2,{"deep":"snapshot"}]},"big":9007199254740993,"huge":12345678901234567890,"negBig":-9007199254740993}`
 
 	cbFixtureSnapshotMsg   = int32(-42)
 	cbFixtureSnapshotToken = uintptr(0xA5A5A5A5)
@@ -120,30 +120,30 @@ func buildCallbackFixture(t *testing.T) string {
 		}
 	}
 	if compiler == "" {
-		t.Skipf("callback fixture 受阻:未找到 C 编译器,夹具构建与原生线程回调验证未执行,不计为本平台通过")
+		t.Skipf("callback fixture blocked: no C compiler found; fixture build and native-thread callback verification not executed, does not count as a pass on this platform")
 	}
 
 	src, err := filepath.Abs(callbackFixtureSrcRel)
 	if err != nil {
-		t.Fatalf("定位 callback fixture 源码 %s 失败: %v", callbackFixtureSrcRel, err)
+		t.Fatalf("failed to locate the callback fixture source %s: %v", callbackFixtureSrcRel, err)
 	}
 	if _, err := os.Stat(src); err != nil {
-		t.Fatalf("callback fixture 源码 %s 不可访问(仓库基线被破坏,非环境受限): %v", src, err)
+		t.Fatalf("callback fixture source %s is not accessible (repository baseline broken, not an environment limitation): %v", src, err)
 	}
 
 	outPath := filepath.Join(t.TempDir(), callbackFixtureSOName)
 	args := []string{"-shared", "-fPIC", "-pthread", "-o", outPath, src}
 	commandLine := compiler + " " + strings.Join(args, " ")
-	t.Logf("callback fixture 构建:源码=%s", src)
-	t.Logf("callback fixture 构建:平台=%s/%s", runtime.GOOS, runtime.GOARCH)
-	t.Logf("callback fixture 构建:编译器=%s", compiler)
-	t.Logf("callback fixture 构建:工具链=%s", compilerFirstLine(t, compiler))
-	t.Logf("callback fixture 构建:命令行=%s", commandLine)
+	t.Logf("callback fixture build: source=%s", src)
+	t.Logf("callback fixture build: platform=%s/%s", runtime.GOOS, runtime.GOARCH)
+	t.Logf("callback fixture build: compiler=%s", compiler)
+	t.Logf("callback fixture build: toolchain=%s", compilerFirstLine(t, compiler))
+	t.Logf("callback fixture build: command line=%s", commandLine)
 
 	cmd := exec.Command(compiler, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("编译 callback fixture 失败(命令行 %s): %v\n%s", commandLine, err, output)
+		t.Fatalf("failed to compile the callback fixture (command line %s): %v\n%s", commandLine, err, output)
 	}
 	return outPath
 }
@@ -156,7 +156,7 @@ func buildCallbackFixture(t *testing.T) string {
 // 不做 ResolveAndRegister,由各用例 Lookup 后本地绑定。
 func cbFixtureOpenChild(scope, so string) (lib *Library, ok bool) {
 	if !filepath.IsAbs(so) {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: %s = %q 不是绝对路径(loader 只接受绝对路径)\n",
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: %s = %q is not an absolute path (the loader only accepts absolute paths)\n",
 			scope, callbackFixtureSOEnv, so)
 		return nil, false
 	}
@@ -198,7 +198,7 @@ func cbFixtureCopyDetails(p *byte) []byte {
 		}
 		out = append(out, c)
 	}
-	panic(fmt.Sprintf("callback fixture details 在 %d 字节内未遇到 NUL,夹具内容超出测试上界", cbFixtureMaxDetailsBytes))
+	panic(fmt.Sprintf("callback fixture details did not hit a NUL within %d bytes; the fixture content exceeds the test bound", cbFixtureMaxDetailsBytes))
 }
 
 // callbackRegistryRecorder 向生产 token 注册表为每个给定 token 安装
@@ -235,7 +235,7 @@ func callbackRegistryRecorder(tokens ...uintptr) (record func() []callbackRecord
 // nativeCallback 不留故障)。
 func checkNoCallbackFault(scope string) bool {
 	if f := lastCallbackFault.Load(); f != nil {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: 意外的边界故障 kind=%s msg=%d token=%d detail=%q\n",
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: unexpected boundary fault kind=%s msg=%d token=%d detail=%q\n",
 			scope, f.Kind, f.Msg, f.Token, f.Detail)
 		return false
 	}
@@ -268,7 +268,7 @@ func runCallbackFixtureRoundtripChild() int {
 	tramp := CallbackTrampoline()
 	for i := 0; i < callbackTrampolineFetches; i++ {
 		if again := CallbackTrampoline(); again != tramp {
-			fmt.Fprintf(os.Stderr, "callback fixture %s child: 第 %d 次获取 trampoline 地址变化: %#x -> %#x\n",
+			fmt.Fprintf(os.Stderr, "callback fixture %s child: trampoline address changed on fetch #%d: %#x -> %#x\n",
 				scope, i, tramp, again)
 			return 1
 		}
@@ -284,13 +284,13 @@ func runCallbackFixtureRoundtripChild() int {
 		cbFixtureMsgB, abiCBytes(cbFixtureDetailsB), cbFixtureTokenB,
 		cbFixtureMsgC, abiCBytes(cbFixtureDetailsC), cbFixtureTokenC)
 	if rc != 0 {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: cbfx_call_on_threads = %d, want 0(全部线程必须创建、调用并 join)\n", scope, rc)
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: cbfx_call_on_threads = %d, want 0 (all threads must be created, called and joined)\n", scope, rc)
 		return 1
 	}
 
 	got := record()
 	if len(got) != 3 {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: 投递数 = %d, want 3\n", scope, len(got))
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: delivery count = %d, want 3\n", scope, len(got))
 		return 1
 	}
 	byToken := make(map[uintptr]callbackRecord, len(got))
@@ -308,15 +308,15 @@ func runCallbackFixtureRoundtripChild() int {
 	} {
 		rec, ok := byToken[want.token]
 		if !ok {
-			fmt.Fprintf(os.Stderr, "callback fixture %s child: 缺少 token=%d 的投递(实际 token 集合见上)\n", scope, uint64(want.token))
+			fmt.Fprintf(os.Stderr, "callback fixture %s child: missing delivery for token=%d (actual token set shown above)\n", scope, uint64(want.token))
 			return 1
 		}
 		if rec.msg != want.msg {
-			fmt.Fprintf(os.Stderr, "callback fixture %s child: token=%d 的 msg = %d, want %d\n", scope, uint64(want.token), rec.msg, want.msg)
+			fmt.Fprintf(os.Stderr, "callback fixture %s child: msg for token=%d = %d, want %d\n", scope, uint64(want.token), rec.msg, want.msg)
 			return 1
 		}
 		if string(rec.details) != want.details {
-			fmt.Fprintf(os.Stderr, "callback fixture %s child: token=%d 的 details 不符:\n got  %q\n want %q\n",
+			fmt.Fprintf(os.Stderr, "callback fixture %s child: details for token=%d mismatch:\n got  %q\n want %q\n",
 				scope, uint64(want.token), rec.details, want.details)
 			return 1
 		}
@@ -363,7 +363,7 @@ func runCallbackFixtureSnapshotChild() int {
 
 	got := record()
 	if len(got) != 1 {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: 投递数 = %d, want 1\n", scope, len(got))
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: delivery count = %d, want 1\n", scope, len(got))
 		return 1
 	}
 	rec := got[0]
@@ -375,7 +375,7 @@ func runCallbackFixtureSnapshotChild() int {
 	// 逐字节比较:原生在 callback 返回后已把缓冲整体改写为 fill,快照
 	// 仍必须是原文——证明复制发生在返回之前。
 	if !bytes.Equal(rec.details, []byte(callbackSnapshotPayload)) {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: 快照与原文逐字节不符(返回后改写影响了快照):\n got  %q\n want %q\n",
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: the snapshot does not match the original byte-for-byte (the post-return rewrite affected the snapshot):\n got  %q\n want %q\n",
 			scope, rec.details, callbackSnapshotPayload)
 		return 1
 	}
@@ -386,16 +386,16 @@ func runCallbackFixtureSnapshotChild() int {
 	dec.UseNumber()
 	var parsed map[string]any
 	if err := dec.Decode(&parsed); err != nil {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: 快照 JSON 解码失败: %v\n", scope, err)
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: snapshot JSON decode failed: %v\n", scope, err)
 		return 1
 	}
 	future, ok := parsed["futureField"].(map[string]any)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: 未知字段 futureField 丢失或形状不符: %v\n", scope, parsed["futureField"])
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: unknown field futureField is missing or has an unexpected shape: %v\n", scope, parsed["futureField"])
 		return 1
 	}
 	if _, ok := future["nested"].([]any); !ok {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: futureField.nested 丢失或不是数组: %v\n", scope, future["nested"])
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: futureField.nested is missing or not an array: %v\n", scope, future["nested"])
 		return 1
 	}
 	for _, check := range []struct{ key, want string }{
@@ -405,11 +405,11 @@ func runCallbackFixtureSnapshotChild() int {
 	} {
 		num, ok := parsed[check.key].(json.Number)
 		if !ok {
-			fmt.Fprintf(os.Stderr, "callback fixture %s child: 字段 %q 不是 json.Number: %v\n", scope, check.key, parsed[check.key])
+			fmt.Fprintf(os.Stderr, "callback fixture %s child: field %q is not a json.Number: %v\n", scope, check.key, parsed[check.key])
 			return 1
 		}
 		if num.String() != check.want {
-			fmt.Fprintf(os.Stderr, "callback fixture %s child: 字段 %q = %s, want %s(大整数被破坏,疑似 float64 往返)\n",
+			fmt.Fprintf(os.Stderr, "callback fixture %s child: field %q = %s, want %s (big integer corrupted, float64 round trip suspected)\n",
 				scope, check.key, num.String(), check.want)
 			return 1
 		}
@@ -457,29 +457,29 @@ func runCallbackFixturePanicChild() int {
 	rc := callOnThread(CallbackTrampoline(),
 		cbFixturePanicMsg, abiCBytes(cbFixturePanicDetail), cbFixturePanicToken)
 	if rc != 0 {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: cbfx_call_on_thread = %d, want 0(panic 被 recover 后 C 线程必须存活并正常 join)\n", scope, rc)
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: cbfx_call_on_thread = %d, want 0 (after the panic is recovered the C thread must survive and join normally)\n", scope, rc)
 		return 1
 	}
 	if !invoked.Load() {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: 捕获处理器未被调用\n", scope)
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: the capturing handler was not invoked\n", scope)
 		return 1
 	}
 	f := lastCallbackFault.Load()
 	if f == nil {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: 处理器 panic 后未记录任何边界故障\n", scope)
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: no boundary fault recorded after the handler panicked\n", scope)
 		return 1
 	}
 	if f.Kind != callbackFaultPanic {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: 故障 kind = %s, want %s\n", scope, f.Kind, callbackFaultPanic)
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: fault kind = %s, want %s\n", scope, f.Kind, callbackFaultPanic)
 		return 1
 	}
 	if f.Msg != cbFixturePanicMsg || f.Token != cbFixturePanicToken {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: 故障 msg = %d, want %d; token = %d, want %d\n",
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: fault msg = %d, want %d; token = %d, want %d\n",
 			scope, f.Msg, cbFixturePanicMsg, uint64(f.Token), uint64(cbFixturePanicToken))
 		return 1
 	}
 	if !strings.Contains(f.Detail, cbFixturePanicProbe) {
-		fmt.Fprintf(os.Stderr, "callback fixture %s child: 故障诊断 %q 未携带 panic 值 %q\n", scope, f.Detail, cbFixturePanicProbe)
+		fmt.Fprintf(os.Stderr, "callback fixture %s child: fault detail %q does not carry the panic value %q\n", scope, f.Detail, cbFixturePanicProbe)
 		return 1
 	}
 
@@ -503,15 +503,15 @@ func TestCallbackFixtureNativeThreadRoundtrip(t *testing.T) {
 		ExtraEnv: map[string]string{callbackFixtureSOEnv: soPath},
 	})
 	if out.Err != nil {
-		t.Fatalf("roundtrip 子进程失败(非零退出/信号/超时一律视为失败):\n%s", out.Diagnostics())
+		t.Fatalf("the roundtrip child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	}
 	line, ok := markerLine(out.Stdout, roundtripOKMarker)
 	if !ok {
-		t.Fatalf("roundtrip 子进程退出码 0,但 stdout 缺少 %s 标记行:\n%s", roundtripOKMarker, out.Diagnostics())
+		t.Fatalf("the roundtrip child exited 0 but stdout is missing the %s marker line:\n%s", roundtripOKMarker, out.Diagnostics())
 	}
 	fields, err := parseABIMarkerFields(line, roundtripOKMarker)
 	if err != nil {
-		t.Fatalf("roundtrip 标记行 %q 解析失败: %v\n%s", line, err, out.Diagnostics())
+		t.Fatalf("failed to parse the roundtrip marker line %q: %v\n%s", line, err, out.Diagnostics())
 	}
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "threads", "3", diag)
@@ -525,7 +525,7 @@ func TestCallbackFixtureNativeThreadRoundtrip(t *testing.T) {
 	abiCheckField(t, fields, "detailbytes",
 		fmt.Sprintf("%d,%d,%d", len(cbFixtureDetailsA), len(cbFixtureDetailsB), len(cbFixtureDetailsC)), diag)
 
-	t.Logf("roundtrip 子进程原生线程回调验证通过(3 线程、负 msg 含 MinInt32、整数 token 往返、trampoline 稳定):%s", line)
+	t.Logf("the roundtrip child's native-thread callback verification passed (3 threads, negative msg including MinInt32, integer token round trip, stable trampoline):%s", line)
 }
 
 // TestCallbackFixtureSnapshotBeforeNativeRewrite 验证 details 即时复制:
@@ -540,15 +540,15 @@ func TestCallbackFixtureSnapshotBeforeNativeRewrite(t *testing.T) {
 		ExtraEnv: map[string]string{callbackFixtureSOEnv: soPath},
 	})
 	if out.Err != nil {
-		t.Fatalf("snapshot 子进程失败(非零退出/信号/超时一律视为失败):\n%s", out.Diagnostics())
+		t.Fatalf("the snapshot child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	}
 	line, ok := markerLine(out.Stdout, snapshotOKMarker)
 	if !ok {
-		t.Fatalf("snapshot 子进程退出码 0,但 stdout 缺少 %s 标记行:\n%s", snapshotOKMarker, out.Diagnostics())
+		t.Fatalf("the snapshot child exited 0 but stdout is missing the %s marker line:\n%s", snapshotOKMarker, out.Diagnostics())
 	}
 	fields, err := parseABIMarkerFields(line, snapshotOKMarker)
 	if err != nil {
-		t.Fatalf("snapshot 标记行 %q 解析失败: %v\n%s", line, err, out.Diagnostics())
+		t.Fatalf("failed to parse the snapshot marker line %q: %v\n%s", line, err, out.Diagnostics())
 	}
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "bytes", strconv.Itoa(len(callbackSnapshotPayload)), diag)
@@ -560,7 +560,7 @@ func TestCallbackFixtureSnapshotBeforeNativeRewrite(t *testing.T) {
 	abiCheckField(t, fields, "negBig", "-9007199254740993", diag)
 	abiCheckField(t, fields, "future", "1", diag)
 
-	t.Logf("snapshot 子进程即时复制验证通过(返回后改写不影响快照、未知字段与大整数逐字符保留):%s", line)
+	t.Logf("the snapshot child's immediate-copy verification passed (post-return rewrite does not affect the snapshot; unknown fields and big integers preserved character by character):%s", line)
 }
 
 // TestCallbackFixturePanicContainedAtBoundary 验证 panic 边界:callback 内
@@ -575,15 +575,15 @@ func TestCallbackFixturePanicContainedAtBoundary(t *testing.T) {
 		ExtraEnv: map[string]string{callbackFixtureSOEnv: soPath},
 	})
 	if out.Err != nil {
-		t.Fatalf("panic 子进程失败(非零退出/信号/超时一律视为失败):\n%s", out.Diagnostics())
+		t.Fatalf("the panic child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	}
 	line, ok := markerLine(out.Stdout, panicFaultOKMarker)
 	if !ok {
-		t.Fatalf("panic 子进程退出码 0,但 stdout 缺少 %s 标记行:\n%s", panicFaultOKMarker, out.Diagnostics())
+		t.Fatalf("the panic child exited 0 but stdout is missing the %s marker line:\n%s", panicFaultOKMarker, out.Diagnostics())
 	}
 	fields, err := parseABIMarkerFields(line, panicFaultOKMarker)
 	if err != nil {
-		t.Fatalf("panic 标记行 %q 解析失败: %v\n%s", line, err, out.Diagnostics())
+		t.Fatalf("failed to parse the panic marker line %q: %v\n%s", line, err, out.Diagnostics())
 	}
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "msg", strconv.FormatInt(int64(cbFixturePanicMsg), 10), diag)
@@ -591,5 +591,5 @@ func TestCallbackFixturePanicContainedAtBoundary(t *testing.T) {
 	abiCheckField(t, fields, "export", "0", diag)
 	abiCheckField(t, fields, "recovered", "1", diag)
 
-	t.Logf("panic 子进程边界验证通过(Go panic recover 为可见故障、C 线程 join、导出正常返回):%s", line)
+	t.Logf("the panic child's boundary verification passed (Go panic recovered as a visible fault, C thread joined, export returned normally):%s", line)
 }

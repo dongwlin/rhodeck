@@ -98,12 +98,12 @@ func parsePackageFile(t *testing.T, name string) *ast.File {
 	t.Helper()
 	dir, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("os.Getwd 失败,无法定位 %s: %v", name, err)
+		t.Fatalf("os.Getwd failed, cannot locate %s: %v", name, err)
 	}
 	path := filepath.Join(dir, name)
 	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)
 	if err != nil {
-		t.Fatalf("解析 %s 失败: %v", path, err)
+		t.Fatalf("failed to parse %s: %v", path, err)
 	}
 	return file
 }
@@ -170,16 +170,16 @@ func canonicalTypeExpr(t *testing.T, expr ast.Expr) string {
 		case "mapLevelKey":
 			return e.Name
 		}
-		t.Fatalf("类型标识 %q 不在白名单内(仅允许 uint8/int32/uint64/uintptr/byte、mapLevelKey 或 unsafe.Pointer)", e.Name)
+		t.Fatalf("type identifier %q is not in the whitelist (only uint8/int32/uint64/uintptr/byte, mapLevelKey, or unsafe.Pointer allowed)", e.Name)
 	case *ast.StarExpr:
 		return "*" + canonicalTypeExpr(t, e.X)
 	case *ast.SelectorExpr:
 		if x, ok := e.X.(*ast.Ident); ok && x.Name == "unsafe" && e.Sel.Name == "Pointer" {
 			return "unsafe.Pointer"
 		}
-		t.Fatalf("选择器表达式不在白名单内(仅允许 unsafe.Pointer, 且 unsafe 导入不得重命名)")
+		t.Fatalf("selector expression is not in the whitelist (only unsafe.Pointer allowed, and the unsafe import must not be renamed)")
 	}
-	t.Fatalf("不允许的类型表达式 %T", expr)
+	t.Fatalf("type expression %T is not allowed", expr)
 	return ""
 }
 
@@ -197,7 +197,7 @@ func canonicalFuncType(t *testing.T, ft *ast.FuncType) string {
 				for _, n := range field.Names {
 					names = append(names, n.Name)
 				}
-				t.Fatalf("每个参数必须恰好具名一个名字(匿名参数与多名参数一律禁止), got %d 个: [%s]",
+				t.Fatalf("each parameter must have exactly one name (anonymous and multi-name parameters are forbidden), got %d: [%s]",
 					len(field.Names), strings.Join(names, ", "))
 			}
 			parts = append(parts, field.Names[0].Name+" "+canonicalTypeExpr(t, field.Type))
@@ -210,7 +210,7 @@ func canonicalFuncType(t *testing.T, ft *ast.FuncType) string {
 	case len(ft.Results.List) == 1 && len(ft.Results.List[0].Names) == 0:
 		sig += " " + canonicalTypeExpr(t, ft.Results.List[0].Type)
 	default:
-		t.Fatalf("结果必须恰好一个且未具名(具名返回值与多返回值一律禁止), got %d 个结果字段", len(ft.Results.List))
+		t.Fatalf("there must be exactly one unnamed result (named and multiple results are forbidden), got %d result fields", len(ft.Results.List))
 	}
 	return sig
 }
@@ -223,18 +223,18 @@ func canonicalizeSigText(t *testing.T, sig string) string {
 	src := "package p\n\ntype _ = " + sig + "\n"
 	file, err := parser.ParseFile(token.NewFileSet(), "expected.go", src, 0)
 	if err != nil {
-		t.Fatalf("解析期望签名 %q 失败: %v", sig, err)
+		t.Fatalf("failed to parse the expected signature %q: %v", sig, err)
 	}
 	if len(file.Decls) != 1 {
-		t.Fatalf("期望签名 %q 解析后必须只有一条声明", sig)
+		t.Fatalf("the expected signature %q must parse into exactly one declaration", sig)
 	}
 	ts, ok := file.Decls[0].(*ast.GenDecl).Specs[0].(*ast.TypeSpec)
 	if !ok {
-		t.Fatalf("期望签名 %q 解析结果不是类型声明", sig)
+		t.Fatalf("the expected signature %q did not parse into a type declaration", sig)
 	}
 	ft, ok := ts.Type.(*ast.FuncType)
 	if !ok {
-		t.Fatalf("期望签名 %q 不是函数类型", sig)
+		t.Fatalf("the expected signature %q is not a function type", sig)
 	}
 	return canonicalFuncType(t, ft)
 }
@@ -248,7 +248,7 @@ func TestStaticFilesHaveNoBuildConstraints(t *testing.T) {
 			for _, group := range file.Comments {
 				for _, c := range group.List {
 					if strings.HasPrefix(c.Text, "//go:build") || strings.HasPrefix(c.Text, "// +build") {
-						t.Errorf("%s 含构建约束注释 %q;设计要求三文件不带平台条件", name, c.Text)
+						t.Errorf("%s contains a build-constraint comment %q; the design requires the three files to carry no platform conditions", name, c.Text)
 					}
 				}
 			}
@@ -280,13 +280,13 @@ func TestStaticTopLevelDeclsWhitelist(t *testing.T) {
 			for i := 0; i < len(got) || i < len(tc.want); i++ {
 				switch {
 				case i >= len(got):
-					t.Errorf("%s 缺少白名单顶层声明 #%d %q(实际全量 %v)", tc.file, i, tc.want[i], got)
+					t.Errorf("%s is missing whitelisted top-level declaration #%d %q (actual full list %v)", tc.file, i, tc.want[i], got)
 					return
 				case i >= len(tc.want):
-					t.Errorf("%s 出现白名单之外的顶层声明 %q(实际全量 %v)", tc.file, got[i], got)
+					t.Errorf("%s has a top-level declaration outside the whitelist %q (actual full list %v)", tc.file, got[i], got)
 					return
 				case got[i] != tc.want[i]:
-					t.Errorf("%s 顶层声明 #%d = %q, want %q(got 全量 %v, want 全量 %v)",
+					t.Errorf("%s top-level declaration #%d = %q, want %q (got full list %v, want full list %v)",
 						tc.file, i, got[i], tc.want[i], got, tc.want)
 					return
 				}
@@ -296,14 +296,14 @@ func TestStaticTopLevelDeclsWhitelist(t *testing.T) {
 	t.Run("api.go imports unsafe without alias", func(t *testing.T) {
 		file := parsePackageFile(t, "api.go")
 		if len(file.Imports) != 1 {
-			t.Fatalf("api.go import 数 = %d, want 1 (unsafe)", len(file.Imports))
+			t.Fatalf("api.go import count = %d, want 1 (unsafe)", len(file.Imports))
 		}
 		imp := file.Imports[0]
 		if path := strings.Trim(imp.Path.Value, `"`); path != "unsafe" {
-			t.Errorf("api.go 唯一 import 的路径 = %q, want %q", path, "unsafe")
+			t.Errorf("api.go's sole import path = %q, want %q", path, "unsafe")
 		}
 		if imp.Name != nil {
-			t.Errorf("api.go 的 unsafe 导入不得有别名/重命名, got %q", imp.Name.Name)
+			t.Errorf("api.go's unsafe import must not be aliased/renamed, got %q", imp.Name.Name)
 		}
 	})
 }
@@ -327,33 +327,33 @@ func TestAPIFieldSignatures(t *testing.T) {
 		}
 	}
 	if spec == nil {
-		t.Fatal("api.go 未找到 type api")
+		t.Fatal("type api not found in api.go")
 	}
 	st, ok := spec.Type.(*ast.StructType)
 	if !ok {
-		t.Fatalf("type api 必须是 struct, got %T", spec.Type)
+		t.Fatalf("type api must be a struct, got %T", spec.Type)
 	}
 	fields := st.Fields.List
 	if len(fields) != len(expectedAPIFields) {
-		t.Fatalf("api 字段数 = %d, want %d", len(fields), len(expectedAPIFields))
+		t.Fatalf("api field count = %d, want %d", len(fields), len(expectedAPIFields))
 	}
 	for i, field := range fields {
 		want := expectedAPIFields[i]
 		if len(field.Names) != 1 {
-			t.Fatalf("字段 #%d 必须恰好一个名字(嵌入字段一律禁止), got %d 个", i, len(field.Names))
+			t.Fatalf("field #%d must have exactly one name (embedded fields are forbidden), got %d", i, len(field.Names))
 		}
 		gotName := field.Names[0].Name
 		if gotName != want.field {
-			t.Errorf("字段 #%d 名 = %q, want %q(字段顺序必须与期望表一致)", i, gotName, want.field)
+			t.Errorf("field #%d name = %q, want %q (field order must match the expectation table)", i, gotName, want.field)
 		}
 		ft, ok := field.Type.(*ast.FuncType)
 		if !ok {
-			t.Fatalf("字段 %s 的类型必须是 func 类型, got %T", gotName, field.Type)
+			t.Fatalf("the type of field %s must be a func type, got %T", gotName, field.Type)
 		}
 		gotSig := canonicalFuncType(t, ft)
 		wantSig := canonicalizeSigText(t, want.sig)
 		if gotSig != wantSig {
-			t.Errorf("字段 %s 签名 = %q, want %q", gotName, gotSig, wantSig)
+			t.Errorf("field %s signature = %q, want %q", gotName, gotSig, wantSig)
 		}
 	}
 }
@@ -377,123 +377,123 @@ func TestSymbolSpecsForm(t *testing.T) {
 		}
 	}
 	if fn == nil {
-		t.Fatal("symbols.go 未找到 func symbolSpecs")
+		t.Fatal("func symbolSpecs not found in symbols.go")
 	}
 	if funcDecls != 1 {
-		t.Errorf("symbols.go 的 FuncDecl 数 = %d, want 1(禁止 helper)", funcDecls)
+		t.Errorf("symbols.go FuncDecl count = %d, want 1 (helpers are forbidden)", funcDecls)
 	}
 	if fn.Recv != nil {
-		t.Fatal("symbolSpecs 不得有 receiver")
+		t.Fatal("symbolSpecs must not have a receiver")
 	}
 	if fn.Type.Params == nil || len(fn.Type.Params.List) != 1 {
-		t.Fatalf("symbolSpecs 必须恰好一个参数, got %d 个参数字段", len(fn.Type.Params.List))
+		t.Fatalf("symbolSpecs must have exactly one parameter, got %d parameter fields", len(fn.Type.Params.List))
 	}
 	param := fn.Type.Params.List[0]
 	if len(param.Names) != 1 || param.Names[0].Name != "table" {
-		t.Fatalf("symbolSpecs 参数必须命名为 table, got %d 个名字", len(param.Names))
+		t.Fatalf("the symbolSpecs parameter must be named table, got %d names", len(param.Names))
 	}
 	star, ok := param.Type.(*ast.StarExpr)
 	if !ok || !isIdent(star.X, "api") {
-		t.Fatalf("symbolSpecs 参数类型必须是 *api, got %T", param.Type)
+		t.Fatalf("the symbolSpecs parameter type must be *api, got %T", param.Type)
 	}
 	if fn.Body == nil || len(fn.Body.List) != 1 {
-		t.Fatalf("symbolSpecs 函数体必须只有一条语句, got %d 条", len(fn.Body.List))
+		t.Fatalf("the symbolSpecs body must contain exactly one statement, got %d", len(fn.Body.List))
 	}
 	ret, ok := fn.Body.List[0].(*ast.ReturnStmt)
 	if !ok {
-		t.Fatalf("symbolSpecs 函数体唯一语句必须是 return, got %T", fn.Body.List[0])
+		t.Fatalf("the sole statement of the symbolSpecs body must be a return, got %T", fn.Body.List[0])
 	}
 	if len(ret.Results) != 1 {
-		t.Fatalf("return 必须恰好一个结果表达式, got %d 个", len(ret.Results))
+		t.Fatalf("the return must have exactly one result expression, got %d", len(ret.Results))
 	}
 	comp, ok := ret.Results[0].(*ast.CompositeLit)
 	if !ok {
-		t.Fatalf("return 的结果必须是复合字面量, got %T", ret.Results[0])
+		t.Fatalf("the return result must be a composite literal, got %T", ret.Results[0])
 	}
 	arr, ok := comp.Type.(*ast.ArrayType)
 	if !ok || arr.Len != nil || !isIdent(arr.Elt, "symbolSpec") {
-		t.Fatalf("返回复合字面量的类型必须是 []symbolSpec, got %T", comp.Type)
+		t.Fatalf("the returned composite literal's type must be []symbolSpec, got %T", comp.Type)
 	}
 	if len(comp.Elts) != len(expectedAPIFields) {
-		t.Fatalf("symbolSpecs 条目数 = %d, want %d", len(comp.Elts), len(expectedAPIFields))
+		t.Fatalf("symbolSpecs entry count = %d, want %d", len(comp.Elts), len(expectedAPIFields))
 	}
 	specKeys := [4]string{"Name", "Target", "Policy", "Platform"}
 	for i, elt := range comp.Elts {
 		entry, ok := elt.(*ast.CompositeLit)
 		if !ok {
-			t.Fatalf("条目 #%d 必须是复合字面量, got %T", i, elt)
+			t.Fatalf("entry #%d must be a composite literal, got %T", i, elt)
 		}
 		if entry.Type != nil {
-			t.Errorf("条目 #%d 的类型必须省略(由外层 []symbolSpec 提供), got %T", i, entry.Type)
+			t.Errorf("entry #%d's type must be omitted (supplied by the outer []symbolSpec), got %T", i, entry.Type)
 		}
 		if len(entry.Elts) != len(specKeys) {
-			t.Fatalf("条目 #%d 必须恰好 %d 个 KeyValueExpr, got %d", i, len(specKeys), len(entry.Elts))
+			t.Fatalf("entry #%d must have exactly %d KeyValueExprs, got %d", i, len(specKeys), len(entry.Elts))
 		}
 		want := expectedAPIFields[i]
 		symbol := "Asst" + want.field
 		for k := range entry.Elts {
 			kv, ok := entry.Elts[k].(*ast.KeyValueExpr)
 			if !ok {
-				t.Fatalf("条目 #%d 第 %d 个元素必须是 KeyValueExpr, got %T", i, k, entry.Elts[k])
+				t.Fatalf("entry #%d element %d must be a KeyValueExpr, got %T", i, k, entry.Elts[k])
 			}
 			key, ok := kv.Key.(*ast.Ident)
 			if !ok {
-				t.Fatalf("条目 #%d 第 %d 个 key 必须是具名 key, got %T", i, k, kv.Key)
+				t.Fatalf("entry #%d key %d must be a named key, got %T", i, k, kv.Key)
 			}
 			if key.Name != specKeys[k] {
-				t.Fatalf("条目 #%d 第 %d 个 key = %q, want %q(键名顺序必须为 Name/Target/Policy/Platform)",
+				t.Fatalf("entry #%d key %d = %q, want %q (key order must be Name/Target/Policy/Platform)",
 					i, k, key.Name, specKeys[k])
 			}
 			switch key.Name {
 			case "Name":
 				lit, ok := kv.Value.(*ast.BasicLit)
 				if !ok || lit.Kind != token.STRING {
-					t.Fatalf("条目 #%d(%s) 的 Name 必须是字符串字面量, got %T", i, symbol, kv.Value)
+					t.Fatalf("entry #%d (%s) Name must be a string literal, got %T", i, symbol, kv.Value)
 				}
 				name, err := strconv.Unquote(lit.Value)
 				if err != nil {
-					t.Fatalf("条目 #%d 的 Name 字面量无法取值: %v", i, err)
+					t.Fatalf("cannot unquote entry #%d's Name literal: %v", i, err)
 				}
 				if name != symbol {
-					t.Errorf("条目 #%d Name = %q, want %q", i, name, symbol)
+					t.Errorf("entry #%d Name = %q, want %q", i, name, symbol)
 				}
 			case "Target":
 				unary, ok := kv.Value.(*ast.UnaryExpr)
 				if !ok || unary.Op != token.AND {
-					t.Fatalf("条目 #%d(%s) 的 Target 必须是 &table.<字段>, got %T", i, symbol, kv.Value)
+					t.Fatalf("entry #%d (%s) Target must be &table.<field>, got %T", i, symbol, kv.Value)
 				}
 				sel, ok := unary.X.(*ast.SelectorExpr)
 				if !ok {
-					t.Fatalf("条目 #%d(%s) 的 Target 必须是 &table.<字段>, got %T", i, symbol, unary.X)
+					t.Fatalf("entry #%d (%s) Target must be &table.<field>, got %T", i, symbol, unary.X)
 				}
 				if !isIdent(sel.X, "table") {
-					t.Fatalf("条目 #%d(%s) 的 Target 基名必须是 table(禁止间接变量目标), got %T", i, symbol, sel.X)
+					t.Fatalf("entry #%d (%s) Target base name must be table (indirect variable targets are forbidden), got %T", i, symbol, sel.X)
 				}
 				if sel.Sel.Name != want.field {
-					t.Errorf("条目 #%d(%s) 的 Target 字段 = %q, want %q", i, symbol, sel.Sel.Name, want.field)
+					t.Errorf("entry #%d (%s) Target field = %q, want %q", i, symbol, sel.Sel.Name, want.field)
 				}
 			case "Policy":
 				id, ok := kv.Value.(*ast.Ident)
 				if !ok || (id.Name != "required" && id.Name != "optional") {
-					t.Fatalf("条目 #%d(%s) 的 Policy 必须引用 required/optional, got %T", i, symbol, kv.Value)
+					t.Fatalf("entry #%d (%s) Policy must reference required/optional, got %T", i, symbol, kv.Value)
 				}
 				if id.Name != want.policy {
-					t.Errorf("条目 #%d(%s) 的 Policy = %q, want %q", i, symbol, id.Name, want.policy)
+					t.Errorf("entry #%d (%s) Policy = %q, want %q", i, symbol, id.Name, want.policy)
 				}
 			case "Platform":
 				id, ok := kv.Value.(*ast.Ident)
 				if !ok || (id.Name != "allPlatforms" && id.Name != "windowsOnly") {
-					t.Fatalf("条目 #%d(%s) 的 Platform 必须引用 allPlatforms/windowsOnly, got %T", i, symbol, kv.Value)
+					t.Fatalf("entry #%d (%s) Platform must reference allPlatforms/windowsOnly, got %T", i, symbol, kv.Value)
 				}
 				if id.Name != want.platform {
-					t.Errorf("条目 #%d(%s) 的 Platform = %q, want %q", i, symbol, id.Name, want.platform)
+					t.Errorf("entry #%d (%s) Platform = %q, want %q", i, symbol, id.Name, want.platform)
 				}
 			}
 		}
 	}
 	ast.Inspect(fn, func(n ast.Node) bool {
 		if _, ok := n.(*ast.CallExpr); ok {
-			t.Errorf("symbolSpecs 内不得出现任何函数调用(helper/append/拼接/反射)")
+			t.Errorf("no function calls may appear inside symbolSpecs (helpers/append/concatenation/reflection)")
 		}
 		return true
 	})
@@ -514,78 +514,78 @@ func TestExclusionsForm(t *testing.T) {
 		}
 	}
 	if varCount != 1 || vdecl == nil {
-		t.Fatalf("symbols.go 的 var 声明数 = %d, want 1 (exclusions)", varCount)
+		t.Fatalf("symbols.go var declaration count = %d, want 1 (exclusions)", varCount)
 	}
 	if len(vdecl.Specs) != 1 {
-		t.Fatalf("exclusions 必须是单条 var 声明, got %d 个 spec", len(vdecl.Specs))
+		t.Fatalf("exclusions must be a single var declaration, got %d specs", len(vdecl.Specs))
 	}
 	vs, ok := vdecl.Specs[0].(*ast.ValueSpec)
 	if !ok || len(vs.Names) != 1 || vs.Names[0].Name != "exclusions" {
-		t.Fatal("唯一 var 必须命名为 exclusions")
+		t.Fatal("the sole var must be named exclusions")
 	}
 	if len(vs.Values) != 1 {
-		t.Fatalf("exclusions 必须是直接字面量, got %d 个值", len(vs.Values))
+		t.Fatalf("exclusions must be a direct literal, got %d values", len(vs.Values))
 	}
 	comp, ok := vs.Values[0].(*ast.CompositeLit)
 	if !ok {
-		t.Fatalf("exclusions 必须是 []exclusionSpec 复合字面量, got %T", vs.Values[0])
+		t.Fatalf("exclusions must be an []exclusionSpec composite literal, got %T", vs.Values[0])
 	}
 	arr, ok := comp.Type.(*ast.ArrayType)
 	if !ok || arr.Len != nil || !isIdent(arr.Elt, "exclusionSpec") {
-		t.Fatalf("exclusions 的类型必须是 []exclusionSpec, got %T", comp.Type)
+		t.Fatalf("exclusions' type must be []exclusionSpec, got %T", comp.Type)
 	}
 	if len(comp.Elts) != len(expectedExclusions) {
-		t.Fatalf("排除条目数 = %d, want %d", len(comp.Elts), len(expectedExclusions))
+		t.Fatalf("exclusion entry count = %d, want %d", len(comp.Elts), len(expectedExclusions))
 	}
 	entryKeys := [3]string{"Name", "Header", "Reason"}
 	seen := map[string]bool{}
 	for i, elt := range comp.Elts {
 		entry, ok := elt.(*ast.CompositeLit)
 		if !ok {
-			t.Fatalf("排除条目 #%d 必须是复合字面量, got %T", i, elt)
+			t.Fatalf("exclusion entry #%d must be a composite literal, got %T", i, elt)
 		}
 		if entry.Type != nil {
-			t.Errorf("排除条目 #%d 的类型必须省略(由外层 []exclusionSpec 提供), got %T", i, entry.Type)
+			t.Errorf("exclusion entry #%d's type must be omitted (supplied by the outer []exclusionSpec), got %T", i, entry.Type)
 		}
 		if len(entry.Elts) != len(entryKeys) {
-			t.Fatalf("排除条目 #%d 必须恰好 %d 个 key, got %d", i, len(entryKeys), len(entry.Elts))
+			t.Fatalf("exclusion entry #%d must have exactly %d keys, got %d", i, len(entryKeys), len(entry.Elts))
 		}
 		values := map[string]string{}
 		for k := range entry.Elts {
 			kv, ok := entry.Elts[k].(*ast.KeyValueExpr)
 			if !ok {
-				t.Fatalf("排除条目 #%d 第 %d 个元素必须是 KeyValueExpr, got %T", i, k, entry.Elts[k])
+				t.Fatalf("exclusion entry #%d element %d must be a KeyValueExpr, got %T", i, k, entry.Elts[k])
 			}
 			key, ok := kv.Key.(*ast.Ident)
 			if !ok {
-				t.Fatalf("排除条目 #%d 第 %d 个 key 必须是具名 key, got %T", i, k, kv.Key)
+				t.Fatalf("exclusion entry #%d key %d must be a named key, got %T", i, k, kv.Key)
 			}
 			if key.Name != entryKeys[k] {
-				t.Fatalf("排除条目 #%d 第 %d 个 key = %q, want %q(键名顺序必须为 Name/Header/Reason)",
+				t.Fatalf("exclusion entry #%d key %d = %q, want %q (key order must be Name/Header/Reason)",
 					i, k, key.Name, entryKeys[k])
 			}
 			lit, ok := kv.Value.(*ast.BasicLit)
 			if !ok || lit.Kind != token.STRING {
-				t.Fatalf("排除条目 #%d 的 %s 必须是字符串字面量, got %T", i, key.Name, kv.Value)
+				t.Fatalf("exclusion entry #%d's %s must be a string literal, got %T", i, key.Name, kv.Value)
 			}
 			text, err := strconv.Unquote(lit.Value)
 			if err != nil {
-				t.Fatalf("排除条目 #%d 的 %s 字面量无法取值: %v", i, key.Name, err)
+				t.Fatalf("cannot unquote exclusion entry #%d's %s literal: %v", i, key.Name, err)
 			}
 			if text == "" {
-				t.Errorf("排除条目 #%d 的 %s 不得为空", i, key.Name)
+				t.Errorf("exclusion entry #%d's %s must not be empty", i, key.Name)
 			}
 			values[key.Name] = text
 		}
 		want := expectedExclusions[i]
 		if values["Name"] != want.name {
-			t.Errorf("排除条目 #%d Name = %q, want %q(条目集合与顺序均冻结)", i, values["Name"], want.name)
+			t.Errorf("exclusion entry #%d Name = %q, want %q (both the entry set and order are frozen)", i, values["Name"], want.name)
 		}
 		if values["Header"] != want.header {
-			t.Errorf("排除条目 %q 的 Header = %q, want %q", values["Name"], values["Header"], want.header)
+			t.Errorf("exclusion entry %q Header = %q, want %q", values["Name"], values["Header"], want.header)
 		}
 		if seen[values["Name"]] {
-			t.Errorf("排除条目 Name 重复: %q", values["Name"])
+			t.Errorf("duplicate exclusion entry Name: %q", values["Name"])
 		}
 		seen[values["Name"]] = true
 	}
@@ -604,7 +604,7 @@ func TestPolicyPlatformConstBlocks(t *testing.T) {
 		}
 	}
 	if len(blocks) != 2 {
-		t.Fatalf("symbols.go 的 const 块数 = %d, want 2", len(blocks))
+		t.Fatalf("symbols.go const block count = %d, want 2", len(blocks))
 	}
 	checkEnumBlock(t, blocks[0], "symbolPolicy", "required", "optional")
 	checkEnumBlock(t, blocks[1], "symbolPlatform", "allPlatforms", "windowsOnly")
@@ -620,7 +620,7 @@ func TestPolicyPlatformConstBlocks(t *testing.T) {
 				continue
 			}
 			if !isIdent(ts.Type, "uint8") {
-				t.Errorf("type %s 底层类型必须是 uint8, got %T", ts.Name.Name, ts.Type)
+				t.Errorf("type %s's underlying type must be uint8, got %T", ts.Name.Name, ts.Type)
 			}
 		}
 	}
@@ -632,27 +632,27 @@ func TestPolicyPlatformConstBlocks(t *testing.T) {
 func checkEnumBlock(t *testing.T, block *ast.GenDecl, blockType, first, second string) {
 	t.Helper()
 	if !block.Lparen.IsValid() {
-		t.Errorf("const %s 必须写成带括号的 const 块", blockType)
+		t.Errorf("const %s must be written as a parenthesized const block", blockType)
 	}
 	if len(block.Specs) != 2 {
-		t.Fatalf("const %s 块必须恰好 2 个 spec, got %d", blockType, len(block.Specs))
+		t.Fatalf("const %s block must have exactly 2 specs, got %d", blockType, len(block.Specs))
 	}
 	firstSpec, ok := block.Specs[0].(*ast.ValueSpec)
 	if !ok || len(firstSpec.Names) != 1 || firstSpec.Names[0].Name != first {
-		t.Fatalf("const %s 块首项必须命名为 %s", blockType, first)
+		t.Fatalf("the first spec of the const %s block must be named %s", blockType, first)
 	}
 	if !isIdent(firstSpec.Type, blockType) {
-		t.Errorf("const %s 块首项必须显式标注类型 %s, got %T", blockType, blockType, firstSpec.Type)
+		t.Errorf("the first spec of the const %s block must be explicitly typed %s, got %T", blockType, blockType, firstSpec.Type)
 	}
 	if len(firstSpec.Values) != 1 || !isIdent(firstSpec.Values[0], "iota") {
-		t.Errorf("const %s 块首项 %s 必须以 iota 起始", blockType, first)
+		t.Errorf("the first spec %s of the const %s block must start with iota", blockType, first)
 	}
 	secondSpec, ok := block.Specs[1].(*ast.ValueSpec)
 	if !ok || len(secondSpec.Names) != 1 || secondSpec.Names[0].Name != second {
-		t.Fatalf("const %s 块次项必须命名为 %s", blockType, second)
+		t.Fatalf("the second spec of the const %s block must be named %s", blockType, second)
 	}
 	if secondSpec.Type != nil || len(secondSpec.Values) != 0 {
-		t.Errorf("const %s 块次项 %s 必须沿用首项的类型与 iota,不得显式赋值", blockType, second)
+		t.Errorf("the second spec %s of the const %s block must inherit the first spec's type and iota; no explicit value assignment", blockType, second)
 	}
 }
 
@@ -676,15 +676,15 @@ func TestCallbackTypeSignatures(t *testing.T) {
 		t.Run(want.typeName, func(t *testing.T) {
 			ts, ok := specs[want.typeName]
 			if !ok {
-				t.Fatalf("callback_types.go 未找到 type %s", want.typeName)
+				t.Fatalf("type %s not found in callback_types.go", want.typeName)
 			}
 			ft, ok := ts.Type.(*ast.FuncType)
 			if !ok {
-				t.Fatalf("type %s 必须直接是 func 类型, got %T", want.typeName, ts.Type)
+				t.Fatalf("type %s must directly be a func type, got %T", want.typeName, ts.Type)
 			}
 			got := canonicalFuncType(t, ft)
 			if expect := canonicalizeSigText(t, want.sig); got != expect {
-				t.Errorf("type %s 签名 = %q, want %q", want.typeName, got, expect)
+				t.Errorf("type %s signature = %q, want %q", want.typeName, got, expect)
 			}
 		})
 	}
@@ -709,17 +709,17 @@ func TestCapabilitySwitchMatchesOptionalSpecs(t *testing.T) {
 		}
 	}
 	if len(expectedCapabilityFields) != len(optional) {
-		t.Fatalf("能力字段期望映射 %d 项与期望表 optional 条目 %d 项数量不等",
+		t.Fatalf("capability field expectation map has %d entries, unequal to the expectation table's %d optional entries",
 			len(expectedCapabilityFields), len(optional))
 	}
 	for name := range expectedCapabilityFields {
 		if !optional[name] {
-			t.Errorf("能力字段映射中的 %q 不是期望表中的 optional 条目", name)
+			t.Errorf("%q in the capability field map is not an optional entry of the expectation table", name)
 		}
 	}
 	for name := range optional {
 		if _, ok := expectedCapabilityFields[name]; !ok {
-			t.Errorf("optional 条目 %q 缺少能力字段映射", name)
+			t.Errorf("optional entry %q is missing from the capability field map", name)
 		}
 	}
 
@@ -734,58 +734,58 @@ func TestCapabilitySwitchMatchesOptionalSpecs(t *testing.T) {
 		return true
 	})
 	if len(switches) != 1 {
-		t.Fatalf("register.go 应恰有一个对 spec.Name 的能力置位 switch, got %d 个", len(switches))
+		t.Fatalf("register.go should have exactly one capability-setting switch over spec.Name, got %d", len(switches))
 	}
 
 	got := map[string]string{}
 	for _, stmt := range switches[0].Body.List {
 		clause, ok := stmt.(*ast.CaseClause)
 		if !ok {
-			t.Fatalf("switch 体内出现非 case 语句 %T", stmt)
+			t.Fatalf("a non-case statement %T appears in the switch body", stmt)
 		}
 		if clause.List == nil {
-			t.Fatal("能力置位 switch 不得有 default 分支, case 集合应与 optional 清单完全相等")
+			t.Fatal("the capability-setting switch must not have a default branch; the case set should equal the optional list exactly")
 		}
 		if len(clause.List) != 1 {
-			t.Fatalf("每个 case 恰好一个符号字面量, got %d 个", len(clause.List))
+			t.Fatalf("each case must have exactly one symbol literal, got %d", len(clause.List))
 		}
 		lit, ok := clause.List[0].(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
-			t.Fatalf("case 值必须是字符串字面量, got %T", clause.List[0])
+			t.Fatalf("the case value must be a string literal, got %T", clause.List[0])
 		}
 		symbol, err := strconv.Unquote(lit.Value)
 		if err != nil {
-			t.Fatalf("case 值 %s 不是合法字符串字面量: %v", lit.Value, err)
+			t.Fatalf("case value %s is not a valid string literal: %v", lit.Value, err)
 		}
 		if _, dup := got[symbol]; dup {
-			t.Errorf("case %s 重复出现", symbol)
+			t.Errorf("case %s appears more than once", symbol)
 		}
 		if len(clause.Body) != 1 {
-			t.Fatalf("case %s 的函数体必须恰为一条赋值, got %d 条", symbol, len(clause.Body))
+			t.Fatalf("the body of case %s must be exactly one assignment, got %d", symbol, len(clause.Body))
 		}
 		assign, ok := clause.Body[0].(*ast.AssignStmt)
 		if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 || !isIdent(assign.Rhs[0], "true") {
-			t.Fatalf("case %s 的函数体必须是 caps.<字段> = true 一条赋值", symbol)
+			t.Fatalf("the body of case %s must be the single assignment caps.<field> = true", symbol)
 		}
 		sel, ok := assign.Lhs[0].(*ast.SelectorExpr)
 		if !ok || !isIdent(sel.X, "caps") {
-			t.Fatalf("case %s 的赋值目标必须是 caps.<字段>", symbol)
+			t.Fatalf("the assignment target of case %s must be caps.<field>", symbol)
 		}
 		got[symbol] = sel.Sel.Name
 	}
 	for symbol, field := range expectedCapabilityFields {
 		actual, ok := got[symbol]
 		if !ok {
-			t.Errorf("能力置位 switch 缺少 optional 符号 %q 的 case", symbol)
+			t.Errorf("the capability-setting switch is missing a case for optional symbol %q", symbol)
 			continue
 		}
 		if actual != field {
-			t.Errorf("case %q 置位字段 = %q, want %q", symbol, actual, field)
+			t.Errorf("case %q sets field = %q, want %q", symbol, actual, field)
 		}
 	}
 	for symbol := range got {
 		if _, ok := expectedCapabilityFields[symbol]; !ok {
-			t.Errorf("能力置位 switch 出现 optional 清单之外的符号 %q", symbol)
+			t.Errorf("the capability-setting switch contains symbol %q outside the optional list", symbol)
 		}
 	}
 }
@@ -803,11 +803,11 @@ func TestCapabilitySwitchMatchesOptionalSpecs(t *testing.T) {
 func TestNativePackageExportsNoRawFunctions(t *testing.T) {
 	dir, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("os.Getwd 失败,无法定位包目录: %v", err)
+		t.Fatalf("os.Getwd failed, cannot locate the package directory: %v", err)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("读取包目录 %s 失败: %v", dir, err)
+		t.Fatalf("failed to read the package directory %s: %v", dir, err)
 	}
 	var names []string
 	for _, entry := range entries {
@@ -818,7 +818,7 @@ func TestNativePackageExportsNoRawFunctions(t *testing.T) {
 		names = append(names, name)
 	}
 	if len(names) == 0 {
-		t.Fatal("包目录内未找到任何非测试 Go 源文件")
+		t.Fatal("no non-test Go source files found in the package directory")
 	}
 
 	seenStructs := map[string]bool{}
@@ -844,7 +844,7 @@ func TestNativePackageExportsNoRawFunctions(t *testing.T) {
 							}
 							for _, id := range vs.Names {
 								if ast.IsExported(id.Name) {
-									t.Errorf("导出包级 %s %q 的显式类型为函数类型,公开层不得出现可复制的 raw 函数变量", kind, id.Name)
+									t.Errorf("exported package-level %s %q has an explicit func type; copyable raw function variables must not appear in the public layer", kind, id.Name)
 								}
 							}
 						}
@@ -862,7 +862,7 @@ func TestNativePackageExportsNoRawFunctions(t *testing.T) {
 								}
 								for _, id := range field.Names {
 									if exportedType && ast.IsExported(id.Name) {
-										t.Errorf("导出结构体 %s 的导出字段 %q 类型为函数类型,不得向公开层导出可复制的 raw 函数", ts.Name.Name, id.Name)
+										t.Errorf("exported field %q of exported struct %s has a func type; copyable raw functions must not be exported to the public layer", ts.Name.Name, id.Name)
 									}
 								}
 							}
@@ -871,7 +871,7 @@ func TestNativePackageExportsNoRawFunctions(t *testing.T) {
 								for _, field := range st.Fields.List {
 									for _, id := range field.Names {
 										if ast.IsExported(id.Name) {
-											t.Errorf("导出结构体 %s 不得有任何导出字段, got %q", ts.Name.Name, id.Name)
+											t.Errorf("exported struct %s must not have any exported fields, got %q", ts.Name.Name, id.Name)
 										}
 									}
 								}
@@ -884,7 +884,7 @@ func TestNativePackageExportsNoRawFunctions(t *testing.T) {
 					}
 					for _, result := range d.Type.Results.List {
 						if _, isFunc := result.Type.(*ast.FuncType); isFunc {
-							t.Errorf("导出函数/方法 %q 的结果类型为函数类型,不得向公开层导出可复制的 raw 函数", d.Name.Name)
+							t.Errorf("exported function/method %q has a func result type; copyable raw functions must not be exported to the public layer", d.Name.Name)
 						}
 					}
 				}
@@ -893,6 +893,6 @@ func TestNativePackageExportsNoRawFunctions(t *testing.T) {
 	}
 
 	if !seenStructs["APITable"] || !seenStructs["Capabilities"] {
-		t.Errorf("包内必须存在 APITable 与 Capabilities 两个只读发布类型, 实际找到 %v", seenStructs)
+		t.Errorf("both read-only publication types APITable and Capabilities must exist in the package, found %v", seenStructs)
 	}
 }

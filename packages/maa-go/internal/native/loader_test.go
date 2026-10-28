@@ -77,12 +77,12 @@ func TestOpenRejectsInvalidPathBeforeNativeLoad(t *testing.T) {
 		wantPath string // 规范化尝试路径
 		wantName string // LibraryName
 	}{
-		{"空路径", "", "", ""},
-		{"当前目录相对路径", "./x.so", "x.so", "x.so"},
-		{"上级目录相对路径", "../up/x.so", "../up/x.so", "x.so"},
-		{"普通相对路径", "lib/libMaaCore.so", "lib/libMaaCore.so", "libMaaCore.so"},
-		{"绝对路径内嵌 NUL", "/tmp/libMaa" + nul + "Core.so", "/tmp/libMaa" + nul + "Core.so", "libMaa" + nul + "Core.so"},
-		{"非法 UTF-8", invalidUTF8, invalidUTF8, string([]byte{0xff, 0xfe}) + ".so"},
+		{"empty path", "", "", ""},
+		{"current-directory relative path", "./x.so", "x.so", "x.so"},
+		{"parent-directory relative path", "../up/x.so", "../up/x.so", "x.so"},
+		{"plain relative path", "lib/libMaaCore.so", "lib/libMaaCore.so", "libMaaCore.so"},
+		{"NUL embedded in absolute path", "/tmp/libMaa" + nul + "Core.so", "/tmp/libMaa" + nul + "Core.so", "libMaa" + nul + "Core.so"},
+		{"invalid UTF-8", invalidUTF8, invalidUTF8, string([]byte{0xff, 0xfe}) + ".so"},
 	}
 
 	for _, tc := range cases {
@@ -90,18 +90,18 @@ func TestOpenRejectsInvalidPathBeforeNativeLoad(t *testing.T) {
 			fake := &fakePrimitives{}
 			lib, err := newFakeLoader(fake).Open(tc.raw)
 			if lib != nil {
-				t.Fatalf("非法路径 %q 不得返回 Library, got %+v", tc.raw, lib)
+				t.Fatalf("invalid path %q must not return a Library, got %+v", tc.raw, lib)
 			}
 			if err == nil {
-				t.Fatalf("非法路径 %q 必须返回错误", tc.raw)
+				t.Fatalf("invalid path %q must return an error", tc.raw)
 			}
 			// 拒绝必须发生在进入原生加载之前。
 			if len(fake.openPaths) != 0 {
-				t.Errorf("open 原语被调用 %d 次, want 0 (calls: %v)", len(fake.openPaths), fake.openPaths)
+				t.Errorf("the open primitive was called %d times, want 0 (calls: %v)", len(fake.openPaths), fake.openPaths)
 			}
 			var lle *LibraryLoadError
 			if !errors.As(err, &lle) {
-				t.Fatalf("errors.As 未得到 *LibraryLoadError, got %T: %v", err, err)
+				t.Fatalf("errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
 			}
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("errors.Is(err, ErrInvalidInput) = false, want true; err = %v", err)
@@ -120,7 +120,7 @@ func TestOpenRejectsInvalidPathBeforeNativeLoad(t *testing.T) {
 				t.Errorf("GOOS/GOARCH = %s/%s, want %s/%s", lle.GOOS, lle.GOARCH, runtime.GOOS, runtime.GOARCH)
 			}
 			if lle.Err == nil {
-				t.Error("Err 必须非 nil")
+				t.Error("Err must be non-nil")
 			}
 			// 错误文本应包含路径与目标平台,便于就地诊断。
 			text := err.Error()
@@ -144,10 +144,10 @@ func TestOpenNormalizesAbsolutePath(t *testing.T) {
 	fake := &fakePrimitives{openHandle: 0x1000}
 	lib, err := newFakeLoader(fake).Open(raw)
 	if err != nil {
-		t.Fatalf("Open(%q) 返回意外错误: %v", raw, err)
+		t.Fatalf("Open(%q) returned an unexpected error: %v", raw, err)
 	}
 	if len(fake.openPaths) != 1 || fake.openPaths[0] != normalized {
-		t.Errorf("原语收到的路径 = %v, want 恰好 [%s]", fake.openPaths, normalized)
+		t.Errorf("path received by the primitive = %v, want exactly [%s]", fake.openPaths, normalized)
 	}
 	if lib.Path() != normalized {
 		t.Errorf("Library.Path() = %q, want %q", lib.Path(), normalized)
@@ -167,11 +167,11 @@ func TestOpenPrimitiveFailureKeepsUnderlyingCause(t *testing.T) {
 
 	lib, err := newFakeLoader(fake).Open(path)
 	if lib != nil {
-		t.Fatalf("原语失败不得返回 Library, got %+v", lib)
+		t.Fatalf("a primitive failure must not return a Library, got %+v", lib)
 	}
 	var lle *LibraryLoadError
 	if !errors.As(err, &lle) {
-		t.Fatalf("errors.As 未得到 *LibraryLoadError, got %T: %v", err, err)
+		t.Fatalf("errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
 	}
 	if lle.Path != path {
 		t.Errorf("Path = %q, want %q", lle.Path, path)
@@ -183,10 +183,10 @@ func TestOpenPrimitiveFailureKeepsUnderlyingCause(t *testing.T) {
 		t.Errorf("GOOS/GOARCH = %s/%s, want %s/%s", lle.GOOS, lle.GOARCH, runtime.GOOS, runtime.GOARCH)
 	}
 	if !errors.Is(err, sentinel) {
-		t.Error("errors.Is 未能沿错误链到达底层 sentinel")
+		t.Error("errors.Is did not reach the underlying sentinel along the error chain")
 	}
 	if errors.Is(err, ErrInvalidInput) {
-		t.Error("底层加载失败不得与 ErrInvalidInput 关联")
+		t.Error("an underlying load failure must not be associated with ErrInvalidInput")
 	}
 }
 
@@ -199,20 +199,20 @@ func TestOpenRejectsNullHandle(t *testing.T) {
 
 	lib, err := newFakeLoader(fake).Open(path)
 	if lib != nil {
-		t.Fatalf("契约破坏情形不得返回 Library, got %+v", lib)
+		t.Fatalf("a contract-violating case must not return a Library, got %+v", lib)
 	}
 	var lle *LibraryLoadError
 	if !errors.As(err, &lle) {
-		t.Fatalf("errors.As 未得到 *LibraryLoadError, got %T: %v", err, err)
+		t.Fatalf("errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
 	}
 	if lle.Path != path || lle.LibraryName != "libMaaCore.so" {
-		t.Errorf("诊断字段不符: Path=%q LibraryName=%q", lle.Path, lle.LibraryName)
+		t.Errorf("diagnostic fields mismatch: Path=%q LibraryName=%q", lle.Path, lle.LibraryName)
 	}
 	if lle.Err == nil {
-		t.Error("Err 必须非 nil")
+		t.Error("Err must be non-nil")
 	}
 	if errors.Is(err, ErrInvalidInput) {
-		t.Error("零句柄是系统 loader 契约破坏,不得与 ErrInvalidInput 关联")
+		t.Error("a null handle is a system loader contract violation and must not be associated with ErrInvalidInput")
 	}
 }
 
@@ -227,21 +227,21 @@ func TestLookupSuccess(t *testing.T) {
 	fake := &fakePrimitives{openHandle: handle, lookupAddr: addr}
 	lib, err := newFakeLoader(fake).Open(path)
 	if err != nil {
-		t.Fatalf("Open(%q) 返回意外错误: %v", path, err)
+		t.Fatalf("Open(%q) returned an unexpected error: %v", path, err)
 	}
 
 	got, err := lib.Lookup("AsstCreateEx")
 	if err != nil {
-		t.Fatalf("Lookup 返回意外错误: %v", err)
+		t.Fatalf("Lookup returned an unexpected error: %v", err)
 	}
 	if got != addr {
-		t.Errorf("Lookup 地址 = %#x, want %#x", got, addr)
+		t.Errorf("Lookup address = %#x, want %#x", got, addr)
 	}
 	if len(fake.lookupNames) != 1 || fake.lookupNames[0] != "AsstCreateEx" {
-		t.Errorf("lookup 收到的符号名 = %v, want [AsstCreateEx]", fake.lookupNames)
+		t.Errorf("symbol names received by lookup = %v, want [AsstCreateEx]", fake.lookupNames)
 	}
 	if len(fake.lookupHandles) != 1 || fake.lookupHandles[0] != handle {
-		t.Errorf("lookup 收到的句柄 = %v, want [%#x]", fake.lookupHandles, handle)
+		t.Errorf("handles received by lookup = %v, want [%#x]", fake.lookupHandles, handle)
 	}
 }
 
@@ -255,16 +255,16 @@ func TestLookupFailureKeepsUnderlyingCause(t *testing.T) {
 	fake := &fakePrimitives{openHandle: 0x2000, lookupErr: sentinel}
 	lib, err := newFakeLoader(fake).Open(path)
 	if err != nil {
-		t.Fatalf("Open(%q) 返回意外错误: %v", path, err)
+		t.Fatalf("Open(%q) returned an unexpected error: %v", path, err)
 	}
 
 	addr, err := lib.Lookup(symbol)
 	if addr != 0 {
-		t.Errorf("失败时地址 = %#x, want 0", addr)
+		t.Errorf("address on failure = %#x, want 0", addr)
 	}
 	var sle *SymbolLookupError
 	if !errors.As(err, &sle) {
-		t.Fatalf("errors.As 未得到 *SymbolLookupError, got %T: %v", err, err)
+		t.Fatalf("errors.As did not yield a *SymbolLookupError, got %T: %v", err, err)
 	}
 	if sle.LibraryPath != path {
 		t.Errorf("LibraryPath = %q, want %q", sle.LibraryPath, path)
@@ -276,7 +276,7 @@ func TestLookupFailureKeepsUnderlyingCause(t *testing.T) {
 		t.Errorf("Profile = %q, want %q", sle.Profile, abiProfile)
 	}
 	if !errors.Is(err, sentinel) {
-		t.Error("errors.Is 未能沿错误链到达底层 sentinel")
+		t.Error("errors.Is did not reach the underlying sentinel along the error chain")
 	}
 }
 
@@ -288,24 +288,24 @@ func TestLookupNullAddressNotCallable(t *testing.T) {
 	fake := &fakePrimitives{openHandle: 0x2000, nullAddr: true}
 	lib, err := newFakeLoader(fake).Open(path)
 	if err != nil {
-		t.Fatalf("Open(%q) 返回意外错误: %v", path, err)
+		t.Fatalf("Open(%q) returned an unexpected error: %v", path, err)
 	}
 
 	addr, err := lib.Lookup("AsstCreateEx")
 	if err == nil {
-		t.Fatal("零地址不得作为成功结果返回 (0, nil)")
+		t.Fatal("a null address must not be returned as a successful (0, nil) result")
 	}
 	if addr != 0 {
-		t.Errorf("失败时地址 = %#x, want 0", addr)
+		t.Errorf("address on failure = %#x, want 0", addr)
 	}
 	var sle *SymbolLookupError
 	if !errors.As(err, &sle) {
-		t.Fatalf("errors.As 未得到 *SymbolLookupError, got %T: %v", err, err)
+		t.Fatalf("errors.As did not yield a *SymbolLookupError, got %T: %v", err, err)
 	}
 	if !errors.Is(err, errSymbolNullAddress) {
-		t.Error("errors.Is 未能识别空地址原因")
+		t.Error("errors.Is did not identify the null-address cause")
 	}
 	if sle.Symbol != "AsstCreateEx" || sle.LibraryPath != path || sle.Profile != abiProfile {
-		t.Errorf("诊断字段不符: %+v", sle)
+		t.Errorf("diagnostic fields mismatch: %+v", sle)
 	}
 }

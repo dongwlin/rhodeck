@@ -119,30 +119,30 @@ func buildABIFixture(t *testing.T) string {
 		}
 	}
 	if compiler == "" {
-		t.Skipf("abi fixture 受阻:未找到 C 编译器,夹具构建与真实 ABI 调用验证未执行,不计为本平台通过")
+		t.Skipf("abi fixture blocked: no C compiler found; fixture build and real ABI call verification not executed, does not count as a pass on this platform")
 	}
 
 	src, err := filepath.Abs(abiFixtureSrcRel)
 	if err != nil {
-		t.Fatalf("定位 abi fixture 源码 %s 失败: %v", abiFixtureSrcRel, err)
+		t.Fatalf("failed to locate the abi fixture source %s: %v", abiFixtureSrcRel, err)
 	}
 	if _, err := os.Stat(src); err != nil {
-		t.Fatalf("abi fixture 源码 %s 不可访问(仓库基线被破坏,非环境受限): %v", src, err)
+		t.Fatalf("abi fixture source %s is not accessible (repository baseline broken, not an environment limitation): %v", src, err)
 	}
 
 	outPath := filepath.Join(t.TempDir(), abiFixtureSOName)
 	args := []string{"-shared", "-fPIC", "-o", outPath, src}
 	commandLine := compiler + " " + strings.Join(args, " ")
-	t.Logf("abi fixture 构建:源码=%s", src)
-	t.Logf("abi fixture 构建:平台=%s/%s", runtime.GOOS, runtime.GOARCH)
-	t.Logf("abi fixture 构建:编译器=%s", compiler)
-	t.Logf("abi fixture 构建:工具链=%s", compilerFirstLine(t, compiler))
-	t.Logf("abi fixture 构建:命令行=%s", commandLine)
+	t.Logf("abi fixture build: source=%s", src)
+	t.Logf("abi fixture build: platform=%s/%s", runtime.GOOS, runtime.GOARCH)
+	t.Logf("abi fixture build: compiler=%s", compiler)
+	t.Logf("abi fixture build: toolchain=%s", compilerFirstLine(t, compiler))
+	t.Logf("abi fixture build: command line=%s", commandLine)
 
 	cmd := exec.Command(compiler, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("编译 abi fixture 失败(命令行 %s): %v\n%s", commandLine, err, output)
+		t.Fatalf("failed to compile the abi fixture (command line %s): %v\n%s", commandLine, err, output)
 	}
 	return outPath
 }
@@ -190,7 +190,7 @@ func abiFoldAsyncAttachWindow(handle, hwnd uintptr, screencap, mouse, keyboard u
 // stderr 打印诊断并返回 ok=false(子进程将以非零退出码失败)。
 func abiFixtureOpenChild(scope, so string) (lib *Library, table *APITable, ok bool) {
 	if !filepath.IsAbs(so) {
-		fmt.Fprintf(os.Stderr, "abi fixture %s child: %s = %q 不是绝对路径(loader 只接受绝对路径)\n",
+		fmt.Fprintf(os.Stderr, "abi fixture %s child: %s = %q is not an absolute path (the loader only accepts absolute paths)\n",
 			scope, abiFixtureSOEnv, so)
 		return nil, nil, false
 	}
@@ -205,7 +205,7 @@ func abiFixtureOpenChild(scope, so string) (lib *Library, table *APITable, ok bo
 		return nil, nil, false
 	}
 	if table == nil {
-		fmt.Fprintf(os.Stderr, "abi fixture %s child: ResolveAndRegister 成功但未发布 API 表\n", scope)
+		fmt.Fprintf(os.Stderr, "abi fixture %s child: ResolveAndRegister succeeded but published no API table\n", scope)
 		return nil, nil, false
 	}
 	return lib, table, true
@@ -332,11 +332,11 @@ func runABIFixtureParamsChild() int {
 		fy = int32(-22)
 	)
 	if got := f.AsyncClick(0x22, fx, fy, 0); got != fx {
-		fmt.Fprintf(os.Stderr, "abi fixture params child: AsyncClick(block=0) = %d, want x=%d(第 2 槽位)\n", got, fx)
+		fmt.Fprintf(os.Stderr, "abi fixture params child: AsyncClick(block=0) = %d, want x=%d (slot 2)\n", got, fx)
 		return 1
 	}
 	if got := f.AsyncClick(0x22, fx, fy, 1); got != fy {
-		fmt.Fprintf(os.Stderr, "abi fixture params child: AsyncClick(block=1) = %d, want y=%d(第 3 槽位)\n", got, fy)
+		fmt.Fprintf(os.Stderr, "abi fixture params child: AsyncClick(block=1) = %d, want y=%d (slot 3)\n", got, fy)
 		return 1
 	}
 
@@ -347,17 +347,17 @@ func runABIFixtureParamsChild() int {
 	wantConnect := abiFoldAsyncConnect(hConnect, adbPath, address, config, 1)
 	gotConnect := f.AsyncConnect(hConnect, abiCBytes(adbPath), abiCBytes(address), abiCBytes(config), 1)
 	if gotConnect != wantConnect {
-		fmt.Fprintf(os.Stderr, "abi fixture params child: AsyncConnect = %d, want 折叠 %d\n", gotConnect, wantConnect)
+		fmt.Fprintf(os.Stderr, "abi fixture params child: AsyncConnect = %d, want fold %d\n", gotConnect, wantConnect)
 		return 1
 	}
 	wantConnect2 := abiFoldAsyncConnect(hConnect, adbPath, config, address, 1)
 	gotConnect2 := f.AsyncConnect(hConnect, abiCBytes(adbPath), abiCBytes(config), abiCBytes(address), 1)
 	if gotConnect2 != wantConnect2 {
-		fmt.Fprintf(os.Stderr, "abi fixture params child: AsyncConnect(对调) = %d, want 折叠 %d\n", gotConnect2, wantConnect2)
+		fmt.Fprintf(os.Stderr, "abi fixture params child: AsyncConnect(swapped) = %d, want fold %d\n", gotConnect2, wantConnect2)
 		return 1
 	}
 	if gotConnect2 == gotConnect {
-		fmt.Fprintf(os.Stderr, "abi fixture params child: 两次 AsyncConnect 折叠重合(%d),参数位置敏感性无法证明\n", gotConnect)
+		fmt.Fprintf(os.Stderr, "abi fixture params child: the two AsyncConnect folds coincide (%d); parameter position sensitivity cannot be proven\n", gotConnect)
 		return 1
 	}
 
@@ -368,7 +368,7 @@ func runABIFixtureParamsChild() int {
 	)
 	wantCreateEx := abiFixtureCreateHandle ^ cb ^ (token << 1)
 	if got := f.CreateEx(cb, token); got != wantCreateEx {
-		fmt.Fprintf(os.Stderr, "abi fixture params child: CreateEx = %#x, want %#x(callback/token 折叠)\n", got, wantCreateEx)
+		fmt.Fprintf(os.Stderr, "abi fixture params child: CreateEx = %#x, want %#x (callback/token fold)\n", got, wantCreateEx)
 		return 1
 	}
 
@@ -393,7 +393,7 @@ func runABIFixtureParamsChild() int {
 	wantAttach := abiFoldAsyncAttachWindow(hAttach, hwnd, sc, mouse, kb, 1)
 	gotAttach := attach(hAttach, hwnd, sc, mouse, kb, 1)
 	if gotAttach != wantAttach {
-		fmt.Fprintf(os.Stderr, "abi fixture params child: AsyncAttachWindow = %d, want 折叠 %d(六参数形状)\n", gotAttach, wantAttach)
+		fmt.Fprintf(os.Stderr, "abi fixture params child: AsyncAttachWindow = %d, want fold %d (six-parameter shape)\n", gotAttach, wantAttach)
 		return 1
 	}
 	// 高 32 位参与:仅改 mouse 的高位字,结果必须不同。
@@ -401,11 +401,11 @@ func runABIFixtureParamsChild() int {
 	wantAttachHigh := abiFoldAsyncAttachWindow(hAttach, hwnd, sc, mouseHigh, kb, 1)
 	gotAttachHigh := attach(hAttach, hwnd, sc, mouseHigh, kb, 1)
 	if gotAttachHigh != wantAttachHigh {
-		fmt.Fprintf(os.Stderr, "abi fixture params child: AsyncAttachWindow(高位字) = %d, want 折叠 %d\n", gotAttachHigh, wantAttachHigh)
+		fmt.Fprintf(os.Stderr, "abi fixture params child: AsyncAttachWindow(high word) = %d, want fold %d\n", gotAttachHigh, wantAttachHigh)
 		return 1
 	}
 	if gotAttachHigh == gotAttach {
-		fmt.Fprintf(os.Stderr, "abi fixture params child: 两次 AsyncAttachWindow 折叠重合(%d),高 32 位未参与,无法证明 64 位 method 传递\n", gotAttach)
+		fmt.Fprintf(os.Stderr, "abi fixture params child: the two AsyncAttachWindow folds coincide (%d); the high 32 bits did not participate, 64-bit method passing cannot be proven\n", gotAttach)
 		return 1
 	}
 
@@ -432,17 +432,17 @@ func runABIFixtureVoidStringsChild() int {
 	first := abiCString(f.GetVersion(), 128)
 	wantFirst := fmt.Sprintf(abiFixtureVersionFormat, 1)
 	if first != wantFirst {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: GetVersion 首次 = %q, want %q\n", first, wantFirst)
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: GetVersion first call = %q, want %q\n", first, wantFirst)
 		return 1
 	}
 	second := abiCString(f.GetVersion(), 128)
 	wantSecond := fmt.Sprintf(abiFixtureVersionFormat, 2)
 	if second != wantSecond {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: GetVersion 二次 = %q, want %q(原生缓冲已被改写)\n", second, wantSecond)
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: GetVersion second call = %q, want %q (the native buffer has been rewritten)\n", second, wantSecond)
 		return 1
 	}
 	if first != wantFirst {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: 首次副本 %q 在原生改写后变为非期望值,借用内容被错误共享\n", first)
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: the first copy %q changed to an unexpected value after the native rewrite; the borrowed content was wrongly shared\n", first)
 		return 1
 	}
 
@@ -452,7 +452,7 @@ func runABIFixtureVoidStringsChild() int {
 	readDump := func() (string, bool) {
 		n := f.GetUUID(0, &dumpBuf[0], uint64(len(dumpBuf)))
 		if n == math.MaxUint64 || n > uint64(len(dumpBuf)) {
-			fmt.Fprintf(os.Stderr, "abi fixture void-strings child: dump 读取失败 n=%d\n", n)
+			fmt.Fprintf(os.Stderr, "abi fixture void-strings child: dump read failed n=%d\n", n)
 			return "", false
 		}
 		return string(dumpBuf[:n]), true
@@ -460,7 +460,7 @@ func runABIFixtureVoidStringsChild() int {
 	// 初始状态:未 Log、未 extras、未 Destroy。
 	gotDump, ok := readDump()
 	if !ok || gotDump != fmt.Sprintf(abiFixtureDumpFormat, 0, "", "", 0) {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: 初始 dump = %q, want %q\n",
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: initial dump = %q, want %q\n",
 			gotDump, fmt.Sprintf(abiFixtureDumpFormat, 0, "", "", 0))
 		return 1
 	}
@@ -473,7 +473,7 @@ func runABIFixtureVoidStringsChild() int {
 	f.Log(abiCBytes("info"), abiCBytes("abi-log-msg-2"))
 	gotDump, ok = readDump()
 	if !ok || gotDump != fmt.Sprintf(abiFixtureDumpFormat, 2, "abifx", `{"k":1}`, 0x77AA55) {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: 副作用 dump = %q, want %q\n",
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: side-effect dump = %q, want %q\n",
 			gotDump, fmt.Sprintf(abiFixtureDumpFormat, 2, "abifx", `{"k":1}`, 0x77AA55))
 		return 1
 	}
@@ -481,46 +481,46 @@ func runABIFixtureVoidStringsChild() int {
 	f.Destroy(0xDEAD)
 	gotDump, ok = readDump()
 	if !ok || gotDump != fmt.Sprintf(abiFixtureDumpFormat, 2, "abifx", `{"k":1}`, 0xDEAD) {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: 二次 dump = %q, want %q\n",
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: second dump = %q, want %q\n",
 			gotDump, fmt.Sprintf(abiFixtureDumpFormat, 2, "abifx", `{"k":1}`, 0xDEAD))
 		return 1
 	}
 
 	// 字符串输入内容到达:内容相等比较,整数参数错位即失败。
 	if got := f.SetUserDir(abiCBytes("/abi-fixture-userdir")); got != 1 {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetUserDir(契约值) = %d, want 1\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetUserDir(contract value) = %d, want 1\n", got)
 		return 1
 	}
 	if got := f.SetUserDir(abiCBytes("/wrong")); got != 0 {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetUserDir(错误值) = %d, want 0\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetUserDir(wrong value) = %d, want 0\n", got)
 		return 1
 	}
 	if got := f.LoadResource(abiCBytes("/abi-fixture-resource")); got != 1 {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: LoadResource(契约值) = %d, want 1\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: LoadResource(contract value) = %d, want 1\n", got)
 		return 1
 	}
 	if got := f.LoadResource(abiCBytes("/wrong")); got != 0 {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: LoadResource(错误值) = %d, want 0\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: LoadResource(wrong value) = %d, want 0\n", got)
 		return 1
 	}
 	if got := f.SetStaticOption(1, abiCBytes("static-option-value")); got != 1 {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetStaticOption(key=1, 契约值) = %d, want 1\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetStaticOption(key=1, contract value) = %d, want 1\n", got)
 		return 1
 	}
 	if got := f.SetStaticOption(2, abiCBytes("static-option-value")); got != 0 {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetStaticOption(key=2, 契约值) = %d, want 0(key 槽位可辨)\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetStaticOption(key=2, contract value) = %d, want 0 (the key slot is distinguishable)\n", got)
 		return 1
 	}
 	if got := f.SetStaticOption(1, abiCBytes("wrong")); got != 0 {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetStaticOption(key=1, 错误值) = %d, want 0\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetStaticOption(key=1, wrong value) = %d, want 0\n", got)
 		return 1
 	}
 	if got := f.SetInstanceOption(0x33, 6, abiCBytes("clienttype-value")); got != 1 {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetInstanceOption(key=6, 契约值) = %d, want 1\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetInstanceOption(key=6, contract value) = %d, want 1\n", got)
 		return 1
 	}
 	if got := f.SetInstanceOption(0x33, 5, abiCBytes("clienttype-value")); got != 0 {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetInstanceOption(key=5, 契约值) = %d, want 0\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetInstanceOption(key=5, contract value) = %d, want 0\n", got)
 		return 1
 	}
 	if got := f.SetTaskParams(0x33, 42, abiCBytes("{}")); got != 1 {
@@ -528,7 +528,7 @@ func runABIFixtureVoidStringsChild() int {
 		return 1
 	}
 	if got := f.SetTaskParams(0x33, 43, abiCBytes("{}")); got != 0 {
-		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetTaskParams(id=43) = %d, want 0(id 槽位可辨)\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture void-strings child: SetTaskParams(id=43) = %d, want 0 (the id slot is distinguishable)\n", got)
 		return 1
 	}
 
@@ -575,7 +575,7 @@ func runABIFixtureBuffersChild() int {
 		return 1
 	}
 	if !bytes.Equal(img, abiFixturePNG[:]) {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetImage 内容不符: %x\n", img)
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetImage content mismatch: %x\n", img)
 		return 1
 	}
 	// 超容量:仍返回实际字节数,只写前 16 字节。
@@ -585,19 +585,19 @@ func runABIFixtureBuffersChild() int {
 		return 1
 	}
 	if !bytes.Equal(big[:16], abiFixturePNG[:]) {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetImage(size=32) 前 16 字节不符: %x\n", big[:16])
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetImage(size=32) first 16 bytes mismatch: %x\n", big[:16])
 		return 1
 	}
 	// 合法零:空图像 handle 返回 0,与 NullSize 可辨。
 	if got := f.GetImage(0, unsafe.Pointer(&img[0]), 16); got != 0 {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetImage(handle=0) = %#x, want 0(合法零)\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetImage(handle=0) = %#x, want 0 (a legal zero)\n", got)
 		return 1
 	}
 	// uint64 高位:buffSize=2^32+15 必须成功 —— 若被截断成 32 位则
 	// 变为 15,会误判容量不足返回 NullSize。
 	const highJustAbove = uint64(1)<<32 + 15
 	if got := f.GetImage(hImg, unsafe.Pointer(&img[0]), highJustAbove); got != 16 {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetImage(size=2^32+15) = %#x, want 16(高 32 位不得截断)\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetImage(size=2^32+15) = %#x, want 16 (the high 32 bits must not be truncated)\n", got)
 		return 1
 	}
 	// MaxUint64 容量同样按 uint64 处理(夹具只写固定 16 字节,安全)。
@@ -622,11 +622,11 @@ func runABIFixtureBuffersChild() int {
 		return 1
 	}
 	if !bytes.Equal(bgr, abiFixtureBGR[:]) {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetImageBgr 内容不符: %x\n", bgr)
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetImageBgr content mismatch: %x\n", bgr)
 		return 1
 	}
 	if got := f.GetImageBgr(0, unsafe.Pointer(&bgr[0]), 12); got != 0 {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetImageBgr(handle=0) = %#x, want 0(合法零)\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetImageBgr(handle=0) = %#x, want 0 (a legal zero)\n", got)
 		return 1
 	}
 
@@ -650,11 +650,11 @@ func runABIFixtureBuffersChild() int {
 		return 1
 	}
 	if string(ub[:16]) != abiFixtureUUIDText {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetUUID 内容不符: %q\n", ub[:16])
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetUUID content mismatch: %q\n", ub[:16])
 		return 1
 	}
 	if ub[16] != 0xAA {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetUUID 尾部字节被改写为 %#x(原生写了 NUL 或越界)\n", ub[16])
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetUUID trailing byte was rewritten to %#x (the native side wrote a NUL or wrote out of bounds)\n", ub[16])
 		return 1
 	}
 	// 更大容量同样返回精确长度,尾部毒值不动。
@@ -667,7 +667,7 @@ func runABIFixtureBuffersChild() int {
 		return 1
 	}
 	if string(ub2[:16]) != abiFixtureUUIDText || ub2[16] != 0xAA {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetUUID(size=24) 内容或尾部毒值不符\n")
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetUUID(size=24) content or trailing poison value mismatch\n")
 		return 1
 	}
 
@@ -676,7 +676,7 @@ func runABIFixtureBuffersChild() int {
 	const hTasks = uintptr(0x9ABC)
 	two := make([]int32, 2)
 	if got := f.GetTasksList(hTasks, &two[0], 2); got != nullsize {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetTasksList(容量 2) = %#x, want NullSize\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetTasksList(capacity 2) = %#x, want NullSize\n", got)
 		return 1
 	}
 	if got := f.GetTasksList(hTasks, nil, 3); got != nullsize {
@@ -685,21 +685,21 @@ func runABIFixtureBuffersChild() int {
 	}
 	three := make([]int32, 3)
 	if got := f.GetTasksList(hTasks, &three[0], 3); got != 3 {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetTasksList(容量 3) = %d, want 3(单位是元素数)\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetTasksList(capacity 3) = %d, want 3 (the unit is the element count)\n", got)
 		return 1
 	}
 	if three[0] != 12 || three[1] != -5 || three[2] != 7 {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetTasksList 内容 = %v, want [12 -5 7]\n", three)
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetTasksList content = %v, want [12 -5 7]\n", three)
 		return 1
 	}
 	// 容量 12(字节误读值)同样成功且仍返回 3 个元素。
 	twelve := make([]int32, 12)
 	if got := f.GetTasksList(hTasks, &twelve[0], 12); got != 3 {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetTasksList(容量 12) = %d, want 3\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetTasksList(capacity 12) = %d, want 3\n", got)
 		return 1
 	}
 	if twelve[0] != 12 || twelve[1] != -5 || twelve[2] != 7 {
-		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetTasksList(容量 12) 内容 = %v, want [12 -5 7]\n", twelve)
+		fmt.Fprintf(os.Stderr, "abi fixture buffers child: GetTasksList(capacity 12) content = %v, want [12 -5 7]\n", twelve)
 		return 1
 	}
 
@@ -727,7 +727,7 @@ func runABIFixtureQueriesChild() int {
 	name1 := abiCString(first.Name, 64)
 	if stage1 != "abifx-stage#1" || code1 != "abifx-code#1" ||
 		level1 != "abifx-level#1" || name1 != "abifx-name#1" {
-		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetMapLevelKey 首次 = %q/%q/%q/%q, want abifx-{stage,code,level,name}#1\n",
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetMapLevelKey first call = %q/%q/%q/%q, want abifx-{stage,code,level,name}#1\n",
 			stage1, code1, level1, name1)
 		return 1
 	}
@@ -737,24 +737,24 @@ func runABIFixtureQueriesChild() int {
 	second := f.GetMapLevelKey(abiCBytes("abifx-hit"))
 	stage2 := abiCString(second.StageID, 64)
 	if stage2 != "abifx-stage#2" {
-		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetMapLevelKey 二次 stage = %q, want abifx-stage#2\n", stage2)
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetMapLevelKey second-call stage = %q, want abifx-stage#2\n", stage2)
 		return 1
 	}
 	if stage1 != "abifx-stage#1" {
-		fmt.Fprintf(os.Stderr, "abi fixture queries child: 首次副本 stage = %q 在原生改写后变为非期望值,借用内容被错误共享\n", stage1)
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: the first copy's stage = %q changed to an unexpected value after the native rewrite; the borrowed content was wrongly shared\n", stage1)
 		return 1
 	}
 
 	// 未命中:未知 key 返回全 NULL struct(四个成员都为 nil)。
 	miss := f.GetMapLevelKey(abiCBytes("abifx-miss"))
 	if miss.StageID != nil || miss.Code != nil || miss.LevelID != nil || miss.Name != nil {
-		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetMapLevelKey(未命中) = %+v, want 全 NULL struct\n", miss)
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetMapLevelKey(miss) = %+v, want an all-NULL struct\n", miss)
 		return 1
 	}
 	// NULL key 同样全 NULL。
 	nullKey := f.GetMapLevelKey(nil)
 	if nullKey.StageID != nil || nullKey.Code != nil || nullKey.LevelID != nil || nullKey.Name != nil {
-		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetMapLevelKey(nil) = %+v, want 全 NULL struct\n", nullKey)
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetMapLevelKey(nil) = %+v, want an all-NULL struct\n", nullKey)
 		return 1
 	}
 
@@ -762,17 +762,17 @@ func runABIFixtureQueriesChild() int {
 	// abiCString 对 nil 返回空串会掩盖 NULL 返回,显式断言非 nil)。
 	empty := f.GetItemName(abiCBytes(""))
 	if empty == nil || abiCString(empty, 64) != "Unknown" {
-		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName(空串) = %v, want 非nil \"Unknown\"\n", empty)
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName(empty string) = %v, want non-nil \"Unknown\"\n", empty)
 		return 1
 	}
 	nullID := f.GetItemName(nil)
 	if nullID == nil || abiCString(nullID, 64) != "Unknown" {
-		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName(nil) = %v, want 非nil \"Unknown\"\n", nullID)
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName(nil) = %v, want non-nil \"Unknown\"\n", nullID)
 		return 1
 	}
 	nope := f.GetItemName(abiCBytes("abifx-nope"))
 	if nope == nil || abiCString(nope, 64) != "" {
-		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName(未知) = %v, want 非nil 空串\n", nope)
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName(unknown) = %v, want non-nil empty string\n", nope)
 		return 1
 	}
 	// 已知物品:带调用计数的借用指针;二次调用改写原生缓冲,已复制
@@ -780,16 +780,16 @@ func runABIFixtureQueriesChild() int {
 	item1 := f.GetItemName(abiCBytes("abifx-item"))
 	firstItem := abiCString(item1, 64)
 	if firstItem != "abifx-item#1" {
-		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName 首次 = %q, want abifx-item#1\n", firstItem)
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName first call = %q, want abifx-item#1\n", firstItem)
 		return 1
 	}
 	_ = f.GetItemName(abiCBytes("abifx-item"))
 	if got := abiCString(item1, 64); got != "abifx-item#2" {
-		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName 二次读原生 = %q, want abifx-item#2(缓冲已被改写)\n", got)
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName second native read = %q, want abifx-item#2 (the buffer has been rewritten)\n", got)
 		return 1
 	}
 	if firstItem != "abifx-item#1" {
-		fmt.Fprintf(os.Stderr, "abi fixture queries child: 首次副本 %q 在原生改写后变为非期望值\n", firstItem)
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: the first copy %q changed to an unexpected value after the native rewrite\n", firstItem)
 		return 1
 	}
 
@@ -811,15 +811,15 @@ func TestABIFixtureNumeric(t *testing.T) {
 		ExtraEnv: map[string]string{abiFixtureSOEnv: soPath},
 	})
 	if out.Err != nil {
-		t.Fatalf("numeric 子进程失败(非零退出/信号/超时一律视为失败):\n%s", out.Diagnostics())
+		t.Fatalf("the numeric child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	}
 	line, ok := markerLine(out.Stdout, numericOKMarker)
 	if !ok {
-		t.Fatalf("numeric 子进程退出码 0,但 stdout 缺少 %s 标记行:\n%s", numericOKMarker, out.Diagnostics())
+		t.Fatalf("the numeric child exited 0 but stdout is missing the %s marker line:\n%s", numericOKMarker, out.Diagnostics())
 	}
 	fields, err := parseABIMarkerFields(line, numericOKMarker)
 	if err != nil {
-		t.Fatalf("numeric 标记行 %q 解析失败: %v\n%s", line, err, out.Diagnostics())
+		t.Fatalf("failed to parse the numeric marker line %q: %v\n%s", line, err, out.Diagnostics())
 	}
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "nullsize", strconv.FormatUint(math.MaxUint64, 10), diag)
@@ -831,7 +831,7 @@ func TestABIFixtureNumeric(t *testing.T) {
 	abiCheckField(t, fields, "screencap1", "101", diag)
 	abiCheckField(t, fields, "create", strconv.FormatUint(uint64(abiFixtureCreateHandle), 10), diag)
 
-	t.Logf("numeric 子进程真实 ABI 验证通过(uint8 0/1/255、负 int32、MaxUint64 往返):%s", line)
+	t.Logf("the numeric child's real ABI verification passed (uint8 0/1/255, negative int32, MaxUint64 round trip):%s", line)
 }
 
 // TestABIFixtureParams 验证参数传递组:x/y 槽位、5 参数折叠、
@@ -845,15 +845,15 @@ func TestABIFixtureParams(t *testing.T) {
 		ExtraEnv: map[string]string{abiFixtureSOEnv: soPath},
 	})
 	if out.Err != nil {
-		t.Fatalf("params 子进程失败(非零退出/信号/超时一律视为失败):\n%s", out.Diagnostics())
+		t.Fatalf("the params child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	}
 	line, ok := markerLine(out.Stdout, paramsOKMarker)
 	if !ok {
-		t.Fatalf("params 子进程退出码 0,但 stdout 缺少 %s 标记行:\n%s", paramsOKMarker, out.Diagnostics())
+		t.Fatalf("the params child exited 0 but stdout is missing the %s marker line:\n%s", paramsOKMarker, out.Diagnostics())
 	}
 	fields, err := parseABIMarkerFields(line, paramsOKMarker)
 	if err != nil {
-		t.Fatalf("params 标记行 %q 解析失败: %v\n%s", line, err, out.Diagnostics())
+		t.Fatalf("failed to parse the params marker line %q: %v\n%s", line, err, out.Diagnostics())
 	}
 
 	// 与子进程独立重算全部折叠期望值(纵深防御)。
@@ -881,7 +881,7 @@ func TestABIFixtureParams(t *testing.T) {
 	abiCheckField(t, fields, "attach2",
 		strconv.FormatInt(int64(abiFoldAsyncAttachWindow(hAttach, hwnd, sc, mouseHigh, kb, hAttachBlock)), 10), diag)
 
-	t.Logf("params 子进程真实 ABI 验证通过(4 参数槽位、5 参数折叠、token 往返、六参数形状 SysV 本地绑定):%s", line)
+	t.Logf("the params child's real ABI verification passed (4-parameter slots, 5-parameter fold, token round trip, six-parameter shape via SysV local binding):%s", line)
 }
 
 // TestABIFixtureVoidStrings 验证 void 与字符串组:副作用 dump、借
@@ -895,15 +895,15 @@ func TestABIFixtureVoidStrings(t *testing.T) {
 		ExtraEnv: map[string]string{abiFixtureSOEnv: soPath},
 	})
 	if out.Err != nil {
-		t.Fatalf("void-strings 子进程失败(非零退出/信号/超时一律视为失败):\n%s", out.Diagnostics())
+		t.Fatalf("the void-strings child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	}
 	line, ok := markerLine(out.Stdout, voidStringsOKMarker)
 	if !ok {
-		t.Fatalf("void-strings 子进程退出码 0,但 stdout 缺少 %s 标记行:\n%s", voidStringsOKMarker, out.Diagnostics())
+		t.Fatalf("the void-strings child exited 0 but stdout is missing the %s marker line:\n%s", voidStringsOKMarker, out.Diagnostics())
 	}
 	fields, err := parseABIMarkerFields(line, voidStringsOKMarker)
 	if err != nil {
-		t.Fatalf("void-strings 标记行 %q 解析失败: %v\n%s", line, err, out.Diagnostics())
+		t.Fatalf("failed to parse the void-strings marker line %q: %v\n%s", line, err, out.Diagnostics())
 	}
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "copy", fmt.Sprintf(abiFixtureVersionFormat, 1), diag)
@@ -911,7 +911,7 @@ func TestABIFixtureVoidStrings(t *testing.T) {
 	abiCheckField(t, fields, "logcount", "2", diag)
 	abiCheckField(t, fields, "destroy", strconv.FormatInt(0xDEAD, 10), diag)
 
-	t.Logf("void-strings 子进程真实 ABI 验证通过(void 副作用、借用改写、字符串输入):%s", line)
+	t.Logf("the void-strings child's real ABI verification passed (void side effects, borrowed-string rewrite, string input arrival):%s", line)
 }
 
 // TestABIFixtureQueries 验证实验导出组:struct 按值返回、全 NULL
@@ -925,15 +925,15 @@ func TestABIFixtureQueries(t *testing.T) {
 		ExtraEnv: map[string]string{abiFixtureSOEnv: soPath},
 	})
 	if out.Err != nil {
-		t.Fatalf("queries 子进程失败(非零退出/信号/超时一律视为失败):\n%s", out.Diagnostics())
+		t.Fatalf("the queries child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	}
 	line, ok := markerLine(out.Stdout, queriesOKMarker)
 	if !ok {
-		t.Fatalf("queries 子进程退出码 0,但 stdout 缺少 %s 标记行:\n%s", queriesOKMarker, out.Diagnostics())
+		t.Fatalf("the queries child exited 0 but stdout is missing the %s marker line:\n%s", queriesOKMarker, out.Diagnostics())
 	}
 	fields, err := parseABIMarkerFields(line, queriesOKMarker)
 	if err != nil {
-		t.Fatalf("queries 标记行 %q 解析失败: %v\n%s", line, err, out.Diagnostics())
+		t.Fatalf("failed to parse the queries marker line %q: %v\n%s", line, err, out.Diagnostics())
 	}
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "stage1", "abifx-stage#1", diag)
@@ -943,7 +943,7 @@ func TestABIFixtureQueries(t *testing.T) {
 	abiCheckField(t, fields, "item1", "abifx-item#1", diag)
 	abiCheckField(t, fields, "item2", "abifx-item#2", diag)
 
-	t.Logf("queries 子进程真实 ABI 验证通过(struct 按值返回、借用复制语义):%s", line)
+	t.Logf("the queries child's real ABI verification passed (struct return by value, borrowed-copy semantics):%s", line)
 }
 
 // TestABIFixtureBuffers 验证缓冲区协议组:NULL/不足/恰好/超容量、
@@ -958,15 +958,15 @@ func TestABIFixtureBuffers(t *testing.T) {
 		ExtraEnv: map[string]string{abiFixtureSOEnv: soPath},
 	})
 	if out.Err != nil {
-		t.Fatalf("buffers 子进程失败(非零退出/信号/超时一律视为失败):\n%s", out.Diagnostics())
+		t.Fatalf("the buffers child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	}
 	line, ok := markerLine(out.Stdout, buffersOKMarker)
 	if !ok {
-		t.Fatalf("buffers 子进程退出码 0,但 stdout 缺少 %s 标记行:\n%s", buffersOKMarker, out.Diagnostics())
+		t.Fatalf("the buffers child exited 0 but stdout is missing the %s marker line:\n%s", buffersOKMarker, out.Diagnostics())
 	}
 	fields, err := parseABIMarkerFields(line, buffersOKMarker)
 	if err != nil {
-		t.Fatalf("buffers 标记行 %q 解析失败: %v\n%s", line, err, out.Diagnostics())
+		t.Fatalf("failed to parse the buffers marker line %q: %v\n%s", line, err, out.Diagnostics())
 	}
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "nullsize", strconv.FormatUint(math.MaxUint64, 10), diag)
@@ -977,7 +977,7 @@ func TestABIFixtureBuffers(t *testing.T) {
 	abiCheckField(t, fields, "high16", "16", diag)
 	abiCheckField(t, fields, "tasks", "12,-5,7", diag)
 
-	t.Logf("buffers 子进程真实 ABI 验证通过(缓冲区协议、合法零/哨兵可辨、uint64 高位、无 NUL UUID、元素数单位):%s", line)
+	t.Logf("the buffers child's real ABI verification passed (buffer protocol, legal zero/sentinel distinguishable, uint64 high bits, NUL-free UUID, element-count unit):%s", line)
 }
 
 // == 标记行解析辅助 ==
@@ -990,7 +990,7 @@ func parseABIMarkerFields(line, marker string) (map[string]string, error) {
 	for _, kv := range strings.Fields(rest) {
 		key, value, ok := strings.Cut(kv, "=")
 		if !ok {
-			return nil, fmt.Errorf("标记字段 %q 缺少 key=value 形态", kv)
+			return nil, fmt.Errorf("marker field %q lacks the key=value form", kv)
 		}
 		fields[key] = value
 	}
@@ -1003,9 +1003,9 @@ func abiCheckField(t *testing.T, fields map[string]string, key, want, diagnostic
 	t.Helper()
 	got, ok := fields[key]
 	if !ok {
-		t.Fatalf("abi fixture 标记行缺少字段 %s:\n%s", key, diagnostics)
+		t.Fatalf("the abi fixture marker line is missing field %s:\n%s", key, diagnostics)
 	}
 	if got != want {
-		t.Fatalf("abi fixture 标记行字段 %s = %q, want %q:\n%s", key, got, want, diagnostics)
+		t.Fatalf("abi fixture marker line field %s = %q, want %q:\n%s", key, got, want, diagnostics)
 	}
 }

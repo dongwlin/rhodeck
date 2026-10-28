@@ -32,11 +32,11 @@ func receiverBaseName(recv *ast.FieldList) string {
 func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	dir, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("os.Getwd 失败,无法定位公开包目录: %v", err)
+		t.Fatalf("os.Getwd failed, cannot locate the public package directory: %v", err)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("读取公开包目录 %s 失败: %v", dir, err)
+		t.Fatalf("failed to read the public package directory %s: %v", dir, err)
 	}
 
 	runtimeMethods := map[string]bool{}
@@ -56,7 +56,7 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 			path := filepath.Join(dir, name)
 			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 			if err != nil {
-				t.Fatalf("解析 %s 失败: %v", path, err)
+				t.Fatalf("failed to parse %s: %v", path, err)
 			}
 			for _, decl := range file.Decls {
 				fd, ok := decl.(*ast.FuncDecl)
@@ -69,7 +69,7 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 					}
 					packageFuncs[fd.Name.Name] = true
 					if fd.Name.Name == "NewInstance" || fd.Name.Name == "Close" {
-						t.Errorf("包级导出函数 %q 属于实例生命周期入口,只能作为类型方法存在", fd.Name.Name)
+						t.Errorf("package-level exported function %q belongs to the instance lifecycle entries and may only exist as a type method", fd.Name.Name)
 					}
 					continue
 				}
@@ -99,7 +99,7 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 						recv == "Runtime" && fd.Name.Name == "Close":
 						//  交付的三个生命周期入口。
 					default:
-						t.Errorf("类型 %s 的导出方法 %q 不在生命周期入口冻结集合内", recv, fd.Name.Name)
+						t.Errorf("exported method %q of type %s is not in the frozen lifecycle entry set", recv, fd.Name.Name)
 					}
 				}
 			}
@@ -107,13 +107,13 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	}
 
 	if !seenRuntime {
-		t.Fatal("未找到 Runtime 类型的方法声明")
+		t.Fatal("no method declarations found for the Runtime type")
 	}
 	if !seenInstance {
-		t.Fatal("未找到 Instance 类型的方法声明")
+		t.Fatal("no method declarations found for the Instance type")
 	}
 	if !seenOperation {
-		t.Fatal("未找到 Operation 类型的方法声明")
+		t.Fatal("no method declarations found for the Operation type")
 	}
 
 	// *Runtime 的导出方法集恰为冻结集合(加入 Close 与两个实验查询)。
@@ -121,12 +121,12 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		"MapLevelKey": true, "ItemName": true, "NewInstance": true, "Close": true}
 	for m := range want {
 		if !runtimeMethods[m] {
-			t.Errorf("*Runtime 缺少冻结的导出方法 %s", m)
+			t.Errorf("*Runtime is missing the frozen exported method %s", m)
 		}
 	}
 	for m := range runtimeMethods {
 		if !want[m] {
-			t.Errorf("*Runtime 出现冻结集合之外的导出方法 %s", m)
+			t.Errorf("*Runtime has an exported method outside the frozen set: %s", m)
 		}
 	}
 
@@ -158,12 +158,12 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	}
 	for m := range wantInstance {
 		if !instanceMethods[m] {
-			t.Errorf("*Instance 缺少冻结的导出方法 %s", m)
+			t.Errorf("*Instance is missing the frozen exported method %s", m)
 		}
 	}
 	for m := range instanceMethods {
 		if !wantInstance[m] {
-			t.Errorf("*Instance 出现冻结集合之外的导出方法 %s", m)
+			t.Errorf("*Instance has an exported method outside the frozen set: %s", m)
 		}
 	}
 
@@ -171,12 +171,12 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	wantOperation := map[string]bool{"ID": true, "Wait": true}
 	for m := range wantOperation {
 		if !operationMethods[m] {
-			t.Errorf("*Operation 缺少冻结的导出方法 %s", m)
+			t.Errorf("*Operation is missing the frozen exported method %s", m)
 		}
 	}
 	for m := range operationMethods {
 		if !wantOperation[m] {
-			t.Errorf("*Operation 出现冻结集合之外的导出方法 %s", m)
+			t.Errorf("*Operation has an exported method outside the frozen set: %s", m)
 		}
 	}
 
@@ -184,12 +184,12 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	wantFuncs := map[string]bool{"Open": true}
 	for f := range wantFuncs {
 		if !packageFuncs[f] {
-			t.Errorf("包级缺少导出函数 %s", f)
+			t.Errorf("the package level is missing the exported function %s", f)
 		}
 	}
 	for f := range packageFuncs {
 		if !wantFuncs[f] {
-			t.Errorf("包级出现冻结集合之外的导出函数 %s", f)
+			t.Errorf("the package level has an exported function outside the frozen set: %s", f)
 		}
 	}
 }

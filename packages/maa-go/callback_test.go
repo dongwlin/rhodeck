@@ -56,24 +56,24 @@ func TestCallbackDeliverHappyPath(t *testing.T) {
 
 	ev := mustReadEvent(t, d.events())
 	if ev.MessageID != MessageID(msg) {
-		t.Fatalf("事件 MessageID = %d, want %d", ev.MessageID, msg)
+		t.Fatalf("event MessageID = %d, want %d", ev.MessageID, msg)
 	}
 	if string(ev.JSON) != payload {
-		t.Fatalf("事件原文 = %s, want 逐字节相等的 %s", ev.JSON, payload)
+		t.Fatalf("event raw JSON = %s, want byte-for-byte equal %s", ev.JSON, payload)
 	}
 	if ev.Sequence != 1 {
-		t.Fatalf("事件序号 = %d, want 1", ev.Sequence)
+		t.Fatalf("event sequence = %d, want 1", ev.Sequence)
 	}
 	select {
 	case <-s.faultNotify():
-		t.Fatalf("正常投递不得触发故障,得到首因 %v", s.currentFault())
+		t.Fatalf("normal delivery must not trigger a fault, got first fault %v", s.currentFault())
 	default:
 	}
 	if lost := s.currentLostEvents(); lost != 0 {
-		t.Errorf("丢失计数 = %d, want 0", lost)
+		t.Errorf("lost events count = %d, want 0", lost)
 	}
 	if n := inFlightCallbacks(s); n != 0 {
-		t.Errorf("在途 callback = %d, want 0(lease 在 deliver 返回前释放)", n)
+		t.Errorf("in-flight callbacks = %d, want 0 (lease released before deliver returns)", n)
 	}
 }
 
@@ -84,7 +84,7 @@ func TestCallbackDeliverHappyPath(t *testing.T) {
 // ErrProtocol 记故障;断言零故障、零丢失、零在途、零事件。对照子用例
 // 证明同一探针在门开时必然记录 ErrProtocol,排除探针失效的假通过。
 func TestCallbackDeliverGateClosedSkipsNativeDetails(t *testing.T) {
-	t.Run("关门后未获 lease 的投递不读取原生 details", func(t *testing.T) {
+	t.Run("delivery without a lease after gate close does not read native details", func(t *testing.T) {
 		target, s, d := newCallbackRig(t, generousBudgets())
 
 		started := make(chan struct{})
@@ -105,53 +105,53 @@ func TestCallbackDeliverGateClosedSkipsNativeDetails(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(hangGuard):
-			t.Fatal("未获 lease 的 deliver 未在防挂死上限内返回")
+			t.Fatal("deliver without a lease did not return within the hang guard limit")
 		}
 
 		select {
 		case <-s.faultNotify():
-			t.Fatalf("未获 lease 的路径不得记录故障(nil 探针被读取),得到首因 %v", s.currentFault())
+			t.Fatalf("the path without a lease must not record a fault (nil probe was read), got first fault %v", s.currentFault())
 		default:
 		}
 		if s.currentFault() != nil {
-			t.Errorf("首因 = %v, want nil", s.currentFault())
+			t.Errorf("first fault = %v, want nil", s.currentFault())
 		}
 		if lost := s.currentLostEvents(); lost != 0 {
-			t.Errorf("丢失计数 = %d, want 0(消息未获准入,不计丢失)", lost)
+			t.Errorf("lost events count = %d, want 0 (message was not admitted, not counted as lost)", lost)
 		}
 		if n := inFlightCallbacks(s); n != 0 {
-			t.Errorf("在途 callback = %d, want 0", n)
+			t.Errorf("in-flight callbacks = %d, want 0", n)
 		}
 		// 无事件入队:排空后公开通道关闭且为空。
 		closeAndDrain(t, d)
 		if n := len(d.events()); n != 0 {
-			t.Errorf("公开缓冲滞留事件 = %d, want 0", n)
+			t.Errorf("events left in the public buffer = %d, want 0", n)
 		}
 		if _, ok := <-d.events(); ok {
-			t.Fatal("未获 lease 的路径不得产生事件")
+			t.Fatal("the path without a lease must not produce events")
 		}
 	})
 
-	t.Run("门开时 nil details 记 ErrProtocol(探针对照)", func(t *testing.T) {
+	t.Run("nil details records ErrProtocol when the gate is open (probe control)", func(t *testing.T) {
 		target, s, d := newCallbackRig(t, generousBudgets())
 		defer closeAndDrain(t, d)
 
 		target.deliver(49, nil)
 		fault := s.currentFault()
 		if fault == nil {
-			t.Fatal("门开时 nil details 必须记录 ErrProtocol 故障,否则探针无效")
+			t.Fatal("nil details with the gate open must record an ErrProtocol fault, otherwise the probe is ineffective")
 		}
 		if !errors.Is(fault, native.ErrProtocol) {
-			t.Errorf("errors.Is(首因, native.ErrProtocol) = false; 首因 = %v", fault)
+			t.Errorf("errors.Is(first fault, native.ErrProtocol) = false; first fault = %v", fault)
 		}
 		if errors.Is(fault, native.ErrEventOverflow) {
-			t.Errorf("nil details 故障不得误标为 ErrEventOverflow: %v", fault)
+			t.Errorf("the nil details fault must not be mislabeled as ErrEventOverflow: %v", fault)
 		}
 		if !strings.Contains(fault.Error(), fmt.Sprintf("message id %d", 49)) {
-			t.Errorf("故障文本应携带 msg:\n%s", fault.Error())
+			t.Errorf("fault text should carry the msg:\n%s", fault.Error())
 		}
 		if lost := s.currentLostEvents(); lost != 1 {
-			t.Errorf("丢失计数 = %d, want 1(空指针消息未能交付)", lost)
+			t.Errorf("lost events count = %d, want 1 (the null-pointer message could not be delivered)", lost)
 		}
 	})
 }
@@ -171,7 +171,7 @@ func TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain(t *testing.T) {
 	payload := `{"what":"InFlight","async_call_id":9,"details":{"ret":true}}`
 	token, err := native.RegisterCallbackTarget(target.deliver)
 	if err != nil {
-		t.Fatalf("经生产入口注册 target.deliver 不得失败: %v", err)
+		t.Fatalf("registering target.deliver through the production entry point must not fail: %v", err)
 	}
 	var unregistered sync.Once
 	doUnregister := func() { unregistered.Do(func() { native.UnregisterCallbackTarget(token) }) }
@@ -204,7 +204,7 @@ func TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain(t *testing.T) {
 	}
 	if !admitted {
 		target.disp.mu.Unlock()
-		t.Fatal("deliver 未在防挂死上限内取得 callback lease(在途计数未达 1)")
+		t.Fatal("deliver did not acquire the callback lease within the hang guard limit (in-flight count never reached 1)")
 	}
 
 	// 关门:已准入的这条不受影响;随后退空等待必须被它挡住。
@@ -221,7 +221,7 @@ func TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain(t *testing.T) {
 	select {
 	case <-drained:
 		target.disp.mu.Unlock()
-		t.Fatal("已准入 callback 未结束时 waitCallbacksDrained 提前返回:关闭等待漏计在途 callback")
+		t.Fatal("waitCallbacksDrained returned early while an admitted callback had not finished: the close wait undercounts in-flight callbacks")
 	default:
 	}
 
@@ -230,7 +230,7 @@ func TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain(t *testing.T) {
 	select {
 	case <-drained:
 	case <-time.After(hangGuard):
-		t.Fatal("放行后 waitCallbacksDrained 未在防挂死上限内收敛")
+		t.Fatal("waitCallbacksDrained did not converge within the hang guard limit after release")
 	}
 
 	//  第 4 步顺序钉死:准入已关闭且全部已准入 callback 退出之后,
@@ -239,21 +239,21 @@ func TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain(t *testing.T) {
 
 	ev := mustReadEvent(t, d.events())
 	if ev.MessageID != MessageID(msg) {
-		t.Fatalf("事件 MessageID = %d, want %d", ev.MessageID, msg)
+		t.Fatalf("event MessageID = %d, want %d", ev.MessageID, msg)
 	}
 	if string(ev.JSON) != payload {
-		t.Fatalf("事件原文 = %s, want %s", ev.JSON, payload)
+		t.Fatalf("event raw JSON = %s, want %s", ev.JSON, payload)
 	}
 	select {
 	case <-s.faultNotify():
-		t.Fatalf("正常准入与退空不得触发故障,得到首因 %v", s.currentFault())
+		t.Fatalf("normal admission and draining must not trigger a fault, got first fault %v", s.currentFault())
 	default:
 	}
 	if lost := s.currentLostEvents(); lost != 0 {
-		t.Errorf("丢失计数 = %d, want 0", lost)
+		t.Errorf("lost events count = %d, want 0", lost)
 	}
 	if n := inFlightCallbacks(s); n != 0 {
-		t.Errorf("在途 callback = %d, want 0", n)
+		t.Errorf("in-flight callbacks = %d, want 0", n)
 	}
 	closeAndDrain(t, d)
 }
@@ -281,26 +281,26 @@ func TestCallbackDeliverClosingIgnoresRawGate(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(hangGuard):
-		t.Fatal("closing 阶段的 deliver 未在防挂死上限内返回:callback 疑似获取了 raw 串行门禁")
+		t.Fatal("deliver during closing did not return within the hang guard limit: the callback apparently acquired the raw serial gate")
 	}
 
 	ev := mustReadEvent(t, d.events())
 	if ev.MessageID != MessageID(msg) {
-		t.Fatalf("事件 MessageID = %d, want %d", ev.MessageID, msg)
+		t.Fatalf("event MessageID = %d, want %d", ev.MessageID, msg)
 	}
 	if string(ev.JSON) != payload {
-		t.Fatalf("事件原文 = %s, want %s", ev.JSON, payload)
+		t.Fatalf("event raw JSON = %s, want %s", ev.JSON, payload)
 	}
 	select {
 	case <-s.faultNotify():
-		t.Fatalf("closing 阶段的必要消息入队不得触发故障,得到首因 %v", s.currentFault())
+		t.Fatalf("enqueueing necessary messages during closing must not trigger a fault, got first fault %v", s.currentFault())
 	default:
 	}
 	if lost := s.currentLostEvents(); lost != 0 {
-		t.Errorf("丢失计数 = %d, want 0", lost)
+		t.Errorf("lost events count = %d, want 0", lost)
 	}
 	if n := inFlightCallbacks(s); n != 0 {
-		t.Errorf("在途 callback = %d, want 0", n)
+		t.Errorf("in-flight callbacks = %d, want 0", n)
 	}
 }
 
@@ -322,32 +322,32 @@ func TestCallbackDeliverPanicBecomesStickyFault(t *testing.T) {
 
 	first := s.currentFault()
 	if first == nil {
-		t.Fatal("deliver 内 panic 必须转为实例故障,不允许静默继续")
+		t.Fatal("a panic inside deliver must become an instance fault, silent continuation is not allowed")
 	}
 	if !errors.Is(first, native.ErrProtocol) {
-		t.Errorf("errors.Is(首因, native.ErrProtocol) = false; 首因 = %v", first)
+		t.Errorf("errors.Is(first fault, native.ErrProtocol) = false; first fault = %v", first)
 	}
 	if errors.Is(first, native.ErrEventOverflow) {
-		t.Errorf("panic 故障不得误标为 ErrEventOverflow: %v", first)
+		t.Errorf("the panic fault must not be mislabeled as ErrEventOverflow: %v", first)
 	}
 	if got := s.currentPhase(); got != phaseFaulted {
-		t.Fatalf("panic 后阶段 = %d, want faulted", got)
+		t.Fatalf("phase after panic = %d, want faulted", got)
 	}
 	if n := inFlightCallbacks(s); n != 0 {
-		t.Fatalf("panic 后在途 callback = %d, want 0(LIFO:lease 先释放再记故障)", n)
+		t.Fatalf("in-flight callbacks after panic = %d, want 0 (LIFO: lease is released before the fault is recorded)", n)
 	}
 	if !strings.Contains(first.Error(), fmt.Sprintf("message id %d", msg)) {
-		t.Errorf("故障文本应携带 msg:\n%s", first.Error())
+		t.Errorf("fault text should carry the msg:\n%s", first.Error())
 	}
 	if snap := s.faultDiagnostics(); snap.rawPrefix != nil {
-		t.Errorf("panic 故障经 recordFault 记录,不得携带原文前缀,得到 %q", snap.rawPrefix)
+		t.Errorf("the panic fault is recorded via recordFault and must not carry a raw prefix, got %q", snap.rawPrefix)
 	}
 
 	// 门与阶段无关:gate 仍开,admitCallback 照常成功;panic 后的
 	// recordFault 已 sticky——首因保持原值不变。
 	target.deliver(msg, callbackCBytes(`{"k":2}`))
 	if s.currentFault() != first {
-		t.Fatalf("重复 panic 后首因被覆盖: %v, want 保持 %v", s.currentFault(), first)
+		t.Fatalf("the first fault was overwritten after a repeated panic: %v, want it kept as %v", s.currentFault(), first)
 	}
 }
 
@@ -356,7 +356,7 @@ func TestCallbackDeliverPanicBecomesStickyFault(t *testing.T) {
 // 丢失、不投递截断 JSON;恰好 CallbackBytes 字节后是 NUL 合法——
 // Event 只携带不含 NUL 的界内原文。
 func TestCallbackDeliverSingleMessageOverflow(t *testing.T) {
-	t.Run("单条超限拒绝且不投递截断 JSON", func(t *testing.T) {
+	t.Run("oversized single message rejected without delivering truncated JSON", func(t *testing.T) {
 		b := generousBudgets()
 		b.callbackBytes = 8
 		target, s, d := newCallbackRig(t, b)
@@ -366,23 +366,23 @@ func TestCallbackDeliverSingleMessageOverflow(t *testing.T) {
 
 		assertOverflowClass(t, s.currentFault())
 		if lost := s.currentLostEvents(); lost != 1 {
-			t.Errorf("丢失计数 = %d, want 1", lost)
+			t.Errorf("lost events count = %d, want 1", lost)
 		}
 		if n := inFlightCallbacks(s); n != 0 {
-			t.Errorf("在途 callback = %d, want 0", n)
+			t.Errorf("in-flight callbacks = %d, want 0", n)
 		}
 		// 无事件入队:排空后公开通道关闭且为空(本子用例在用例体内
 		// 排空以断言空通道,不再 defer 重复关闭)。
 		closeAndDrain(t, d)
 		if n := len(d.events()); n != 0 {
-			t.Errorf("公开缓冲滞留事件 = %d, want 0(截断 JSON 不得投递)", n)
+			t.Errorf("events left in the public buffer = %d, want 0 (truncated JSON must not be delivered)", n)
 		}
 		if _, ok := <-d.events(); ok {
-			t.Fatal("超限消息不得产生事件")
+			t.Fatal("an oversized message must not produce events")
 		}
 	})
 
-	t.Run("恰 CallbackBytes 字节后是 NUL 合法", func(t *testing.T) {
+	t.Run("NUL exactly after CallbackBytes bytes is legal", func(t *testing.T) {
 		b := generousBudgets()
 		b.callbackBytes = 8
 		target, s, d := newCallbackRig(t, b)
@@ -395,18 +395,18 @@ func TestCallbackDeliverSingleMessageOverflow(t *testing.T) {
 
 		ev := mustReadEvent(t, d.events())
 		if string(ev.JSON) != payload {
-			t.Fatalf("事件原文 = %q, want 恰 %d 字节的 %q(NUL 不入 payload)", ev.JSON, len(payload), payload)
+			t.Fatalf("event raw JSON = %q, want exactly %d bytes %q (NUL not part of the payload)", ev.JSON, len(payload), payload)
 		}
 		if ev.MessageID != MessageID(53) {
-			t.Errorf("事件 MessageID = %d, want 53", ev.MessageID)
+			t.Errorf("event MessageID = %d, want 53", ev.MessageID)
 		}
 		select {
 		case <-s.faultNotify():
-			t.Fatalf("边界合法的消息不得触发故障,得到首因 %v", s.currentFault())
+			t.Fatalf("a boundary-legal message must not trigger a fault, got first fault %v", s.currentFault())
 		default:
 		}
 		if lost := s.currentLostEvents(); lost != 0 {
-			t.Errorf("丢失计数 = %d, want 0", lost)
+			t.Errorf("lost events count = %d, want 0", lost)
 		}
 	})
 }
@@ -450,7 +450,7 @@ func TestCallbackDeliverAdmitOverflowContract(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("第 1 条未在防挂死上限内滞留公开缓冲并释放内部预算")
+			t.Fatal("message #1 did not get retained in the public buffer and release the internal budget within the hang guard limit")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -463,20 +463,20 @@ func TestCallbackDeliverAdmitOverflowContract(t *testing.T) {
 	select {
 	case <-entered:
 	case <-time.After(hangGuard):
-		t.Fatal("第 2 条未在防挂死上限内进入结算通知:dispatcher 疑似未运行或未取件")
+		t.Fatal("message #2 did not enter the settle notification within the hang guard limit: the dispatcher apparently is not running or did not pick it up")
 	}
 
 	// 第 3 条:admit 溢出——deliver 除 admit 内部上报外不额外计丢失、
 	// 不预留任何额度。
 	target.deliver(501, callbackCBytes(`{"p3":1}`))
 	if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
-		t.Fatalf("首因 = %v, want 含 native.ErrEventOverflow", s.currentFault())
+		t.Fatalf("first fault = %v, want errors.Is native.ErrEventOverflow", s.currentFault())
 	}
 	if errors.Is(s.currentFault(), native.ErrProtocol) {
-		t.Errorf("admit 溢出不得误标为 ErrProtocol: %v", s.currentFault())
+		t.Errorf("the admit overflow must not be mislabeled as ErrProtocol: %v", s.currentFault())
 	}
 	if lost := s.currentLostEvents(); lost != 1 {
-		t.Fatalf("admit 溢出后丢失计数 = %d, want 1(仅 admit 按溢出契约上报)", lost)
+		t.Fatalf("lost events count after the admit overflow = %d, want 1 (only admit reports per the overflow contract)", lost)
 	}
 
 	// 放行结算:被阻塞条目先结算后投递,公开缓冲已满 → 按公开溢出契
@@ -488,24 +488,24 @@ func TestCallbackDeliverAdmitOverflowContract(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("公开溢出未在防挂死上限内计入丢失,当前丢失计数 = %d", s.currentLostEvents())
+			t.Fatalf("the public overflow was not counted as lost within the hang guard limit, current lost events count = %d", s.currentLostEvents())
 		}
 		time.Sleep(time.Millisecond)
 	}
 	if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
-		t.Errorf("放行后首因 = %v, want 仍含 native.ErrEventOverflow(sticky)", s.currentFault())
+		t.Errorf("first fault after release = %v, want errors.Is native.ErrEventOverflow (sticky)", s.currentFault())
 	}
 
 	// 公开缓冲仍只有滞留的第 1 条:溢出的两条都没有成为事件。
 	if n := len(d.events()); n != 1 {
-		t.Fatalf("公开缓冲滞留事件 = %d, want 1(仅预先滞留的第 1 条)", n)
+		t.Fatalf("events left in the public buffer = %d, want 1 (only the pre-retained first one)", n)
 	}
 	ev := mustReadEvent(t, d.events())
 	if ev.MessageID != MessageID(p0Msg) || string(ev.JSON) != `{"p0":1}` {
-		t.Fatalf("滞留事件 = (MessageID %d, %s), want (500, {\"p0\":1})", ev.MessageID, ev.JSON)
+		t.Fatalf("retained event = (MessageID %d, %s), want (500, {\"p0\":1})", ev.MessageID, ev.JSON)
 	}
 	if n := inFlightCallbacks(s); n != 0 {
-		t.Errorf("在途 callback = %d, want 0", n)
+		t.Errorf("in-flight callbacks = %d, want 0", n)
 	}
 }
 
@@ -522,27 +522,27 @@ func TestCallbackDeliverEmptyDetails(t *testing.T) {
 
 	ev := mustReadEvent(t, d.events())
 	if ev.MessageID != MessageID(54) {
-		t.Fatalf("事件 MessageID = %d, want 54", ev.MessageID)
+		t.Fatalf("event MessageID = %d, want 54", ev.MessageID)
 	}
 	if len(ev.JSON) != 0 {
-		t.Fatalf("空 details 的 Event JSON 长度 = %d, want 0", len(ev.JSON))
+		t.Fatalf("Event JSON length for empty details = %d, want 0", len(ev.JSON))
 	}
 	fault := s.currentFault()
 	if fault == nil {
-		t.Fatal("空原文必须由 dispatcher 按非法 JSON 报协议故障")
+		t.Fatal("empty raw data must be reported by the dispatcher as an invalid-JSON protocol fault")
 	}
 	if !errors.Is(fault, native.ErrProtocol) {
-		t.Errorf("errors.Is(首因, native.ErrProtocol) = false; 首因 = %v", fault)
+		t.Errorf("errors.Is(first fault, native.ErrProtocol) = false; first fault = %v", fault)
 	}
 	if !strings.Contains(fault.Error(), "not valid UTF-8/JSON") {
-		t.Errorf("协议故障应来自 dispatcher 的内容检查而非 callback 准入层:\n%s", fault.Error())
+		t.Errorf("the protocol fault should come from the dispatcher's content check, not the callback admission layer:\n%s", fault.Error())
 	}
 	// 原文(空)仍按公开预算交付:不丢失。
 	if lost := s.currentLostEvents(); lost != 0 {
-		t.Errorf("丢失计数 = %d, want 0(空原文已完整交付)", lost)
+		t.Errorf("lost events count = %d, want 0 (the empty raw data was fully delivered)", lost)
 	}
 	if n := inFlightCallbacks(s); n != 0 {
-		t.Errorf("在途 callback = %d, want 0", n)
+		t.Errorf("in-flight callbacks = %d, want 0", n)
 	}
 }
 
@@ -552,10 +552,10 @@ func TestCallbackDeliverEmptyDetails(t *testing.T) {
 func TestCallbackTargetNilArgumentsPanic(t *testing.T) {
 	st := newInstanceState(0x0C0A1, 128, 1_048_576)
 	d := newEventDispatcher(st, nil, 1024, 64, 4096, 64, 4096)
-	assertPanics(t, "nil state 的 newCallbackTarget", func() {
+	assertPanics(t, "newCallbackTarget with nil state", func() {
 		newCallbackTarget(nil, d, 1024)
 	})
-	assertPanics(t, "nil dispatcher 的 newCallbackTarget", func() {
+	assertPanics(t, "newCallbackTarget with nil dispatcher", func() {
 		newCallbackTarget(st, nil, 1024)
 	})
 }
@@ -597,36 +597,36 @@ func TestCallbackDeliverConcurrentAdmission(t *testing.T) {
 	wg.Wait()
 
 	if n := inFlightCallbacks(s); n != 0 {
-		t.Fatalf("并发投递完成后在途 callback = %d, want 0", n)
+		t.Fatalf("in-flight callbacks after concurrent delivery = %d, want 0", n)
 	}
 	// 预算按 1024 条给足:全部滞留公开缓冲,关门排空不丢失。
 	closeAndDrain(t, d)
 
 	if n := len(d.events()); n != workers*perWorker {
-		t.Fatalf("公开缓冲滞留事件 = %d, want %d(每条恰好入队一次)", n, workers*perWorker)
+		t.Fatalf("events left in the public buffer = %d, want %d (each enqueued exactly once)", n, workers*perWorker)
 	}
 	prevSeq := uint64(0)
 	for i := 0; i < workers*perWorker; i++ {
 		ev := mustReadEvent(t, d.events())
 		if ev.Sequence != prevSeq+1 {
-			t.Fatalf("第 %d 条事件序号 = %d, want %d(单一 dispatcher 串行分配,FIFO 严格单调)",
+			t.Fatalf("event %d sequence = %d, want %d (single dispatcher assigns serially, FIFO strictly monotonic)",
 				i+1, ev.Sequence, prevSeq+1)
 		}
 		prevSeq = ev.Sequence
 		if !want[string(ev.JSON)] {
-			t.Fatalf("意外的第 %d 条事件原文 %s", i+1, ev.JSON)
+			t.Fatalf("unexpected raw JSON for event %d: %s", i+1, ev.JSON)
 		}
 		delete(want, string(ev.JSON))
 	}
 	if len(want) != 0 {
-		t.Fatalf("缺失 %d 条事件原文(并发复制有丢失)", len(want))
+		t.Fatalf("missing %d event payloads (concurrent copying lost data)", len(want))
 	}
 	select {
 	case <-s.faultNotify():
-		t.Fatalf("充足预算下的并发准入不得产生故障,得到首因 %v", s.currentFault())
+		t.Fatalf("concurrent admission under ample budgets must not produce a fault, got first fault %v", s.currentFault())
 	default:
 	}
 	if lost := s.currentLostEvents(); lost != 0 {
-		t.Errorf("丢失计数 = %d, want 0", lost)
+		t.Errorf("lost events count = %d, want 0", lost)
 	}
 }

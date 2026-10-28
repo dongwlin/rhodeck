@@ -111,18 +111,18 @@ func TestRunFreshProcessPerCase(t *testing.T) {
 	for i := 1; i <= 2; i++ {
 		out := ffitest.Run(t, ffitest.Options{Mode: modeOK, Timeout: childTimeout})
 		if out.Err != nil {
-			t.Fatalf("第 %d 次 Run 失败(成功路径不得失败):\n%s", i, out.Diagnostics())
+			t.Fatalf("Run #%d failed (the success path must not fail):\n%s", i, out.Diagnostics())
 		}
 		if out.TimedOut || out.Signaled {
-			t.Fatalf("第 %d 次 Run 不得报告超时/信号死亡:\n%s", i, out.Diagnostics())
+			t.Fatalf("Run #%d must not report timeout/signal death:\n%s", i, out.Diagnostics())
 		}
 		if !strings.Contains(out.Stdout, okMarker) {
-			t.Fatalf("第 %d 次 Run 退出码 0,但 stdout 缺少标记 %s:\n%s", i, okMarker, out.Diagnostics())
+			t.Fatalf("Run #%d exited 0 but stdout is missing marker %s:\n%s", i, okMarker, out.Diagnostics())
 		}
 		pids = append(pids, parseChildPID(t, out.Stdout))
 	}
 	if pids[0] == pids[1] {
-		t.Fatalf("两次连续 Run 的子进程 PID 相同(%d),违背每用例新进程契约", pids[0])
+		t.Fatalf("two consecutive Runs got the same child PID (%d), violating the fresh-process-per-case contract", pids[0])
 	}
 }
 
@@ -132,16 +132,16 @@ func TestRunFreshProcessPerCase(t *testing.T) {
 func TestRunAbnormalExitCode(t *testing.T) {
 	out := ffitest.Run(t, ffitest.Options{Mode: modeExit, Timeout: childTimeout})
 	if out.Err == nil {
-		t.Fatalf("exit-code 子进程以 os.Exit(42) 结束,必须报告为失败:\n%s", out.Diagnostics())
+		t.Fatalf("the exit-code child ended via os.Exit(42), must be reported as a failure:\n%s", out.Diagnostics())
 	}
 	if out.ExitCode != 42 {
 		t.Fatalf("ExitCode = %d, want 42:\n%s", out.ExitCode, out.Diagnostics())
 	}
 	if out.Signaled || out.TimedOut {
-		t.Fatalf("普通非零退出不得误报为信号死亡/超时:\n%s", out.Diagnostics())
+		t.Fatalf("a plain non-zero exit must not be misreported as signal death/timeout:\n%s", out.Diagnostics())
 	}
 	if !strings.Contains(out.Stdout, exitMarker) || !strings.Contains(out.Stderr, exitMarker) {
-		t.Fatalf("异常退出的 stdout/stderr 必须保留可辨识输出:\n%s", out.Diagnostics())
+		t.Fatalf("the abnormal exit's stdout/stderr must preserve recognizable output:\n%s", out.Diagnostics())
 	}
 }
 
@@ -154,24 +154,24 @@ func TestRunTimeoutKillReportedAsFailure(t *testing.T) {
 	const timeout = 3 * time.Second
 	out := ffitest.Run(t, ffitest.Options{Mode: modeHang, Timeout: timeout})
 	if out.Err == nil {
-		t.Fatalf("挂起子进程在 %s 超时后必须被报告为失败,实际退出码 0:\n%s", timeout, out.Diagnostics())
+		t.Fatalf("the hanging child must be reported as a failure after the %s timeout, got exit code 0:\n%s", timeout, out.Diagnostics())
 	}
 	if !out.TimedOut {
-		t.Fatalf("失败必须可辨识为超时终止(TimedOut=false, err=%v):\n%s", out.Err, out.Diagnostics())
+		t.Fatalf("the failure must be identifiable as a timeout kill (TimedOut=false, err=%v):\n%s", out.Err, out.Diagnostics())
 	}
 	if out.ExitCode == 0 {
-		t.Fatalf("被外部终止的子进程不得报告成功退出:\n%s", out.Diagnostics())
+		t.Fatalf("an externally killed child must not report a successful exit:\n%s", out.Diagnostics())
 	}
 	if runtime.GOOS == "windows" && out.Signaled {
-		t.Fatalf("Windows 超时终止不得报告 Unix 信号死亡:\n%s", out.Diagnostics())
+		t.Fatalf("a Windows timeout kill must not report Unix signal death:\n%s", out.Diagnostics())
 	}
 	if runtime.GOOS != "windows" && !out.Signaled {
-		t.Fatalf("超时终止必须经信号杀死子进程(Signaled=false, err=%v):\n%s", out.Err, out.Diagnostics())
+		t.Fatalf("the timeout kill must kill the child via a signal (Signaled=false, err=%v):\n%s", out.Err, out.Diagnostics())
 	}
 	if !strings.Contains(out.Stdout, hangMarker) {
-		t.Fatalf("超时诊断必须保留子进程已产出的输出:\n%s", out.Diagnostics())
+		t.Fatalf("timeout diagnostics must preserve the output the child already produced:\n%s", out.Diagnostics())
 	}
-	t.Logf("挂起子进程按预期在 %s 超时被外部终止,执行器报告为失败并保留诊断:\n%s",
+	t.Logf("the hanging child was externally killed on the %s timeout as expected; the executor reported a failure and kept diagnostics:\n%s",
 		timeout, out.Diagnostics())
 }
 
@@ -182,17 +182,17 @@ func TestRunUnknownModeFailsFast(t *testing.T) {
 	const missing = "no-such-mode-in-ffitest"
 	out := ffitest.Run(t, ffitest.Options{Mode: missing, Timeout: childTimeout})
 	if out.Err == nil {
-		t.Fatalf("未知模式必须被报告为失败:\n%s", out.Diagnostics())
+		t.Fatalf("an unknown mode must be reported as a failure:\n%s", out.Diagnostics())
 	}
 	if out.ExitCode != ffitest.ExitUnknownMode {
-		t.Fatalf("未知模式的退出码 = %d, want %d:\n%s",
+		t.Fatalf("unknown mode exit code = %d, want %d:\n%s",
 			out.ExitCode, ffitest.ExitUnknownMode, out.Diagnostics())
 	}
 	if !strings.Contains(out.Stderr, missing) {
-		t.Fatalf("未知模式的 stderr 诊断必须含模式名 %q:\n%s", missing, out.Diagnostics())
+		t.Fatalf("the unknown mode's stderr diagnostics must contain the mode name %q:\n%s", missing, out.Diagnostics())
 	}
 	if out.Signaled || out.TimedOut {
-		t.Fatalf("未知模式是受控的 fail-fast 退出,不得误报信号死亡/超时:\n%s", out.Diagnostics())
+		t.Fatalf("an unknown mode is a controlled fail-fast exit and must not be misreported as signal death/timeout:\n%s", out.Diagnostics())
 	}
 }
 
@@ -205,11 +205,11 @@ func TestRunExtraEnvPassedThrough(t *testing.T) {
 		ExtraEnv: map[string]string{echoEnvName: echoEnvValue},
 	})
 	if out.Err != nil {
-		t.Fatalf("echo-env 子进程失败:\n%s", out.Diagnostics())
+		t.Fatalf("echo-env child failed:\n%s", out.Diagnostics())
 	}
 	want := fmt.Sprintf("%s %s=%q", echoEnvMarker, echoEnvName, echoEnvValue)
 	if !strings.Contains(out.Stdout, want) {
-		t.Fatalf("stdout 未含 %q(ExtraEnv 未生效或被改写):\n%s", want, out.Diagnostics())
+		t.Fatalf("stdout does not contain %q (ExtraEnv not applied or rewritten):\n%s", want, out.Diagnostics())
 	}
 }
 
@@ -233,14 +233,14 @@ func TestRunExtraEnvOverridesInheritedValue(t *testing.T) {
 		ExtraEnv: map[string]string{echoEnvName: overrideEnvValue},
 	})
 	if out.Err != nil {
-		t.Fatalf("echo-env 子进程失败:\n%s", out.Diagnostics())
+		t.Fatalf("echo-env child failed:\n%s", out.Diagnostics())
 	}
 	want := fmt.Sprintf("%s %s=%q", echoEnvMarker, echoEnvName, overrideEnvValue)
 	if !strings.Contains(out.Stdout, want) {
-		t.Fatalf("子进程应读到 ExtraEnv 覆盖值 %q:\n%s", overrideEnvValue, out.Diagnostics())
+		t.Fatalf("the child should read the ExtraEnv override value %q:\n%s", overrideEnvValue, out.Diagnostics())
 	}
 	if strings.Contains(out.Stdout, inheritedEnvValue) {
-		t.Fatalf("子进程读到了父进程继承值 %q,覆盖未生效:\n%s", inheritedEnvValue, out.Diagnostics())
+		t.Fatalf("the child read the parent-inherited value %q; the override did not take effect:\n%s", inheritedEnvValue, out.Diagnostics())
 	}
 }
 
@@ -258,11 +258,11 @@ func TestRunChildModeEnvExclusiveOverExtraEnv(t *testing.T) {
 		},
 	})
 	if out.Err != nil {
-		t.Fatalf("ExtraEnv 中的 ChildModeEnv 条目必须被忽略,分派按 Options.Mode 进行:\n%s", out.Diagnostics())
+		t.Fatalf("the ChildModeEnv entry in ExtraEnv must be ignored; dispatch follows Options.Mode:\n%s", out.Diagnostics())
 	}
 	want := fmt.Sprintf("%s %s=%q", echoEnvMarker, echoEnvName, echoEnvValue)
 	if !strings.Contains(out.Stdout, want) {
-		t.Fatalf("echo-env 子进程退出 0,但 stdout 缺少标记(分派可能被篡改):\n%s", out.Diagnostics())
+		t.Fatalf("echo-env child exited 0 but stdout is missing the marker (dispatch may have been tampered with):\n%s", out.Diagnostics())
 	}
 }
 
@@ -270,13 +270,13 @@ func TestRunChildModeEnvExclusiveOverExtraEnv(t *testing.T) {
 // nil run 与空 mode 一律 panic——注册期炸掉比把错误推迟到用例运行时
 // 安全。
 func TestRegisterContractPanics(t *testing.T) {
-	assertPanics(t, "重复 mode", func() {
+	assertPanics(t, "duplicate mode", func() {
 		ffitest.Register(modeOK, func() int { return 0 })
 	})
 	assertPanics(t, "nil run", func() {
 		ffitest.Register("contract-nil-run", nil)
 	})
-	assertPanics(t, "空 mode", func() {
+	assertPanics(t, "empty mode", func() {
 		ffitest.Register("", func() int { return 0 })
 	})
 }
@@ -312,10 +312,10 @@ func TestRegisterConcurrentDistinctModes(t *testing.T) {
 	t.Setenv(ffitest.ChildModeEnv, "race-mode-3")
 	code, handled := ffitest.Dispatch()
 	if !handled {
-		t.Fatalf("Dispatch 未分派已设置的模式 %q", ffitest.ChildModeEnv+"=race-mode-3")
+		t.Fatalf("Dispatch did not dispatch the set mode %q", ffitest.ChildModeEnv+"=race-mode-3")
 	}
 	if code != 0 {
-		t.Fatalf("并发注册的 race-mode-3 经 Dispatch 返回退出码 %d, want 0", code)
+		t.Fatalf("race-mode-3 registered concurrently returned exit code %d via Dispatch, want 0", code)
 	}
 }
 
@@ -333,11 +333,11 @@ func parseChildPID(t *testing.T, stdout string) int {
 		}
 		pid, err := strconv.Atoi(strings.TrimSpace(rest))
 		if err != nil {
-			t.Fatalf("ok 子进程标记行的 PID 不是十进制整数 %q: %v", line, err)
+			t.Fatalf("the PID in the ok child's marker line is not a decimal integer %q: %v", line, err)
 		}
 		return pid
 	}
-	t.Fatalf("stdout 缺少 %s pid=... 标记行:\n%s", okMarker, stdout)
+	t.Fatalf("stdout is missing the %s pid=... marker line:\n%s", okMarker, stdout)
 	return 0
 }
 
@@ -346,9 +346,9 @@ func assertPanics(t *testing.T, what string, fn func()) {
 	t.Helper()
 	defer func() {
 		if r := recover(); r == nil {
-			t.Errorf("%s 未按契约 panic", what)
+			t.Errorf("%s did not panic as required by the contract", what)
 		} else {
-			t.Logf("%s 按契约 panic: %v", what, r)
+			t.Logf("%s panicked as required by the contract: %v", what, r)
 		}
 	}()
 	fn()

@@ -33,7 +33,7 @@ func assertPanics(t *testing.T, what string, f func()) {
 	t.Helper()
 	defer func() {
 		if recover() == nil {
-			t.Errorf("%s 必须按契约 panic", what)
+			t.Errorf("%s must panic as required by the contract", what)
 		}
 	}()
 	f()
@@ -100,10 +100,10 @@ func mustRegister(t *testing.T, deliver CallbackDelivery) uintptr {
 	t.Helper()
 	token, err := RegisterCallbackTarget(deliver)
 	if err != nil {
-		t.Fatalf("RegisterCallbackTarget 不得失败: %v", err)
+		t.Fatalf("RegisterCallbackTarget must not fail: %v", err)
 	}
 	if token == 0 {
-		t.Fatalf("注册返回的 token = 0, want 非零(token 0 不会被接受)")
+		t.Fatalf("registered token = 0, want non-zero (token 0 is never accepted)")
 	}
 	return token
 }
@@ -142,7 +142,7 @@ func TestTokenMonotonicNeverReused(t *testing.T) {
 	second := register()
 	third := register()
 	if !(first < second && second < third) {
-		t.Fatalf("连续注册的 token 必须严格递增: %d, %d, %d",
+		t.Fatalf("consecutively registered tokens must strictly increase: %d, %d, %d",
 			uint64(first), uint64(second), uint64(third))
 	}
 
@@ -152,7 +152,7 @@ func TestTokenMonotonicNeverReused(t *testing.T) {
 	removed[second] = true
 	again := register()
 	if again <= third || again <= second || again <= first {
-		t.Fatalf("注销后再次注册的 token = %d, 必须大于之前全部 (%d, %d, %d):token 不得复用",
+		t.Fatalf("token registered after unregistration = %d, must be greater than all previous (%d, %d, %d): tokens must not be reused",
 			uint64(again), uint64(first), uint64(second), uint64(third))
 	}
 }
@@ -183,19 +183,19 @@ func TestTokenExhaustionRefusedAtWrapBoundary(t *testing.T) {
 
 	token, err := RegisterCallbackTarget(noop)
 	if err == nil {
-		t.Fatalf("计数器回绕边界的注册必须被拒绝,得到 token %d", uint64(token))
+		t.Fatalf("registration at the counter wrap boundary must be rejected, got token %d", uint64(token))
 	}
 	if !errors.Is(err, ErrProtocol) {
 		t.Errorf("errors.Is(err, ErrProtocol) = false; err = %v", err)
 	}
 	if errors.Is(err, ErrInvalidInput) {
-		t.Errorf("耗尽拒绝不得误标为 ErrInvalidInput: %v", err)
+		t.Errorf("exhaustion rejection must not be mislabeled as ErrInvalidInput: %v", err)
 	}
 	if token != 0 {
-		t.Errorf("被拒绝的注册 token = %d, want 0", uint64(token))
+		t.Errorf("rejected registration token = %d, want 0", uint64(token))
 	}
 	if after := registryEntryCount(); after != before {
-		t.Errorf("被拒绝的注册不得改动注册表:条目数 %d -> %d", before, after)
+		t.Errorf("a rejected registration must not modify the registry: entry count %d -> %d", before, after)
 	}
 
 	// 恢复计数器后注册表照常可用:正常铸造、查表命中。
@@ -203,7 +203,7 @@ func TestTokenExhaustionRefusedAtWrapBoundary(t *testing.T) {
 	okToken := mustRegister(t, noop)
 	t.Cleanup(func() { UnregisterCallbackTarget(okToken) })
 	if lookupCallbackTarget(okToken) == nil {
-		t.Fatalf("恢复计数器后注册的 token %d 必须可在注册表查到", uint64(okToken))
+		t.Fatalf("token %d registered after restoring the counter must be found in the registry", uint64(okToken))
 	}
 }
 
@@ -219,22 +219,22 @@ func TestTokenNotConsumedByNilDelivery(t *testing.T) {
 
 	bad, err := RegisterCallbackTarget(nil)
 	if err == nil {
-		t.Fatalf("nil deliver 的注册必须被拒绝,得到 token %d", uint64(bad))
+		t.Fatalf("registration with a nil deliver must be rejected, got token %d", uint64(bad))
 	}
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
 	}
 	if errors.Is(err, ErrProtocol) {
-		t.Errorf("nil deliver 拒绝不得误标为 ErrProtocol: %v", err)
+		t.Errorf("nil deliver rejection must not be mislabeled as ErrProtocol: %v", err)
 	}
 	if bad != 0 {
-		t.Errorf("被拒绝的注册 token = %d, want 0", uint64(bad))
+		t.Errorf("rejected registration token = %d, want 0", uint64(bad))
 	}
 
 	next := mustRegister(t, noop)
 	t.Cleanup(func() { UnregisterCallbackTarget(next) })
 	if next != first+1 {
-		t.Fatalf("nil 拒绝后的下一个 token = %d, want %d(与之前连续,nil 注册不消耗 token)",
+		t.Fatalf("next token after the nil rejection = %d, want %d (contiguous with the previous; a nil registration consumes no token)",
 			uint64(next), uint64(first+1))
 	}
 }
@@ -245,51 +245,51 @@ func TestTokenNotConsumedByNilDelivery(t *testing.T) {
 // 层错误终止 C 线程);命中的投递收到精确的 (msg, details 指针)——
 // 指针按值透传,分发序自身不读取内容。
 func TestDispatchCallbackDeliveryOrder(t *testing.T) {
-	t.Run("token 0 记 token-zero 故障不投递", func(t *testing.T) {
+	t.Run("token 0 records token-zero fault, no delivery", func(t *testing.T) {
 		saveFaultSlot(t)
 		rec := &cbDeliveryRecorder{}
 		dispatchCallback(7, cbTestCBytes(`{"t":0}`), 0)
 
 		f := lastCallbackFault.Load()
 		if f == nil {
-			t.Fatal("token 0 必须留下可见边界故障,不允许静默丢弃")
+			t.Fatal("token 0 must leave a visible boundary fault; silent drops are not allowed")
 		}
 		if f.Kind != callbackFaultTokenZero {
-			t.Errorf("故障 kind = %q, want %q", f.Kind, callbackFaultTokenZero)
+			t.Errorf("fault kind = %q, want %q", f.Kind, callbackFaultTokenZero)
 		}
 		if f.Msg != 7 || f.Token != 0 {
-			t.Errorf("故障 msg = %d, want 7; token = %d, want 0", f.Msg, uint64(f.Token))
+			t.Errorf("fault msg = %d, want 7; token = %d, want 0", f.Msg, uint64(f.Token))
 		}
 		if f.Detail == "" {
-			t.Error("故障诊断不得为空")
+			t.Error("the fault detail must not be empty")
 		}
 		if got := rec.snapshot(); len(got) != 0 {
-			t.Errorf("token 0 的消息被投递 %d 次, want 0(details 指针未被读取)", len(got))
+			t.Errorf("token 0's message was delivered %d times, want 0 (details pointer must not be read)", len(got))
 		}
 	})
 
-	t.Run("未注册 token 记 unknown-token 故障不投递", func(t *testing.T) {
+	t.Run("unregistered token records unknown-token fault, no delivery", func(t *testing.T) {
 		saveFaultSlot(t)
 		rec := &cbDeliveryRecorder{}
 		dispatchCallback(-3, cbTestCBytes(`{}`), registryTestGhostToken)
 
 		f := lastCallbackFault.Load()
 		if f == nil {
-			t.Fatal("未注册 token 必须留下可见边界故障,不允许静默丢弃")
+			t.Fatal("an unregistered token must leave a visible boundary fault; silent drops are not allowed")
 		}
 		if f.Kind != callbackFaultUnknownToken {
-			t.Errorf("故障 kind = %q, want %q", f.Kind, callbackFaultUnknownToken)
+			t.Errorf("fault kind = %q, want %q", f.Kind, callbackFaultUnknownToken)
 		}
 		if f.Msg != -3 || f.Token != registryTestGhostToken {
-			t.Errorf("故障 msg = %d, want -3; token = %d, want %d",
+			t.Errorf("fault msg = %d, want -3; token = %d, want %d",
 				f.Msg, uint64(f.Token), uint64(registryTestGhostToken))
 		}
 		if got := rec.snapshot(); len(got) != 0 {
-			t.Errorf("未注册 token 的消息被投递 %d 次, want 0", len(got))
+			t.Errorf("the unregistered token's message was delivered %d times, want 0", len(got))
 		}
 	})
 
-	t.Run("命中投递精确透传 msg 与 details 指针", func(t *testing.T) {
+	t.Run("hit delivers msg and details pointer exactly", func(t *testing.T) {
 		saveFaultSlot(t)
 		rec := &cbDeliveryRecorder{}
 		token := mustRegister(t, rec.deliver)
@@ -304,16 +304,16 @@ func TestDispatchCallbackDeliveryOrder(t *testing.T) {
 
 		got := rec.snapshot()
 		if len(got) != 1 {
-			t.Fatalf("命中投递次数 = %d, want 1", len(got))
+			t.Fatalf("hit delivery count = %d, want 1", len(got))
 		}
 		if got[0].msg != msg {
-			t.Errorf("投递 msg = %d, want %d", got[0].msg, msg)
+			t.Errorf("delivered msg = %d, want %d", got[0].msg, msg)
 		}
 		if got[0].ptr != p {
-			t.Errorf("投递 details 指针 = %p, want 原样透传的 %p(指针按值透传,分发序不复制不改写)", got[0].ptr, p)
+			t.Errorf("delivered details pointer = %p, want pass-through %p (pointers pass by value; the dispatch order neither copies nor rewrites)", got[0].ptr, p)
 		}
 		if f := lastCallbackFault.Load(); f != nil {
-			t.Errorf("命中投递不得记录边界故障,得到 kind=%s", f.Kind)
+			t.Errorf("a hit delivery must not record a boundary fault, got kind=%s", f.Kind)
 		}
 	})
 }
@@ -332,12 +332,12 @@ func TestCallbackRegistryLockNotHeldAcrossDelivery(t *testing.T) {
 		defer close(done)
 		// 重入查表:读锁必须可用。
 		if lookupCallbackTarget(token) == nil {
-			t.Errorf("投递内重入查表未命中 token %d", uint64(token))
+			t.Errorf("reentrant lookup inside delivery missed token %d", uint64(token))
 		}
 		// 重入登记/移除:写锁必须可用(读锁未跨投递持有)。
 		inner, err := RegisterCallbackTarget(noop)
 		if err != nil {
-			t.Errorf("投递内重入注册不得失败: %v", err)
+			t.Errorf("reentrant registration inside delivery must not fail: %v", err)
 			return
 		}
 		UnregisterCallbackTarget(inner)
@@ -350,7 +350,7 @@ func TestCallbackRegistryLockNotHeldAcrossDelivery(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(hangGuard):
-		t.Fatal("投递内的注册表重入未在防挂死上限内完成:实现疑似在投递期间持有注册表锁(自死锁)")
+		t.Fatal("registry reentrancy inside delivery did not finish within the hang guard: the implementation appears to hold the registry lock during delivery (self-deadlock)")
 	}
 }
 
@@ -398,10 +398,10 @@ func TestCallbackRegistryInFlightDeliverySurvivesUnregister(t *testing.T) {
 	select {
 	case <-removed:
 	case <-time.After(hangGuard):
-		t.Fatal("UnregisterCallbackTarget 未在防挂死上限内返回:remove 疑似在等待在途投递")
+		t.Fatal("UnregisterCallbackTarget did not return within the hang guard: remove appears to be waiting for in-flight deliveries")
 	}
 	if lookupCallbackTarget(token) != nil {
-		t.Fatal("注销后注册表仍能查到该 token")
+		t.Fatal("the token is still found in the registry after unregistration")
 	}
 
 	// 放行:已开始的投递不因注销失败,捕获状态在投递期间保持可达。
@@ -409,10 +409,10 @@ func TestCallbackRegistryInFlightDeliverySurvivesUnregister(t *testing.T) {
 	select {
 	case <-completed:
 	case <-time.After(hangGuard):
-		t.Fatal("注销后放行,在途投递未在防挂死上限内完成")
+		t.Fatal("released after unregistration, the in-flight delivery did not finish within the hang guard")
 	}
 	if gotMsg != msg || gotPtr != details {
-		t.Errorf("在途投递捕获 msg = %d, want %d; 指针 = %p, want %p(强引用保证参数完好)",
+		t.Errorf("in-flight delivery captured msg = %d, want %d; pointer = %p, want %p (strong references keep the arguments intact)",
 			gotMsg, msg, gotPtr, details)
 	}
 }
@@ -465,7 +465,7 @@ func TestCallbackRegistryPauseSeamBetweenLookupAndDeliver(t *testing.T) {
 	// hook 触发:此刻查表已命中、投递尚未开始。
 	<-entered
 	if !hookMatched.Load() {
-		t.Fatal("暂停缝未携带命中的 token 调用")
+		t.Fatal("the pause seam was called without the matched token")
 	}
 	// 暂停窗口内并发注销同 token:remove 不被暂停的投递阻塞(注册表
 	// 锁不在查表之后持有)。
@@ -477,10 +477,10 @@ func TestCallbackRegistryPauseSeamBetweenLookupAndDeliver(t *testing.T) {
 	select {
 	case <-removed:
 	case <-time.After(hangGuard):
-		t.Fatal("暂停窗口内的注销未在防挂死上限内返回:注册表锁疑似跨查表与投递持有")
+		t.Fatal("unregistration inside the pause window did not return within the hang guard: the registry lock appears to be held across lookup and delivery")
 	}
 	if lookupCallbackTarget(token) != nil {
-		t.Fatal("暂停窗口内的注销未生效")
+		t.Fatal("unregistration inside the pause window did not take effect")
 	}
 	reject.Store(true)
 	close(release)
@@ -488,17 +488,17 @@ func TestCallbackRegistryPauseSeamBetweenLookupAndDeliver(t *testing.T) {
 	deadline := time.Now().Add(hangGuard)
 	for !invoked.Load() {
 		if time.Now().After(deadline) {
-			t.Fatal("放行后投递未在防挂死上限内到达 fake:暂停缝疑似不在查表与投递之间")
+			t.Fatal("after release the delivery did not reach the fake within the hang guard: the pause seam appears to sit outside lookup and delivery")
 		}
 		time.Sleep(time.Millisecond)
 	}
 	// 分发序照常调用已命中的 fake(不复查注册表),但拒绝标志使其未
 	// 读取 details——证明 hook 恰位于查表与投递之间。
 	if readDetails.Load() {
-		t.Error("拒绝标志已翻转,fake 不得读取 details")
+		t.Error("the reject flag is set; the fake must not read details")
 	}
 	if f := lastCallbackFault.Load(); f != nil {
-		t.Errorf("已命中的投递不得记录边界故障,得到 kind=%s", f.Kind)
+		t.Errorf("a matched delivery must not record a boundary fault, got kind=%s", f.Kind)
 	}
 }
 
@@ -516,15 +516,15 @@ func TestCallbackRegistryInstallRemovePanics(t *testing.T) {
 	})
 
 	callbackTargets.install(registryTestToken, noop)
-	assertPanics(t, "已登记 token 的重复 install", func() {
+	assertPanics(t, "duplicate install of a registered token", func() {
 		callbackTargets.install(registryTestToken, noop)
 	})
 
 	callbackTargets.remove(registryTestToken)
-	assertPanics(t, "已移除 token 的重复 remove", func() {
+	assertPanics(t, "duplicate remove of a removed token", func() {
 		callbackTargets.remove(registryTestToken)
 	})
-	assertPanics(t, "从未登记 token 的 remove", func() {
+	assertPanics(t, "remove of a never-registered token", func() {
 		callbackTargets.remove(registryTestGhostToken2)
 	})
 }
@@ -534,19 +534,19 @@ func TestCallbackRegistryInstallRemovePanics(t *testing.T) {
 // 法,超过则按溢出处理;nil 缓冲返回未找到,由调用方按 ErrProtocol 处
 // 理):整段无 NUL 返回 (0, false),不投递截断 JSON 的决定归调用方。
 func TestCallbackDetailsLengthBounds(t *testing.T) {
-	t.Run("nil 缓冲返回未找到", func(t *testing.T) {
+	t.Run("nil buffer returns not found", func(t *testing.T) {
 		if length, found := CallbackDetailsLength(nil, 1024); found || length != 0 {
 			t.Fatalf("CallbackDetailsLength(nil, 1024) = (%d, %v), want (0, false)", length, found)
 		}
 	})
 
-	t.Run("中位 NUL 返回其下标", func(t *testing.T) {
+	t.Run("mid-buffer NUL returns its index", func(t *testing.T) {
 		if length, found := CallbackDetailsLength(cbTestCBytes("abc"), 1024); !found || length != 3 {
 			t.Fatalf("CallbackDetailsLength = (%d, %v), want (3, true)", length, found)
 		}
 	})
 
-	t.Run("恰在 maxBytes 下标的 NUL 合法", func(t *testing.T) {
+	t.Run("NUL exactly at the maxBytes index is valid", func(t *testing.T) {
 		//  冻结边界:扫描范围含端点 maxBytes,恰好 CallbackBytes
 		// 字节后是 NUL 合法(9 字节缓冲、maxBytes=8)。
 		if length, found := CallbackDetailsLength(cbTestCBytes("12345678"), 8); !found || length != 8 {
@@ -554,7 +554,7 @@ func TestCallbackDetailsLengthBounds(t *testing.T) {
 		}
 	})
 
-	t.Run("maxBytes 内无 NUL 返回未找到", func(t *testing.T) {
+	t.Run("no NUL within maxBytes returns not found", func(t *testing.T) {
 		// 9 字节全非 NUL、maxBytes=8:扫描 0..8 无 NUL(唯一的 NUL 在
 		// 下标 9,界外)→ (0, false)。
 		if length, found := CallbackDetailsLength(cbTestRawBytes("123456789"), 8); found || length != 0 {
@@ -562,12 +562,12 @@ func TestCallbackDetailsLengthBounds(t *testing.T) {
 		}
 	})
 
-	t.Run("maxBytes 为 0 只看首字节", func(t *testing.T) {
+	t.Run("maxBytes 0 only inspects the first byte", func(t *testing.T) {
 		if length, found := CallbackDetailsLength(cbTestCBytes(""), 0); !found || length != 0 {
-			t.Fatalf("首字节即 NUL:CallbackDetailsLength = (%d, %v), want (0, true)", length, found)
+			t.Fatalf("first byte is NUL: CallbackDetailsLength = (%d, %v), want (0, true)", length, found)
 		}
 		if _, found := CallbackDetailsLength(cbTestRawBytes("x"), 0); found {
-			t.Fatalf("首字节非 NUL:found = true, want false(maxBytes=0 时无扫描余地)")
+			t.Fatalf("first byte is not NUL: found = true, want false (no scan room when maxBytes=0)")
 		}
 	})
 }
@@ -577,32 +577,32 @@ func TestCallbackDetailsLengthBounds(t *testing.T) {
 // length 0 不读取任何原生字节、负长度按接线层编程错误 panic、复制后
 // 改写源缓冲不影响副本。
 func TestCallbackDetailsCopySemantics(t *testing.T) {
-	t.Run("精确复制 length 字节", func(t *testing.T) {
+	t.Run("copies exactly length bytes", func(t *testing.T) {
 		src := cbTestCBytes(`{"k":9007199254740993}`)
 		got := CopyCallbackDetails(src, len(`{"k":9007199254740993}`))
 		if string(got) != `{"k":9007199254740993}` {
-			t.Fatalf("副本 = %q, want 精确的 payload(不含 NUL)", got)
+			t.Fatalf("copy = %q, want the exact payload (without NUL)", got)
 		}
 	})
 
-	t.Run("length 0 不读取源缓冲", func(t *testing.T) {
+	t.Run("length 0 reads no source buffer", func(t *testing.T) {
 		// 空消息(下标 0 即 NUL)与 nil 指针都必须安全返回空字节串:
 		// length 0 时不发生任何原生字节读取。
 		if got := CopyCallbackDetails(cbTestCBytes(""), 0); len(got) != 0 {
-			t.Fatalf("length 0 的副本长度 = %d, want 0", len(got))
+			t.Fatalf("copy length at length 0 = %d, want 0", len(got))
 		}
 		if got := CopyCallbackDetails(nil, 0); len(got) != 0 {
-			t.Fatalf("nil 源且 length 0 的副本长度 = %d, want 0", len(got))
+			t.Fatalf("copy length with a nil source and length 0 = %d, want 0", len(got))
 		}
 	})
 
-	t.Run("负长度 panic", func(t *testing.T) {
-		assertPanics(t, "负长度的 CopyCallbackDetails", func() {
+	t.Run("negative length panics", func(t *testing.T) {
+		assertPanics(t, "CopyCallbackDetails with a negative length", func() {
 			CopyCallbackDetails(cbTestCBytes("abc"), -1)
 		})
 	})
 
-	t.Run("副本与源独立", func(t *testing.T) {
+	t.Run("copy is independent of the source", func(t *testing.T) {
 		payload := "independent"
 		buf := append([]byte(payload), 0)
 		src := &buf[0]
@@ -613,7 +613,7 @@ func TestCallbackDetailsCopySemantics(t *testing.T) {
 			buf[i] = 'X'
 		}
 		if string(got) != payload {
-			t.Fatalf("改写源后副本 = %q, want 保持 %q(副本与源不共享底层缓冲)", got, payload)
+			t.Fatalf("copy after rewriting the source = %q, want unchanged %q (copy and source do not share the underlying buffer)", got, payload)
 		}
 	})
 }

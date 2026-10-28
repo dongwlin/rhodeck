@@ -165,7 +165,7 @@ func buildPlatformLoaderFixture(t *testing.T) (library, dependency string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(t.TempDir(), "原生 loader fixtures")
+	dir := filepath.Join(t.TempDir(), "native loader fixtures")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

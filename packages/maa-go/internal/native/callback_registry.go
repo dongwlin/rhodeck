@@ -214,7 +214,7 @@ func dispatchCallback(msg int32, detailsJSON *byte, token uintptr) {
 			Kind:   callbackFaultTokenZero,
 			Msg:    msg,
 			Token:  token,
-			Detail: "callback 携带 token 0,没有可投递的目标;token 0 不会被注册表接受",
+			Detail: "callback carries token 0, no deliverable target; token 0 is never accepted by the registry",
 		})
 		return
 	}
@@ -224,7 +224,7 @@ func dispatchCallback(msg int32, detailsJSON *byte, token uintptr) {
 			Kind:   callbackFaultUnknownToken,
 			Msg:    msg,
 			Token:  token,
-			Detail: "callback 携带的 token 未在注册表中登记(尚未注册或已移除),消息未投递;不允许静默丢弃",
+			Detail: "callback carries a token not registered in the registry (never registered or already removed), message not delivered; silent drops are not allowed",
 		})
 		return
 	}

@@ -14,13 +14,13 @@ import (
 func TestCStringEncodesEmptyStringAsEmptyCString(t *testing.T) {
 	p, buf := cString("")
 	if p == nil {
-		t.Fatal(`cString("") 必须返回非 nil 指针(空 C 字符串,不传 nil)`)
+		t.Fatal(`cString("") must return a non-nil pointer (an empty C string, not nil)`)
 	}
 	if len(buf) != 1 || buf[0] != 0x00 {
-		t.Fatalf(`cString("") 的底层 buffer = %#v, want 恰为单字节 0x00`, buf)
+		t.Fatalf(`cString("") underlying buffer = %#v, want exactly a single byte 0x00`, buf)
 	}
 	if *p != 0x00 {
-		t.Errorf("*p = %#x, want 0x00(指针指向 buffer 首字节的 NUL)", *p)
+		t.Errorf("*p = %#x, want 0x00 (the pointer targets the NUL at the buffer's first byte)", *p)
 	}
 }
 
@@ -29,12 +29,12 @@ func TestCStringEncodesEmptyStringAsEmptyCString(t *testing.T) {
 func TestCStringAppendsNULTerminator(t *testing.T) {
 	p, buf := cString("abc")
 	if p == nil {
-		t.Fatal("cString 必须返回非 nil 指针")
+		t.Fatal("cString must return a non-nil pointer")
 	}
 	if got := string(buf); got != "abc\x00" {
-		t.Fatalf(`cString("abc") 的底层 buffer = %q, want "abc\x00"`, got)
+		t.Fatalf(`cString("abc") underlying buffer = %q, want "abc\x00"`, got)
 	}
 	if p != &buf[0] {
-		t.Errorf("返回的指针必须指向底层 buffer 首字节")
+		t.Errorf("the returned pointer must target the first byte of the underlying buffer")
 	}
 }

@@ -242,18 +242,18 @@ func TestCounterexampleExclusionThroughCLI(t *testing.T) {
 	}{
 		{"duplicate exclusion", func(t *testing.T, fs map[string]string) {
 			fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
-				"{Name: \"AsstConnect\", Header: \"AsstCaller.h\", Reason: \"上游 deprecated 注释；同步连接由 AsyncConnect 代替\"},",
-				"{Name: \"AsstConnect\", Header: \"AsstCaller.h\", Reason: \"上游 deprecated 注释；同步连接由 AsyncConnect 代替\"},\n"+
-					"{Name: \"AsstConnect\", Header: \"AsstCaller.h\", Reason: \"重复条目\"},")
+				"{Name: \"AsstConnect\", Header: \"AsstCaller.h\", Reason: \"upstream deprecated comment; synchronous connect replaced by AsyncConnect\"},",
+				"{Name: \"AsstConnect\", Header: \"AsstCaller.h\", Reason: \"upstream deprecated comment; synchronous connect replaced by AsyncConnect\"},\n"+
+					"{Name: \"AsstConnect\", Header: \"AsstCaller.h\", Reason: \"duplicate entry\"},")
 		}, CatRelation, "excluded more than once"},
 		{"empty exclusion reason", func(t *testing.T, fs map[string]string) {
 			fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
-				"Reason: \"上游 deprecated 注释；同步连接由 AsyncConnect 代替\"", "Reason: \"\"")
+				"Reason: \"upstream deprecated comment; synchronous connect replaced by AsyncConnect\"", "Reason: \"\"")
 		}, CatGoSyntax, "Reason"},
 		{"wildcard-style exclusion", func(t *testing.T, fs map[string]string) {
 			fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
 				"var exclusions = []exclusionSpec{",
-				"var exclusions = []exclusionSpec{\n\t{Name: \"Asst*\", Header: \"AsstCaller.h\", Reason: \"通配符兜底\"},")
+				"var exclusions = []exclusionSpec{\n\t{Name: \"Asst*\", Header: \"AsstCaller.h\", Reason: \"wildcard fallback\"},")
 		}, CatRelation, "stale exclusion"},
 		{"exclusion of an already-bound symbol", func(t *testing.T, fs map[string]string) {
 			fs["api.go"] = mustReplace(t, fs["api.go"],

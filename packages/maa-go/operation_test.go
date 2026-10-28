@@ -31,10 +31,10 @@ func mustAdmitPending(t *testing.T, s *instanceState, id AsyncID, what string) *
 	t.Helper()
 	op, err := s.admitPendingOperation(id, what)
 	if err != nil {
-		t.Fatalf("准入 pending operation %d(%s)不得失败: %v", id, what, err)
+		t.Fatalf("admitting pending operation %d (%s) must not fail: %v", id, what, err)
 	}
 	if op == nil {
-		t.Fatalf("准入 pending operation %d 返回 nil 记录", id)
+		t.Fatalf("admitting pending operation %d returned a nil record", id)
 	}
 	return op
 }
@@ -64,7 +64,7 @@ func waitGuarded(t *testing.T, op *operation, ctx context.Context) (AsyncResult,
 	case o := <-ch:
 		return o.res, o.err
 	case <-time.After(hangGuard):
-		t.Fatal("operation.wait 未在防挂死上限内返回:done 通知疑似未关闭")
+		t.Fatal("operation.wait did not return within the hang-guard limit: the done notification appears not closed")
 		return AsyncResult{}, nil
 	}
 }
@@ -81,7 +81,7 @@ func asyncCallInfoPayload(id AsyncID, what, details string) []byte {
 // 竞争时每个 operation 恰好取得一种终态,先结算者胜,后到的结算入
 // 口不得覆盖已发布终态、不得 panic。
 func TestOperationSettlesExactlyOnceUnderRaces(t *testing.T) {
-	t.Run("8 个并发等待者观察同一完成终态", func(t *testing.T) {
+	t.Run("8 concurrent waiters observe the same completion terminal state", func(t *testing.T) {
 		const (
 			waiters = 8
 			rounds  = 50
@@ -121,19 +121,19 @@ func TestOperationSettlesExactlyOnceUnderRaces(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(hangGuard):
-			t.Fatal("并发等待者未在防挂死上限内收敛:done 通知疑似未关闭")
+			t.Fatal("concurrent waiters did not converge within the hang-guard limit: the done notification appears not closed")
 		}
 		if n := mismatch.Load(); n != 0 {
-			t.Fatalf("%d 个等待者取得的终态与唯一一次结算结果不一致", n)
+			t.Fatalf("%d waiters obtained a terminal state inconsistent with the single settlement result", n)
 		}
 		// 全部并发等待收敛后,再次等待仍取得同一终态。
 		res, err := waitGuarded(t, op, context.Background())
 		if err != nil || res.ID != id || res.What != what || !res.OK || string(res.Details) != details {
-			t.Fatalf("结算后的单独等待 = (%+v, %v), want 同一完成终态", res, err)
+			t.Fatalf("standalone wait after settlement = (%+v, %v), want the same completion terminal state", res, err)
 		}
 	})
 
-	t.Run("完成、关闭扫描与故障扫描竞争恰一终态", func(t *testing.T) {
+	t.Run("completion, close scan and fault scan race for exactly one terminal state", func(t *testing.T) {
 		const (
 			rounds       = 30
 			roundWaiters = 4
@@ -144,8 +144,8 @@ func TestOperationSettlesExactlyOnceUnderRaces(t *testing.T) {
 			details = `{"ret":true}`
 		)
 		successInfo := completionInfo{ID: id, What: what, OK: true, Details: json.RawMessage(details)}
-		faultCause := fmt.Errorf("竞争故障: %w", native.ErrProtocol)
-		lateCause := fmt.Errorf("后到故障: %w", native.ErrEventOverflow)
+		faultCause := fmt.Errorf("race fault: %w", native.ErrProtocol)
+		lateCause := fmt.Errorf("late-arriving fault: %w", native.ErrEventOverflow)
 
 		// classify 把一次等待结果归入三类终态之一;字段越界或类别串
 		// 染归入失败类别,由调用方断言。
@@ -154,21 +154,21 @@ func TestOperationSettlesExactlyOnceUnderRaces(t *testing.T) {
 			switch {
 			case err == nil:
 				if res.ID != id || res.What != what || !res.OK || string(res.Details) != details {
-					return "成功内容损坏"
+					return "success content corrupted"
 				}
-				return "完成"
+				return "completed"
 			case errors.Is(err, faultCause):
 				if !zero || errors.Is(err, native.ErrClosed) || errors.Is(err, native.ErrNativeRejected) {
-					return "故障类别损坏"
+					return "fault class corrupted"
 				}
-				return "故障"
+				return "fault"
 			case errors.Is(err, native.ErrClosed):
 				if !zero || errors.Is(err, faultCause) {
-					return "关闭类别损坏"
+					return "closed class corrupted"
 				}
-				return "关闭"
+				return "closed"
 			default:
-				return "未知终态"
+				return "unknown terminal state"
 			}
 		}
 
@@ -213,21 +213,21 @@ func TestOperationSettlesExactlyOnceUnderRaces(t *testing.T) {
 			select {
 			case <-done:
 			case <-time.After(hangGuard):
-				t.Fatalf("第 %d 轮竞争未在防挂死上限内收敛", round)
+				t.Fatalf("round %d race did not converge within the hang-guard limit", round)
 			}
 
 			if len(seen) != roundWaiters {
-				t.Fatalf("第 %d 轮等待者结果数 = %d, want %d", round, len(seen), roundWaiters)
+				t.Fatalf("round %d waiter result count = %d, want %d", round, len(seen), roundWaiters)
 			}
 			for i, class := range seen {
 				if class != seen[0] {
-					t.Fatalf("第 %d 轮等待者 %d 见终态 %q, 与等待者 0 的 %q 不一致", round, i, class, seen[0])
+					t.Fatalf("round %d waiter %d saw terminal state %q, inconsistent with waiter 0's %q", round, i, class, seen[0])
 				}
 			}
 			switch seen[0] {
-			case "完成", "关闭", "故障":
+			case "completed", "closed", "fault":
 			default:
-				t.Fatalf("第 %d 轮终态类别 %q 越界", round, seen[0])
+				t.Fatalf("round %d terminal state class %q out of range", round, seen[0])
 			}
 
 			// 先结算者胜:后到的其余结算入口不得覆盖、不得 panic。
@@ -240,15 +240,15 @@ func TestOperationSettlesExactlyOnceUnderRaces(t *testing.T) {
 			s.settleRemainingPending()
 			again, err := op.wait(context.Background())
 			if class := classify(again, err); class != seen[0] {
-				t.Fatalf("第 %d 轮后到结算改写终态: %q → %q(%+v, %v)", round, seen[0], class, again, err)
+				t.Fatalf("round %d late settlement rewrote the terminal state: %q → %q (%+v, %v)", round, seen[0], class, again, err)
 			}
 		}
 	})
 
-	t.Run("完成先行时后到的关闭与故障结算不得覆盖", func(t *testing.T) {
+	t.Run("with completion first, late close and fault settlements must not overwrite", func(t *testing.T) {
 		s := newReadyState(t, 0x0A78, 8)
 		id := AsyncID(78)
-		op := mustAdmitPending(t, s, id, "先完成的提交")
+		op := mustAdmitPending(t, s, id, "submission completed first")
 		successInfo := completionInfo{ID: id, What: "FirstWin", OK: true, Details: json.RawMessage(`{"ret":true}`)}
 		s.settleCompletion(successInfo)
 
@@ -256,15 +256,15 @@ func TestOperationSettlesExactlyOnceUnderRaces(t *testing.T) {
 		// 清空为空操作。任何一路都不得改写已发布终态,也不得 panic。
 		mustElectClose(t, s)
 		s.settleCompletion(successInfo)
-		s.recordFault(fmt.Errorf("后到故障: %w", native.ErrEventOverflow))
+		s.recordFault(fmt.Errorf("late-arriving fault: %w", native.ErrEventOverflow))
 		s.settleRemainingPending()
 
 		res, err := waitGuarded(t, op, context.Background())
 		if err != nil || !res.OK || res.ID != id || string(res.Details) != `{"ret":true}` {
-			t.Fatalf("后到结算改写了终态: (%+v, %v), want 完成终态原样", res, err)
+			t.Fatalf("the late settlement rewrote the terminal state: (%+v, %v), want the completion terminal state unchanged", res, err)
 		}
 		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("后到结算不得复活 pending 记录: 占用 = %d", n)
+			t.Fatalf("the late settlement must not revive the pending record: occupancy = %d", n)
 		}
 	})
 }
@@ -281,13 +281,13 @@ func TestOperationTerminalErrorSemantics(t *testing.T) {
 		details = `{"ret":false,"cost":7}`
 	)
 
-	t.Run("ret=false 返回完好结果与 ErrNativeRejected", func(t *testing.T) {
+	t.Run("ret=false returns an intact result together with ErrNativeRejected", func(t *testing.T) {
 		op := newOperation(id)
 		op.complete(newResultRecord(id, what, false, json.RawMessage(details)))
 
 		res, err := waitGuarded(t, op, context.Background())
 		if err == nil {
-			t.Fatal("ret=false 必须返回非 nil 错误")
+			t.Fatal("ret=false must return a non-nil error")
 		}
 		if !errors.Is(err, native.ErrNativeRejected) {
 			t.Errorf("errors.Is(err, native.ErrNativeRejected) = false; err = %v", err)
@@ -295,14 +295,14 @@ func TestOperationTerminalErrorSemantics(t *testing.T) {
 		// 结果与可辨识失败错误同时给出,快照字段完好(不在 OK
 		// 字段编造结构化原因)。
 		if res.ID != id || res.What != what || res.OK || string(res.Details) != details {
-			t.Fatalf("ret=false 的结果 = %+v, want 字段完好的失败结果", res)
+			t.Fatalf("ret=false result = %+v, want a failure result with intact fields", res)
 		}
 		if got := op.id(); got != id {
-			t.Errorf("已结算后 ID 必须保持可读: got %d, want %d", got, id)
+			t.Errorf("ID must stay readable after settlement: got %d, want %d", got, id)
 		}
 	})
 
-	t.Run("关闭结算返回 ErrClosed 且无结果", func(t *testing.T) {
+	t.Run("close settlement returns ErrClosed with no result", func(t *testing.T) {
 		op := newOperation(id)
 		op.settleClosed()
 
@@ -311,40 +311,40 @@ func TestOperationTerminalErrorSemantics(t *testing.T) {
 			t.Fatalf("errors.Is(err, native.ErrClosed) = false; err = %v", err)
 		}
 		if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-			t.Fatalf("关闭结算必须无结果: %+v", res)
+			t.Fatalf("the close settlement must carry no result: %+v", res)
 		}
 		if got := op.id(); got != id {
-			t.Errorf("已结算后 ID 必须保持可读: got %d, want %d", got, id)
+			t.Errorf("ID must stay readable after settlement: got %d, want %d", got, id)
 		}
 	})
 
-	t.Run("故障结算原样返回首因", func(t *testing.T) {
+	t.Run("fault settlement returns the first cause as is", func(t *testing.T) {
 		op := newOperation(id)
-		cause := fmt.Errorf("事件队列溢出: %w", native.ErrEventOverflow)
+		cause := fmt.Errorf("event queue overflow: %w", native.ErrEventOverflow)
 		op.settleFault(cause)
 
 		res, err := waitGuarded(t, op, context.Background())
 		if !errors.Is(err, cause) {
-			t.Fatalf("errors.Is(err, cause) = false; err = %v, want 首因 %v", err, cause)
+			t.Fatalf("errors.Is(err, cause) = false; err = %v, want first cause %v", err, cause)
 		}
 		if !errors.Is(err, native.ErrEventOverflow) {
 			t.Errorf("errors.Is(err, native.ErrEventOverflow) = false; err = %v", err)
 		}
 		if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-			t.Fatalf("故障结算必须无结果: %+v", res)
+			t.Fatalf("the fault settlement must carry no result: %+v", res)
 		}
 		if got := op.id(); got != id {
-			t.Errorf("已结算后 ID 必须保持可读: got %d, want %d", got, id)
+			t.Errorf("ID must stay readable after settlement: got %d, want %d", got, id)
 		}
 	})
 
-	t.Run("三类终态错误互不可混淆", func(t *testing.T) {
+	t.Run("the three terminal error classes must not be conflated with each other", func(t *testing.T) {
 		nativeOp := newOperation(611)
 		nativeOp.complete(newResultRecord(611, what, false, json.RawMessage(details)))
 		closedOp := newOperation(612)
 		closedOp.settleClosed()
 		faultOp := newOperation(613)
-		cause := fmt.Errorf("首因: %w", native.ErrEventOverflow)
+		cause := fmt.Errorf("first cause: %w", native.ErrEventOverflow)
 		faultOp.settleFault(cause)
 
 		_, nativeErr := waitGuarded(t, nativeOp, context.Background())
@@ -353,24 +353,24 @@ func TestOperationTerminalErrorSemantics(t *testing.T) {
 
 		// 原生失败只含 ErrNativeRejected,不得混入关闭/溢出。
 		if !errors.Is(nativeErr, native.ErrNativeRejected) {
-			t.Errorf("原生失败错误 = %v, want 含 ErrNativeRejected", nativeErr)
+			t.Errorf("native failure error = %v, want it to contain ErrNativeRejected", nativeErr)
 		}
 		if errors.Is(nativeErr, native.ErrClosed) || errors.Is(nativeErr, native.ErrEventOverflow) || errors.Is(nativeErr, cause) {
-			t.Errorf("原生失败错误混入相邻类别: %v", nativeErr)
+			t.Errorf("the native failure error mixed in an adjacent class: %v", nativeErr)
 		}
 		// 关闭只含 ErrClosed。
 		if !errors.Is(closedErr, native.ErrClosed) {
-			t.Errorf("关闭错误 = %v, want 含 ErrClosed", closedErr)
+			t.Errorf("close error = %v, want it to contain ErrClosed", closedErr)
 		}
 		if errors.Is(closedErr, native.ErrNativeRejected) || errors.Is(closedErr, native.ErrEventOverflow) || errors.Is(closedErr, cause) {
-			t.Errorf("关闭错误混入相邻类别: %v", closedErr)
+			t.Errorf("the close error mixed in an adjacent class: %v", closedErr)
 		}
 		// 故障只沿首因链可达,不得混入原生失败/关闭。
 		if !errors.Is(faultErr, cause) || !errors.Is(faultErr, native.ErrEventOverflow) {
-			t.Errorf("故障错误 = %v, want 沿首因链可达 ErrEventOverflow", faultErr)
+			t.Errorf("fault error = %v, want ErrEventOverflow reachable along the first-cause chain", faultErr)
 		}
 		if errors.Is(faultErr, native.ErrNativeRejected) || errors.Is(faultErr, native.ErrClosed) {
-			t.Errorf("故障错误混入相邻类别: %v", faultErr)
+			t.Errorf("the fault error mixed in an adjacent class: %v", faultErr)
 		}
 	})
 }
@@ -380,57 +380,57 @@ func TestOperationTerminalErrorSemantics(t *testing.T) {
 // ctx.Err() 与零值结果,不改写终态、不提前回收 pending 记录;终态
 // 已发布时与取消竞争,已发布终态优先。
 func TestOperationWaitCancellation(t *testing.T) {
-	t.Run("已取消 context 返回 Canceled 且不改写终态、不回收槽位", func(t *testing.T) {
+	t.Run("a cancelled context returns Canceled without rewriting the terminal state or reclaiming the slot", func(t *testing.T) {
 		s := newReadyState(t, 0x0A31, 8)
 		id := AsyncID(21)
-		op := mustAdmitPending(t, s, id, "将被取消等待的提交")
+		op := mustAdmitPending(t, s, id, "submission whose wait will be cancelled")
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
 		res, err := waitGuarded(t, op, ctx)
 		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("已取消 ctx 的等待错误 = %v, want context.Canceled", err)
+			t.Fatalf("wait error with a cancelled ctx = %v, want context.Canceled", err)
 		}
 		if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-			t.Fatalf("取消的等待必须返回零值结果: %+v", res)
+			t.Fatalf("the cancelled wait must return a zero-value result: %+v", res)
 		}
 		// 取消不迁移终态、不提前回收:记录仍在实例 pending 表中。
 		if n := pendingOccupancy(s); n != 1 {
-			t.Fatalf("取消一次等待后 pending 占用 = %d, want 1(取消不提前回收)", n)
+			t.Fatalf("pending occupancy after cancelling one wait = %d, want 1 (cancel does not reclaim early)", n)
 		}
 		// 之后仍可再次等待取得真实结果。
 		s.settleCompletion(completionInfo{ID: id, What: "Click", OK: true, Details: json.RawMessage(`{"ret":true}`)})
 		res2, err2 := waitGuarded(t, op, context.Background())
 		if err2 != nil || res2.ID != id || !res2.OK {
-			t.Fatalf("取消后的再次等待 = (%+v, %v), want 真实完成结果", res2, err2)
+			t.Fatalf("re-wait after cancellation = (%+v, %v), want the real completion result", res2, err2)
 		}
 	})
 
-	t.Run("已到期 deadline 返回 DeadlineExceeded 且可再等待", func(t *testing.T) {
+	t.Run("an expired deadline returns DeadlineExceeded and can wait again", func(t *testing.T) {
 		s := newReadyState(t, 0x0A32, 8)
 		id := AsyncID(22)
-		op := mustAdmitPending(t, s, id, "超时等待的提交")
+		op := mustAdmitPending(t, s, id, "submission whose wait times out")
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
 		defer cancel()
 
 		res, err := waitGuarded(t, op, ctx)
 		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("已到期 deadline 的等待错误 = %v, want context.DeadlineExceeded", err)
+			t.Fatalf("wait error with an expired deadline = %v, want context.DeadlineExceeded", err)
 		}
 		if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-			t.Fatalf("超时的等待必须返回零值结果: %+v", res)
+			t.Fatalf("the timed-out wait must return a zero-value result: %+v", res)
 		}
 		if n := pendingOccupancy(s); n != 1 {
-			t.Fatalf("超时一次等待后 pending 占用 = %d, want 1", n)
+			t.Fatalf("pending occupancy after one timed-out wait = %d, want 1", n)
 		}
 		op.complete(newResultRecord(id, "Click", true, json.RawMessage(`{"ret":true}`)))
 		res2, err2 := waitGuarded(t, op, context.Background())
 		if err2 != nil || res2.ID != id || !res2.OK || string(res2.Details) != `{"ret":true}` {
-			t.Fatalf("超时后的再次等待 = (%+v, %v), want 真实完成结果", res2, err2)
+			t.Fatalf("re-wait after timeout = (%+v, %v), want the real completion result", res2, err2)
 		}
 	})
 
-	t.Run("终态已发布时取消的 ctx 仍取得终态", func(t *testing.T) {
+	t.Run("a cancelled ctx still obtains the terminal state once it is published", func(t *testing.T) {
 		const (
 			rounds = 30
 			id     = AsyncID(23)
@@ -450,10 +450,10 @@ func TestOperationWaitCancellation(t *testing.T) {
 			// 就绪,无论 select 取哪一支,观察到的都必须是稳定终态。
 			res, err := waitGuarded(t, op, ctx)
 			if errors.Is(err, context.Canceled) {
-				t.Fatalf("第 %d 轮:已结算后取消 ctx 的等待被误报为取消(err = %v), want 终态优先", round, err)
+				t.Fatalf("round %d: the wait with a cancelled ctx after settlement was misreported as cancelled (err = %v), want the terminal state to win", round, err)
 			}
 			if err != nil || res.ID != id || !res.OK || string(res.Details) != `{"ret":true}` {
-				t.Fatalf("第 %d 轮:已结算后取消 ctx 的等待 = (%+v, %v), want 终态优先", round, res, err)
+				t.Fatalf("round %d: the wait with a cancelled ctx after settlement = (%+v, %v), want the terminal state to win", round, res, err)
 			}
 		}
 	})
@@ -476,7 +476,7 @@ func TestOperationWaitSnapshotIndependence(t *testing.T) {
 		return op
 	}
 
-	t.Run("改写一次等待的副本不影响缓存与其他等待者", func(t *testing.T) {
+	t.Run("mutating one wait's copy does not affect the cache or other waiters", func(t *testing.T) {
 		op := settledOp(t)
 		w1, _ := waitGuarded(t, op, context.Background())
 		w2, _ := waitGuarded(t, op, context.Background())
@@ -489,11 +489,11 @@ func TestOperationWaitSnapshotIndependence(t *testing.T) {
 		w1.What = "tampered"
 		w1.OK = false
 		if w2.ID != id || w2.What != what || !w2.OK || string(w2.Details) != details {
-			t.Fatalf("改写先前副本影响了另一等待者的结果: %+v", w2)
+			t.Fatalf("mutating an earlier copy affected another waiter's result: %+v", w2)
 		}
 		w3, _ := waitGuarded(t, op, context.Background())
 		if w3.ID != id || w3.What != what || !w3.OK || string(w3.Details) != details {
-			t.Fatalf("改写先前副本影响了缓存: %+v", w3)
+			t.Fatalf("mutating an earlier copy affected the cache: %+v", w3)
 		}
 		// 改写 w2 同理:w1 保持被改写状态(它是调用者拥有的独立数据),
 		// 新快照仍取原始内容。
@@ -502,11 +502,11 @@ func TestOperationWaitSnapshotIndependence(t *testing.T) {
 		}
 		w4, _ := waitGuarded(t, op, context.Background())
 		if string(w4.Details) != details || w4.What != what {
-			t.Fatalf("改写第二份副本影响了缓存: %+v", w4)
+			t.Fatalf("mutating the second copy affected the cache: %+v", w4)
 		}
 	})
 
-	t.Run("并发等待各自改写互不串扰", func(t *testing.T) {
+	t.Run("concurrent waiters mutating their own copies do not crosstalk", func(t *testing.T) {
 		op := settledOp(t)
 		const n = 8
 		var (
@@ -529,11 +529,11 @@ func TestOperationWaitSnapshotIndependence(t *testing.T) {
 		}
 		wg.Wait()
 		if polluted.Load() != 0 {
-			t.Fatalf("%d 个并发等待者取得被污染的副本", polluted.Load())
+			t.Fatalf("%d concurrent waiters obtained polluted copies", polluted.Load())
 		}
 		final, err := waitGuarded(t, op, context.Background())
 		if err != nil || string(final.Details) != details || final.What != what {
-			t.Fatalf("并发改写影响了缓存: (%+v, %v)", final, err)
+			t.Fatalf("concurrent mutation affected the cache: (%+v, %v)", final, err)
 		}
 	})
 }
@@ -545,46 +545,46 @@ func TestOperationWaitSnapshotIndependence(t *testing.T) {
 // 不提前释放槽位。无轮询/reaper 为结构性结论,见文件头代码审查说
 // 明,不做运行时 goroutine 计数。
 func TestPendingOperationOwnershipAndReclaim(t *testing.T) {
-	t.Run("丢弃调用者引用不影响实例关联,结算统一回收", func(t *testing.T) {
+	t.Run("dropping the caller reference does not affect the instance association; settlement reclaims uniformly", func(t *testing.T) {
 		s := newReadyState(t, 0x0A51, 4)
 		id := AsyncID(9)
-		mustAdmitPending(t, s, id, "将被丢弃的提交")
+		mustAdmitPending(t, s, id, "submission to be dropped")
 		// 调用者从此不再持有 *operation:实例关联不受影响。
 		if n := pendingOccupancy(s); n != 1 {
-			t.Fatalf("admit 后 pending 占用 = %d, want 1", n)
+			t.Fatalf("pending occupancy after admit = %d, want 1", n)
 		}
 		s.mu.Lock()
 		_, stillTracked := s.pending[id]
 		s.mu.Unlock()
 		if !stillTracked {
-			t.Fatal("丢弃调用者引用后实例 pending 表必须仍持有该记录")
+			t.Fatal("the instance pending table must still hold the record after the caller reference is dropped")
 		}
 		// 只有最终结算移出记录并回收 PendingOperations 容量。
 		s.settleCompletion(completionInfo{ID: id, What: "DroppedCall", OK: true, Details: json.RawMessage(`{"ret":true}`)})
 		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("结算后 pending 占用 = %d, want 0(容量已回收)", n)
+			t.Fatalf("pending occupancy after settlement = %d, want 0 (capacity reclaimed)", n)
 		}
-		if _, err := s.admitPendingOperation(id, "回收后的新提交"); err != nil {
-			t.Fatalf("回收后同 ID 再次 admit 不得失败: %v", err)
+		if _, err := s.admitPendingOperation(id, "new submission after reclamation"); err != nil {
+			t.Fatalf("re-admitting the same ID after reclamation must not fail: %v", err)
 		}
 	})
 
-	t.Run("取消一次等待不提前释放槽位", func(t *testing.T) {
+	t.Run("cancelling one wait does not release the slot early", func(t *testing.T) {
 		s := newReadyState(t, 0x0A52, 4)
 		id := AsyncID(10)
-		op := mustAdmitPending(t, s, id, "取消后仍占位的提交")
+		op := mustAdmitPending(t, s, id, "submission still holding a slot after cancellation")
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		if _, err := waitGuarded(t, op, ctx); !errors.Is(err, context.Canceled) {
-			t.Fatalf("取消的等待错误 = %v, want context.Canceled", err)
+			t.Fatalf("cancelled wait error = %v, want context.Canceled", err)
 		}
 		// 取消不释放槽位:容量仍被占用,真实完成仍可按 ID 结算。
 		if n := pendingOccupancy(s); n != 1 {
-			t.Fatalf("取消后 pending 占用 = %d, want 1", n)
+			t.Fatalf("pending occupancy after cancel = %d, want 1", n)
 		}
 		s.settleCompletion(completionInfo{ID: id, What: "Click", OK: false, Details: json.RawMessage(`{"ret":false}`)})
 		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("完成结算后 pending 占用 = %d, want 0", n)
+			t.Fatalf("pending occupancy after completion settlement = %d, want 0", n)
 		}
 	})
 }
@@ -596,90 +596,90 @@ func TestPendingOperationOwnershipAndReclaim(t *testing.T) {
 // 分别按各自哨兵拒绝;id==0 与 initializing 阶段准入按编程错误
 // panic。
 func TestAdmitPendingOperationBoundaries(t *testing.T) {
-	t.Run("容量填满拒绝包装 ErrOperationLimit 且实例不故障", func(t *testing.T) {
+	t.Run("full-capacity rejection wraps ErrOperationLimit and the instance does not fault", func(t *testing.T) {
 		s := newReadyState(t, 0x0A61, 2)
-		mustAdmitPending(t, s, AsyncID(1), "第 1 笔")
-		mustAdmitPending(t, s, AsyncID(2), "第 2 笔")
+		mustAdmitPending(t, s, AsyncID(1), "submission 1")
+		mustAdmitPending(t, s, AsyncID(2), "submission 2")
 
-		_, err := s.admitPendingOperation(AsyncID(3), "第 3 笔")
+		_, err := s.admitPendingOperation(AsyncID(3), "submission 3")
 		if err == nil {
-			t.Fatal("容量填满后 admit 必须拒绝")
+			t.Fatal("admit must reject once capacity is full")
 		}
 		if !errors.Is(err, native.ErrOperationLimit) {
 			t.Errorf("errors.Is(err, native.ErrOperationLimit) = false; err = %v", err)
 		}
 		if errors.Is(err, native.ErrClosed) || errors.Is(err, native.ErrClosing) {
-			t.Errorf("容量拒绝不得误标为 closed/closing: %v", err)
+			t.Errorf("the capacity rejection must not be mislabelled as closed/closing: %v", err)
 		}
-		if !strings.Contains(err.Error(), "第 3 笔") {
-			t.Errorf("拒绝错误应携带 what 上下文文本:\n%s", err.Error())
+		if !strings.Contains(err.Error(), "submission 3") {
+			t.Errorf("the rejection error should carry the what context text:\n%s", err.Error())
 		}
 		// 实例不因容量拒绝而故障。
 		if got := s.currentPhase(); got != phaseReady {
-			t.Errorf("容量拒绝后阶段 = %d, want 仍为 ready", got)
+			t.Errorf("phase after the capacity rejection = %d, want still ready", got)
 		}
 		if s.currentFault() != nil {
-			t.Errorf("容量拒绝后首因 = %v, want nil", s.currentFault())
+			t.Errorf("first cause after the capacity rejection = %v, want nil", s.currentFault())
 		}
 		select {
 		case <-s.faultNotify():
-			t.Error("容量拒绝不得触发一次性故障通知")
+			t.Error("the capacity rejection must not trigger the one-shot fault notification")
 		default:
 		}
 		// 被拒的准入不占容量:占用仍为 2。
 		if n := pendingOccupancy(s); n != 2 {
-			t.Fatalf("被拒的 admit 后占用 = %d, want 2(拒绝不占容量)", n)
+			t.Fatalf("occupancy after the rejected admit = %d, want 2 (a rejection consumes no capacity)", n)
 		}
 		// 结算释放后可再 admit;再次填满后再次拒绝。
-		s.settleCompletion(completionInfo{ID: 1, What: "第 1 笔", OK: true, Details: json.RawMessage(`{"ret":true}`)})
+		s.settleCompletion(completionInfo{ID: 1, What: "submission 1", OK: true, Details: json.RawMessage(`{"ret":true}`)})
 		if n := pendingOccupancy(s); n != 1 {
-			t.Fatalf("结算释放后占用 = %d, want 1", n)
+			t.Fatalf("occupancy after settlement released it = %d, want 1", n)
 		}
-		if _, err := s.admitPendingOperation(AsyncID(3), "第 3 笔"); err != nil {
-			t.Fatalf("结算释放后 admit 不得失败: %v", err)
+		if _, err := s.admitPendingOperation(AsyncID(3), "submission 3"); err != nil {
+			t.Fatalf("admit must not fail after settlement released capacity: %v", err)
 		}
-		if _, err := s.admitPendingOperation(AsyncID(4), "第 4 笔"); !errors.Is(err, native.ErrOperationLimit) {
-			t.Fatalf("再次填满后必须再次拒绝: %v", err)
+		if _, err := s.admitPendingOperation(AsyncID(4), "submission 4"); !errors.Is(err, native.ErrOperationLimit) {
+			t.Fatalf("must reject again once capacity is full again: %v", err)
 		}
 	})
 
-	t.Run("closing、faulted、closed 阶段拒绝准入", func(t *testing.T) {
+	t.Run("closing, faulted and closed phases reject admission", func(t *testing.T) {
 		closing := newReadyState(t, 0x0A62, 8)
 		mustElectClose(t, closing)
-		_, err := closing.admitPendingOperation(AsyncID(1), "closing 中的提交")
+		_, err := closing.admitPendingOperation(AsyncID(1), "submission during closing")
 		if !errors.Is(err, native.ErrClosing) {
 			t.Fatalf("errors.Is(err, native.ErrClosing) = false; err = %v", err)
 		}
 		if errors.Is(err, native.ErrClosed) || errors.Is(err, native.ErrOperationLimit) {
-			t.Errorf("closing 拒绝不得误标为相邻类别: %v", err)
+			t.Errorf("the closing rejection must not be mislabelled as an adjacent class: %v", err)
 		}
 
 		faulted := newReadyState(t, 0x0A63, 8)
-		cause := fmt.Errorf("事件队列溢出: %w", native.ErrEventOverflow)
+		cause := fmt.Errorf("event queue overflow: %w", native.ErrEventOverflow)
 		faulted.recordFault(cause)
-		_, err = faulted.admitPendingOperation(AsyncID(2), "faulted 中的提交")
+		_, err = faulted.admitPendingOperation(AsyncID(2), "submission during faulted")
 		if !errors.Is(err, cause) || !errors.Is(err, native.ErrEventOverflow) {
-			t.Fatalf("faulted 拒绝应沿链到达首因: err = %v", err)
+			t.Fatalf("the faulted rejection should reach the first cause along the chain: err = %v", err)
 		}
 		if errors.Is(err, native.ErrClosing) || errors.Is(err, native.ErrClosed) {
-			t.Errorf("faulted 拒绝不得误标为 closing/closed: %v", err)
+			t.Errorf("the faulted rejection must not be mislabelled as closing/closed: %v", err)
 		}
 
 		closed := newClosedState(t, 0x0A64)
-		_, err = closed.admitPendingOperation(AsyncID(3), "closed 中的提交")
+		_, err = closed.admitPendingOperation(AsyncID(3), "submission during closed")
 		if !errors.Is(err, native.ErrClosed) {
 			t.Fatalf("errors.Is(err, native.ErrClosed) = false; err = %v", err)
 		}
 		if errors.Is(err, native.ErrClosing) || errors.Is(err, native.ErrOperationLimit) {
-			t.Errorf("closed 拒绝不得误标为相邻类别: %v", err)
+			t.Errorf("the closed rejection must not be mislabelled as an adjacent class: %v", err)
 		}
 	})
 
-	t.Run("id 为 0 与 initializing 阶段准入 panic", func(t *testing.T) {
+	t.Run("admission panics for id 0 and in the initializing phase", func(t *testing.T) {
 		ready := newReadyState(t, 0x0A65, 8)
-		assertPanics(t, "id 为 0 的 pending 准入", func() { _, _ = ready.admitPendingOperation(0, "零 ID") })
+		assertPanics(t, "pending admission with id 0", func() { _, _ = ready.admitPendingOperation(0, "zero ID") })
 		initializing := newInstanceState(0x0A66, 8, 1_048_576)
-		assertPanics(t, "initializing 阶段的 pending 准入", func() { _, _ = initializing.admitPendingOperation(1, "未发布实例") })
+		assertPanics(t, "pending admission in the initializing phase", func() { _, _ = initializing.admitPendingOperation(1, "unpublished instance") })
 	})
 }
 
@@ -689,66 +689,66 @@ func TestAdmitPendingOperationBoundaries(t *testing.T) {
 // 达的完成消息查不到记录,不能覆盖故障终态;重复故障不重复扫描、
 // 不覆盖首因、不 panic。
 func TestFirstFaultLinearizesPendingOperations(t *testing.T) {
-	t.Run("首因立即统一结算全部未决 pending", func(t *testing.T) {
+	t.Run("the first cause immediately settles all pending operations in one sweep", func(t *testing.T) {
 		s := newReadyState(t, 0x0A71, 8)
-		op1 := mustAdmitPending(t, s, AsyncID(11), "未决 1")
-		op2 := mustAdmitPending(t, s, AsyncID(12), "未决 2")
-		op3 := mustAdmitPending(t, s, AsyncID(13), "未决 3")
+		op1 := mustAdmitPending(t, s, AsyncID(11), "pending 1")
+		op2 := mustAdmitPending(t, s, AsyncID(12), "pending 2")
+		op3 := mustAdmitPending(t, s, AsyncID(13), "pending 3")
 		// 故障前先结算 op2:已结算的成功不得被故障改写。
-		s.settleCompletion(completionInfo{ID: 12, What: "先到成功", OK: true, Details: json.RawMessage(`{"ret":true}`)})
+		s.settleCompletion(completionInfo{ID: 12, What: "earlier success", OK: true, Details: json.RawMessage(`{"ret":true}`)})
 
-		cause := fmt.Errorf("事件队列溢出: %w", native.ErrEventOverflow)
+		cause := fmt.Errorf("event queue overflow: %w", native.ErrEventOverflow)
 		s.recordFault(cause)
 
 		for i, op := range []*operation{op1, op3} {
 			res, err := waitGuarded(t, op, context.Background())
 			if !errors.Is(err, cause) {
-				t.Fatalf("未决项 %d 的错误 = %v, want 首因 %v", i+1, err, cause)
+				t.Fatalf("pending item %d error = %v, want first cause %v", i+1, err, cause)
 			}
 			if errors.Is(err, native.ErrClosed) || errors.Is(err, native.ErrNativeRejected) {
-				t.Errorf("未决项 %d 的故障错误混入相邻类别: %v", i+1, err)
+				t.Errorf("pending item %d fault error mixed in an adjacent class: %v", i+1, err)
 			}
 			if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-				t.Errorf("未决项 %d 的故障结算必须无结果: %+v", i+1, res)
+				t.Errorf("pending item %d fault settlement must carry no result: %+v", i+1, res)
 			}
 		}
 		res2, err2 := waitGuarded(t, op2, context.Background())
 		if err2 != nil || !res2.OK || string(res2.Details) != `{"ret":true}` {
-			t.Fatalf("故障前已结算的成功被改写: (%+v, %v)", res2, err2)
+			t.Fatalf("the success settled before the fault was rewritten: (%+v, %v)", res2, err2)
 		}
 		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("首因扫描后 pending 占用 = %d, want 0", n)
+			t.Fatalf("pending occupancy after the first-cause scan = %d, want 0", n)
 		}
 		if got := s.currentPhase(); got != phaseFaulted {
-			t.Errorf("首因记录后阶段 = %d, want faulted", got)
+			t.Errorf("phase after recording the first cause = %d, want faulted", got)
 		}
 	})
 
-	t.Run("故障后到达的完成不能覆盖故障终态", func(t *testing.T) {
+	t.Run("a completion arriving after the fault must not overwrite the fault terminal state", func(t *testing.T) {
 		s := newReadyState(t, 0x0A72, 8)
 		id := AsyncID(21)
-		op := mustAdmitPending(t, s, id, "故障前未决")
-		cause := fmt.Errorf("首因: %w", native.ErrProtocol)
+		op := mustAdmitPending(t, s, id, "pending before the fault")
+		cause := fmt.Errorf("first cause: %w", native.ErrProtocol)
 		s.recordFault(cause)
 
 		// 故障后完成消息查不到记录,只能按未命中放弃:等待者必须见
 		// 故障而非成功。
-		s.settleCompletion(completionInfo{ID: id, What: "迟到完成", OK: true, Details: json.RawMessage(`{"ret":true}`)})
+		s.settleCompletion(completionInfo{ID: id, What: "late completion", OK: true, Details: json.RawMessage(`{"ret":true}`)})
 		res, err := waitGuarded(t, op, context.Background())
 		if !errors.Is(err, cause) || res.ID != 0 {
-			t.Fatalf("故障后到达的完成改写了终态: (%+v, %v), want 首因故障", res, err)
+			t.Fatalf("the completion arriving after the fault rewrote the terminal state: (%+v, %v), want the first-cause fault", res, err)
 		}
 		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("未命中的完成不得复活记录: 占用 = %d", n)
+			t.Fatalf("a missed completion must not revive the record: occupancy = %d", n)
 		}
 	})
 
-	t.Run("重复故障不重复扫描且不覆盖首因", func(t *testing.T) {
+	t.Run("a duplicate fault neither rescans nor overwrites the first cause", func(t *testing.T) {
 		s := newReadyState(t, 0x0A73, 8)
-		op1 := mustAdmitPending(t, s, AsyncID(31), "未决 A")
-		op2 := mustAdmitPending(t, s, AsyncID(32), "未决 B")
-		first := fmt.Errorf("首因: %w", native.ErrProtocol)
-		second := fmt.Errorf("后到: %w", native.ErrEventOverflow)
+		op1 := mustAdmitPending(t, s, AsyncID(31), "pending A")
+		op2 := mustAdmitPending(t, s, AsyncID(32), "pending B")
+		first := fmt.Errorf("first cause: %w", native.ErrProtocol)
+		second := fmt.Errorf("late: %w", native.ErrEventOverflow)
 
 		s.recordFault(first)
 		// 重复故障不得 panic(重复关闭 faultDone 或重复结算都会在实
@@ -758,16 +758,16 @@ func TestFirstFaultLinearizesPendingOperations(t *testing.T) {
 		for i, op := range []*operation{op1, op2} {
 			_, err := waitGuarded(t, op, context.Background())
 			if !errors.Is(err, first) || errors.Is(err, second) {
-				t.Fatalf("未决项 %d 的错误 = %v, want 首因 %v 且不含后到", i+1, err, first)
+				t.Fatalf("pending item %d error = %v, want first cause %v without the late cause", i+1, err, first)
 			}
 		}
 		if got := s.currentFault(); !errors.Is(got, first) || errors.Is(got, native.ErrEventOverflow) {
-			t.Fatalf("首因被后到故障覆盖: %v", got)
+			t.Fatalf("the first cause was overwritten by the later fault: %v", got)
 		}
 		select {
 		case <-s.faultNotify():
 		default:
-			t.Fatal("首因必须关闭一次性故障通知")
+			t.Fatal("the first cause must close the one-shot fault notification")
 		}
 	})
 }
@@ -776,47 +776,47 @@ func TestFirstFaultLinearizesPendingOperations(t *testing.T) {
 // 阶段把剩余 pending 全部以 ErrClosed 结算一次并清空,表已空时为无
 // 害空操作;非 closing 阶段调用按编程错误 panic。
 func TestSettleRemainingPendingClosingSemantics(t *testing.T) {
-	t.Run("closing 清剩余 pending 为 ErrClosed", func(t *testing.T) {
+	t.Run("closing settles the remaining pending as ErrClosed", func(t *testing.T) {
 		s := newReadyState(t, 0x0A81, 8)
-		op1 := mustAdmitPending(t, s, AsyncID(1), "剩余 1")
-		op2 := mustAdmitPending(t, s, AsyncID(2), "剩余 2")
+		op1 := mustAdmitPending(t, s, AsyncID(1), "remaining 1")
+		op2 := mustAdmitPending(t, s, AsyncID(2), "remaining 2")
 		mustElectClose(t, s)
 
 		s.settleRemainingPending()
 		for i, op := range []*operation{op1, op2} {
 			res, err := waitGuarded(t, op, context.Background())
 			if !errors.Is(err, native.ErrClosed) {
-				t.Fatalf("剩余项 %d 的错误 = %v, want ErrClosed", i+1, err)
+				t.Fatalf("remaining item %d error = %v, want ErrClosed", i+1, err)
 			}
 			if errors.Is(err, native.ErrNativeRejected) || errors.Is(err, native.ErrClosing) {
-				t.Errorf("剩余项 %d 的关闭错误混入相邻类别: %v", i+1, err)
+				t.Errorf("remaining item %d close error mixed in an adjacent class: %v", i+1, err)
 			}
 			if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-				t.Errorf("剩余项 %d 的关闭结算必须无结果: %+v", i+1, res)
+				t.Errorf("remaining item %d close settlement must carry no result: %+v", i+1, res)
 			}
 		}
 		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("关闭清空后占用 = %d, want 0", n)
+			t.Fatalf("occupancy after close drained it = %d, want 0", n)
 		}
 		// 表已空后再次调用为无害空操作,随后可正常走完关闭发布。
 		s.settleRemainingPending()
 		finishClose(t, s, nil)
 		if got := s.currentPhase(); got != phaseClosed {
-			t.Fatalf("清空后完成关闭,阶段 = %d, want closed", got)
+			t.Fatalf("close completed after draining, phase = %d, want closed", got)
 		}
 	})
 
-	t.Run("非 closing 阶段调用 panic", func(t *testing.T) {
+	t.Run("calling in a non-closing phase panics", func(t *testing.T) {
 		ready := newReadyState(t, 0x0A82, 8)
-		mustAdmitPending(t, ready, AsyncID(3), "未决项")
-		assertPanics(t, "ready 阶段 settleRemainingPending", func() { ready.settleRemainingPending() })
+		mustAdmitPending(t, ready, AsyncID(3), "pending item")
+		assertPanics(t, "settleRemainingPending in the ready phase", func() { ready.settleRemainingPending() })
 
 		faulted := newReadyState(t, 0x0A83, 8)
-		faulted.recordFault(fmt.Errorf("故障: %w", native.ErrProtocol))
-		assertPanics(t, "faulted 阶段 settleRemainingPending", func() { faulted.settleRemainingPending() })
+		faulted.recordFault(fmt.Errorf("fault: %w", native.ErrProtocol))
+		assertPanics(t, "settleRemainingPending in the faulted phase", func() { faulted.settleRemainingPending() })
 
 		closed := newClosedState(t, 0x0A84)
-		assertPanics(t, "closed 阶段 settleRemainingPending", func() { closed.settleRemainingPending() })
+		assertPanics(t, "settleRemainingPending in the closed phase", func() { closed.settleRemainingPending() })
 	})
 }
 
@@ -840,76 +840,76 @@ func newSettlementWiredDispatcher(t *testing.T, pendingOperations uint64) (*even
 // 败;未命中 ID 不结算、不故障,事件照常投递(边界:本层
 // 无提交高水位核对,未知/重复完成不归因、不猜测、不计丢失)。
 func TestDispatcherWiringSettlesCompletion(t *testing.T) {
-	t.Run("合法完成先结算后投递,details 原文逐字节保留", func(t *testing.T) {
+	t.Run("a valid completion settles before delivery, details raw preserved byte-for-byte", func(t *testing.T) {
 		d, s := newSettlementWiredDispatcher(t, 16)
 		defer closeAndDrain(t, d)
 		id := AsyncID(42)
 		details := `{"ret":true, "cost":3}` // 内部空白必须原样保留(非紧凑化)
 		payload := asyncCallInfoPayload(id, "Screencap", details)
-		op := mustAdmitPending(t, s, id, "接线提交")
+		op := mustAdmitPending(t, s, id, "wired submission")
 
 		enqueue(t, d, asyncCallInfoMessageID, payload)
 		ev := mustReadEvent(t, d.events())
 		if string(ev.JSON) != string(payload) {
-			t.Fatalf("公开事件原文 = %s, want 逐字节保留的 %s", ev.JSON, payload)
+			t.Fatalf("public event raw = %s, want byte-for-byte preserved %s", ev.JSON, payload)
 		}
 		// 先结算后投递(第 5 步):公开事件可读时,等待必须立即取
 		// 得终态,不得再有任何延迟。
 		res, err := waitGuarded(t, op, context.Background())
 		if err != nil {
-			t.Fatalf("事件可读时等待必须立即返回终态: %v", err)
+			t.Fatalf("the wait must return the terminal state immediately once the event is readable: %v", err)
 		}
 		if res.ID != id || res.What != "Screencap" || !res.OK {
-			t.Fatalf("结算结果 = %+v, want {42 Screencap true}", res)
+			t.Fatalf("settled result = %+v, want {42 Screencap true}", res)
 		}
 		if string(res.Details) != details {
-			t.Fatalf("结算 details = %q, want 与消息中 details 子对象逐字节一致的 %q", res.Details, details)
+			t.Fatalf("settled details = %q, want byte-for-byte identical to the details sub-object in the message %q", res.Details, details)
 		}
 		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("结算后 pending 占用 = %d, want 0", n)
+			t.Fatalf("pending occupancy after settlement = %d, want 0", n)
 		}
 		select {
 		case <-s.faultNotify():
-			t.Fatal("合法完成不得触发故障")
+			t.Fatal("a valid completion must not trigger a fault")
 		default:
 		}
 		if lost := s.currentLostEvents(); lost != 0 {
-			t.Errorf("丢失计数 = %d, want 0", lost)
+			t.Errorf("lost count = %d, want 0", lost)
 		}
 	})
 
-	t.Run("ret=false 消息结算为原生失败", func(t *testing.T) {
+	t.Run("a ret=false message settles as a native failure", func(t *testing.T) {
 		d, s := newSettlementWiredDispatcher(t, 16)
 		defer closeAndDrain(t, d)
 		id := AsyncID(43)
 		payload := asyncCallInfoPayload(id, "Click", `{"ret":false}`)
-		op := mustAdmitPending(t, s, id, "失败完成的提交")
+		op := mustAdmitPending(t, s, id, "submission with a failing completion")
 
 		enqueue(t, d, asyncCallInfoMessageID, payload)
 		mustReadEvent(t, d.events())
 
 		res, err := waitGuarded(t, op, context.Background())
 		if !errors.Is(err, native.ErrNativeRejected) {
-			t.Fatalf("ret=false 的等待错误 = %v, want ErrNativeRejected", err)
+			t.Fatalf("wait error for ret=false = %v, want ErrNativeRejected", err)
 		}
 		if res.ID != id || res.What != "Click" || res.OK || string(res.Details) != `{"ret":false}` {
-			t.Fatalf("ret=false 的结果 = %+v, want 完好快照与失败错误并存", res)
+			t.Fatalf("ret=false result = %+v, want the intact snapshot coexisting with the failure error", res)
 		}
 		if errors.Is(err, native.ErrClosed) || errors.Is(err, native.ErrEventOverflow) {
-			t.Errorf("ret=false 是该 Operation 的正常失败,不得混入生命周期/溢出类别: %v", err)
+			t.Errorf("ret=false is this Operation's normal failure and must not be mixed into the lifecycle/overflow classes: %v", err)
 		}
 		// ret=false 不使实例故障。
 		select {
 		case <-s.faultNotify():
-			t.Fatal("ret=false 不得使实例故障")
+			t.Fatal("ret=false must not fault the instance")
 		default:
 		}
 		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("结算后 pending 占用 = %d, want 0", n)
+			t.Fatalf("pending occupancy after settlement = %d, want 0", n)
 		}
 	})
 
-	t.Run("无窗口的未知 ID 完成为 ErrProtocol 故障,原文仍交付", func(t *testing.T) {
+	t.Run("an unknown-ID completion without a window faults with ErrProtocol, raw still delivered", func(t *testing.T) {
 		//  已接提交高水位与关联语义(无窗口的未知 ID 为
 		// ErrProtocol):不能归因的完成不得静默丢弃矛盾证据,以 ErrProtocol
 		// 故障保留首因;消息原文仍按公开预算交付,pending 记录由首因
@@ -917,34 +917,34 @@ func TestDispatcherWiringSettlesCompletion(t *testing.T) {
 		d, s := newSettlementWiredDispatcher(t, 16)
 		defer closeAndDrain(t, d)
 		id := AsyncID(100)
-		op := mustAdmitPending(t, s, id, "在决提交")
+		op := mustAdmitPending(t, s, id, "unresolved submission")
 
 		unknown := asyncCallInfoPayload(AsyncID(999), "Screencap", `{"ret":true}`)
 		enqueue(t, d, asyncCallInfoMessageID, unknown)
 		ev := mustReadEvent(t, d.events())
 		if string(ev.JSON) != string(unknown) {
-			t.Fatalf("未知完成的事件原文 = %s, want %s", ev.JSON, unknown)
+			t.Fatalf("unknown completion event raw = %s, want %s", ev.JSON, unknown)
 		}
 
 		// 故障即首因:错误链可达 ErrProtocol;记录被首因扫描统一结算,
 		// 等待取得首因而非成功。
 		res, err := waitGuarded(t, op, context.Background())
 		if !errors.Is(err, native.ErrProtocol) {
-			t.Fatalf("未知完成后的等待错误 = %v, want 沿首因链可达 ErrProtocol", err)
+			t.Fatalf("wait error after the unknown completion = %v, want ErrProtocol reachable along the first-cause chain", err)
 		}
 		if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-			t.Fatalf("故障结算必须无结果: %+v", res)
+			t.Fatalf("the fault settlement must carry no result: %+v", res)
 		}
 		if got := s.currentFault(); got == nil || !errors.Is(got, native.ErrProtocol) {
-			t.Fatalf("首因 = %v, want ErrProtocol", got)
+			t.Fatalf("first cause = %v, want ErrProtocol", got)
 		}
 		select {
 		case <-s.faultNotify():
 		default:
-			t.Fatal("未知完成必须触发一次性故障通知")
+			t.Fatal("an unknown completion must trigger the one-shot fault notification")
 		}
 		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("首因扫描后占用 = %d, want 0", n)
+			t.Fatalf("occupancy after the first-cause scan = %d, want 0", n)
 		}
 	})
 }
@@ -954,36 +954,36 @@ func TestDispatcherWiringSettlesCompletion(t *testing.T) {
 // 都是内部不变量破坏,panic;无因故障结算 panic;nil 与零值
 // operation 不可用,结算/等待按实现契约 panic。
 func TestOperationSettlementPanicDiscipline(t *testing.T) {
-	t.Run("重复结算 panic", func(t *testing.T) {
+	t.Run("duplicate settlement panics", func(t *testing.T) {
 		id := AsyncID(41)
 		op := newOperation(id)
 		op.complete(newResultRecord(id, "Click", true, json.RawMessage(`{"ret":true}`)))
-		assertPanics(t, "完成后再完成", func() {
+		assertPanics(t, "complete after complete", func() {
 			op.complete(newResultRecord(id, "Click", true, json.RawMessage(`{"ret":true}`)))
 		})
-		assertPanics(t, "完成后再以关闭结算", func() { op.settleClosed() })
-		assertPanics(t, "完成后再以故障结算", func() {
-			op.settleFault(fmt.Errorf("迟到故障: %w", native.ErrProtocol))
+		assertPanics(t, "settle closed after complete", func() { op.settleClosed() })
+		assertPanics(t, "settle fault after complete", func() {
+			op.settleFault(fmt.Errorf("late fault: %w", native.ErrProtocol))
 		})
 	})
 
-	t.Run("无因故障结算 panic", func(t *testing.T) {
+	t.Run("fault settlement without a cause panics", func(t *testing.T) {
 		op := newOperation(42)
-		assertPanics(t, "cause 为 nil 的 settleFault", func() { op.settleFault(nil) })
+		assertPanics(t, "settleFault with nil cause", func() { op.settleFault(nil) })
 	})
 
-	t.Run("nil 与零值 operation 不可用", func(t *testing.T) {
+	t.Run("nil and zero-value operations are unusable", func(t *testing.T) {
 		// 零值结构体的 done 通道不存在:结算路径 close nil 通道即
 		// panic(恰一次结算纪律的最后防线)。
 		var zero operation
-		assertPanics(t, "零值 operation 完成", func() {
+		assertPanics(t, "zero-value operation complete", func() {
 			zero.complete(newResultRecord(43, "Click", true, json.RawMessage(`{"ret":true}`)))
 		})
-		assertPanics(t, "零值 operation 关闭结算", func() { zero.settleClosed() })
+		assertPanics(t, "zero-value operation close settlement", func() { zero.settleClosed() })
 		// nil 指针:读取任何字段即 panic。
 		var nilOp *operation
-		assertPanics(t, "nil operation 等待", func() { _, _ = nilOp.wait(context.Background()) })
-		assertPanics(t, "nil operation 完成", func() {
+		assertPanics(t, "nil operation wait", func() { _, _ = nilOp.wait(context.Background()) })
+		assertPanics(t, "nil operation complete", func() {
 			nilOp.complete(newResultRecord(44, "Click", true, json.RawMessage(`{"ret":true}`)))
 		})
 	})

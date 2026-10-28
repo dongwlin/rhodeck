@@ -79,24 +79,24 @@ func newQueryRuntime(t *testing.T, caps native.Capabilities, q runtimeQuerier) *
 }
 
 func TestMapLevelKeyQuery(t *testing.T) {
-	t.Run("能力缺席返回 ErrUnsupported 且不触达 native", func(t *testing.T) {
+	t.Run("missing capability returns ErrUnsupported without touching native", func(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, false, false), q)
 		out, err := rt.MapLevelKey("6-16")
 		if out != (MapLevelKey{}) || !errors.Is(err, native.ErrUnsupported) {
-			t.Fatalf("能力缺席 = (%+v, %v), want 零值与 ErrUnsupported", out, err)
+			t.Fatalf("missing capability = (%+v, %v), want zero value and ErrUnsupported", out, err)
 		}
 		if len(q.levelCalls) != 0 {
-			t.Errorf("能力缺席时 mapLevelKey 被调用 %d 次, want 0", len(q.levelCalls))
+			t.Errorf("mapLevelKey called %d times with a missing capability, want 0", len(q.levelCalls))
 		}
 	})
 
-	t.Run("命中四字段转换与输入透传", func(t *testing.T) {
+	t.Run("hit converts four fields and passes input through", func(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		q.levelStages = []*byte{q.cBytes("act1side_stg_3")}
 		q.levelCodes = []*byte{q.cBytes("HV-3")}
 		q.levelLevels = []*byte{q.cBytes("level_act1side_stage3")}
-		q.levelNames = []*byte{q.cBytes("覆潮之地-3")}
+		q.levelNames = []*byte{q.cBytes("Undertide Land-3")}
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, true, false), q)
 
 		out, err := rt.MapLevelKey("HV-3")
@@ -104,29 +104,29 @@ func TestMapLevelKeyQuery(t *testing.T) {
 			t.Fatalf("MapLevelKey = %v, want nil", err)
 		}
 		want := MapLevelKey{StageID: "act1side_stg_3", Code: "HV-3",
-			LevelID: "level_act1side_stage3", Name: "覆潮之地-3"}
+			LevelID: "level_act1side_stage3", Name: "Undertide Land-3"}
 		if out != want {
-			t.Fatalf("MapLevelKey = %+v, want %+v(四字段按 C 成员顺序)", out, want)
+			t.Fatalf("MapLevelKey = %+v, want %+v (four fields in C member order)", out, want)
 		}
 		if len(q.levelCalls) != 1 || q.levelCalls[0] != "HV-3" {
-			t.Fatalf("收到 key = %v, want 原样透传", q.levelCalls)
+			t.Fatalf("received key = %v, want it passed through unchanged", q.levelCalls)
 		}
 	})
 
-	t.Run("全 NULL struct 转换为零值即未找到", func(t *testing.T) {
+	t.Run("all-NULL struct converts to the zero value meaning not found", func(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		q.nilLevelAll = true
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, true, false), q)
 		out, err := rt.MapLevelKey("missing")
 		if err != nil {
-			t.Fatalf("未找到时错误 = %v, want nil(零值即未找到)", err)
+			t.Fatalf("error on not-found = %v, want nil (the zero value means not found)", err)
 		}
 		if out != (MapLevelKey{}) {
-			t.Fatalf("未找到 = %+v, want 零值 MapLevelKey", out)
+			t.Fatalf("not found = %+v, want a zero-value MapLevelKey", out)
 		}
 	})
 
-	t.Run("界内无 NUL 是协议破坏", func(t *testing.T) {
+	t.Run("no NUL within bounds is a protocol violation", func(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		// 扫描窗口是 queryBorrowedStringLimit+1 字节:满长度分配且
 		// 全程无 NUL,使「界内无 NUL」确定可辨。
@@ -141,84 +141,84 @@ func TestMapLevelKeyQuery(t *testing.T) {
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, true, false), q)
 		out, err := rt.MapLevelKey("k")
 		if out != (MapLevelKey{}) || !errors.Is(err, native.ErrProtocol) {
-			t.Fatalf("界内无 NUL = (%+v, %v), want 零值与 ErrProtocol", out, err)
+			t.Fatalf("no NUL within bounds = (%+v, %v), want zero value and ErrProtocol", out, err)
 		}
 	})
 
-	t.Run("内嵌 NUL 输入在纯 Go 校验拒绝", func(t *testing.T) {
+	t.Run("embedded NUL input rejected by pure Go validation", func(t *testing.T) {
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, true, false), newFakeRuntimeQuerier())
 		if _, err := rt.MapLevelKey("a\x00b"); !errors.Is(err, native.ErrInvalidInput) {
-			t.Fatalf("内嵌 NUL = %v, want ErrInvalidInput", err)
+			t.Fatalf("embedded NUL = %v, want ErrInvalidInput", err)
 		}
 	})
 
-	t.Run("生命周期终止拒绝", func(t *testing.T) {
+	t.Run("terminated lifecycle rejects", func(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, true, false), q)
 		rt.gate.terminate(nil)
 		if _, err := rt.MapLevelKey("k"); !errors.Is(err, native.ErrRuntimeTerminated) {
-			t.Fatalf("终止后 = %v, want ErrRuntimeTerminated", err)
+			t.Fatalf("after termination = %v, want ErrRuntimeTerminated", err)
 		}
 	})
 }
 
 func TestItemNameQuery(t *testing.T) {
-	t.Run("能力缺席返回 ErrUnsupported 且不触达 native", func(t *testing.T) {
+	t.Run("missing capability returns ErrUnsupported without touching native", func(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, false, false), q)
 		name, err := rt.ItemName("0111")
 		if name != "" || !errors.Is(err, native.ErrUnsupported) {
-			t.Fatalf("能力缺席 = (%q, %v), want 空串与 ErrUnsupported", name, err)
+			t.Fatalf("missing capability = (%q, %v), want empty string and ErrUnsupported", name, err)
 		}
 		if len(q.itemCalls) != 0 {
-			t.Errorf("能力缺席时 itemName 被调用 %d 次, want 0", len(q.itemCalls))
+			t.Errorf("itemName called %d times with a missing capability, want 0", len(q.itemCalls))
 		}
 	})
 
-	t.Run("空 Id 与已知 Id 的借用复制", func(t *testing.T) {
+	t.Run("borrowed copy for empty and known IDs", func(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		unknown := q.cBytes("")
-		q.itemReturns = []*byte{q.cBytes("Unknown"), q.cBytes("招聘许可")}
+		q.itemReturns = []*byte{q.cBytes("Unknown"), q.cBytes("Recruitment Permit")}
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, false, true), q)
 
 		unknownName, err := rt.ItemName("")
 		if err != nil || unknownName != "Unknown" {
-			t.Fatalf("空 Id = (%q, %v), want Unknown 与 nil(空 Id 是合法查询)", unknownName, err)
+			t.Fatalf("empty ID = (%q, %v), want Unknown and nil (an empty ID is a valid query)", unknownName, err)
 		}
 		name, err := rt.ItemName("4003")
-		if err != nil || name != "招聘许可" {
-			t.Fatalf("已知 Id = (%q, %v), want 招聘许可与 nil", name, err)
+		if err != nil || name != "Recruitment Permit" {
+			t.Fatalf("known ID = (%q, %v), want Recruitment Permit and nil", name, err)
 		}
 		if len(q.itemCalls) != 2 || q.itemCalls[0] != "" || q.itemCalls[1] != "4003" {
-			t.Fatalf("收到 id 序列 = %v, want 原样透传", q.itemCalls)
+			t.Fatalf("received id sequence = %v, want it passed through unchanged", q.itemCalls)
 		}
 		_ = unknown
 	})
 
-	t.Run("非法 UTF-8 是协议破坏", func(t *testing.T) {
+	t.Run("invalid UTF-8 is a protocol violation", func(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		q.itemReturns = []*byte{q.cBytes("\xff\xfe")}
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, false, true), q)
 		if _, err := rt.ItemName("x"); !errors.Is(err, native.ErrProtocol) {
-			t.Fatalf("非法 UTF-8 = %v, want ErrProtocol", err)
+			t.Fatalf("invalid UTF-8 = %v, want ErrProtocol", err)
 		}
 	})
 
-	t.Run("nil 返回是协议破坏", func(t *testing.T) {
+	t.Run("nil return is a protocol violation", func(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		q.nilItemRet = true
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, false, true), q)
 		if _, err := rt.ItemName("x"); !errors.Is(err, native.ErrProtocol) {
-			t.Fatalf("nil 返回 = %v, want ErrProtocol(C 契约恒非 NULL)", err)
+			t.Fatalf("nil return = %v, want ErrProtocol (the C contract is never NULL)", err)
 		}
 	})
 
-	t.Run("终止后拒绝且错误可辨", func(t *testing.T) {
+	t.Run("rejects after termination with a distinguishable error", func(t *testing.T) {
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, false, true), newFakeRuntimeQuerier())
 		rt.gate.terminate(errors.New("boom"))
 		_, err := rt.ItemName("x")
 		if !errors.Is(err, native.ErrRuntimeTerminated) || !strings.Contains(err.Error(), "boom") {
-			t.Fatalf("终止后 = %v, want 附首因的 ErrRuntimeTerminated", err)
+			t.Fatalf("after termination = %v, want ErrRuntimeTerminated carrying the first cause", err)
 		}
 	})
 }

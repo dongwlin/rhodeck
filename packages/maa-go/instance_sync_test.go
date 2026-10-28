@@ -52,21 +52,21 @@ func TestAppendTaskPassesUnknownTypeAndJSONVerbatim(t *testing.T) {
 		t.Errorf("AppendTask id = %d, want 123", id)
 	}
 	if got := rig.caller.count("appendTask"); got != 1 {
-		t.Fatalf("AppendTask 调用次数 = %d, want 1", got)
+		t.Fatalf("AppendTask call count = %d, want 1", got)
 	}
 	rec := rig.caller.appendRecord(0)
 	if rec.handle != handle {
-		t.Errorf("AppendTask 收到 handle %#x, want %#x(实例唯一受门控句柄)", rec.handle, handle)
+		t.Errorf("AppendTask received handle %#x, want %#x (the unique gated handle of the instance)", rec.handle, handle)
 	}
 	if rec.taskType != taskType {
-		t.Errorf("AppendTask taskType = %q, want %q(未知任务类型原样透传)", rec.taskType, taskType)
+		t.Errorf("AppendTask taskType = %q, want %q (unknown task type passed through as-is)", rec.taskType, taskType)
 	}
 	if rec.params != string(raw) {
-		t.Errorf("AppendTask params 逐字节透传被破坏:\n got %q\nwant %q", rec.params, string(raw))
+		t.Errorf("AppendTask params byte-for-byte passthrough broken:\n got %q\nwant %q", rec.params, string(raw))
 	}
 	for _, want := range []string{"unknown_field", "9007199254740993", `a\u0000b`} {
 		if !strings.Contains(rec.params, want) {
-			t.Errorf("AppendTask params 应保留 %q:\n%s", want, rec.params)
+			t.Errorf("AppendTask params should preserve %q:\n%s", want, rec.params)
 		}
 	}
 
@@ -74,16 +74,16 @@ func TestAppendTaskPassesUnknownTypeAndJSONVerbatim(t *testing.T) {
 	rig.caller.appendRet = 0
 	id, err = inst.AppendTask(taskType, json.RawMessage(`{}`))
 	if id != 0 {
-		t.Errorf("提交失败时 id = %d, want 0", id)
+		t.Errorf("id on submission failure = %d, want 0", id)
 	}
 	if !errors.Is(err, native.ErrNativeRejected) {
-		t.Errorf("提交失败 err = %v, want errors.Is native.ErrNativeRejected", err)
+		t.Errorf("submission failure err = %v, want errors.Is native.ErrNativeRejected", err)
 	}
 	if !strings.Contains(err.Error(), "AsstAppendTask") {
-		t.Errorf("错误应指明接口:\n%s", err.Error())
+		t.Errorf("the error should name the interface:\n%s", err.Error())
 	}
 	if got := rig.caller.count("appendTask"); got != 2 {
-		t.Errorf("AppendTask 调用次数 = %d, want 2", got)
+		t.Errorf("AppendTask call count = %d, want 2", got)
 	}
 }
 
@@ -97,26 +97,26 @@ func TestAcceptedRequestsAreNotTaskCompletion(t *testing.T) {
 	inst, rig := newSyncRig(t, handle)
 	params := json.RawMessage(`{"stage":"1-7"}`)
 
-	t.Run("SetTaskParams 接受为恰 nil,拒绝为 ErrNativeRejected", func(t *testing.T) {
+	t.Run("SetTaskParams accepts as exactly nil, rejects with ErrNativeRejected", func(t *testing.T) {
 		if err := inst.SetTaskParams(7, params); err != nil {
-			t.Fatalf("SetTaskParams = %v, want 恰 nil(接受≠完成)", err)
+			t.Fatalf("SetTaskParams = %v, want exactly nil (accepted != completed)", err)
 		}
 		rec := rig.caller.setParamsRecord(0)
 		if rec.handle != handle || rec.id != 7 || rec.params != string(params) {
-			t.Errorf("SetTaskParams 调用记录 = %+v, want handle %#x、id 7、params 逐字节透传", rec, handle)
+			t.Errorf("SetTaskParams call record = %+v, want handle %#x, id 7, params passed through byte-for-byte", rec, handle)
 		}
 		if err := inst.SetTaskParams(-5, params); err != nil {
-			t.Fatalf("SetTaskParams(-5) = %v, want 恰 nil", err)
+			t.Fatalf("SetTaskParams(-5) = %v, want exactly nil", err)
 		}
 		if got := rig.caller.setParamsRecord(1).id; got != -5 {
-			t.Errorf("SetTaskParams id = %d, want -5(int32 符号位保留)", got)
+			t.Errorf("SetTaskParams id = %d, want -5 (int32 sign bit preserved)", got)
 		}
 		rig.caller.setParamsRet = 0
 		if err := inst.SetTaskParams(7, params); !errors.Is(err, native.ErrNativeRejected) {
-			t.Errorf("被拒 SetTaskParams = %v, want errors.Is native.ErrNativeRejected", err)
+			t.Errorf("rejected SetTaskParams = %v, want errors.Is native.ErrNativeRejected", err)
 		}
 	})
-	t.Run("Start/Stop/BackToHome 接受为恰 nil,拒绝为 ErrNativeRejected", func(t *testing.T) {
+	t.Run("Start/Stop/BackToHome accept as exactly nil, reject with ErrNativeRejected", func(t *testing.T) {
 		type entry struct {
 			name  string
 			call  func() error
@@ -129,13 +129,13 @@ func TestAcceptedRequestsAreNotTaskCompletion(t *testing.T) {
 		}
 		for i, e := range entries {
 			if err := e.call(); err != nil {
-				t.Fatalf("%s = %v, want 恰 nil(接受≠任务已完成)", e.name, err)
+				t.Fatalf("%s = %v, want exactly nil (accepted != task completed)", e.name, err)
 			}
 			if got := e.calls(); got != 1 {
-				t.Errorf("%s 调用次数 = %d, want 1", e.name, got)
+				t.Errorf("%s call count = %d, want 1", e.name, got)
 			}
 			if rec := rig.caller.boolRecord(i); rec.handle != handle {
-				t.Errorf("%s 收到 handle %#x, want %#x", e.name, rec.handle, handle)
+				t.Errorf("%s received handle %#x, want %#x", e.name, rec.handle, handle)
 			}
 		}
 		for _, name := range []string{"start", "stop", "backToHome"} {
@@ -150,7 +150,7 @@ func TestAcceptedRequestsAreNotTaskCompletion(t *testing.T) {
 				err = inst.BackToHome()
 			}
 			if !errors.Is(err, native.ErrNativeRejected) {
-				t.Errorf("被拒 %s = %v, want errors.Is native.ErrNativeRejected", name, err)
+				t.Errorf("rejected %s = %v, want errors.Is native.ErrNativeRejected", name, err)
 			}
 		}
 		delete(rig.caller.boolRets, "start")
@@ -211,38 +211,38 @@ func TestSyncEntriesRejectByLifecycle(t *testing.T) {
 		}
 	}
 
-	t.Run("closed 阶段拒绝全部入口且无原生副作用", func(t *testing.T) {
+	t.Run("closed phase rejects all entries with no native side effects", func(t *testing.T) {
 		inst, rig := newSyncRig(t, 0xE220)
 		if err := inst.Close(); err != nil {
 			t.Fatalf("Close = %v, want nil", err)
 		}
 		for i, err := range allEntries(inst) {
 			if !errors.Is(err, native.ErrClosed) {
-				t.Errorf("入口 %d = %v, want errors.Is native.ErrClosed", i, err)
+				t.Errorf("entry %d = %v, want errors.Is native.ErrClosed", i, err)
 			}
 		}
 		if got := rig.caller.total(); got != 0 {
-			t.Errorf("closed 后业务调用次数 = %d, want 0(不绕过状态调用)", got)
+			t.Errorf("business call count after closed = %d, want 0 (does not bypass the state calls)", got)
 		}
 	})
-	t.Run("faulted 阶段拒绝全部入口且错误链可达首因", func(t *testing.T) {
+	t.Run("faulted phase rejects all entries with the first cause reachable along the chain", func(t *testing.T) {
 		inst, rig := newSyncRig(t, 0xE221)
 		cause := fmt.Errorf("fake: first fault: %w", native.ErrProtocol)
 		inst.inst.state.recordFault(cause)
 		for i, err := range allEntries(inst) {
 			if !errors.Is(err, cause) || !errors.Is(err, native.ErrProtocol) {
-				t.Errorf("入口 %d = %v, want 沿错误链可达首因与 native.ErrProtocol", i, err)
+				t.Errorf("entry %d = %v, want the first cause and native.ErrProtocol reachable along the error chain", i, err)
 			}
 		}
 		if got := rig.caller.total(); got != 0 {
-			t.Errorf("faulted 后业务调用次数 = %d, want 0(不绕过状态调用)", got)
+			t.Errorf("business call count after faulted = %d, want 0 (does not bypass the state calls)", got)
 		}
 		// faulted 后关闭仍可完成(异常路径进入 faulted 后关闭)。
 		if err := inst.Close(); !errors.Is(err, cause) {
-			t.Errorf("faulted 后 Close = %v, want 首因", err)
+			t.Errorf("Close after faulted = %v, want the first cause", err)
 		}
 	})
-	t.Run("closing 阶段拒绝全部入口", func(t *testing.T) {
+	t.Run("closing phase rejects all entries", func(t *testing.T) {
 		inst, rig := newSyncRig(t, 0xE222)
 		entered := make(chan struct{})
 		release := make(chan struct{})
@@ -256,11 +256,11 @@ func TestSyncEntriesRejectByLifecycle(t *testing.T) {
 		<-entered
 		for i, err := range allEntries(inst) {
 			if !errors.Is(err, native.ErrClosing) {
-				t.Errorf("closing 中入口 %d = %v, want errors.Is native.ErrClosing", i, err)
+				t.Errorf("entry %d during closing = %v, want errors.Is native.ErrClosing", i, err)
 			}
 		}
 		if got := rig.caller.total(); got != 0 {
-			t.Errorf("closing 中业务调用次数 = %d, want 0(不绕过状态调用)", got)
+			t.Errorf("business call count during closing = %d, want 0 (does not bypass the state calls)", got)
 		}
 		close(release)
 		select {
@@ -269,7 +269,7 @@ func TestSyncEntriesRejectByLifecycle(t *testing.T) {
 				t.Fatalf("Close = %v, want nil", err)
 			}
 		case <-time.After(hangGuard):
-			t.Fatal("Close 未在防挂死上限内完成")
+			t.Fatal("Close did not complete within the hang-guard deadline")
 		}
 	})
 }
@@ -287,23 +287,23 @@ func TestInvalidInputFailsBeforeNative(t *testing.T) {
 		raw  json.RawMessage
 	}{
 		{"nil", nil},
-		{"空白", json.RawMessage("   ")},
+		{"blank", json.RawMessage("   ")},
 		{"null", json.RawMessage(`null`)},
-		{"数组", json.RawMessage(`[1,2]`)},
-		{"标量", json.RawMessage(`42`)},
-		{"截断", json.RawMessage(`{"a":`)},
-		{"尾随第二个值", json.RawMessage(`{"a":1} {"b":2}`)},
-		{"实际 NUL", json.RawMessage("{\"a\":\"\x00\"}")},
-		{"非法 UTF-8", json.RawMessage("{\"a\":\"\xff\xfe\"}")},
+		{"array", json.RawMessage(`[1,2]`)},
+		{"scalar", json.RawMessage(`42`)},
+		{"truncated", json.RawMessage(`{"a":`)},
+		{"trailing second value", json.RawMessage(`{"a":1} {"b":2}`)},
+		{"actual NUL", json.RawMessage("{\"a\":\"\x00\"}")},
+		{"invalid UTF-8", json.RawMessage("{\"a\":\"\xff\xfe\"}")},
 	}
 	t.Run("AppendTask", func(t *testing.T) {
 		badTypes := []struct {
 			what string
 			typ  string
 		}{
-			{"空 taskType", ""},
-			{"内嵌 NUL", "a\x00b"},
-			{"非法 UTF-8", string([]byte{0xff, 0xfe})},
+			{"empty taskType", ""},
+			{"embedded NUL", "a\x00b"},
+			{"invalid UTF-8", string([]byte{0xff, 0xfe})},
 		}
 		for _, tc := range badTypes {
 			_, err := inst.AppendTask(tc.typ, json.RawMessage(`{}`))
@@ -327,7 +327,7 @@ func TestInvalidInputFailsBeforeNative(t *testing.T) {
 	})
 	// 全部非法输入(含正确输入的对照组之外)都未触达任何原生业务调用。
 	if got := rig.caller.total(); got != 0 {
-		t.Errorf("非法输入的业务调用次数 = %d, want 0(raw 前失败)", got)
+		t.Errorf("business call count with invalid input = %d, want 0 (fails before raw)", got)
 	}
 }
 
@@ -343,18 +343,18 @@ func TestLogReturnsOnlyInputOrLifecycleErrors(t *testing.T) {
 	rt := &Runtime{limits: defaultLimits(), gate: gate, logger: logger}
 
 	if err := rt.Log("info", "hello binding"); err != nil {
-		t.Fatalf("Log = %v, want nil(无输入/生命周期错误即无错误)", err)
+		t.Fatalf("Log = %v, want nil (no input/lifecycle error means no error)", err)
 	}
 	rec := logger.record(0)
 	if rec.level != "info" || rec.message != "hello binding" {
-		t.Errorf("Log 记录 = %+v, want level/message 逐字节透传", rec)
+		t.Errorf("Log record = %+v, want level/message passed through byte-for-byte", rec)
 	}
 	// 空串允许,由 Core 解释。
 	if err := rt.Log("", ""); err != nil {
-		t.Errorf("Log(空串) = %v, want nil", err)
+		t.Errorf("Log(empty string) = %v, want nil", err)
 	}
 	if rec := logger.record(1); rec.level != "" || rec.message != "" {
-		t.Errorf("Log 空串记录 = %+v, want 空串透传", rec)
+		t.Errorf("Log empty-string record = %+v, want empty-string passthrough", rec)
 	}
 
 	// 生命周期终止后:错误包装 ErrRuntimeTerminated,native 不再触达。
@@ -362,13 +362,13 @@ func TestLogReturnsOnlyInputOrLifecycleErrors(t *testing.T) {
 	gate.terminate(cause)
 	err := rt.Log("info", "after termination")
 	if !errors.Is(err, native.ErrRuntimeTerminated) {
-		t.Errorf("终止后 Log = %v, want errors.Is native.ErrRuntimeTerminated", err)
+		t.Errorf("Log after termination = %v, want errors.Is native.ErrRuntimeTerminated", err)
 	}
 	if !strings.Contains(err.Error(), "terminated cause") {
-		t.Errorf("终止诊断应附首个失败原因文本:\n%s", err.Error())
+		t.Errorf("termination diagnostics should attach the first failure cause text:\n%s", err.Error())
 	}
 	if got := logger.count(); got != 2 {
-		t.Errorf("终止后 Log 调用次数 = %d, want 仍为 2(生命周期前失败)", got)
+		t.Errorf("Log call count after termination = %d, want still 2 (fails before the lifecycle)", got)
 	}
 }
 
@@ -387,17 +387,17 @@ func TestLogInputFailsBeforeNative(t *testing.T) {
 		level   string
 		message string
 	}{
-		{"level 内嵌 NUL", "in\x00fo", "x"},
-		{"message 非法 UTF-8", "info", string([]byte{0xff, 0xfe})},
-		{"message 超单字符串预算", "info", strings.Repeat("a", 17)},
-		{"合计超 ConfigBytes", "ab", strings.Repeat("b", 19)},
+		{"embedded NUL in level", "in\x00fo", "x"},
+		{"invalid UTF-8 in message", "info", string([]byte{0xff, 0xfe})},
+		{"message exceeds the single-string budget", "info", strings.Repeat("a", 17)},
+		{"total exceeds ConfigBytes", "ab", strings.Repeat("b", 19)},
 	}
 	for _, tc := range cases {
 		if err := rt.Log(tc.level, tc.message); !errors.Is(err, native.ErrInvalidInput) {
 			t.Errorf("%s: err = %v, want errors.Is native.ErrInvalidInput", tc.what, err)
 		}
 		if got := logger.count(); got != 0 {
-			t.Fatalf("%s: Log 调用次数 = %d, want 0(raw 前失败)", tc.what, got)
+			t.Fatalf("%s: Log call count = %d, want 0 (fails before raw)", tc.what, got)
 		}
 	}
 }
@@ -462,10 +462,10 @@ func TestSyncEntriesShareSingleRawGate(t *testing.T) {
 		_, err := inst.AppendTask("Fighting", json.RawMessage(`{}`))
 		errAppend <- err
 	}()
-	waitUntil(t, "AppendTask 已准入并在门禁前排队", func() bool { return inFlightCalls(inst.inst.state) == 2 })
+	waitUntil(t, "AppendTask admitted and queued before the gate", func() bool { return inFlightCalls(inst.inst.state) == 2 })
 	<-time.After(notWithin)
 	if got := rig.caller.count("appendTask"); got != 0 {
-		t.Fatalf("同一 raw 门禁被 Start 占据时 AppendTask 已进入 native %d 次", got)
+		t.Fatalf("AppendTask entered native %d times while the same raw gate is held by Start", got)
 	}
 
 	close(release)
@@ -482,14 +482,14 @@ func TestSyncEntriesShareSingleRawGate(t *testing.T) {
 				t.Fatalf("%s = %v, want nil", wait.what, err)
 			}
 		case <-time.After(hangGuard):
-			t.Fatalf("%s 未在防挂死上限内完成", wait.what)
+			t.Fatalf("%s did not complete within the hang-guard deadline", wait.what)
 		}
 	}
 	if got := rig.caller.count("appendTask"); got != 1 {
-		t.Errorf("放行后 AppendTask 调用次数 = %d, want 1", got)
+		t.Errorf("AppendTask call count after release = %d, want 1", got)
 	}
 	if got := rig.caller.count("start"); got != 1 {
-		t.Errorf("放行后 Start 调用次数 = %d, want 1", got)
+		t.Errorf("Start call count after release = %d, want 1", got)
 	}
 }
 
@@ -519,17 +519,17 @@ func TestCloseWaitsQueuedSyncEntries(t *testing.T) {
 		_, err := inst.AppendTask("Fighting", json.RawMessage(`{}`))
 		errAppend <- err
 	}()
-	waitUntil(t, "排队调用已准入", func() bool { return inFlightCalls(inst.inst.state) == 2 })
+	waitUntil(t, "queued call admitted", func() bool { return inFlightCalls(inst.inst.state) == 2 })
 
 	closeErr := make(chan error, 1)
 	go func() { closeErr <- inst.Close() }()
-	waitUntil(t, "close 完成选主转入 closing", func() bool { return inst.inst.state.currentPhase() == phaseClosing })
+	waitUntil(t, "close won the election and transitioned to closing", func() bool { return inst.inst.state.currentPhase() == phaseClosing })
 	<-time.After(notWithin)
 	if got := rig.closer.count("stop"); got != 0 {
-		t.Fatalf("在途同步调用未退出时 Stop 已被调用 %d 次", got)
+		t.Fatalf("Stop called %d times while in-flight sync calls have not exited", got)
 	}
 	if got := rig.closer.count("destroy"); got != 0 {
-		t.Fatalf("在途同步调用未退出时 Destroy 已被调用 %d 次", got)
+		t.Fatalf("Destroy called %d times while in-flight sync calls have not exited", got)
 	}
 
 	// 放行 Start:排队中的 AppendTask 转入门禁段照常完成(先于关闭
@@ -541,15 +541,15 @@ func TestCloseWaitsQueuedSyncEntries(t *testing.T) {
 			t.Fatalf("Start = %v, want nil", err)
 		}
 	case <-time.After(hangGuard):
-		t.Fatal("Start 未在防挂死上限内完成")
+		t.Fatal("Start did not complete within the hang-guard deadline")
 	}
 	select {
 	case err := <-errAppend:
 		if err != nil {
-			t.Fatalf("排队中的 AppendTask = %v, want nil(已准入调用不被关闭撤销)", err)
+			t.Fatalf("queued AppendTask = %v, want nil (admitted calls are not revoked by close)", err)
 		}
 	case <-time.After(hangGuard):
-		t.Fatal("AppendTask 未在防挂死上限内完成")
+		t.Fatal("AppendTask did not complete within the hang-guard deadline")
 	}
 	select {
 	case err := <-closeErr:
@@ -557,12 +557,12 @@ func TestCloseWaitsQueuedSyncEntries(t *testing.T) {
 			t.Fatalf("Close = %v, want nil", err)
 		}
 	case <-time.After(hangGuard):
-		t.Fatal("Close 未在防挂死上限内完成")
+		t.Fatal("Close did not complete within the hang-guard deadline")
 	}
 	if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-		t.Fatalf("native 调用序列 = %v, want [stop destroy]", seq)
+		t.Fatalf("native call sequence = %v, want [stop destroy]", seq)
 	}
 	if got := rig.closer.destroyHandles[0]; got != handle {
-		t.Errorf("Destroy 收到 handle %#x, want %#x", got, handle)
+		t.Errorf("Destroy received handle %#x, want %#x", got, handle)
 	}
 }

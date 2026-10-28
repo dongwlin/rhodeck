@@ -43,7 +43,7 @@ func checkerTarballPath() (string, error) {
 	}
 	cache, err := os.UserCacheDir()
 	if err != nil {
-		return "", fmt.Errorf("%w: 无法定位用户缓存目录: %v", errTarballMissing, err)
+		return "", fmt.Errorf("%w: cannot locate the user cache directory: %v", errTarballMissing, err)
 	}
 	return filepath.Join(cache, "maa", "MAA-v6.20.1-linux-x86_64.tar.gz"), nil
 }
@@ -70,15 +70,15 @@ func sha256File(path string) (string, error) {
 func requireRealCInput(t *testing.T) string {
 	t.Helper()
 	if runtime.GOARCH != "amd64" {
-		t.Skipf("真实头验收受阻:当前架构 %s 不在锁定基线(linux amd64)内", runtime.GOARCH)
+		t.Skipf("real-header acceptance blocked: architecture %s is outside the locked baseline (linux amd64)", runtime.GOARCH)
 	}
 	tarball, err := checkerTarballPath()
 	if err != nil {
-		t.Skipf("真实头验收受阻: %v", err)
+		t.Skipf("real-header acceptance blocked: %v", err)
 	}
 	if _, err := os.Stat(tarball); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			t.Skipf("真实头验收受阻:锁定发行包缺失(%s)", tarball)
+			t.Skipf("real-header acceptance blocked: locked release tarball missing (%s)", tarball)
 		}
 		t.Fatalf("stat %s: %v", tarball, err)
 	}
@@ -87,7 +87,7 @@ func requireRealCInput(t *testing.T) string {
 		t.Fatalf("hash %s: %v", tarball, err)
 	}
 	if got != lockedReleaseTarballSHA256 {
-		t.Fatalf("发行包 SHA256 = %s, want %s (锁定基线被破坏)", got, lockedReleaseTarballSHA256)
+		t.Fatalf("release tarball SHA256 = %s, want %s (locked baseline broken)", got, lockedReleaseTarballSHA256)
 	}
 
 	members := map[string]string{ // 归档成员名 → 归档相对路径
@@ -99,7 +99,7 @@ func requireRealCInput(t *testing.T) string {
 	digests := map[string]string{}
 	dir := t.TempDir()
 	if err := extractHeaderMembers(tarball, dir, members, digests); err != nil {
-		t.Fatalf("解包锁定成员失败: %v", err)
+		t.Fatalf("extracting the locked members failed: %v", err)
 	}
 
 	// 成员字节摘要必须等于 checker 内部 profile 常量;不符即 Fail,
@@ -107,7 +107,7 @@ func requireRealCInput(t *testing.T) string {
 	for _, key := range []string{FileAsstCaller, FileAsstPort, FileAsstCallerExtra} {
 		want := profile.Files[key]
 		if digests[key] != want.SHA256 {
-			t.Fatalf("%s 成员 SHA256 = %s, want %s (与 checker 内部 profile 常量不符)",
+			t.Fatalf("%s member SHA256 = %s, want %s (does not match the checker's internal profile constant)",
 				key, digests[key], want.SHA256)
 		}
 	}
@@ -178,7 +178,7 @@ func extractHeaderMembers(tarball, dir string, members, digests map[string]strin
 			continue
 		}
 		if hdr.Typeflag != tar.TypeReg {
-			return fmt.Errorf("成员 %s 类型 %q 超出锁定基线(应为普通文件)", name, hdr.Typeflag)
+			return fmt.Errorf("member %s has type %q outside the locked baseline (regular file expected)", name, hdr.Typeflag)
 		}
 		dest := filepath.Join(dir, filepath.FromSlash(key))
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
@@ -197,7 +197,7 @@ func extractHeaderMembers(tarball, dir string, members, digests map[string]strin
 	}
 	for name := range members {
 		if !seen[name] {
-			return fmt.Errorf("发行包内未找到 %s", name)
+			return fmt.Errorf("member %s not found in the release tarball", name)
 		}
 	}
 	return nil

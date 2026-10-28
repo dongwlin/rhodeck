@@ -110,15 +110,15 @@ func buildLoaderFixture(t *testing.T, missing bool) string {
 		}
 	}
 	if compiler == "" {
-		t.Skipf("loader fixture 受阻:未找到 C 编译器,夹具构建与装载验证未执行,不计为本平台通过")
+		t.Skipf("loader fixture blocked: no C compiler found; fixture build and load verification not executed, does not count as a pass on this platform")
 	}
 
 	src, err := filepath.Abs(loaderFixtureSrcRel)
 	if err != nil {
-		t.Fatalf("定位夹具源码 %s 失败: %v", loaderFixtureSrcRel, err)
+		t.Fatalf("failed to locate fixture source %s: %v", loaderFixtureSrcRel, err)
 	}
 	if _, err := os.Stat(src); err != nil {
-		t.Fatalf("夹具源码 %s 不可访问(仓库基线被破坏,非环境受限): %v", src, err)
+		t.Fatalf("fixture source %s is not accessible (repository baseline broken, not an environment limitation): %v", src, err)
 	}
 
 	outPath := filepath.Join(t.TempDir(), loaderFixtureSOName)
@@ -129,21 +129,21 @@ func buildLoaderFixture(t *testing.T, missing bool) string {
 	args = append(args, "-o", outPath, src)
 	commandLine := compiler + " " + strings.Join(args, " ")
 
-	variant := "complete(28 导出全部在场)"
+	variant := "complete(all 28 exports present)"
 	if missing {
-		variant = "missing(-DLOADER_FIXTURE_MISSING,省略 3 个必需符号)"
+		variant = "missing(-DLOADER_FIXTURE_MISSING, omitting 3 required symbols)"
 	}
-	t.Logf("loader fixture 构建:变体=%s", variant)
-	t.Logf("loader fixture 构建:源码=%s", src)
-	t.Logf("loader fixture 构建:平台=%s/%s", runtime.GOOS, runtime.GOARCH)
-	t.Logf("loader fixture 构建:编译器=%s", compiler)
-	t.Logf("loader fixture 构建:工具链=%s", compilerFirstLine(t, compiler))
-	t.Logf("loader fixture 构建:命令行=%s", commandLine)
+	t.Logf("loader fixture build: variant=%s", variant)
+	t.Logf("loader fixture build: source=%s", src)
+	t.Logf("loader fixture build: platform=%s/%s", runtime.GOOS, runtime.GOARCH)
+	t.Logf("loader fixture build: compiler=%s", compiler)
+	t.Logf("loader fixture build: toolchain=%s", compilerFirstLine(t, compiler))
+	t.Logf("loader fixture build: command line=%s", commandLine)
 
 	cmd := exec.Command(compiler, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("编译 loader fixture 失败(命令行 %s): %v\n%s", commandLine, err, output)
+		t.Fatalf("failed to compile the loader fixture (command line %s): %v\n%s", commandLine, err, output)
 	}
 	return outPath
 }
@@ -155,7 +155,7 @@ func compilerFirstLine(t *testing.T, compiler string) string {
 	t.Helper()
 	out, err := exec.Command(compiler, "--version").Output()
 	if err != nil {
-		return fmt.Sprintf("%s --version 查询失败: %v", compiler, err)
+		return fmt.Sprintf("%s --version query failed: %v", compiler, err)
 	}
 	line, _, _ := strings.Cut(string(out), "\n")
 	return strings.TrimSpace(line)
@@ -169,7 +169,7 @@ func compilerFirstLine(t *testing.T, compiler string) string {
 func runLoaderFixtureCompleteChild() int {
 	so := os.Getenv(loaderFixtureSOEnv)
 	if !filepath.IsAbs(so) {
-		fmt.Fprintf(os.Stderr, "loader fixture complete child: %s = %q 不是绝对路径(loader 只接受绝对路径)\n", loaderFixtureSOEnv, so)
+		fmt.Fprintf(os.Stderr, "loader fixture complete child: %s = %q is not an absolute path (the loader only accepts absolute paths)\n", loaderFixtureSOEnv, so)
 		return 1
 	}
 
@@ -184,37 +184,37 @@ func runLoaderFixtureCompleteChild() int {
 		return 1
 	}
 	if table == nil {
-		fmt.Fprintln(os.Stderr, "loader fixture complete child: ResolveAndRegister 成功但未发布 API 表")
+		fmt.Fprintln(os.Stderr, "loader fixture complete child: ResolveAndRegister succeeded but published no API table")
 		return 1
 	}
 
 	caps := table.Capabilities()
 	if !caps.Create() {
-		fmt.Fprintln(os.Stderr, "loader fixture complete child: Capabilities.Create() = false, want true(AsstCreate 在场)")
+		fmt.Fprintln(os.Stderr, "loader fixture complete child: Capabilities.Create() = false, want true (AsstCreate is present)")
 		return 1
 	}
 	if !caps.ImageBgr() {
-		fmt.Fprintln(os.Stderr, "loader fixture complete child: Capabilities.ImageBgr() = false, want true(AsstGetImageBgr 在场)")
+		fmt.Fprintln(os.Stderr, "loader fixture complete child: Capabilities.ImageBgr() = false, want true (AsstGetImageBgr is present)")
 		return 1
 	}
 	if caps.AsyncAttachWindow() {
-		fmt.Fprintln(os.Stderr, "loader fixture complete child: Capabilities.AsyncAttachWindow() = true, want false(windowsOnly 符号在 Linux 不查找)")
+		fmt.Fprintln(os.Stderr, "loader fixture complete child: Capabilities.AsyncAttachWindow() = true, want false (the windowsOnly symbol is not looked up on Linux)")
 		return 1
 	}
 	if !caps.MapLevelKey() || !caps.ItemName() {
-		fmt.Fprintf(os.Stderr, "loader fixture complete child: Capabilities.MapLevelKey()=%v ItemName()=%v, want true,true(实验导出在夹具中恒在场)\n",
+		fmt.Fprintf(os.Stderr, "loader fixture complete child: Capabilities.MapLevelKey()=%v ItemName()=%v, want true,true (the experimental exports are always present in the fixture)\n",
 			caps.MapLevelKey(), caps.ItemName())
 		return 1
 	}
 
 	_, lookupErr := lib.Lookup(loaderFixtureProbeSymbol)
 	if lookupErr == nil {
-		fmt.Fprintf(os.Stderr, "loader fixture complete child: Lookup(%s) 意外成功,必须失败\n", loaderFixtureProbeSymbol)
+		fmt.Fprintf(os.Stderr, "loader fixture complete child: Lookup(%s) unexpectedly succeeded, it must fail\n", loaderFixtureProbeSymbol)
 		return 1
 	}
 	var sle *SymbolLookupError
 	if !errors.As(lookupErr, &sle) {
-		fmt.Fprintf(os.Stderr, "loader fixture complete child: Lookup(%s) 的错误 %T 不是 *SymbolLookupError: %v\n",
+		fmt.Fprintf(os.Stderr, "loader fixture complete child: Lookup(%s) error %T is not a *SymbolLookupError: %v\n",
 			loaderFixtureProbeSymbol, lookupErr, lookupErr)
 		return 1
 	}
@@ -235,31 +235,31 @@ func runLoaderFixtureCompleteChild() int {
 func runLoaderFixtureMissingChild() int {
 	so := os.Getenv(loaderFixtureSOEnv)
 	if !filepath.IsAbs(so) {
-		fmt.Fprintf(os.Stderr, "loader fixture missing child: %s = %q 不是绝对路径(loader 只接受绝对路径)\n", loaderFixtureSOEnv, so)
+		fmt.Fprintf(os.Stderr, "loader fixture missing child: %s = %q is not an absolute path (the loader only accepts absolute paths)\n", loaderFixtureSOEnv, so)
 		return 1
 	}
 
 	lib, err := NewLoader().Open(so)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "loader fixture missing child: Open(%s) failed: %v(缺失发生在符号解析阶段,装载本身必须成功)\n", so, err)
+		fmt.Fprintf(os.Stderr, "loader fixture missing child: Open(%s) failed: %v (missing symbols happen at the symbol resolution stage; the load itself must succeed)\n", so, err)
 		return 1
 	}
 	table, err := ResolveAndRegister(lib)
 	if err == nil {
-		fmt.Fprintf(os.Stderr, "loader fixture missing child: ResolveAndRegister 意外成功,必需符号缺失必须整体失败\n")
+		fmt.Fprintf(os.Stderr, "loader fixture missing child: ResolveAndRegister unexpectedly succeeded; missing required symbols must fail as a whole\n")
 		return 1
 	}
 	if table != nil {
-		fmt.Fprintf(os.Stderr, "loader fixture missing child: 失败事务不得发布 API 表, got %v\n", table)
+		fmt.Fprintf(os.Stderr, "loader fixture missing child: a failed transaction must not publish an API table, got %v\n", table)
 		return 1
 	}
 	var agg AggregateError
 	if !errors.As(err, &agg) {
-		fmt.Fprintf(os.Stderr, "loader fixture missing child: errors.As 未命中 AggregateError, got %T: %v\n", err, err)
+		fmt.Fprintf(os.Stderr, "loader fixture missing child: errors.As did not match AggregateError, got %T: %v\n", err, err)
 		return 1
 	}
 	if len(agg) != len(expectedMissingFixtureSymbols) {
-		fmt.Fprintf(os.Stderr, "loader fixture missing child: 聚合错误 %d 项, want %d 项: %v\n",
+		fmt.Fprintf(os.Stderr, "loader fixture missing child: aggregate error has %d items, want %d: %v\n",
 			len(agg), len(expectedMissingFixtureSymbols), err)
 		return 1
 	}
@@ -268,21 +268,21 @@ func runLoaderFixtureMissingChild() int {
 	for i, item := range agg {
 		var sle *SymbolLookupError
 		if !errors.As(item, &sle) {
-			fmt.Fprintf(os.Stderr, "loader fixture missing child: 聚合项 %d (%T) 不是 *SymbolLookupError: %v\n", i, item, item)
+			fmt.Fprintf(os.Stderr, "loader fixture missing child: aggregate item %d (%T) is not a *SymbolLookupError: %v\n", i, item, item)
 			return 1
 		}
 		if sle.LibraryPath != so {
-			fmt.Fprintf(os.Stderr, "loader fixture missing child: 聚合项 %d LibraryPath = %q, want %q\n", i, sle.LibraryPath, so)
+			fmt.Fprintf(os.Stderr, "loader fixture missing child: aggregate item %d LibraryPath = %q, want %q\n", i, sle.LibraryPath, so)
 			return 1
 		}
 		if sle.Profile != abiProfile {
-			fmt.Fprintf(os.Stderr, "loader fixture missing child: 聚合项 %d Profile = %q, want %q\n", i, sle.Profile, abiProfile)
+			fmt.Fprintf(os.Stderr, "loader fixture missing child: aggregate item %d Profile = %q, want %q\n", i, sle.Profile, abiProfile)
 			return 1
 		}
 		missing = append(missing, sle.Symbol)
 	}
 	if strings.Join(missing, ",") != strings.Join(expectedMissingFixtureSymbols, ",") {
-		fmt.Fprintf(os.Stderr, "loader fixture missing child: 缺失符号集合/顺序 = [%s], want [%s](必须与 fixture.c 的缺失变体及声明顺序严格一致)\n",
+		fmt.Fprintf(os.Stderr, "loader fixture missing child: missing symbol set/order = [%s], want [%s] (must match fixture.c's missing variant and declaration order exactly)\n",
 			strings.Join(missing, ","), strings.Join(expectedMissingFixtureSymbols, ","))
 		return 1
 	}
@@ -314,33 +314,33 @@ func TestLoaderFixtureCompleteLoadsInFreshSubprocess(t *testing.T) {
 		ExtraEnv: map[string]string{loaderFixtureSOEnv: soPath},
 	})
 	if out.Err != nil {
-		t.Fatalf("complete 子进程失败(非零退出/信号/超时一律视为失败):\n%s", out.Diagnostics())
+		t.Fatalf("the complete child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	}
 	line, ok := markerLine(out.Stdout, completeOKMarker)
 	if !ok {
-		t.Fatalf("complete 子进程退出码 0,但 stdout 缺少 %s 标记行:\n%s", completeOKMarker, out.Diagnostics())
+		t.Fatalf("the complete child exited 0 but stdout is missing the %s marker line:\n%s", completeOKMarker, out.Diagnostics())
 	}
 
 	gotSymbols, err := parseMarkerSymbolsCount(line)
 	if err != nil {
-		t.Fatalf("complete 标记行 %q 解析失败: %v\n%s", line, err, out.Diagnostics())
+		t.Fatalf("failed to parse the complete marker line %q: %v\n%s", line, err, out.Diagnostics())
 	}
 	wantSymbols := countApplicableSpecs()
 	if gotSymbols != wantSymbols {
-		t.Fatalf("complete 标记行 symbols = %d, want %d(标记行与符号清单现算条数不符,防标记行失真):\n%s",
+		t.Fatalf("complete marker line symbols = %d, want %d (the marker line disagrees with the freshly computed symbol list count; guards against marker distortion):\n%s",
 			gotSymbols, wantSymbols, out.Diagnostics())
 	}
 
 	create, imageBgr, attach, mapLevelKey, itemName, err := parseMarkerCaps(line)
 	if err != nil {
-		t.Fatalf("complete 标记行 %q 的 caps 解析失败: %v\n%s", line, err, out.Diagnostics())
+		t.Fatalf("failed to parse caps of the complete marker line %q: %v\n%s", line, err, out.Diagnostics())
 	}
 	if create != 1 || imageBgr != 1 || attach != 0 || mapLevelKey != 1 || itemName != 1 {
-		t.Fatalf("complete 标记行 caps = create=%d,imageBgr=%d,attach=%d,mapLevelKey=%d,itemName=%d, want 1,1,0,1,1:\n%s",
+		t.Fatalf("complete marker line caps = create=%d,imageBgr=%d,attach=%d,mapLevelKey=%d,itemName=%d, want 1,1,0,1,1:\n%s",
 			create, imageBgr, attach, mapLevelKey, itemName, out.Diagnostics())
 	}
 
-	t.Logf("complete 子进程装载验证通过(单独标记,不计入 ABI 调用通过统计):%s", line)
+	t.Logf("the complete child's load verification passed (separate marker, not counted in ABI call pass statistics):%s", line)
 }
 
 // TestLoaderFixtureMissingRequiredSymbolsReportedTogether 验收缺失
@@ -357,19 +357,19 @@ func TestLoaderFixtureMissingRequiredSymbolsReportedTogether(t *testing.T) {
 		ExtraEnv: map[string]string{loaderFixtureSOEnv: soPath},
 	})
 	if out.Err != nil {
-		t.Fatalf("missing 子进程失败(其内部断言未全部通过):\n%s", out.Diagnostics())
+		t.Fatalf("the missing child failed (its internal assertions did not all pass):\n%s", out.Diagnostics())
 	}
 	line, ok := markerLine(out.Stdout, missingOKMarker)
 	if !ok {
-		t.Fatalf("missing 子进程退出码 0,但 stdout 缺少 %s 标记行:\n%s", missingOKMarker, out.Diagnostics())
+		t.Fatalf("the missing child exited 0 but stdout is missing the %s marker line:\n%s", missingOKMarker, out.Diagnostics())
 	}
 
 	got := parseMarkerSymbolsList(line)
 	if strings.Join(got, ",") != strings.Join(expectedMissingFixtureSymbols, ",") {
-		t.Fatalf("missing 标记行 symbols = [%s], want [%s]:\n%s",
+		t.Fatalf("missing marker line symbols = [%s], want [%s]:\n%s",
 			strings.Join(got, ","), strings.Join(expectedMissingFixtureSymbols, ","), out.Diagnostics())
 	}
-	t.Logf("missing 子进程聚合报告验证通过(3 项一次收集,顺序与符号清单一致):%s", line)
+	t.Logf("the missing child's aggregate report verification passed (3 items collected in one call, order matches the symbol list):%s", line)
 }
 
 // countApplicableSpecs 现算当前平台适用的符号条数:遍历
@@ -409,11 +409,11 @@ func markerLine(stdout, marker string) (string, bool) {
 func parseMarkerSymbolsCount(line string) (int, error) {
 	fields := strings.Fields(line)
 	if len(fields) < 2 || !strings.HasPrefix(fields[1], "symbols=") {
-		return 0, fmt.Errorf("标记行缺少 symbols=<n> 字段")
+		return 0, fmt.Errorf("the marker line lacks the symbols=<n> field")
 	}
 	n, err := strconv.Atoi(strings.TrimPrefix(fields[1], "symbols="))
 	if err != nil {
-		return 0, fmt.Errorf("symbols 值不是十进制整数: %w", err)
+		return 0, fmt.Errorf("the symbols value is not a decimal integer: %w", err)
 	}
 	return n, nil
 }
@@ -433,16 +433,16 @@ func parseMarkerSymbolsList(line string) []string {
 func parseMarkerCaps(line string) (create, imageBgr, attach, mapLevelKey, itemName int, err error) {
 	fields := strings.Fields(line)
 	if len(fields) < 3 || !strings.HasPrefix(fields[2], "caps=") {
-		return 0, 0, 0, 0, 0, fmt.Errorf("标记行缺少 caps=... 字段")
+		return 0, 0, 0, 0, 0, fmt.Errorf("the marker line lacks the caps=... field")
 	}
 	for _, kv := range strings.Split(strings.TrimPrefix(fields[2], "caps="), ",") {
 		key, value, ok := strings.Cut(kv, "=")
 		if !ok {
-			return 0, 0, 0, 0, 0, fmt.Errorf("caps 分量 %q 缺少 key=value 形态", kv)
+			return 0, 0, 0, 0, 0, fmt.Errorf("caps component %q lacks the key=value form", kv)
 		}
 		n, convErr := strconv.Atoi(value)
 		if convErr != nil {
-			return 0, 0, 0, 0, 0, fmt.Errorf("caps 分量 %q 的值不是十进制整数: %w", kv, convErr)
+			return 0, 0, 0, 0, 0, fmt.Errorf("the value of caps component %q is not a decimal integer: %w", kv, convErr)
 		}
 		switch key {
 		case "create":
@@ -456,7 +456,7 @@ func parseMarkerCaps(line string) (create, imageBgr, attach, mapLevelKey, itemNa
 		case "itemName":
 			itemName = n
 		default:
-			return 0, 0, 0, 0, 0, fmt.Errorf("caps 含未知键 %q", key)
+			return 0, 0, 0, 0, 0, fmt.Errorf("caps contains unknown key %q", key)
 		}
 	}
 	return create, imageBgr, attach, mapLevelKey, itemName, nil
