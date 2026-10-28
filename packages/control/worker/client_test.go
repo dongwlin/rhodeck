@@ -265,6 +265,19 @@ func helper(mode string) int {
 			case "reject":
 				emit(protocol.Response, req.Name, req.ID, 0, nil, &protocol.Error{Code: protocol.NativeRejected, Message: "fixture rejected start"})
 				continue
+			case "faultdiag", "dupfault", "badfault":
+				respond(struct{}{})
+				notice := protocol.FaultNotice{Error: protocol.Error{Code: protocol.EventOverflow, Message: "fixture instance fault"}}
+				if mode == "badfault" {
+					notice.Error.Message = "" // invalid: a fault without a reason
+				}
+				sequence++
+				emit(protocol.Event, protocol.FaultEvent, 0, sequence, notice, nil)
+				if mode == "dupfault" {
+					sequence++
+					emit(protocol.Event, protocol.FaultEvent, 0, sequence, notice, nil)
+				}
+				continue
 			case "badsequence":
 				emit(protocol.Event, protocol.CoreEvent, 0, 2, protocol.Callback{CoreSequence: 1, JSON: json.RawMessage(`{}`)}, nil)
 				continue
@@ -432,6 +445,38 @@ func helper(mode string) int {
 				sequence++
 				emit(protocol.Event, protocol.OperationEvent, 0, sequence, protocol.OperationResult{RequestID: firstConnectID, AsyncID: 41, OK: false, Error: &protocol.Error{Code: protocol.InvalidState, Message: "fixture close settlement"}}, nil)
 			}
+			// faultdiag/stopdiag/ghostfault/baddiag/bigdiag/latefault send the
+			// terminal diagnostics snapshot before the close response, like
+			// the real worker's close ordering; latefault follows the close
+			// response with an unreported fault, a contract breach.
+			fixtureDiagnostics := map[string]func() protocol.InstanceDiagnostics{
+				"faultdiag": func() protocol.InstanceDiagnostics {
+					return protocol.InstanceDiagnostics{
+						LostEvents: math.MaxUint64,
+						FirstFault: &protocol.Error{Code: protocol.EventOverflow, Message: "fixture instance fault"},
+						RawPrefix:  base64.StdEncoding.EncodeToString([]byte{0xDE, 0x00, 0xFF, 0xFE, 0x80}),
+					}
+				},
+				"stopdiag": func() protocol.InstanceDiagnostics {
+					return protocol.InstanceDiagnostics{StopDiagnostic: &protocol.Error{Code: protocol.NativeRejected, Message: "fixture stop returned 0"}}
+				},
+				"ghostfault": func() protocol.InstanceDiagnostics {
+					return protocol.InstanceDiagnostics{FirstFault: &protocol.Error{Code: protocol.EventOverflow, Message: "fixture instance fault"}}
+				},
+				"baddiag": func() protocol.InstanceDiagnostics {
+					return protocol.InstanceDiagnostics{RawPrefix: "!!!not-base64!!!"}
+				},
+				"bigdiag": func() protocol.InstanceDiagnostics {
+					return protocol.InstanceDiagnostics{RawPrefix: base64.StdEncoding.EncodeToString(make([]byte, protocol.MaxRawPrefixBytes+1))}
+				},
+				"latefault": func() protocol.InstanceDiagnostics {
+					return protocol.InstanceDiagnostics{LostEvents: 1}
+				},
+			}
+			if build, ok := fixtureDiagnostics[mode]; ok {
+				sequence++
+				emit(protocol.Event, protocol.DiagnosticsEvent, 0, sequence, build(), nil)
+			}
 			if mode == "badclose" {
 				respond(map[string]bool{"invalid": true})
 				return 0
@@ -444,6 +489,10 @@ func helper(mode string) int {
 				fmt.Fprint(os.Stderr, strings.Repeat("x", 100000)+"fixture log tail")
 			}
 			respond(struct{}{})
+			if mode == "latefault" {
+				sequence++
+				emit(protocol.Event, protocol.FaultEvent, 0, sequence, protocol.FaultNotice{Error: protocol.Error{Code: protocol.EventOverflow, Message: "late fixture fault"}}, nil)
+			}
 			if mode == "ackhang" {
 				time.Sleep(time.Hour)
 				return 5
@@ -1304,5 +1353,236 @@ func TestClientEmptyImageIsNormalResult(t *testing.T) {
 	}
 	if err := c.Close(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// waitFault waits for the client's native fault observation.
+func waitFault(t *testing.T, c *Client) {
+	t.Helper()
+	select {
+	case <-c.Fault():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the native fault observation never fired")
+	}
+}
+
+// TestClientFaultAndDiagnosticsAreNativeObservations proves the client-side
+// equivalents of the binding's five public observations: the fault notice
+// arrives as a channel observation with its stable code, the terminal
+// diagnostics snapshot follows it before close completes, the raw prefix
+// decodes back to the original bytes (which are neither valid UTF-8 nor valid
+// JSON), the saturating lost count survives exactly, and repeated accesses
+// return independent copies of the stable final snapshot.
+func TestClientFaultAndDiagnosticsAreNativeObservations(t *testing.T) {
+	c := launchFixture(t, "faultdiag")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	// The fault is armed by Start; the event channel is left undrained on
+	// purpose — the fault observation must not depend on the consumer.
+	if err := c.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitFault(t, c)
+	if err := c.InstanceErr(); err == nil || err.Code != protocol.EventOverflow {
+		t.Fatalf("instance error = %v, want event_overflow", err)
+	}
+
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireReaped(t, c)
+	select {
+	case <-c.InstanceDone():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the native terminal observation never fired")
+	}
+	snap, ok := c.InstanceDiagnostics()
+	if !ok {
+		t.Fatal("the terminal snapshot was reported missing after delivery")
+	}
+	if snap.LostEvents != math.MaxUint64 {
+		t.Fatalf("lost_events = %d, want the saturated count", snap.LostEvents)
+	}
+	if snap.FirstFault == nil || snap.FirstFault.Code != protocol.EventOverflow {
+		t.Fatalf("first fault = %+v, want event_overflow", snap.FirstFault)
+	}
+	if snap.StopDiagnostic != nil {
+		t.Fatalf("unexpected stop diagnostic: %+v", snap.StopDiagnostic)
+	}
+	want := []byte{0xDE, 0x00, 0xFF, 0xFE, 0x80}
+	if string(snap.RawPrefix) != string(want) {
+		t.Fatalf("raw prefix changed: %q, want %q", snap.RawPrefix, want)
+	}
+	// The final snapshot is stable and every access is an independent copy.
+	snap.RawPrefix[0] = 'X'
+	if snap.FirstFault.Detail != nil {
+		snap.FirstFault.Detail.Kind = "mutated"
+	}
+	again, ok := c.InstanceDiagnostics()
+	if !ok || string(again.RawPrefix) != string(want) || again.FirstFault == nil || again.FirstFault.Code != protocol.EventOverflow {
+		t.Fatalf("snapshot was rewritten through a returned copy: %+v, %t", again, ok)
+	}
+	// The process done channel is a separate observation from the native one;
+	// after a normal close both are closed, but neither substitutes the other.
+	select {
+	case <-c.Done():
+	default:
+		t.Fatal("process done must be closed after a reaped close")
+	}
+}
+
+// TestClientConfirmedOperationSurvivesLaterFault proves a confirmed result is
+// never rewritten: an operation that settled successfully before the fault
+// keeps its cached success after the fault event and the terminal snapshot.
+func TestClientConfirmedOperationSurvivesLaterFault(t *testing.T) {
+	c := launchFixture(t, "faultdiag")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	op, err := c.Click(ctx, protocol.ClickRequest{X: -5, Y: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, waitErr := op.Wait(ctx)
+	if waitErr != nil || !first.OK {
+		t.Fatalf("click terminal state: %+v, %v", first, waitErr)
+	}
+	if err := c.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitFault(t, c)
+	again, waitErr := op.Wait(ctx)
+	if waitErr != nil || !again.OK || string(again.Details) != string(first.Details) {
+		t.Fatalf("confirmed result was rewritten by the fault: %+v, %v", again, waitErr)
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireReaped(t, c)
+	final, waitErr := op.Wait(ctx)
+	if waitErr != nil || !final.OK {
+		t.Fatalf("confirmed result changed after close: %+v, %v", final, waitErr)
+	}
+}
+
+// TestClientFaultObservationDoesNotDependOnEventConsumption proves the
+// supervisor-level fault report never waits for the business consumer: with
+// nobody draining Events, the fault and the terminal snapshot are still
+// observed within a bounded time and the close completes.
+func TestClientFaultObservationDoesNotDependOnEventConsumption(t *testing.T) {
+	c := launchFixture(t, "faultdiag")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// No goroutine reads c.Events() in this test.
+	waitFault(t, c)
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireReaped(t, c)
+	select {
+	case <-c.InstanceDone():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the terminal snapshot never fired without a consumer")
+	}
+	if _, ok := c.InstanceDiagnostics(); !ok {
+		t.Fatal("the terminal snapshot was reported missing without a consumer")
+	}
+}
+
+// TestClientStopDiagnosticWithoutFault proves a stop-only diagnostic is a
+// terminal fact of its own: it is delivered in the snapshot, the fault
+// observation never fires, and the instance error stays nil.
+func TestClientStopDiagnosticWithoutFault(t *testing.T) {
+	c := launchFixture(t, "stopdiag")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireReaped(t, c)
+	select {
+	case <-c.Fault():
+		t.Fatal("a stop-only diagnostic must not close the fault observation")
+	default:
+	}
+	if err := c.InstanceErr(); err != nil {
+		t.Fatalf("instance error = %v, want nil", err)
+	}
+	snap, ok := c.InstanceDiagnostics()
+	if !ok || snap.StopDiagnostic == nil || snap.StopDiagnostic.Code != protocol.NativeRejected || snap.FirstFault != nil || snap.LostEvents != 0 {
+		t.Fatalf("snapshot = %+v, %t", snap, ok)
+	}
+}
+
+// TestClientKilledProcessReportsDiagnosticsUnavailable proves the process and
+// native observations stay separate: a crash closes the process Done but
+// never the native Done or the fault observation, and the missing snapshot is
+// reported as unavailable instead of being fabricated.
+func TestClientKilledProcessReportsDiagnosticsUnavailable(t *testing.T) {
+	c := launchFixture(t, "crash")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	err := c.Start(ctx)
+	// The exit races the EOF on the pipes, so only the unknown-discipline is
+	// pinned here: the process is gone and no native fact survived it.
+	requireFailure(t, err, true)
+	requireReaped(t, c)
+	select {
+	case <-c.InstanceDone():
+		t.Fatal("a killed process must not fabricate the native terminal state")
+	default:
+	}
+	select {
+	case <-c.Fault():
+		t.Fatal("a killed process must not fabricate a native fault")
+	default:
+	}
+	if err := c.InstanceErr(); err != nil {
+		t.Fatalf("instance error = %v, want nil", err)
+	}
+	if _, ok := c.InstanceDiagnostics(); ok {
+		t.Fatal("a killed process must not fabricate a diagnostics snapshot")
+	}
+}
+
+// TestClientRejectsBrokenFaultAndDiagnosticsReports proves the client does
+// not trust fault traffic: a duplicated fault, a fault after the terminal
+// snapshot, a snapshot naming an unreported fault, an unbounded raw prefix
+// and a non-base64 prefix all abort the session as protocol errors.
+func TestClientRejectsBrokenFaultAndDiagnosticsReports(t *testing.T) {
+	for _, mode := range []string{"dupfault", "badfault", "ghostfault", "latefault", "baddiag", "bigdiag"} {
+		t.Run(mode, func(t *testing.T) {
+			c := launchFixture(t, mode)
+			ctx := context.Background()
+			if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Start(ctx); err != nil {
+				if mode == "badfault" {
+					requireFailure(t, err, true)
+					requireReaped(t, c)
+					return
+				}
+				t.Fatal(err)
+			}
+			err := c.Close(ctx)
+			failure := requireFailure(t, err, true)
+			if failure.Code != "protocol_error" {
+				t.Fatalf("failure code = %s, want protocol_error", failure.Code)
+			}
+			requireReaped(t, c)
+		})
 	}
 }

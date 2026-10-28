@@ -91,10 +91,15 @@ exposes a command the connected build rejects:
 - **Instance observations.** `fault` and `diagnostics` events carry the native
   instance's first fault and bounded diagnostics snapshot (saturating lost
   event count, structured first fault and stop diagnostic, base64 raw prefix
-  that may be invalid UTF-8/JSON). The client caches them and exposes them
-  separately from its own process-level `Done()`/`Err()`/stderr diagnostics;
-  a forced kill is reported as process-level failure with unknown facts, and
-  never as a fabricated final instance snapshot.
+  that may be invalid UTF-8/JSON). The client validates them, caches them, and
+  exposes the native equivalents separately from its own process-level
+  facts: `Fault()` closes when the fault event was received — independent of
+  any consumer draining `Events()` — `InstanceErr()` returns that first fault,
+  and `InstanceDone()`/`InstanceDiagnostics()` report the terminal state and
+  its decoded snapshot (ok=false until delivered, never fabricated). A forced
+  kill is reported as process-level failure with unknown facts and closes
+  `Done()` but neither `Fault()` nor `InstanceDone()`; the stderr tail stays
+  on `Diagnostics() string`.
 - **Queries.** `uuid`, `map_level_key`, `item_name`, and `log` return the
   frozen result DTOs; empty strings, zero-valued results, and empty lists are
   normal observations, not errors.
