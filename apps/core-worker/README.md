@@ -17,10 +17,20 @@ updates, automatic reconnection, task replay, or device locking.
 
 ## Transport and initialization
 
-stdin/stdout carry protocol v1 JSONL. Each complete frame ends with a newline.
-stdout is reserved for protocol; Go and native stdout are redirected to stderr
-before MaaCore loads. The supervisor captures a bounded stderr tail. Keep stdin
-open until the close response: premature EOF means the parent lost the session.
+stdin/stdout carry protocol v1 JSONL. Protocol v1 is frozen as a whole: the
+command/event tables, DTO shapes, numeric encoding, error codes, and transport
+budgets are the contract, and the [protocol package](../../packages/control/worker/protocol/protocol.go)
+is its single definition. Decoding is strict on control fields, so any later
+change a v1 peer could not parse — added, removed, renamed, or retyped fields,
+commands, events, or codes, or framing/sequence changes — requires a protocol
+version bump; it cannot hide behind optional fields. Peers verify the version
+on the first frame and refuse incompatible ones before any request, and
+therefore before any device action.
+
+Each complete frame ends with a newline. stdout is reserved for protocol; Go
+and native stdout are redirected to stderr before MaaCore loads. The
+supervisor captures a bounded stderr tail. Keep stdin open until the close
+response: premature EOF means the parent lost the session.
 
 The first frame is `hello`, containing worker version, random session ID,
 OS/architecture and transport budgets. This handshake does not load MaaCore.
@@ -40,7 +50,23 @@ For example, an initialization request is:
 Paths must be explicit and absolute. `resource_roots` is ordered; each root
 contains `resource/`. Optional `static_options`, `instance_options` and
 `connection_extras` use the [protocol DTOs](../../packages/control/worker/protocol/protocol.go).
-The worker uses maa-go's default input, callback and operation budgets.
+
+`limits` is the full explicit [binding limit configuration](../../packages/control/worker/protocol/contract.go)
+(`Limits`); omitting it selects the binding's whole default set, and a present
+`limits` is one complete configuration — fields are never individually
+backfilled from defaults. Configurations whose single-unit maxima exceed the
+wire budgets (`Limits.InputJSONBytes` > 4 MiB, `ConfigBytes` > 4 MiB,
+`CallbackBytes` > 4 MiB, `Tasks.Max` > 65536 elements, `ImagePNG.Max`/`ImageBGR.Max`
+> 128 MiB) are rejected with `limit_exceeded` and the effective maximum before
+the native library is touched, so no accepted configuration can produce a
+result the transport cannot deliver. The initialize response reports the
+effective `limits` and the native `null_size` capacity sentinel alongside the
+facts below. Until a build applies explicit limits it rejects any present
+`limits` with `invalid_input` instead of silently ignoring the caller's
+capacity configuration.
+
+The worker uses the binding's default input, callback and operation budgets
+when `limits` is omitted.
 
 `snapshot_id` is an identifier supplied by the installation owner. Initialization
 reports the actual library SHA256, native Core version, optional native symbols,
@@ -53,17 +79,33 @@ not enumerate accepted task types or expand the worker's command set.
 
 ## Commands and observations
 
-| Name | Payload | Response meaning |
-| --- | --- | --- |
-| `initialize` | `InitializeRequest` | Core and instance ready; version and snapshot facts |
-| `connect` | `adb_path`, `address`, `config` | Nonzero `async_id`: accepted only |
-| `append_task` | string `type`, raw object `params` | Nonzero `task_id`: appended only |
-| `set_task_params` | `task_id`, raw object `params` | Parameters accepted |
-| `start` | absent or `{}` | Start call accepted |
-| `stop` | absent or `{}` | `stopped` is true only after Stop returns and Running is false |
-| `status` | absent or `{}` | Native `running`, `connected`, and `tasks` observations |
-| `ping` | absent or `{}` | IPC loop can respond, including while a native call is blocked |
-| `close` | absent or `{}` | Stop/Destroy returned, events and operations drained; process exits |
+The v1 command table below is frozen. A build answers every name in the
+table; commands it does not implement yet are rejected with the stable
+`unsupported` code and the session survives. Capabilities reported by
+initialize describe native symbol availability only — never that a command is
+implemented, a task type is accepted, or an action will succeed.
+
+| Name | Payload | Response meaning | Status |
+| --- | --- | --- | --- |
+| `initialize` | `InitializeRequest` | Core and instance ready; version, snapshot facts, effective limits, `null_size` | implemented |
+| `connect` | `adb_path`, `address`, `config` | Nonzero `async_id`: accepted only | implemented |
+| `append_task` | string `type`, raw object `params` | Nonzero `task_id`: appended only | implemented |
+| `set_task_params` | `task_id`, raw object `params` | Parameters accepted | implemented |
+| `start` | absent or `{}` | Start call accepted | implemented |
+| `stop` | absent or `{}` | `stopped` is true only after Stop returns and Running is false | implemented |
+| `status` | absent or `{}` | Native `running`, `connected`, and `tasks` observations | implemented |
+| `ping` | absent or `{}` | IPC loop can respond, including while a native call is blocked | implemented |
+| `close` | absent or `{}` | Stop/Destroy returned, events and operations drained; process exits | implemented |
+| `back_to_home` | absent or `{}` | Call accepted; native void return carries no completion fact | reserved |
+| `uuid` | absent or `{}` | `uuid` string; the empty string is a normal result | reserved |
+| `click` | `x`, `y` int32 | Nonzero `async_id`: accepted only | reserved |
+| `screencap` | absent or `{}` | Nonzero `async_id`: accepted only | reserved |
+| `attach_window` | `hwnd` uint64, `screencap_method`, `mouse_method`, `keyboard_method` uint64 masks | Nonzero `async_id`: accepted only | reserved |
+| `get_image_png` / `get_image_bgr` | absent or `{}` | `ImageTransfer` describing one owned snapshot of the cached image | reserved |
+| `image_chunk` | `transfer_id`, `offset`, `length` | `ImageChunkResponse` with exactly the requested bytes | reserved |
+| `log` | `level`, `message` | Call accepted; void return carries no completion fact | reserved |
+| `map_level_key` | `key` | Four-field result; zero values mean "not found", not an error | reserved |
+| `item_name` | `id` | `name`; the empty string means "not found", not an error | reserved |
 
 State-changing native calls are serialized. `ping` does not enter MaaCore;
 responsiveness proves neither native responsiveness nor task completion.
@@ -79,6 +121,62 @@ Their `name` identifies the payload:
 - `operation`: originating `request_id`, `async_id`, `what`, `ok`, raw `details`
   and optional stable `error`; this follows the corresponding acceptance response.
   A failed connection is distinct from rejected submission.
+- `fault`: the first instance fault as a structured `error` with its stable
+  code. This is an independent observation: it is delivered through the same
+  ordered sequence but never depends on the consumer draining other events —
+  if the outbound channel cannot deliver it, the session fails and the
+  supervisor reports the loss, so a fault is either delivered or loudly lost.
+- `diagnostics`: the bounded instance diagnostics snapshot, sent once the
+  instance reaches its terminal state: saturating `lost_events`, optional
+  `first_fault` and `stop_diagnostic` as structured errors, and `raw_prefix`
+  as the standard base64 encoding of up to 4096 raw bytes that may be neither
+  valid UTF-8 nor valid JSON. A normal close omits all three optional fields.
+  The client must represent these native instance observations separately
+  from its own process-level Done/Err/stderr facts.
+
+### Numbers, bytes, and empty values
+
+Control-plane numbers are typed integers decoded directly from JSON integer
+literals; nothing in the contract path passes through float64. `uint64`
+fields (request/event sequences, masks, `hwnd`, byte counts, saturating
+counts) survive `math.MaxUint64` exactly; values beyond that range, non-
+integer or exponent forms are rejected, never wrapped. Window handles travel
+as unsigned 64-bit integers and are converted to platform pointer width by
+the worker after validation. Win32 screencap/input masks are uint64 bit
+fields passed through verbatim.
+
+Raw task params, connection extras, Core callback JSON, and operation details
+stay `json.RawMessage`: their nested schema — including unknown fields,
+duplicate keys, and numbers of any magnitude — is preserved byte for byte and
+is deliberately not validated by the protocol.
+
+`false`, empty strings, zero-length cached images, empty task lists, and
+zero-valued query results are normal results and never errors. A 0-length
+cached image is a complete transfer with the SHA256 of the empty payload and
+needs no chunks.
+
+### Image transfers
+
+`get_image_png`/`get_image_bgr` read only the Core cache; they never trigger
+a screencap. The worker validates the transfer budget, takes one owned
+snapshot, and answers with `ImageTransfer`: nonzero `transfer_id`, the
+snapshot's `total_bytes`, its SHA256 (64 lowercase hex digits), and
+`chunk_bytes` (at most 4 MiB). The client then fetches chunks with
+`image_chunk` requests — `offset`, `length` within `[1, chunk_bytes]` and
+`offset+length ≤ total_bytes`, in any order — and receives exactly the
+requested bytes as standard base64. The supervisor assembles the payload,
+verifies coverage and the declared SHA256, and only then delivers it; chunks
+never enter the event stream or its sequence domain.
+
+Transfers are bounded: at most 2 concurrent, each at most 128 MiB (the
+largest legal binding image maximum), so the aggregate in-flight image memory
+is at most 256 MiB on each side of the pipe. A request beyond these budgets
+is rejected with `limit_exceeded` and the effective maximum before any byte
+is read; an unknown or exhausted transfer id is `invalid_input`. The client
+keeps at most one outstanding chunk request per transfer, so chunk traffic
+cannot flood the outbound queue. The worker releases a snapshot when its last
+byte is served, on any session failure, and at close; the supervisor's
+request deadline bounds every chunk fetch.
 
 Numbers never pass through float64 maps. JSON formatting/escaping may change;
 unknown fields and integer values are retained. Callback and operation producers
@@ -100,10 +198,19 @@ for requests or shutdown.
 Remote error codes are `invalid_input`, `invalid_state`, `native_rejected`,
 `unsupported`, `load_failed`, `symbol_missing`, `registration_failed`,
 `snapshot_mismatch`, `limit_exceeded`, `event_overflow`, `protocol_error` and
-`internal_error`. Mapping uses Go error identity/types, not native text parsing.
+`internal_error`. The code is the only control-plane discriminator; mapping
+uses Go error identity/types, not native text parsing. An optional bounded
+`detail` object qualifies capacity rejections with machine-readable fields —
+reason `kind`, the limited buffer/interface, its unit, the limits field path,
+probe attempts, the observed capacity, and the effective wire maximum — so a
+merged code such as `limit_exceeded` still distinguishes native buffer
+exhaustion from operation-count limits and transport-budget rejections
+without parsing messages.
+
 Any initialization attempt reaching the native factory is terminal on failure;
-the caller starts a fresh worker to recover. Payload schema rejections happen
-before that attempt. Reinitializing a ready worker is rejected.
+the caller starts a fresh worker to recover. Payload schema rejections —
+including explicit limits above the wire budgets — happen before that
+attempt. Reinitializing a ready worker is rejected.
 
 EOF, SIGINT/SIGTERM, binding faults, malformed protocol, queue overflow and output
 failure stop admission and enter cleanup. After those interruptions the worker
