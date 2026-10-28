@@ -131,6 +131,11 @@ func TestRealCoreWorkerNoDevice(t *testing.T) {
 	if info.LibrarySHA256 != digest || info.CoreVersion != expectedVersion || len(info.Resources) != 1 || len(info.Resources[0].VersionSHA256) != 64 {
 		t.Fatalf("runtime snapshot: %+v", info)
 	}
+	_, err = c.AppendTask(ctx, protocol.TaskRequest{Type: "RhodeckUnknownTaskForProtocolTest", Params: json.RawMessage(`{"future":9007199254740993}`)})
+	var rejected *protocol.Error
+	if !errors.As(err, &rejected) || rejected.Code != protocol.NativeRejected {
+		t.Fatalf("Core must decide unknown task acceptance: %v", err)
+	}
 	var ids []int32
 	for range 2 {
 		r, err := c.AppendTask(ctx, protocol.TaskRequest{Type: "Award", Params: json.RawMessage(`{"enable":false,"future":9007199254740993}`)})
@@ -172,5 +177,5 @@ func TestRealCoreWorkerNoDevice(t *testing.T) {
 	if len(callbacks) != 1 || callbacks[0].MessageID != 5 || callbacks[0].CoreSequence != 1 {
 		t.Fatalf("expected sole Destroyed callback, got %+v", callbacks)
 	}
-	t.Logf("platform=%s/%s Core=%s library_sha256=%s resource_version_sha256=%s; initialize/append/update/status/destroy passed without device actions", runtime.GOOS, runtime.GOARCH, info.CoreVersion, info.LibrarySHA256, info.Resources[0].VersionSHA256)
+	t.Logf("platform=%s/%s Core=%s library_sha256=%s resource_version_sha256=%s; initialize/reject-unknown/append/update/status/destroy passed without device actions", runtime.GOOS, runtime.GOARCH, info.CoreVersion, info.LibrarySHA256, info.Resources[0].VersionSHA256)
 }

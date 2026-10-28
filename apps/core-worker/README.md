@@ -125,7 +125,8 @@ The real-Core test is explicitly enabled with `RHODECK_WORKER_CORE_LIBRARY`,
 `RHODECK_WORKER_RESOURCE_ROOT`, `RHODECK_WORKER_LIBRARY_SHA256` and
 `RHODECK_WORKER_CORE_VERSION`. Run
 `go test ./apps/core-worker -run '^TestRealCoreWorkerNoDevice$' -v -count=1`.
-It initializes, appends disabled Award tasks, updates parameters, reads status and
+It initializes, confirms native rejection of an unknown task, appends disabled
+Award tasks, updates parameters, reads status and
 destroys the instance. It never connects or starts tasks. Without explicit inputs
 the test skips; a skip is not real-Core verification.
 
