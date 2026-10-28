@@ -103,7 +103,9 @@ func helper(mode string) int {
 	}
 	// imageTransfers tracks one served snapshot per transfer ID with the next
 	// expected chunk offset, so the frozen per-transfer sequential pull is
-	// enforced even when two transfers interleave on the wire.
+	// enforced even when transfers interleave on the wire. Every get_image
+	// request owns a fresh ID, like the real worker's per-snapshot registry,
+	// so concurrent transfers of the same kind keep independent state.
 	type fixtureImage struct {
 		payload  []byte
 		chunkLen uint32
@@ -112,10 +114,7 @@ func helper(mode string) int {
 	}
 	images := map[uint64]*fixtureImage{}
 	var imageCoreSequence uint64
-	const (
-		imagePNGTransfer = uint64(77)
-		imageBGRTransfer = uint64(78)
-	)
+	var nextFixtureTransfer uint64
 	g := protocol.Greeting{WorkerVersion: "fixture", SessionID: "fixture-session", OS: "fixture", Arch: "fixture", MaxFrameBytes: protocol.MaxFrameBytes, QueueMessages: protocol.QueueMessages, QueueBytes: protocol.QueueBytes}
 	emit(protocol.Hello, "", 0, 0, g, nil)
 	reader := protocol.NewReader(os.Stdin)
@@ -367,12 +366,12 @@ func helper(mode string) int {
 				emit(protocol.Response, req.Name, req.ID, 0, nil, &protocol.Error{Code: protocol.Unsupported, Message: "fixture lacks the optional BGR symbol"})
 				continue
 			}
-			transferID := imagePNGTransfer
 			salt := byte(0x50)
 			if req.Name == protocol.GetImageBGR {
-				transferID = imageBGRTransfer
 				salt = 0x47
 			}
+			nextFixtureTransfer++
+			transferID := nextFixtureTransfer
 			payload := fixtureImagePattern(3<<20+4567, salt)
 			if mode == "emptyimage" {
 				payload = nil
@@ -1585,4 +1584,211 @@ func TestClientRejectsBrokenFaultAndDiagnosticsReports(t *testing.T) {
 			requireReaped(t, c)
 		})
 	}
+}
+
+// requireIPCStopped asserts the session left no IPC goroutine behind: after
+// Done, both the read and the write loop must have returned.
+func requireIPCStopped(t *testing.T, c *Client) {
+	t.Helper()
+	select {
+	case <-c.readDone:
+	default:
+		t.Fatal("the read loop outlived Done")
+	}
+	select {
+	case <-c.writeDone:
+	default:
+		t.Fatal("the write loop outlived Done")
+	}
+}
+
+// TestClientConcurrentTransfersOperationsFaultAndClose proves the frozen
+// shutdown sequence under full load: large image transfers, settled async
+// operations and a native fault all share the session while a concurrent
+// Close races them. Every participant exits with a terminal fact — a
+// completed image is the full verified snapshot, never a prefix; a fetch that
+// overlaps the closing admission either delivers that snapshot or fails;
+// confirmed operation results survive the fault and the close; the final
+// diagnostics stay readable — and the process is reaped with no IPC goroutine
+// outliving Done.
+func TestClientConcurrentTransfersOperationsFaultAndClose(t *testing.T) {
+	// The fixture subprocess re-generates every snapshot and encodes every
+	// chunk in-process, which the race instrumentation slows down enough to
+	// outrun the short fixture deadlines; this test pins concurrency and
+	// shutdown invariants, not latency, so it runs with the production
+	// default budgets.
+	cfg := fixtureConfig(t, "faultdiag")
+	cfg.RequestTimeout, cfg.ShutdownTimeout = 30*time.Second, 5*time.Second
+	c, err := Launch(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close(context.Background()) })
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	wantPNG := fixtureImagePattern(3<<20+4567, 0x50)
+	wantBGR := fixtureImagePattern(3<<20+4567, 0x47)
+
+	var wg sync.WaitGroup
+	for i := range 6 {
+		wg.Go(func() {
+			fetch, want := c.GetImagePNG, wantPNG
+			if i%2 == 1 {
+				fetch, want = c.GetImageBGR, wantBGR
+			}
+			got, err := fetch(ctx)
+			if err != nil {
+				t.Errorf("transfer %d: %v", i, err)
+				return
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("transfer %d delivered %d bytes instead of the verified snapshot", i, len(got))
+			}
+		})
+	}
+	for range 4 {
+		wg.Go(func() {
+			op, err := c.Click(ctx, protocol.ClickRequest{X: -5, Y: 7})
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			result, waitErr := op.Wait(ctx)
+			if waitErr != nil || !result.OK {
+				t.Errorf("click terminal state: %+v, %v", result, waitErr)
+			}
+		})
+	}
+	wg.Wait()
+
+	// The native fault is armed by Start. From here the closers, a last
+	// transfer and a repeat wait race each other on the shared terminal facts.
+	if err := c.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitFault(t, c)
+	wg = sync.WaitGroup{}
+	for range 8 {
+		wg.Go(func() {
+			if err := c.Close(ctx); err != nil {
+				t.Errorf("concurrent close: %v", err)
+			}
+		})
+	}
+	wg.Go(func() {
+		// Overlapping the closing admission is allowed to fail, never to
+		// succeed partially: whatever comes back must be the whole verified
+		// snapshot or an error.
+		got, err := c.GetImagePNG(ctx)
+		if err == nil && !bytes.Equal(got, wantPNG) {
+			t.Errorf("racing transfer delivered %d bytes instead of the verified snapshot", len(got))
+		}
+	})
+	wg.Wait()
+	requireReaped(t, c)
+	requireIPCStopped(t, c)
+
+	// A native instance fault does not fail the process close, and the final
+	// observations stay readable after Done: the buffered events drain, then
+	// the closed stream terminates the range.
+	snap, ok := c.InstanceDiagnostics()
+	if !ok || snap.FirstFault == nil || snap.FirstFault.Code != protocol.EventOverflow {
+		t.Fatalf("final diagnostics after the concurrent close: %+v, %t", snap, ok)
+	}
+	closed := time.After(5 * time.Second)
+	for {
+		select {
+		case _, open := <-c.Events():
+			if !open {
+				return
+			}
+		case <-closed:
+			t.Fatal("the event stream never closed after Done")
+		}
+	}
+}
+
+// TestClientKillReleasesEveryWaiter proves a forced termination never invents
+// a terminal state and never strands a waiter: an accepted operation the
+// process took to its grave reports unknown to every concurrent waiter, the
+// process is reaped, and no IPC goroutine outlives Done.
+func TestClientKillReleasesEveryWaiter(t *testing.T) {
+	c := launchFixture(t, "pendingcrash")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	op, err := c.Connect(ctx, protocol.ConnectRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	waitErrs := make([]error, 8)
+	for i := range 8 {
+		wg.Go(func() {
+			_, waitErrs[i] = op.Wait(ctx)
+		})
+	}
+	// Let every waiter block on the unsettled operation, then crash the
+	// process under them: no wait may invent a result, a cancellation or a
+	// rollback, and none may hang.
+	time.Sleep(100 * time.Millisecond)
+	if err := c.Start(ctx); err == nil {
+		t.Fatal("the crashed session reported a successful start")
+	}
+	wg.Wait()
+	for _, waitErr := range waitErrs {
+		requireFailure(t, waitErr, true)
+	}
+	requireReaped(t, c)
+	requireIPCStopped(t, c)
+}
+
+// TestClientCloseDuringStuckTransferStaysBounded proves an unconfirmed image
+// cannot buy a clean close: with a chunk response withheld mid-transfer,
+// Close stops admission, fails within its shutdown deadline, kills and reaps
+// the worker, and the interrupted fetch reports failure instead of a partial
+// success.
+func TestClientCloseDuringStuckTransferStaysBounded(t *testing.T) {
+	cfg := fixtureConfig(t, "slowchunk")
+	cfg.ShutdownTimeout = 500 * time.Millisecond
+	c, err := Launch(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close(context.Background()) })
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	fetchErr := make(chan error, 1)
+	go func() { _, err := c.GetImagePNG(ctx); fetchErr <- err }()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(c.Diagnostics(), "slowchunk: second chunk request received") {
+		if time.Now().After(deadline) {
+			t.Fatal("the second chunk request never arrived")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	closing := make(chan error, 1)
+	go func() { closing <- c.Close(context.Background()) }()
+	select {
+	case err := <-fetchErr:
+		if err == nil {
+			t.Fatal("the interrupted transfer reported success")
+		}
+		requireFailure(t, err, true)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the interrupted fetch never returned")
+	}
+	select {
+	case err := <-closing:
+		requireFailure(t, err, true)
+	case <-time.After(10 * time.Second):
+		t.Fatal("close did not finish within its bounded deadline")
+	}
+	requireReaped(t, c)
+	requireIPCStopped(t, c)
 }

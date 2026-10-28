@@ -1235,7 +1235,17 @@ func TestSessionCloseSettlesPendingOperations(t *testing.T) {
 	if m := h.call(protocol.Close, nil); m.Error != nil {
 		t.Fatal(m.Error)
 	}
-	settlement := operationEvents(t, h, 1)[0]
+	// The terminal diagnostics and the operation settlement race each other on
+	// the way out (neither ordering is frozen), so filter by name instead of
+	// assuming one precedes the other.
+	settlements := namedEvents(h, protocol.OperationEvent)
+	if len(settlements) != 1 {
+		t.Fatalf("expected exactly one settlement event, got %d", len(settlements))
+	}
+	var settlement protocol.OperationResult
+	if err := protocol.Decode(settlements[0].Payload, &settlement); err != nil {
+		t.Fatal(err)
+	}
 	if settlement.RequestID != accepted.ID || settlement.AsyncID != 41 || settlement.OK || settlement.What != "" {
 		t.Fatalf("close settlement: %+v", settlement)
 	}
@@ -1244,6 +1254,71 @@ func TestSessionCloseSettlesPendingOperations(t *testing.T) {
 	}
 	if err := <-h.done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSessionCloseReleasesRetainedTransfersAndSettlesOperations proves close
+// drains the session's own state in one pass: a partially served snapshot
+// stays owned until the close, the pending operation is settled as a
+// lifecycle result before the close response, and the close completes without
+// a second cleanup error so the process can exit.
+func TestSessionCloseReleasesRetainedTransfersAndSettlesOperations(t *testing.T) {
+	f := newFakeEngine()
+	f.imagePNG = func() ([]byte, error) { return []byte("snapshot"), nil }
+	op := newFakeOperation(41)
+	op.result = protocol.OperationResult{AsyncID: 41}
+	op.err = maa.ErrClosed
+	f.connectHook = func(protocol.ConnectRequest) (operation, error) { return f.submit(op) }
+	h := harness(t, fakeFactory(f))
+	h.initialize()
+	var accepted protocol.ImageTransfer
+	m := h.call(protocol.GetImagePNG, nil)
+	if m.Error != nil {
+		t.Fatal(m.Error)
+	}
+	if err := protocol.Decode(m.Payload, &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if accepted.TotalBytes != 8 {
+		t.Fatalf("transfer: %+v", accepted)
+	}
+	// Serve only the first half, so the snapshot is still retained when the
+	// close arrives.
+	chunk := h.call(protocol.ImageChunk, protocol.ImageChunkRequest{TransferID: accepted.TransferID, Offset: 0, Length: 3})
+	if chunk.Error != nil {
+		t.Fatal(chunk.Error)
+	}
+	connectID := h.send(protocol.Connect, protocol.ConnectRequest{})
+	if m := h.response(connectID); m.Error != nil {
+		t.Fatal(m.Error)
+	}
+	if m := h.call(protocol.Close, nil); m.Error != nil {
+		t.Fatalf("close: %+v", m)
+	}
+	// The terminal diagnostics and the operation settlement race each other on
+	// the way out (neither ordering is frozen), so filter by name instead of
+	// assuming one precedes the other.
+	settlements := namedEvents(h, protocol.OperationEvent)
+	if len(settlements) != 1 {
+		t.Fatalf("expected exactly one settlement event, got %d", len(settlements))
+	}
+	var settlement protocol.OperationResult
+	if err := protocol.Decode(settlements[0].Payload, &settlement); err != nil {
+		t.Fatal(err)
+	}
+	if settlement.RequestID != connectID || settlement.AsyncID != 41 || settlement.OK || settlement.What != "" {
+		t.Fatalf("close settlement: %+v", settlement)
+	}
+	if settlement.Error == nil || settlement.Error.Code != protocol.InvalidState {
+		t.Fatalf("lifecycle settlement must be invalid_state: %+v", settlement.Error)
+	}
+	// The close response is answered exactly once and the session exits
+	// cleanly: the release path added no second close diagnostic.
+	if err := <-h.done; err != nil {
+		t.Fatal(err)
+	}
+	if f.closes.Load() != 1 {
+		t.Fatalf("close count: %d", f.closes.Load())
 	}
 }
 
