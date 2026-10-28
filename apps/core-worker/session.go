@@ -337,6 +337,21 @@ func (s *session) commands(factory engineFactory) (result error) {
 				if err = emptyPayload(req.Payload); err == nil {
 					out, err = core.UUID()
 				}
+			case protocol.Log:
+				var input protocol.LogRequest
+				if err = payload(req, &input); err == nil {
+					err = core.Log(input)
+				}
+			case protocol.MapLevelKey:
+				var query protocol.MapLevelKeyRequest
+				if err = payload(req, &query); err == nil {
+					out, err = core.MapLevelKey(query)
+				}
+			case protocol.ItemName:
+				var query protocol.ItemNameRequest
+				if err = payload(req, &query); err == nil {
+					out, err = core.ItemName(query)
+				}
 			case protocol.GetImagePNG, protocol.GetImageBGR:
 				// Reading the cache is not a screencap: the snapshot is taken
 				// under the transfer budgets and served chunk by chunk.

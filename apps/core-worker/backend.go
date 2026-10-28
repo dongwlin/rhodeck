@@ -35,6 +35,9 @@ type engine interface {
 	BackToHome() error
 	Status() (protocol.ExecutionStatus, error)
 	UUID() (protocol.UUIDResult, error)
+	Log(protocol.LogRequest) error
+	MapLevelKey(protocol.MapLevelKeyRequest) (protocol.MapLevelKeyResult, error)
+	ItemName(protocol.ItemNameRequest) (protocol.ItemNameResult, error)
 	GetImagePNG() ([]byte, error)
 	GetImageBGR() ([]byte, error)
 	Observe(context.Context, func(protocol.Callback) error) error
@@ -326,6 +329,38 @@ func (e *nativeEngine) Status() (protocol.ExecutionStatus, error) {
 func (e *nativeEngine) UUID() (protocol.UUIDResult, error) {
 	uuid, err := e.instance.UUID()
 	return protocol.UUIDResult{UUID: uuid}, err
+}
+
+// Log feeds the process-level native log (AsstLog). The binding validates the
+// level and message before the native call; the C void return means a nil
+// error only states that the call was issued and returned — it is not a native
+// success confirmation and implies nothing about what Core did with the text.
+func (e *nativeEngine) Log(req protocol.LogRequest) error {
+	return e.runtime.Log(req.Level, req.Message)
+}
+
+// MapLevelKey runs the experiment level lookup (AsstGetMapLevelKey). The
+// binding gates on the optional symbol (a missing export surfaces the stable
+// unsupported rejection without any native call), copies the four borrowed
+// strings immediately, and maps the zero value to "not found" — a normal
+// result, never an error.
+func (e *nativeEngine) MapLevelKey(req protocol.MapLevelKeyRequest) (protocol.MapLevelKeyResult, error) {
+	mk, err := e.runtime.MapLevelKey(req.Key)
+	if err != nil {
+		return protocol.MapLevelKeyResult{}, err
+	}
+	return protocol.MapLevelKeyResult{StageID: mk.StageID, Code: mk.Code, LevelID: mk.LevelID, Name: mk.Name}, nil
+}
+
+// ItemName runs the experiment item lookup (AsstGetItemName). The empty result
+// and the native "Unknown" are normal results; a native contract breach (null
+// pointer, invalid UTF-8, missing NUL) arrives as the binding's protocol_error.
+func (e *nativeEngine) ItemName(req protocol.ItemNameRequest) (protocol.ItemNameResult, error) {
+	name, err := e.runtime.ItemName(req.ID)
+	if err != nil {
+		return protocol.ItemNameResult{}, err
+	}
+	return protocol.ItemNameResult{Name: name}, nil
 }
 
 // GetImagePNG reads the Core's cached PNG encoding (AsstGetImage). The read
