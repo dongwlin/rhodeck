@@ -1,11 +1,11 @@
 name: maa-go
 
-# Unit verification on Linux/Windows amd64 and macOS arm64.
+# Unit verification on Linux/Windows amd64 and both macOS architectures.
 #
 # CI intentionally runs only layers that need no MaaCore release artifact:
 # static declaration checks, Go/fake-native tests, CGO_ENABLED=0 build/vet,
-# and gofmt on every platform; loader/ABI/callback fixtures on Linux only.
-# Windows/macOS unit tests do not imply native loader support. The real-MaaCore
+# and gofmt on every platform, including production loader tests. The separate
+# loader/ABI/callback fixture layers run on Linux only. The real-MaaCore
 # (`core`) layer is local-only and is never claimed by this workflow. A skip
 # or missing toolchain in a selected layer is UNVERIFIED (binary exit 2); a
 # real failure is exit 1. Either fails the job.
@@ -46,13 +46,16 @@ jobs:
       matrix:
         include:
           - target: linux/amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-latest
             layers: ci
           - target: windows/amd64
-            runner: windows-2025
+            runner: windows-latest
             layers: static,go,build,fmt
           - target: darwin/arm64
-            runner: macos-15
+            runner: macos-latest
+            layers: static,go,build,fmt
+          - target: darwin/amd64
+            runner: macos-15-intel
             layers: static,go,build,fmt
     defaults:
       run:
@@ -66,6 +69,15 @@ jobs:
       - name: Install C toolchain for fixtures
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Enable native Windows C compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $compilerDir = @('C:\msys64\mingw64\bin', 'C:\msys64\ucrt64\bin') |
+            Where-Object { Test-Path (Join-Path $_ 'gcc.exe') } |
+            Select-Object -First 1
+          if (-not $compilerDir) { throw 'Native MinGW gcc is missing from the runner image' }
+          Add-Content -Path $env:GITHUB_PATH -Value $compilerDir
       - name: Build layered checker
         run: go build -o maa-go-check.exe ./tools/maa-go-check
       - name: Run layered checks
@@ -73,7 +85,7 @@ jobs:
 
   race:
     name: race detector (linux/amd64, real-core acceptance excluded)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -90,18 +102,13 @@ jobs:
 
   cross-build:
     name: cross-compile (${{ matrix.goos }}/${{ matrix.goarch }}, no execution)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - goos: linux
-            goarch: arm64
-          - goos: windows
-            goarch: arm64
-          - goos: darwin
-            goarch: amd64
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
     env:
       CGO_ENABLED: "0"
       GOOS: ${{ matrix.goos }}
