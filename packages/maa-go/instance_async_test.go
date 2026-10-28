@@ -110,7 +110,7 @@ func waitOperationGuarded(t *testing.T, op *Operation, ctx context.Context) (Asy
 }
 
 // connectInput 是异步用例的合法连接输入(Config 允许空串)。
-var connectInput = ConnectConfig{ADBPath: "/usr/bin/adb", Address: "127.0.0.1:5555", Config: ""}
+var connectInput = ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: "127.0.0.1:5555", Config: ""}
 
 // TestAsyncEntriesForwardBlockFalseAndAcceptedID 验证「三个
 // 异步 raw 入口均传 block=false,非零 ID 只表示提交被接受」:三个入
@@ -953,9 +953,9 @@ func TestAsyncInputAndLifecycleRejections(t *testing.T) {
 			cfg  ConnectConfig
 		}{
 			{"相对 ADBPath", ConnectConfig{ADBPath: "adb", Address: "127.0.0.1:5555"}},
-			{"空 Address", ConnectConfig{ADBPath: "/usr/bin/adb", Address: ""}},
-			{"内嵌 NUL", ConnectConfig{ADBPath: "/usr/bin/a\x00db", Address: "x"}},
-			{"非法 UTF-8", ConnectConfig{ADBPath: "/usr/bin/\xff\xfe", Address: "x"}},
+			{"空 Address", ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: ""}},
+			{"内嵌 NUL", ConnectConfig{ADBPath: testAbsolutePath("adb") + "\x00", Address: "x"}},
+			{"非法 UTF-8", ConnectConfig{ADBPath: testAbsolutePath("adb") + "\xff\xfe", Address: "x"}},
 		}
 		for _, tc := range bad {
 			if op, err := inst.Connect(tc.cfg); op != nil || !errors.Is(err, native.ErrInvalidInput) {

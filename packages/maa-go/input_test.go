@@ -134,12 +134,12 @@ func TestConnectConfigValidationRejectsInvalidInput(t *testing.T) {
 	}{
 		{"ADBPath 为空", ConnectConfig{Address: "127.0.0.1:5555"}, "ADBPath"},
 		{"ADBPath 相对路径", ConnectConfig{ADBPath: "adb", Address: "127.0.0.1:5555"}, "ADBPath"},
-		{"ADBPath 内嵌 NUL", ConnectConfig{ADBPath: "/usr/bin/ad" + nul + "b", Address: "127.0.0.1:5555"}, "ADBPath"},
-		{"ADBPath 非法 UTF-8", ConnectConfig{ADBPath: "/usr/bin/" + invalidUTF8, Address: "127.0.0.1:5555"}, "ADBPath"},
-		{"Address 为空", ConnectConfig{ADBPath: "/usr/bin/adb"}, "Address"},
-		{"Address 内嵌 NUL", ConnectConfig{ADBPath: "/usr/bin/adb", Address: "127.0.0.1" + nul}, "Address"},
-		{"Config 内嵌 NUL", ConnectConfig{ADBPath: "/usr/bin/adb", Address: "127.0.0.1:5555", Config: "{" + nul + "}"}, "Config"},
-		{"Config 非法 UTF-8", ConnectConfig{ADBPath: "/usr/bin/adb", Address: "127.0.0.1:5555", Config: invalidUTF8}, "Config"},
+		{"ADBPath 内嵌 NUL", ConnectConfig{ADBPath: testAbsolutePath("adb") + nul, Address: "127.0.0.1:5555"}, "ADBPath"},
+		{"ADBPath 非法 UTF-8", ConnectConfig{ADBPath: testAbsolutePath("adb") + invalidUTF8, Address: "127.0.0.1:5555"}, "ADBPath"},
+		{"Address 为空", ConnectConfig{ADBPath: testAbsolutePath("adb")}, "Address"},
+		{"Address 内嵌 NUL", ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: "127.0.0.1" + nul}, "Address"},
+		{"Config 内嵌 NUL", ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: "127.0.0.1:5555", Config: "{" + nul + "}"}, "Config"},
+		{"Config 非法 UTF-8", ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: "127.0.0.1:5555", Config: invalidUTF8}, "Config"},
 	}
 
 	for _, tc := range cases {
@@ -162,7 +162,7 @@ func TestConnectConfigValidationRejectsInvalidInput(t *testing.T) {
 // 空串(将被原样编码为空 C 字符串而非 nil);ADBPath + Address +
 // Config 的文本合计超过 ConfigBytes 时拒绝,单串预算仍逐项执行。
 func TestConnectConfigAcceptsEmptyConfigAndBudget(t *testing.T) {
-	cfg := ConnectConfig{ADBPath: "/usr/bin/adb", Address: "127.0.0.1:5555", Config: ""}
+	cfg := ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: "127.0.0.1:5555", Config: ""}
 	snap, err := snapshotConnectInput(cfg, defaultLimits())
 	if err != nil {
 		t.Fatalf("空 Config 应当被接受: %v", err)
@@ -177,7 +177,7 @@ func TestConnectConfigAcceptsEmptyConfigAndBudget(t *testing.T) {
 	limits.InputStringBytes = 64
 	limits.InputJSONBytes = 64
 	limits.ConfigBytes = 100
-	full := ConnectConfig{ADBPath: "/" + strings.Repeat("a", 39), Address: strings.Repeat("b", 40), Config: strings.Repeat("c", 40)}
+	full := ConnectConfig{ADBPath: testAbsolutePathWithLength(40), Address: strings.Repeat("b", 40), Config: strings.Repeat("c", 40)}
 	_, err = snapshotConnectInput(full, limits)
 	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "connect input text bytes total") {
 		t.Fatalf("连接输入文本合计超 ConfigBytes 必须拒绝: %v", err)
@@ -185,7 +185,7 @@ func TestConnectConfigAcceptsEmptyConfigAndBudget(t *testing.T) {
 
 	// 单串预算独立执行:恰达 65,537 字节的 ADBPath 超默认
 	// InputStringBytes。
-	_, err = snapshotConnectInput(ConnectConfig{ADBPath: "/" + strings.Repeat("a", 65_536), Address: "x"}, defaultLimits())
+	_, err = snapshotConnectInput(ConnectConfig{ADBPath: testAbsolutePathWithLength(65_537), Address: "x"}, defaultLimits())
 	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "InputStringBytes") {
 		t.Fatalf("ADBPath 超单串预算必须拒绝: %v", err)
 	}

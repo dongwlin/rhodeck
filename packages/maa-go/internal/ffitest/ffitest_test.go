@@ -11,6 +11,7 @@ package ffitest_test
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -145,7 +146,8 @@ func TestRunAbnormalExitCode(t *testing.T) {
 }
 
 // TestRunTimeoutKillReportedAsFailure 验收超时语义:挂起子进程在 3s
-// 短超时后被外部杀死,结果报告为失败(TimedOut 与 Signaled 置位),
+// 短超时后被外部杀死,结果报告为失败(TimedOut 置位,Unix 上 Signaled
+// 置位;Windows 的 TerminateProcess 不产生信号),
 // 已产出的标记保留——超时不是通过,也不得 recover 后继续或自动重试。
 // 本测试断言该机制工作,测试本身通过。
 func TestRunTimeoutKillReportedAsFailure(t *testing.T) {
@@ -157,13 +159,19 @@ func TestRunTimeoutKillReportedAsFailure(t *testing.T) {
 	if !out.TimedOut {
 		t.Fatalf("失败必须可辨识为超时终止(TimedOut=false, err=%v):\n%s", out.Err, out.Diagnostics())
 	}
-	if !out.Signaled {
+	if out.ExitCode == 0 {
+		t.Fatalf("被外部终止的子进程不得报告成功退出:\n%s", out.Diagnostics())
+	}
+	if runtime.GOOS == "windows" && out.Signaled {
+		t.Fatalf("Windows 超时终止不得报告 Unix 信号死亡:\n%s", out.Diagnostics())
+	}
+	if runtime.GOOS != "windows" && !out.Signaled {
 		t.Fatalf("超时终止必须经信号杀死子进程(Signaled=false, err=%v):\n%s", out.Err, out.Diagnostics())
 	}
 	if !strings.Contains(out.Stdout, hangMarker) {
 		t.Fatalf("超时诊断必须保留子进程已产出的输出:\n%s", out.Diagnostics())
 	}
-	t.Logf("挂起子进程按预期在 %s 超时被 SIGKILL,执行器报告为失败并保留诊断:\n%s",
+	t.Logf("挂起子进程按预期在 %s 超时被外部终止,执行器报告为失败并保留诊断:\n%s",
 		timeout, out.Diagnostics())
 }
 

@@ -2,6 +2,7 @@ package native
 
 import (
 	"errors"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -105,8 +106,12 @@ func TestOpenRejectsInvalidPathBeforeNativeLoad(t *testing.T) {
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("errors.Is(err, ErrInvalidInput) = false, want true; err = %v", err)
 			}
-			if lle.Path != tc.wantPath {
-				t.Errorf("Path = %q, want %q", lle.Path, tc.wantPath)
+			wantPath := tc.wantPath
+			if wantPath != "" {
+				wantPath = filepath.Clean(wantPath)
+			}
+			if lle.Path != wantPath {
+				t.Errorf("Path = %q, want %q", lle.Path, wantPath)
 			}
 			if lle.LibraryName != tc.wantName {
 				t.Errorf("LibraryName = %q, want %q", lle.LibraryName, tc.wantName)
@@ -119,8 +124,8 @@ func TestOpenRejectsInvalidPathBeforeNativeLoad(t *testing.T) {
 			}
 			// 错误文本应包含路径与目标平台,便于就地诊断。
 			text := err.Error()
-			if tc.wantPath != "" && !strings.Contains(text, tc.wantPath) {
-				t.Errorf("Error() = %q, want it to contain path %q", text, tc.wantPath)
+			if wantPath != "" && !strings.Contains(text, wantPath) {
+				t.Errorf("Error() = %q, want it to contain path %q", text, wantPath)
 			}
 			if want := runtime.GOOS + "/" + runtime.GOARCH; !strings.Contains(text, want) {
 				t.Errorf("Error() = %q, want it to contain target platform %q", text, want)
@@ -132,10 +137,10 @@ func TestOpenRejectsInvalidPathBeforeNativeLoad(t *testing.T) {
 // TestOpenNormalizesAbsolutePath 验证:合法绝对路径按 filepath.Clean
 // 规范化后恰好以规范化形式传给平台原语,Library 的 Path/Name 与之一致。
 func TestOpenNormalizesAbsolutePath(t *testing.T) {
-	const (
-		raw        = "/tmp//a/./b/../libMaaCore.so"
-		normalized = "/tmp/a/libMaaCore.so"
-	)
+	dir := t.TempDir()
+	sep := string(filepath.Separator)
+	raw := dir + sep + sep + "a" + sep + "." + sep + "b" + sep + ".." + sep + "libMaaCore.so"
+	normalized := filepath.Join(dir, "a", "libMaaCore.so")
 	fake := &fakePrimitives{openHandle: 0x1000}
 	lib, err := newFakeLoader(fake).Open(raw)
 	if err != nil {
@@ -156,7 +161,7 @@ func TestOpenNormalizesAbsolutePath(t *testing.T) {
 // 底层错误原样进入 *LibraryLoadError 的错误链,可沿 errors.Is
 // 追溯,且不与输入错误关联。
 func TestOpenPrimitiveFailureKeepsUnderlyingCause(t *testing.T) {
-	const path = "/opt/maa/libMaaCore.so"
+	path := filepath.Join(t.TempDir(), "libMaaCore.so")
 	sentinel := errors.New("fake dlopen: dependency library missing")
 	fake := &fakePrimitives{openErr: sentinel}
 
@@ -189,7 +194,7 @@ func TestOpenPrimitiveFailureKeepsUnderlyingCause(t *testing.T) {
 // 情形被转换为 *LibraryLoadError,不返回 Library,原因不与输入
 // 错误关联。
 func TestOpenRejectsNullHandle(t *testing.T) {
-	const path = "/opt/maa/libMaaCore.so"
+	path := filepath.Join(t.TempDir(), "libMaaCore.so")
 	fake := &fakePrimitives{zeroHandle: true}
 
 	lib, err := newFakeLoader(fake).Open(path)
@@ -215,10 +220,10 @@ func TestOpenRejectsNullHandle(t *testing.T) {
 // 使用打开阶段返回的句柄。
 func TestLookupSuccess(t *testing.T) {
 	const (
-		path   = "/opt/maa/libMaaCore.so"
 		handle = uintptr(0x2000)
 		addr   = uintptr(0xabcdef)
 	)
+	path := filepath.Join(t.TempDir(), "libMaaCore.so")
 	fake := &fakePrimitives{openHandle: handle, lookupAddr: addr}
 	lib, err := newFakeLoader(fake).Open(path)
 	if err != nil {
@@ -244,10 +249,8 @@ func TestLookupSuccess(t *testing.T) {
 // *SymbolLookupError,逐字段保留库路径、符号名与 ABI 组合标识,
 // 底层原因可沿 errors.Is 追溯,且不返回可用地址。
 func TestLookupFailureKeepsUnderlyingCause(t *testing.T) {
-	const (
-		path   = "/opt/maa/libMaaCore.so"
-		symbol = "AsstNoSuchSymbol"
-	)
+	const symbol = "AsstNoSuchSymbol"
+	path := filepath.Join(t.TempDir(), "libMaaCore.so")
 	sentinel := errors.New("fake dlsym: undefined symbol")
 	fake := &fakePrimitives{openHandle: 0x2000, lookupErr: sentinel}
 	lib, err := newFakeLoader(fake).Open(path)
@@ -281,7 +284,7 @@ func TestLookupFailureKeepsUnderlyingCause(t *testing.T) {
 // 不会被当作可调用的函数地址返回,而是得到可识别空地址原因的
 // *SymbolLookupError。
 func TestLookupNullAddressNotCallable(t *testing.T) {
-	const path = "/opt/maa/libMaaCore.so"
+	path := filepath.Join(t.TempDir(), "libMaaCore.so")
 	fake := &fakePrimitives{openHandle: 0x2000, nullAddr: true}
 	lib, err := newFakeLoader(fake).Open(path)
 	if err != nil {

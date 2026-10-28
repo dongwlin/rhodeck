@@ -9,8 +9,8 @@
 // 实现。Open 会经 Loader.Open 的既有包装得到 *LibraryLoadError,
 // 不会进入任何系统 loader,也不会产生半初始化状态。
 //
-// 真实的平台支持必须在对应平台分别通过 fixture、真实 MaaCore 与
-// 退出验收后才能声明;交叉编译通过不构成运行支持。
+// Windows/macOS 的 Go/fake-native 单测覆盖平台中立行为;单测和
+// 交叉编译都不会使这里的占位原语获得实际动态装载能力。
 
 package native
 

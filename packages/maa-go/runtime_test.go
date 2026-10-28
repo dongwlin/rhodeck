@@ -260,7 +260,7 @@ func TestOpenSessionStepsAndMetadata(t *testing.T) {
 
 	cfg := validRuntimeConfig()
 	cfg.StaticOptions = []StaticOption{{Key: 1, Value: "cpu"}, {Key: 2, Value: ""}}
-	cfg.ResourceRoots = []string{"/opt/maa/resource", "/opt/maa/extra"}
+	cfg.ResourceRoots = []string{testAbsolutePath("resource"), testAbsolutePath("extra")}
 	cfg.ConnectionExtras = []ConnectionExtra{
 		{Name: "sink", JSON: json.RawMessage(`{"a":1}`)},
 		{Name: "other", JSON: json.RawMessage(`{}`)},
@@ -277,11 +277,11 @@ func TestOpenSessionStepsAndMetadata(t *testing.T) {
 	want := []fakeCall{
 		{step: "version"},
 		{step: "nullSize"},
-		{step: "setUserDir", value: "/home/tester/.maa"},
+		{step: "setUserDir", value: testAbsolutePath("user")},
 		{step: "setStaticOption", key: 1, value: "cpu"},
 		{step: "setStaticOption", key: 2, value: ""},
-		{step: "loadResource", value: "/opt/maa/resource"},
-		{step: "loadResource", value: "/opt/maa/extra"},
+		{step: "loadResource", value: testAbsolutePath("resource")},
+		{step: "loadResource", value: testAbsolutePath("extra")},
 		{step: "setConnectionExtras", value: "sink", extra: `{"a":1}`},
 		{step: "setConnectionExtras", value: "other", extra: `{}`},
 	}
@@ -365,7 +365,7 @@ func TestOpenSnapshotIsDeepCopy(t *testing.T) {
 
 	cfg := validRuntimeConfig()
 	cfg.StaticOptions = []StaticOption{{Key: 3, Value: "orig"}}
-	cfg.ResourceRoots = []string{"/opt/maa/resource"}
+	cfg.ResourceRoots = []string{testAbsolutePath("resource")}
 	cfg.ConnectionExtras = []ConnectionExtra{{Name: "sink", JSON: json.RawMessage(`{"orig":1}`)}}
 	explicit := validLimits()
 	explicit.InputStringBytes = 12_345
@@ -381,11 +381,11 @@ func TestOpenSnapshotIsDeepCopy(t *testing.T) {
 	}
 
 	// Open 返回后修改原配置。
-	cfg.UserDir = "/tampered"
+	cfg.UserDir = testAbsolutePath("tampered")
 	cfg.StaticOptions[0].Value = "tampered"
 	cfg.StaticOptions = append(cfg.StaticOptions, StaticOption{Key: 9, Value: "extra"})
-	cfg.ResourceRoots[0] = "/tampered"
-	cfg.ResourceRoots = append(cfg.ResourceRoots, "/tampered2")
+	cfg.ResourceRoots[0] = testAbsolutePath("tampered")
+	cfg.ResourceRoots = append(cfg.ResourceRoots, testAbsolutePath("tampered2"))
 	cfg.ConnectionExtras[0].Name = "tampered"
 	cfg.ConnectionExtras[0].JSON = json.RawMessage(`{"tampered":true}`)
 	cfg.ConnectionExtras = append(cfg.ConnectionExtras, ConnectionExtra{Name: "t2", JSON: json.RawMessage(`{}`)})
@@ -397,9 +397,9 @@ func TestOpenSnapshotIsDeepCopy(t *testing.T) {
 	want := []fakeCall{
 		{step: "version"},
 		{step: "nullSize"},
-		{step: "setUserDir", value: "/home/tester/.maa"},
+		{step: "setUserDir", value: testAbsolutePath("user")},
 		{step: "setStaticOption", key: 3, value: "orig"},
-		{step: "loadResource", value: "/opt/maa/resource"},
+		{step: "loadResource", value: testAbsolutePath("resource")},
 		{step: "setConnectionExtras", value: "sink", extra: `{"orig":1}`},
 	}
 	got := sess.recorded()
@@ -425,7 +425,7 @@ func TestConcurrentOpenSingleReserve(t *testing.T) {
 	cfgs := make([]RuntimeConfig, n)
 	for i := range cfgs {
 		cfgs[i] = validRuntimeConfig()
-		cfgs[i].UserDir = fmt.Sprintf("/home/user-%d/.maa", i)
+		cfgs[i].UserDir = testAbsolutePath(fmt.Sprintf("user-%d", i))
 	}
 	rts := make([]*Runtime, n)
 	errs := make([]error, n)
@@ -561,7 +561,7 @@ func TestOpenStepFailuresTerminateLifecycle(t *testing.T) {
 				sess.resourceRejectN = 1
 			},
 			config: func(cfg *RuntimeConfig) {
-				cfg.ResourceRoots = []string{"/opt/maa/resource", "/opt/maa/extra"}
+				cfg.ResourceRoots = []string{testAbsolutePath("resource"), testAbsolutePath("extra")}
 			},
 			wantIs: ErrNativeRejected,
 			check: func(t *testing.T, env *fakeEnv, err error) {

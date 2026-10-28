@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,13 +20,33 @@ import (
 // 逐字段突变构造失败用例。
 func validLimits() Limits { return defaultLimits() }
 
+// testAbsolutePath 返回当前测试目录下的绝对路径。fake native 不要求
+// 文件存在,路径仍使用宿主平台的卷名与分隔符以覆盖真实的路径校验。
+func testAbsolutePath(parts ...string) string {
+	path, err := filepath.Abs(filepath.Join(append([]string{"testdata", "paths"}, parts...)...))
+	if err != nil {
+		panic(err)
+	}
+	return path
+}
+
+// testAbsolutePathWithLength 构造恰好 n 字节的绝对路径,供预算边界
+// 用例使用。Windows 保留卷名前缀,不将无卷名的 / 当作绝对路径。
+func testAbsolutePathWithLength(n int) string {
+	root := filepath.VolumeName(testAbsolutePath()) + string(filepath.Separator)
+	if n < len(root) {
+		panic("test absolute path budget is shorter than its root")
+	}
+	return root + strings.Repeat("r", n-len(root))
+}
+
 // validRuntimeConfig 返回一份合法的最小配置,供逐字段突变构造
 // 失败用例。
 func validRuntimeConfig() RuntimeConfig {
 	return RuntimeConfig{
-		LibraryPath:   "/opt/maa/libMaaCore.so",
-		UserDir:       "/home/tester/.maa",
-		ResourceRoots: []string{"/opt/maa/resource"},
+		LibraryPath:   testAbsolutePath("libMaaCore.so"),
+		UserDir:       testAbsolutePath("user"),
+		ResourceRoots: []string{testAbsolutePath("resource")},
 	}
 }
 
@@ -42,14 +63,14 @@ func TestConfigValidationRejectsInvalidContent(t *testing.T) {
 	}{
 		{"LibraryPath 为空", func(c *RuntimeConfig) { c.LibraryPath = "" }, "LibraryPath"},
 		{"LibraryPath 相对路径", func(c *RuntimeConfig) { c.LibraryPath = "lib/libMaaCore.so" }, "LibraryPath"},
-		{"LibraryPath 内嵌 NUL", func(c *RuntimeConfig) { c.LibraryPath = "/opt/lib" + nul + ".so" }, "LibraryPath"},
-		{"LibraryPath 非法 UTF-8", func(c *RuntimeConfig) { c.LibraryPath = "/opt/" + invalidUTF8 + ".so" }, "LibraryPath"},
+		{"LibraryPath 内嵌 NUL", func(c *RuntimeConfig) { c.LibraryPath += nul }, "LibraryPath"},
+		{"LibraryPath 非法 UTF-8", func(c *RuntimeConfig) { c.LibraryPath += invalidUTF8 }, "LibraryPath"},
 		{"UserDir 相对路径", func(c *RuntimeConfig) { c.UserDir = "relative/dir" }, "UserDir"},
-		{"UserDir 内嵌 NUL", func(c *RuntimeConfig) { c.UserDir = "/ho" + nul + "me" }, "UserDir"},
+		{"UserDir 内嵌 NUL", func(c *RuntimeConfig) { c.UserDir += nul }, "UserDir"},
 		{"ResourceRoots 为空", func(c *RuntimeConfig) { c.ResourceRoots = nil }, "ResourceRoots"},
 		{"资源根为空串", func(c *RuntimeConfig) { c.ResourceRoots = []string{""} }, "ResourceRoots[0]"},
 		{"资源根相对路径", func(c *RuntimeConfig) { c.ResourceRoots = []string{"res"} }, "ResourceRoots[0]"},
-		{"资源根内嵌 NUL", func(c *RuntimeConfig) { c.ResourceRoots = []string{"/o" + nul + "pt/res"} }, "ResourceRoots[0]"},
+		{"资源根内嵌 NUL", func(c *RuntimeConfig) { c.ResourceRoots = []string{testAbsolutePath("resource") + nul} }, "ResourceRoots[0]"},
 		{"静态选项 key 重复", func(c *RuntimeConfig) {
 			c.StaticOptions = []StaticOption{{Key: 1, Value: "a"}, {Key: 1, Value: "b"}}
 		}, "StaticOptions[1]"},
@@ -121,13 +142,13 @@ func TestConfigValidationRejectsInvalidContent(t *testing.T) {
 			// 超过默认 ConfigBytes 4,194,304。
 			c.ResourceRoots = make([]string, 65)
 			for i := range c.ResourceRoots {
-				c.ResourceRoots[i] = "/" + strings.Repeat("r", 65_535)
+				c.ResourceRoots[i] = testAbsolutePathWithLength(65_536)
 			}
 		}, "ConfigBytes"},
 		{"项数合计超 ConfigEntries 预算", func(c *RuntimeConfig) {
 			c.ResourceRoots = make([]string, 257) // 默认 ConfigEntries 256
 			for i := range c.ResourceRoots {
-				c.ResourceRoots[i] = "/opt/res"
+				c.ResourceRoots[i] = testAbsolutePath("resource")
 			}
 		}, "ConfigEntries"},
 	}
@@ -310,7 +331,7 @@ func TestConfigEntriesExactUpperBoundAccepted(t *testing.T) {
 	cfg := validRuntimeConfig()
 	cfg.ResourceRoots = make([]string, defaultLimits().ConfigEntries)
 	for i := range cfg.ResourceRoots {
-		cfg.ResourceRoots[i] = "/opt/res"
+		cfg.ResourceRoots[i] = testAbsolutePath("resource")
 	}
 	snap, err := snapshotConfig(cfg)
 	if err != nil {
@@ -321,7 +342,7 @@ func TestConfigEntriesExactUpperBoundAccepted(t *testing.T) {
 	}
 
 	// 多一项即拒绝,与恰达上界构成边界对。
-	cfg.ResourceRoots = append(cfg.ResourceRoots, "/opt/res")
+	cfg.ResourceRoots = append(cfg.ResourceRoots, testAbsolutePath("resource"))
 	if _, err := snapshotConfig(cfg); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("合计项数超 ConfigEntries 一项必须拒绝, got %v", err)
 	}
@@ -342,7 +363,7 @@ func TestConfigBytesExactUpperBoundAccepted(t *testing.T) {
 		if n > defaultLimits().InputStringBytes {
 			n = defaultLimits().InputStringBytes
 		}
-		cfg.ResourceRoots = append(cfg.ResourceRoots, "/"+strings.Repeat("r", int(n)-1))
+		cfg.ResourceRoots = append(cfg.ResourceRoots, testAbsolutePathWithLength(int(n)))
 		remaining -= n
 	}
 	total := uint64(len(cfg.LibraryPath) + len(cfg.UserDir))
@@ -450,7 +471,7 @@ func TestStaticOptionZeroKeyRejected(t *testing.T) {
 func TestSnapshotDeepCopiesConfig(t *testing.T) {
 	cfg := validRuntimeConfig()
 	cfg.StaticOptions = []StaticOption{{Key: 3, Value: "orig"}}
-	cfg.ResourceRoots = []string{"/opt/maa/resource"}
+	cfg.ResourceRoots = []string{testAbsolutePath("resource")}
 	cfg.ConnectionExtras = []ConnectionExtra{{Name: "sink", JSON: json.RawMessage(`{"orig":1}`)}}
 	explicit := validLimits()
 	explicit.InputStringBytes = 12_345
@@ -468,8 +489,8 @@ func TestSnapshotDeepCopiesConfig(t *testing.T) {
 	// Open 返回后修改原配置的一切可变内容。
 	cfg.StaticOptions[0].Value = "tampered"
 	cfg.StaticOptions = append(cfg.StaticOptions, StaticOption{Key: 9, Value: "extra"})
-	cfg.ResourceRoots[0] = "/tampered"
-	cfg.ResourceRoots = append(cfg.ResourceRoots, "/tampered2")
+	cfg.ResourceRoots[0] = testAbsolutePath("tampered")
+	cfg.ResourceRoots = append(cfg.ResourceRoots, testAbsolutePath("tampered2"))
 	cfg.ConnectionExtras[0].Name = "tampered"
 	cfg.ConnectionExtras[0].JSON[0] = 'X'
 	cfg.ConnectionExtras = append(cfg.ConnectionExtras, ConnectionExtra{Name: "t2", JSON: json.RawMessage(`{}`)})
@@ -478,7 +499,7 @@ func TestSnapshotDeepCopiesConfig(t *testing.T) {
 	if snap.staticOptions[0].Value != "orig" || len(snap.staticOptions) != 1 {
 		t.Errorf("静态选项快照被改写: %+v", snap.staticOptions)
 	}
-	if snap.resourceRoots[0] != "/opt/maa/resource" || len(snap.resourceRoots) != 1 {
+	if snap.resourceRoots[0] != testAbsolutePath("resource") || len(snap.resourceRoots) != 1 {
 		t.Errorf("资源根快照被改写: %v", snap.resourceRoots)
 	}
 	if snap.connectionExtras[0].Name != "sink" || len(snap.connectionExtras) != 1 {

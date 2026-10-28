@@ -5,6 +5,7 @@ package native
 
 import (
 	"errors"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -88,7 +89,7 @@ func expectApplicableNames(t *testing.T) []string {
 // 由调用方保证非零,各用例在此基础上按需注入失败。
 func mustOpenLibrary(t *testing.T, fake *fakePrimitives) *Library {
 	t.Helper()
-	const path = "/opt/maa/libMaaCore.so"
+	path := filepath.Join(t.TempDir(), "libMaaCore.so")
 	lib, err := newFakeLoader(fake).Open(path)
 	if err != nil {
 		t.Fatalf("Open(%q) 返回意外错误: %v", path, err)
