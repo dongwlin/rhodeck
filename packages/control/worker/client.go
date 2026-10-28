@@ -321,6 +321,8 @@ func validateResponse(m protocol.Message) error {
 		target = &protocol.ExecutionStatus{}
 	case protocol.Stop:
 		target = &protocol.StopResult{}
+	case protocol.UUID:
+		target = &protocol.UUIDResult{}
 	}
 	if err := protocol.Decode(m.Payload, target); err != nil {
 		return err
@@ -476,6 +478,21 @@ func (c *Client) Start(ctx context.Context) error {
 func (c *Client) Stop(ctx context.Context) (protocol.StopResult, error) {
 	var r protocol.StopResult
 	err := c.decode(ctx, protocol.Stop, nil, &r)
+	return r, err
+}
+
+// BackToHome requests the instance to return to the home screen. A nil error
+// only means the worker reported the call as accepted; the screen action's
+// outcome is observed through Core events, never inferred here.
+func (c *Client) BackToHome(ctx context.Context) error {
+	return c.decode(ctx, protocol.BackToHome, nil, &struct{}{})
+}
+
+// UUID reads the device UUID from the Core cache. The worker never connects
+// for this read, and the empty string is a normal result.
+func (c *Client) UUID(ctx context.Context) (protocol.UUIDResult, error) {
+	var r protocol.UUIDResult
+	err := c.decode(ctx, protocol.UUID, nil, &r)
 	return r, err
 }
 func (c *Client) Status(ctx context.Context) (protocol.ExecutionStatus, error) {

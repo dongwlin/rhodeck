@@ -31,11 +31,14 @@ select defaults: startup 10s, requests 30s, shutdown 5s. Negative values fail be
 process launch. Its context bounds startup only; `Close` owns the established
 session lifetime. `ExpectedWorkerVersion` can enforce an exact build version.
 
-Use the typed Initialize/Connect/AppendTask/SetTaskParams/Start/Stop/Status/Ping
-methods. Calls are concurrent-safe; a single writer preserves request ID order,
-and responses can arrive in any order. Connect returns acceptance and later emits
-an `operation` event. Task completion must be interpreted from native callbacks;
-the supervisor does not infer success from status or acknowledgments.
+Use the typed Initialize/Connect/AppendTask/SetTaskParams/Start/Stop/BackToHome/
+Status/UUID/Ping methods. Calls are concurrent-safe; a single writer preserves
+request ID order, and responses can arrive in any order. Connect returns
+acceptance and later emits an `operation` event. Task and screen-action
+completion must be interpreted from native callbacks; the supervisor does not
+infer success from status or acknowledgments. `UUID` reads the device UUID from
+the Core cache without connecting; the empty string and an empty task list are
+normal results.
 
 `Initialize` returns the worker's read-only runtime snapshot: the native Core
 version, the library SHA256, one digest per available `resource/version.json`,

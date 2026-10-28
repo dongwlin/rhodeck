@@ -156,6 +156,12 @@ func helper(mode string) int {
 				return 13
 			}
 			respond(protocol.TaskAccepted{TaskID: 23})
+		case protocol.SetTaskParams:
+			var task protocol.TaskParamsRequest
+			if protocol.Decode(req.Payload, &task) != nil || task.TaskID != 23 || string(task.Params) != `{"enable":false,"future":900719925474099312345}` {
+				return 13
+			}
+			respond(struct{}{})
 		case protocol.Start:
 			switch mode {
 			case "crash":
@@ -189,7 +195,23 @@ func helper(mode string) int {
 				respond(map[string]string{"running": "invalid"})
 				continue
 			}
+			if mode == "empty" {
+				respond(protocol.ExecutionStatus{Tasks: []int32{}})
+				continue
+			}
 			respond(protocol.ExecutionStatus{Tasks: []int32{23}})
+		case protocol.BackToHome:
+			respond(struct{}{})
+		case protocol.UUID:
+			switch mode {
+			case "empty":
+				respond(protocol.UUIDResult{UUID: ""})
+			case "uuidschema":
+				respond(map[string]int{"uuid": 42})
+			default:
+				respond(protocol.UUIDResult{UUID: "emulator-5554"})
+			}
+			continue
 		case protocol.Stop:
 			respond(protocol.StopResult{Stopped: true})
 		case protocol.Close:
@@ -269,7 +291,7 @@ func TestClientFullConversation(t *testing.T) {
 	if err != nil || task.TaskID != 23 {
 		t.Fatalf("append: %+v, %v", task, err)
 	}
-	if err := c.SetTaskParams(ctx, protocol.TaskParamsRequest{TaskID: 23, Params: json.RawMessage(`{}`)}); err != nil {
+	if err := c.SetTaskParams(ctx, protocol.TaskParamsRequest{TaskID: 23, Params: json.RawMessage(`{"enable":false,"future":900719925474099312345}`)}); err != nil {
 		t.Fatal(err)
 	}
 	op, err := c.Connect(ctx, protocol.ConnectRequest{})
@@ -293,6 +315,12 @@ func TestClientFullConversation(t *testing.T) {
 	}
 	if status, err := c.Status(ctx); err != nil || status.Running || len(status.Tasks) != 1 {
 		t.Fatalf("status: %+v, %v", status, err)
+	}
+	if err := c.BackToHome(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if uuid, err := c.UUID(ctx); err != nil || uuid.UUID != "emulator-5554" {
+		t.Fatalf("uuid: %+v, %v", uuid, err)
 	}
 	if stopped, err := c.Stop(ctx); err != nil || !stopped.Stopped {
 		t.Fatalf("stop: %+v, %v", stopped, err)
@@ -366,6 +394,32 @@ func TestClientRejectsIncompleteRuntimeSnapshot(t *testing.T) {
 			requireReaped(t, c)
 		})
 	}
+}
+
+// TestClientEmptyObservationsAreNormalResults proves the read-side contract on
+// the client: running=false, connected=false, an empty task list and the empty
+// UUID arrive as normal results — no error, no synthetic failure — and
+// BackToHome acceptance is delivered without inventing a completion fact.
+func TestClientEmptyObservationsAreNormalResults(t *testing.T) {
+	c := launchFixture(t, "empty")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := c.Status(ctx)
+	if err != nil || status.Running || status.Connected || len(status.Tasks) != 0 {
+		t.Fatalf("empty status: %+v, %v", status, err)
+	}
+	if uuid, err := c.UUID(ctx); err != nil || uuid.UUID != "" {
+		t.Fatalf("empty uuid: %+v, %v", uuid, err)
+	}
+	if err := c.BackToHome(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireReaped(t, c)
 }
 
 func TestClientConcurrentRequestsAndClose(t *testing.T) {
@@ -470,6 +524,13 @@ func TestClientRemoteRejectionAndBadResponseSchema(t *testing.T) {
 	c = launchFixture(t, "badschema")
 	_, err := c.Status(context.Background())
 	requireFailure(t, err, true)
+	requireReaped(t, c)
+	c = launchFixture(t, "uuidschema")
+	if _, err := c.UUID(context.Background()); err == nil {
+		t.Fatal("bad uuid schema accepted")
+	} else {
+		requireFailure(t, err, true)
+	}
 	requireReaped(t, c)
 }
 
