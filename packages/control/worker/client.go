@@ -642,6 +642,7 @@ func (c *Client) Initialize(ctx context.Context, req protocol.InitializeRequest)
 	err := c.decode(ctx, protocol.Initialize, req, &r)
 	return r, err
 }
+
 // submitOperation sends one async submission command and returns the handle to
 // its waitable terminal state. The read loop attaches the shared state before
 // the acceptance response is delivered, so the handle always exists before any
