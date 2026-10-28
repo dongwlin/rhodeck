@@ -62,8 +62,17 @@ func (m Message) Validate() error {
 	if len(m.Name) > 64 {
 		return errors.New("worker: message name exceeds byte limit")
 	}
-	if m.Error != nil && (m.Error.Code == "" || len(m.Error.Code) > 64 || m.Error.Message == "" || len(m.Error.Message) > 4096) {
-		return errors.New("worker: invalid error payload")
+	if m.Error != nil {
+		if m.Error.Code == "" || len(m.Error.Code) > 64 || m.Error.Message == "" || len(m.Error.Message) > 4096 {
+			return errors.New("worker: invalid error payload")
+		}
+		if d := m.Error.Detail; d != nil {
+			for _, s := range [4]string{d.Kind, d.Buffer, d.Unit, d.Field} {
+				if len(s) > 128 {
+					return errors.New("worker: invalid error detail")
+				}
+			}
+		}
 	}
 	switch m.Type {
 	case Hello:

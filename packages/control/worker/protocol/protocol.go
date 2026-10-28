@@ -1,4 +1,10 @@
-// Package protocol defines the versioned Core worker wire contract. It has no
+// Package protocol defines the versioned Core worker wire contract. Protocol
+// v1 is frozen as a whole: the command/event tables, DTO shapes, numeric
+// encoding, error codes, and transport budgets in this package are the
+// contract. Any later change that a v1 peer could not parse — added, removed,
+// renamed, or retyped fields, commands, events, or codes; framing or sequence
+// changes — requires a protocol version bump, because decoding is strict and
+// peers reject unknown control fields instead of ignoring them. It has no
 // dependencies on the native binding, application services, or process manager.
 package protocol
 
@@ -23,17 +29,30 @@ const (
 )
 
 const (
-	Initialize     = "initialize"
-	Connect        = "connect"
-	AppendTask     = "append_task"
-	SetTaskParams  = "set_task_params"
-	Start          = "start"
-	Stop           = "stop"
-	Status         = "status"
-	Ping           = "ping"
-	Close          = "close"
-	CoreEvent      = "core"
-	OperationEvent = "operation"
+	Initialize       = "initialize"
+	Connect          = "connect"
+	AppendTask       = "append_task"
+	SetTaskParams    = "set_task_params"
+	Start            = "start"
+	Stop             = "stop"
+	Status           = "status"
+	Ping             = "ping"
+	Close            = "close"
+	BackToHome       = "back_to_home"
+	UUID             = "uuid"
+	Click            = "click"
+	Screencap        = "screencap"
+	AttachWindow     = "attach_window"
+	GetImagePNG      = "get_image_png"
+	GetImageBGR      = "get_image_bgr"
+	ImageChunk       = "image_chunk"
+	Log              = "log"
+	MapLevelKey      = "map_level_key"
+	ItemName         = "item_name"
+	CoreEvent        = "core"
+	OperationEvent   = "operation"
+	FaultEvent       = "fault"
+	DiagnosticsEvent = "diagnostics"
 )
 
 const (
@@ -53,12 +72,30 @@ const (
 
 // Error is a stable code plus bounded diagnostic text. Consumers switch on Code,
 // never parse Message. It describes a command or operation, not a task outcome.
+// Detail optionally carries a bounded, machine-discriminable structured reason
+// (for example which buffer limit was hit and its effective maximum); it never
+// replaces the Code.
 type Error struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string       `json:"code"`
+	Message string       `json:"message"`
+	Detail  *ErrorDetail `json:"detail,omitempty"`
 }
 
 func (e *Error) Error() string { return fmt.Sprintf("worker: %s: %s", e.Code, e.Message) }
+
+// ErrorDetail bounds the structured reason carried by an Error. Kind selects
+// the reason family (for example "buffer_limit", "operation_limit",
+// "transport_budget"); the remaining fields qualify it. Omitted numeric fields
+// are absent, not zero-valued facts.
+type ErrorDetail struct {
+	Kind     string `json:"kind,omitempty"`
+	Buffer   string `json:"buffer,omitempty"`
+	Unit     string `json:"unit,omitempty"`
+	Field    string `json:"field,omitempty"`
+	Attempts uint64 `json:"attempts,omitempty"`
+	Capacity uint64 `json:"capacity,omitempty"`
+	Maximum  uint64 `json:"maximum,omitempty"`
+}
 
 // Message is one JSONL frame. Request IDs increase strictly within a session.
 // Events use their own contiguous sequence; Core callback sequences are retained
@@ -96,6 +133,10 @@ type ConnectionExtra struct {
 // InitializeRequest selects a caller-owned, immutable installation. SnapshotID
 // identifies that installation; it is not a claim that its whole tree was hashed.
 // The library and available resource/version.json files are hashed by the worker.
+// Limits == nil selects the binding's whole default limit set; a non-nil Limits
+// is one complete explicit configuration — fields are never individually filled
+// from defaults, and configurations that exceed the wire budgets frozen in this
+// package are rejected before the native library is touched.
 type InitializeRequest struct {
 	SnapshotID            string            `json:"snapshot_id"`
 	LibraryPath           string            `json:"library_path"`
@@ -106,6 +147,7 @@ type InitializeRequest struct {
 	StaticOptions         []Option          `json:"static_options,omitempty"`
 	InstanceOptions       []Option          `json:"instance_options,omitempty"`
 	ConnectionExtras      []ConnectionExtra `json:"connection_extras,omitempty"`
+	Limits                *Limits           `json:"limits,omitempty"`
 }
 
 type Resource struct {
@@ -113,6 +155,10 @@ type Resource struct {
 	VersionSHA256 string `json:"version_sha256,omitempty"`
 }
 
+// Capabilities reports which optional symbols the loaded native library
+// exports. It describes native availability only: it never claims that a wire
+// command is implemented, that a task type is accepted, or that an operation
+// will succeed on the current installation.
 type Capabilities struct {
 	ImageBGR     bool `json:"image_bgr"`
 	AttachWindow bool `json:"attach_window"`
@@ -120,12 +166,17 @@ type Capabilities struct {
 	ItemName     bool `json:"item_name"`
 }
 
+// RuntimeInfo is the immutable metadata copied at initialization. Limits is the
+// effective (post-validation) limit set the worker applies, and NullSize is the
+// native output-buffer capacity sentinel (locked profile: math.MaxUint64).
 type RuntimeInfo struct {
 	SnapshotID    string       `json:"snapshot_id"`
 	CoreVersion   string       `json:"core_version"`
 	LibrarySHA256 string       `json:"library_sha256"`
 	Resources     []Resource   `json:"resources"`
 	Capabilities  Capabilities `json:"capabilities"`
+	Limits        *Limits      `json:"limits,omitempty"`
+	NullSize      uint64       `json:"null_size,omitempty"`
 }
 
 type ConnectRequest struct {
