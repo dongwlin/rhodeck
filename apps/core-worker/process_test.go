@@ -107,6 +107,87 @@ func TestWorkerProcess(t *testing.T) {
 			t.Fatalf("snapshot check: %v", err)
 		}
 	})
+	t.Run("binding rejects zero-capacity limits before loading", func(t *testing.T) {
+		c := launchWorker(t)
+		root := t.TempDir()
+		library := filepath.Join(root, "placeholder")
+		if err := os.WriteFile(library, []byte("not a dynamic library"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		limits := bindingDefaultLimits
+		limits.ImagePNG.Initial = 0
+		_, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "zero-capacity", LibraryPath: library, UserDir: root, ResourceRoots: []string{root}, Limits: &limits})
+		var remote *protocol.Error
+		if !errors.As(err, &remote) || remote.Code != protocol.InvalidInput || !strings.Contains(remote.Message, "Limits.ImagePNG.Initial") {
+			t.Fatalf("zero capacity must be rejected by the binding with its field path: %v", err)
+		}
+		select {
+		case <-c.Done():
+		case <-time.After(5 * time.Second):
+			t.Fatal("rejected initializer did not exit")
+		}
+	})
+	t.Run("binding rejects contradictory limits before loading", func(t *testing.T) {
+		c := launchWorker(t)
+		root := t.TempDir()
+		library := filepath.Join(root, "placeholder")
+		if err := os.WriteFile(library, []byte("not a dynamic library"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		limits := bindingDefaultLimits
+		limits.UUID = protocol.BufferLimits{Initial: 4097, Max: 4096, GrowthRetries: 6}
+		_, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "contradiction", LibraryPath: library, UserDir: root, ResourceRoots: []string{root}, Limits: &limits})
+		var remote *protocol.Error
+		if !errors.As(err, &remote) || remote.Code != protocol.InvalidInput || !strings.Contains(remote.Message, "Limits.UUID.Initial") {
+			t.Fatalf("contradictory limits must be rejected by the binding with its field path: %v", err)
+		}
+		select {
+		case <-c.Done():
+		case <-time.After(5 * time.Second):
+			t.Fatal("rejected initializer did not exit")
+		}
+	})
+	// A complete, binding-legal limit configuration must reach the native
+	// factory; with a placeholder library the attempt fails as load_failed,
+	// which proves validation passed and the mapping was applied.
+	t.Run("complete explicit limits reach native loading", func(t *testing.T) {
+		c := launchWorker(t)
+		root := t.TempDir()
+		library := filepath.Join(root, "placeholder")
+		if err := os.WriteFile(library, []byte("not a dynamic library"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		limits := bindingDefaultLimits
+		limits.ImageBGR = protocol.BufferLimits{Initial: 4 << 20, Max: 128 << 20, GrowthRetries: 5}
+		_, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "explicit-limits", LibraryPath: library, UserDir: root, ResourceRoots: []string{root}, Limits: &limits})
+		var remote *protocol.Error
+		if !errors.As(err, &remote) || remote.Code != protocol.LoadFailed {
+			t.Fatalf("legal explicit limits must reach native loading: %v", err)
+		}
+		select {
+		case <-c.Done():
+		case <-time.After(5 * time.Second):
+			t.Fatal("failed initializer did not exit")
+		}
+	})
+	t.Run("omitted limits reach native loading", func(t *testing.T) {
+		c := launchWorker(t)
+		root := t.TempDir()
+		library := filepath.Join(root, "placeholder")
+		if err := os.WriteFile(library, []byte("not a dynamic library"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "default-limits", LibraryPath: library, UserDir: root, ResourceRoots: []string{root}})
+		var remote *protocol.Error
+		if !errors.As(err, &remote) || remote.Code != protocol.LoadFailed {
+			t.Fatalf("omitted limits must select the whole default set and load: %v", err)
+		}
+		select {
+		case <-c.Done():
+		case <-time.After(5 * time.Second):
+			t.Fatal("failed initializer did not exit")
+		}
+	})
 }
 
 // Opt in with explicit, caller-owned paths. This test never connects, starts a

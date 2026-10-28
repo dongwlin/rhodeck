@@ -54,19 +54,20 @@ contains `resource/`. Optional `static_options`, `instance_options` and
 `limits` is the full explicit [binding limit configuration](../../packages/control/worker/protocol/contract.go)
 (`Limits`); omitting it selects the binding's whole default set, and a present
 `limits` is one complete configuration — fields are never individually
-backfilled from defaults. Configurations whose single-unit maxima exceed the
+backfilled from defaults, and an explicit zero capacity is rejected, never
+silently refilled. Configurations whose single-unit maxima exceed the
 wire budgets (`Limits.InputJSONBytes` > 4 MiB, `ConfigBytes` > 4 MiB,
 `CallbackBytes` > 4 MiB, `Tasks.Max` > 65536 elements, `ImagePNG.Max`/`ImageBGR.Max`
 > 128 MiB) are rejected with `limit_exceeded` and the effective maximum before
 the native library is touched, so no accepted configuration can produce a
-result the transport cannot deliver. The initialize response reports the
-effective `limits` and the native `null_size` capacity sentinel alongside the
-facts below. Until a build applies explicit limits it rejects any present
-`limits` with `invalid_input` instead of silently ignoring the caller's
-capacity configuration.
+result the transport cannot deliver. The binding's own range and cross-field
+validation runs inside the factory; a configuration it rejects terminates the
+session like any other failed initialization.
 
-The worker uses the binding's default input, callback and operation budgets
-when `limits` is omitted.
+The initialize response reports the effective `limits` — exactly the applied
+configuration, materialized from the whole default set when omitted — and the
+native `null_size` capacity sentinel (`math.MaxUint64` for the locked profile)
+alongside the facts below.
 
 `snapshot_id` is an identifier supplied by the installation owner. Initialization
 reports the actual library SHA256, native Core version, optional native symbols,

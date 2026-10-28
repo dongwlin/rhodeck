@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -220,23 +221,143 @@ func TestSessionReservedCommandsStayUnsupported(t *testing.T) {
 	}
 }
 
-// TestSessionRejectsExplicitLimitsWithoutApplying proves the frozen Limits
-// field is never silently ignored: an explicit configuration is rejected with
-// invalid_input before the native factory, and the session stays usable.
-func TestSessionRejectsExplicitLimitsWithoutApplying(t *testing.T) {
-	f := newFakeEngine()
-	h := harness(t, fakeFactory(f))
-	req := protocol.InitializeRequest{SnapshotID: "test", Limits: &protocol.Limits{InputJSONBytes: 1024}}
-	m := h.call(protocol.Initialize, req)
-	if m.Error == nil || m.Error.Code != protocol.InvalidInput {
-		t.Fatalf("explicit limits must be rejected before the factory, got %+v", m)
+// limitsRecorder records the initialize requests one factory received and
+// echoes the applied limit set back in the runtime info.
+type limitsRecorder struct {
+	calls atomic.Int32
+	last  protocol.InitializeRequest
+}
+
+func limitsFactory(rec *limitsRecorder) engineFactory {
+	return func(req protocol.InitializeRequest) (engine, protocol.RuntimeInfo, error) {
+		rec.calls.Add(1)
+		rec.last = req
+		info := protocol.RuntimeInfo{
+			SnapshotID:   "test",
+			CoreVersion:  "test-core",
+			Capabilities: protocol.Capabilities{ImageBGR: true, AttachWindow: true, MapLevelKey: false, ItemName: true},
+			NullSize:     math.MaxUint64,
+		}
+		if req.Limits != nil {
+			echoed := *req.Limits
+			info.Limits = &echoed
+		}
+		return newFakeEngine(), info, nil
 	}
-	if f.closes.Load() != 0 {
-		t.Fatal("limits rejection must not reach the native factory or end the session")
-	}
-	if m := h.call(protocol.Initialize, protocol.InitializeRequest{SnapshotID: "test"}); m.Error != nil {
-		t.Fatalf("session unusable after limits rejection: %+v", m)
-	}
+}
+
+// TestSessionAppliesLimitsContract proves the worker applies the caller's
+// limit configuration instead of ignoring it: omitted limits select the whole
+// materialized default set, explicit limits are applied verbatim and echoed in
+// the initialize response, and a configuration above the frozen wire budgets
+// is rejected with limit_exceeded and the effective maximum before the native
+// factory is touched, leaving the session alive.
+func TestSessionAppliesLimitsContract(t *testing.T) {
+	t.Run("omitted limits select the whole default set", func(t *testing.T) {
+		rec := &limitsRecorder{}
+		h := harness(t, limitsFactory(rec))
+		m := h.call(protocol.Initialize, protocol.InitializeRequest{SnapshotID: "test"})
+		if m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if rec.calls.Load() != 1 || rec.last.Limits == nil || *rec.last.Limits != bindingDefaultLimits {
+			t.Fatalf("factory limits = %+v, want the materialized defaults", rec.last.Limits)
+		}
+		var info protocol.RuntimeInfo
+		if err := protocol.Decode(m.Payload, &info); err != nil {
+			t.Fatal(err)
+		}
+		if info.NullSize != math.MaxUint64 {
+			t.Fatalf("null_size = %d, want the locked sentinel", info.NullSize)
+		}
+		if info.Limits == nil || *info.Limits != bindingDefaultLimits {
+			t.Fatalf("reported limits = %+v, want the applied defaults", info.Limits)
+		}
+		if !info.Capabilities.ImageBGR || !info.Capabilities.AttachWindow || info.Capabilities.MapLevelKey || !info.Capabilities.ItemName {
+			t.Fatalf("capabilities changed: %+v", info.Capabilities)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("explicit limits are applied verbatim", func(t *testing.T) {
+		rec := &limitsRecorder{}
+		h := harness(t, limitsFactory(rec))
+		explicit := protocol.Limits{
+			InputStringBytes:  65_536,
+			InputJSONBytes:    1 << 20,
+			ConfigEntries:     128,
+			ConfigBytes:       4 << 20,
+			ImagePNG:          protocol.BufferLimits{Initial: 1 << 20, Max: 32 << 20, GrowthRetries: 5},
+			ImageBGR:          protocol.BufferLimits{Initial: 4 << 20, Max: 128 << 20, GrowthRetries: 5},
+			UUID:              protocol.BufferLimits{Initial: 64, Max: 4096, GrowthRetries: 6},
+			Tasks:             protocol.BufferLimits{Initial: 64, Max: 1 << 16, GrowthRetries: 3},
+			CallbackBytes:     1 << 20,
+			InternalEvents:    512,
+			InternalBytes:     16 << 20,
+			PublicEvents:      512,
+			PublicBytes:       16 << 20,
+			PendingOperations: 64,
+			EarlyResults:      1,
+			EarlyBytes:        1 << 20,
+		}
+		m := h.call(protocol.Initialize, protocol.InitializeRequest{SnapshotID: "test", Limits: &explicit})
+		if m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if rec.calls.Load() != 1 || rec.last.Limits == nil || *rec.last.Limits != explicit {
+			t.Fatalf("factory limits = %+v, want the explicit configuration", rec.last.Limits)
+		}
+		var info protocol.RuntimeInfo
+		if err := protocol.Decode(m.Payload, &info); err != nil {
+			t.Fatal(err)
+		}
+		if info.Limits == nil || *info.Limits != explicit {
+			t.Fatalf("reported limits = %+v, want the explicit configuration", info.Limits)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("wire budget rejection precedes the factory", func(t *testing.T) {
+		rec := &limitsRecorder{}
+		h := harness(t, limitsFactory(rec))
+		oversized := bindingDefaultLimits
+		oversized.ConfigBytes = protocol.MaxConfigBytes + 1
+		m := h.call(protocol.Initialize, protocol.InitializeRequest{SnapshotID: "test", Limits: &oversized})
+		if m.Error == nil || m.Error.Code != protocol.LimitExceeded {
+			t.Fatalf("oversized limits: %+v", m)
+		}
+		if m.Error.Detail == nil || m.Error.Detail.Field != "Limits.ConfigBytes" || m.Error.Detail.Maximum != protocol.MaxConfigBytes {
+			t.Fatalf("effective maximum not reported: %+v", m.Error.Detail)
+		}
+		if rec.calls.Load() != 0 {
+			t.Fatal("wire rejection must not reach the native factory")
+		}
+		if m := h.call(protocol.Ping, nil); m.Error != nil {
+			t.Fatalf("session unusable after wire rejection: %+v", m)
+		}
+		if m := h.call(protocol.Initialize, protocol.InitializeRequest{SnapshotID: "test"}); m.Error != nil {
+			t.Fatalf("legal initialize after wire rejection: %+v", m)
+		}
+		if rec.calls.Load() != 1 {
+			t.Fatalf("factory calls: %d", rec.calls.Load())
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestSessionAsyncCompletionDoesNotBlockStop(t *testing.T) {

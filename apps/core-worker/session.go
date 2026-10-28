@@ -214,13 +214,19 @@ func (s *session) commands(factory engineFactory) (result error) {
 					_ = s.respond(req, nil, err, false)
 					continue
 				}
-				// Limits are part of the frozen v1 contract but not applied by
-				// this build yet. Reject them explicitly before the factory so a
-				// caller's capacity configuration can never be silently ignored.
-				if config.Limits != nil {
-					_ = s.respond(req, nil, wireError(protocol.InvalidInput, "explicit Limits are not applied by this worker build"), false)
+				// Omitted limits select the whole default set as one applied
+				// configuration. The frozen wire budgets are enforced before
+				// the native factory, so an undeliverable configuration fails
+				// with limit_exceeded and the effective maximum instead of a
+				// mid-session delivery failure; the binding's own range and
+				// cross-field validation happens inside the factory and any
+				// failure there is terminal.
+				limits := effectiveLimits(config.Limits)
+				if err := protocol.CheckWireLimits(&limits); err != nil {
+					_ = s.respond(req, nil, err, false)
 					continue
 				}
+				config.Limits = &limits
 				var info protocol.RuntimeInfo
 				core, info, err = factory(config)
 				if err != nil {

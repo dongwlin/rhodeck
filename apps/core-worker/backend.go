@@ -36,6 +36,106 @@ type engine interface {
 
 type engineFactory func(protocol.InitializeRequest) (engine, protocol.RuntimeInfo, error)
 
+// bindingDefaultLimits materializes the whole default limit set of the locked
+// binding profile (frozen numbers of packages/maa-go's defaultLimits). When
+// the caller omits limits this is the applied configuration, so the reported
+// effective set is exactly the set handed to the binding; the binding
+// re-validates it on every initialize, so a profile change cannot diverge
+// silently.
+var bindingDefaultLimits = protocol.Limits{
+	InputStringBytes:  65_536,
+	InputJSONBytes:    1 << 20,
+	ConfigEntries:     256,
+	ConfigBytes:       4 << 20,
+	ImagePNG:          protocol.BufferLimits{Initial: 1 << 20, Max: 32 << 20, GrowthRetries: 5},
+	ImageBGR:          protocol.BufferLimits{Initial: 4 << 20, Max: 64 << 20, GrowthRetries: 5},
+	UUID:              protocol.BufferLimits{Initial: 64, Max: 4096, GrowthRetries: 6},
+	Tasks:             protocol.BufferLimits{Initial: 64, Max: 1 << 16, GrowthRetries: 10},
+	CallbackBytes:     1 << 20,
+	InternalEvents:    256,
+	InternalBytes:     16 << 20,
+	PublicEvents:      256,
+	PublicBytes:       16 << 20,
+	PendingOperations: 128,
+	EarlyResults:      1,
+	EarlyBytes:        1 << 20,
+}
+
+// effectiveLimits returns the limit set the worker applies: a detached copy of
+// the explicit configuration, or the whole materialized default set when
+// limits are omitted. Omission never selects an empty skeleton that fields
+// would be backfilled into, and an explicit zero stays zero for the binding to
+// reject — only a missing Limits selects the default set as a whole.
+func effectiveLimits(l *protocol.Limits) protocol.Limits {
+	if l == nil {
+		return bindingDefaultLimits
+	}
+	return *l
+}
+
+// bindingLimits maps the wire limit set onto the binding configuration,
+// including every BufferLimits probe strategy. nil maps to nil (the binding's
+// own default set); the session materializes defaults before the factory, so
+// production requests always carry the complete applied configuration.
+func bindingLimits(l *protocol.Limits) *maa.Limits {
+	if l == nil {
+		return nil
+	}
+	return &maa.Limits{
+		InputStringBytes:  l.InputStringBytes,
+		InputJSONBytes:    l.InputJSONBytes,
+		ConfigEntries:     l.ConfigEntries,
+		ConfigBytes:       l.ConfigBytes,
+		ImagePNG:          bindingBufferLimits(l.ImagePNG),
+		ImageBGR:          bindingBufferLimits(l.ImageBGR),
+		UUID:              bindingBufferLimits(l.UUID),
+		Tasks:             bindingBufferLimits(l.Tasks),
+		CallbackBytes:     l.CallbackBytes,
+		InternalEvents:    l.InternalEvents,
+		InternalBytes:     l.InternalBytes,
+		PublicEvents:      l.PublicEvents,
+		PublicBytes:       l.PublicBytes,
+		PendingOperations: l.PendingOperations,
+		EarlyResults:      l.EarlyResults,
+		EarlyBytes:        l.EarlyBytes,
+	}
+}
+
+func bindingBufferLimits(b protocol.BufferLimits) maa.BufferLimits {
+	return maa.BufferLimits{Initial: b.Initial, Max: b.Max, GrowthRetries: b.GrowthRetries}
+}
+
+// bindingConfig maps the initialize request onto the binding runtime
+// configuration: explicit paths, ordered resource roots, ordered static
+// options, connection extras with their raw JSON preserved byte for byte, and
+// the complete limit set. The binding deep-copies the configuration when it
+// validates, so the mapped value is transient.
+func bindingConfig(req protocol.InitializeRequest) maa.RuntimeConfig {
+	cfg := maa.RuntimeConfig{
+		LibraryPath:   req.LibraryPath,
+		UserDir:       req.UserDir,
+		ResourceRoots: req.ResourceRoots,
+		Limits:        bindingLimits(req.Limits),
+	}
+	for _, opt := range req.StaticOptions {
+		cfg.StaticOptions = append(cfg.StaticOptions, maa.StaticOption{Key: opt.Key, Value: opt.Value})
+	}
+	for _, extra := range req.ConnectionExtras {
+		cfg.ConnectionExtras = append(cfg.ConnectionExtras, maa.ConnectionExtra{Name: extra.Name, JSON: extra.JSON})
+	}
+	return cfg
+}
+
+// bindingInstanceConfig maps the ordered instance options; instance
+// configuration does not override the runtime's limit set.
+func bindingInstanceConfig(req protocol.InitializeRequest) maa.InstanceConfig {
+	var cfg maa.InstanceConfig
+	for _, opt := range req.InstanceOptions {
+		cfg.Options = append(cfg.Options, maa.InstanceOption{Key: opt.Key, Value: opt.Value})
+	}
+	return cfg
+}
+
 type nativeEngine struct {
 	runtime  *maa.Runtime
 	instance *maa.Instance
@@ -68,13 +168,7 @@ func openEngine(req protocol.InitializeRequest) (_ engine, info protocol.Runtime
 		}
 		info.Resources = append(info.Resources, protocol.Resource{Root: root, VersionSHA256: digest})
 	}
-	cfg := maa.RuntimeConfig{LibraryPath: req.LibraryPath, UserDir: req.UserDir, ResourceRoots: req.ResourceRoots}
-	for _, opt := range req.StaticOptions {
-		cfg.StaticOptions = append(cfg.StaticOptions, maa.StaticOption{Key: opt.Key, Value: opt.Value})
-	}
-	for _, extra := range req.ConnectionExtras {
-		cfg.ConnectionExtras = append(cfg.ConnectionExtras, maa.ConnectionExtra{Name: extra.Name, JSON: extra.JSON})
-	}
+	cfg := bindingConfig(req)
 	rt, err := maa.Open(cfg)
 	if err != nil {
 		return nil, info, err
@@ -90,11 +184,14 @@ func openEngine(req protocol.InitializeRequest) (_ engine, info protocol.Runtime
 	}
 	caps := rt.Capabilities()
 	info.Capabilities = protocol.Capabilities{ImageBGR: caps.ImageBgr(), AttachWindow: caps.AsyncAttachWindow(), MapLevelKey: caps.MapLevelKey(), ItemName: caps.ItemName()}
-	var icfg maa.InstanceConfig
-	for _, opt := range req.InstanceOptions {
-		icfg.Options = append(icfg.Options, maa.InstanceOption{Key: opt.Key, Value: opt.Value})
+	info.NullSize = rt.NullSize()
+	// The applied limit set is what the session passed in; report a detached
+	// copy so the response never aliases the request.
+	if req.Limits != nil {
+		applied := *req.Limits
+		info.Limits = &applied
 	}
-	in, err := rt.NewInstance(icfg)
+	in, err := rt.NewInstance(bindingInstanceConfig(req))
 	if err != nil {
 		return nil, info, err
 	}
