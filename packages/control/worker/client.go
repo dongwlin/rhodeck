@@ -487,6 +487,10 @@ func validateResponse(m protocol.Message) error {
 		target = &protocol.StopResult{}
 	case protocol.UUID:
 		target = &protocol.UUIDResult{}
+	case protocol.MapLevelKey:
+		target = &protocol.MapLevelKeyResult{}
+	case protocol.ItemName:
+		target = &protocol.ItemNameResult{}
 	case protocol.GetImagePNG, protocol.GetImageBGR:
 		target = &protocol.ImageTransfer{}
 	case protocol.ImageChunk:
@@ -841,6 +845,35 @@ func (c *Client) UUID(ctx context.Context) (protocol.UUIDResult, error) {
 	err := c.decode(ctx, protocol.UUID, nil, &r)
 	return r, err
 }
+
+// Log feeds the process-level native log. The level and message travel
+// verbatim, empty strings included; a nil error only states that the worker
+// issued the void native call — it is not a completion fact about anything
+// Core did with the text. Input rejections (invalid UTF-8, embedded NUL,
+// byte budget) arrive as the stable invalid_input code.
+func (c *Client) Log(ctx context.Context, req protocol.LogRequest) error {
+	return c.decode(ctx, protocol.Log, req, &struct{}{})
+}
+
+// MapLevelKey queries the experiment level mapping. The key passes through
+// verbatim, and the zero-valued four-field result means "not found" — a
+// normal result, not an error. A missing optional symbol arrives as the
+// stable unsupported rejection without any native call.
+func (c *Client) MapLevelKey(ctx context.Context, req protocol.MapLevelKeyRequest) (protocol.MapLevelKeyResult, error) {
+	var r protocol.MapLevelKeyResult
+	err := c.decode(ctx, protocol.MapLevelKey, req, &r)
+	return r, err
+}
+
+// ItemName queries the experiment item name. The empty result and the native
+// "Unknown" are normal results, not errors; a missing optional symbol arrives
+// as the stable unsupported rejection without any native call.
+func (c *Client) ItemName(ctx context.Context, req protocol.ItemNameRequest) (protocol.ItemNameResult, error) {
+	var r protocol.ItemNameResult
+	err := c.decode(ctx, protocol.ItemName, req, &r)
+	return r, err
+}
+
 func (c *Client) Status(ctx context.Context) (protocol.ExecutionStatus, error) {
 	var r protocol.ExecutionStatus
 	err := c.decode(ctx, protocol.Status, nil, &r)
