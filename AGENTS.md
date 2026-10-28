@@ -14,6 +14,7 @@ Rhodeck 当前是一个 Go module，提供 MaaCore 动态绑定、独立 Core wo
 | `packages/control/worker/protocol/` | 纯协议 DTO、编解码和有界队列 |
 | `tools/check-maa-api/` | 锁定 C 头与 Go raw 声明的静态一致性检查 |
 | `tools/maa-go-check/` | 分层验证入口，分别报告各层执行结果 |
+| `tools/api-coverage/` | 完整 worker 的 API 覆盖清单与漂移门禁：扫描 maa-go 公开面并与冻结清单、五段映射对账 |
 
 依赖方向为监管客户端 → protocol、core-worker → protocol 与 maa、maa → internal/native。监管客户端不加载原生库；protocol 不依赖绑定、进程管理或应用服务。不要将规划中的产品模块当作已实现能力。
 
@@ -42,6 +43,7 @@ Rhodeck 当前是一个 Go module，提供 MaaCore 动态绑定、独立 Core wo
 | Windows/macOS 绑定与工具验证 | `go run ./tools/maa-go-check --layers static,go,build,fmt` |
 | worker、监管与协议测试 | `CGO_ENABLED=0 go test ./apps/core-worker ./packages/control/worker/... -skip TestRealCoreWorker -count=1 -timeout=3m` |
 | worker 与监管 race 检查 | `go test -race ./apps/core-worker ./packages/control/worker/... -skip TestRealCoreWorker -count=1 -timeout=3m` |
+| API 覆盖漂移检查 | `go run ./tools/api-coverage --root .`（新增/删除/修改被覆盖 API 时同步更新 `tools/api-coverage/inventory.go`，否则失败） |
 
 当前没有单独的 Lint、类型检查脚本或部署工作流；Go 编译与 vet 承担相应检查。worker 通过 stdin/stdout JSONL 由父进程驱动，没有独立开发服务启动命令；构建示例的 `/tmp` 路径适用于 Unix shell，Windows 使用本机绝对输出路径。
 
