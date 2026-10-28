@@ -177,7 +177,9 @@ func (e *nativeEngine) Observe(ctx context.Context, emit func(protocol.Callback)
 			return e.instance.Err()
 		case event, ok := <-e.instance.Events():
 			if !ok {
-				return e.instance.Err()
+				// Close reports a Stop rejection through its response. Only an
+				// actual binding fault interrupts the transport independently.
+				return e.instance.Diagnostics().FirstFault
 			}
 			if err := emit(protocol.Callback{MessageID: int32(event.MessageID), CoreSequence: event.Sequence, JSON: event.JSON}); err != nil {
 				return err

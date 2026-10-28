@@ -16,13 +16,14 @@ import (
 )
 
 type fakeEngine struct {
-	events    chan protocol.Callback
-	closed    chan struct{}
-	closes    atomic.Int32
-	task      protocol.TaskRequest
-	start     func() error
-	closeHook func()
-	op        *fakeOperation
+	events     chan protocol.Callback
+	closed     chan struct{}
+	closes     atomic.Int32
+	task       protocol.TaskRequest
+	start      func() error
+	closeHook  func()
+	closeError error
+	op         *fakeOperation
 }
 
 func newFakeEngine() *fakeEngine {
@@ -67,7 +68,7 @@ func (f *fakeEngine) Close() error {
 	if f.op != nil {
 		f.op.finish()
 	}
-	return nil
+	return f.closeError
 }
 
 type fakeOperation struct {
@@ -263,6 +264,22 @@ func TestSessionInitializationFailureIsTerminal(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("factory called %d times", calls.Load())
+	}
+}
+
+func TestSessionCloseErrorIsReportedBeforeExit(t *testing.T) {
+	f := newFakeEngine()
+	f.closeError = maa.ErrNativeRejected
+	h := harness(t, fakeFactory(f))
+	h.initialize()
+	if m := h.call(protocol.Close, nil); m.Error == nil || m.Error.Code != protocol.NativeRejected {
+		t.Fatalf("close diagnostic: %+v", m)
+	}
+	if err := <-h.done; !errors.Is(err, maa.ErrNativeRejected) {
+		t.Fatalf("close exit: %v", err)
+	}
+	if f.closes.Load() != 1 {
+		t.Fatalf("close count: %d", f.closes.Load())
 	}
 }
 

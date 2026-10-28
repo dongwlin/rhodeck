@@ -43,6 +43,7 @@ func TestReaderRejectsCorruptFrames(t *testing.T) {
 		"no newline":             `{"version":1,"type":"request","id":1,"name":"ping"}`,
 		"utf8":                   "{\"version\":1,\"type\":\"\xff\"}\n",
 		"null payload":           `{"version":1,"type":"request","id":1,"name":"ping","payload":null}` + "\n",
+		"duplicate field":        `{"version":1,"type":"request","id":1,"id":2,"name":"ping"}` + "\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NewReader(strings.NewReader(raw)).Read(); err == nil {
@@ -56,9 +57,9 @@ func TestReaderRejectsCorruptFrames(t *testing.T) {
 }
 
 func TestFrameByteLimit(t *testing.T) {
-	m, _ := NewMessage(Request, "x", 1, "")
+	m, _ := NewMessage(Request, "x", 1, map[string]string{"data": ""})
 	empty, _ := Encode(m)
-	m.Payload, _ = json.Marshal(strings.Repeat("x", MaxFrameBytes-len(empty)+1))
+	m.Payload, _ = json.Marshal(map[string]string{"data": strings.Repeat("x", MaxFrameBytes-len(empty)+1)})
 	data, err := Encode(m)
 	if err != nil || len(data) != MaxFrameBytes+1 {
 		t.Fatalf("exact bound: %d, %v", len(data), err)
@@ -66,7 +67,7 @@ func TestFrameByteLimit(t *testing.T) {
 	if _, err = NewReader(bytes.NewReader(data)).Read(); err != nil {
 		t.Fatal(err)
 	}
-	m.Payload, _ = json.Marshal(strings.Repeat("x", MaxFrameBytes))
+	m.Payload, _ = json.Marshal(map[string]string{"data": strings.Repeat("x", MaxFrameBytes)})
 	if _, err = Encode(m); !errors.Is(err, ErrFrameTooLarge) {
 		t.Fatalf("oversize encode: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestQueueBoundsAndReclaimsBytes(t *testing.T) {
 		t.Fatalf("slot not reclaimed: %v", err)
 	}
 	q = NewQueue()
-	m, _ = NewMessage(Request, "large", 1, strings.Repeat("x", MaxFrameBytes-1024))
+	m, _ = NewMessage(Request, "large", 1, map[string]string{"data": strings.Repeat("x", MaxFrameBytes-1024)})
 	for range 2 {
 		if _, err := q.Send(m); err != nil {
 			t.Fatal(err)

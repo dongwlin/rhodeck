@@ -15,7 +15,7 @@ func isolateStdout() (*os.File, error) {
 		return nil, err
 	}
 	syscall.CloseOnExec(fd)
-	if err := syscall.Dup2(int(os.Stderr.Fd()), int(os.Stdout.Fd())); err != nil {
+	if err := redirectDescriptor(int(os.Stderr.Fd()), int(os.Stdout.Fd())); err != nil {
 		_ = syscall.Close(fd)
 		return nil, err
 	}

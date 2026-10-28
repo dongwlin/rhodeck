@@ -18,6 +18,32 @@ func Decode(raw []byte, target any) error {
 	if !utf8.Valid(raw) {
 		return errors.New("worker: invalid UTF-8")
 	}
+	// Check the control object's keys before normal struct decoding. JSON's
+	// usual last-key-wins behavior could otherwise change an ID or command.
+	// Nested RawMessage contents retain their own native schema.
+	keys := json.NewDecoder(bytes.NewReader(raw))
+	start, err := keys.Token()
+	if err != nil || start != json.Delim('{') {
+		return errors.New("worker: expected a JSON object")
+	}
+	seen := make(map[string]bool)
+	for keys.More() {
+		key, err := keys.Token()
+		if err != nil {
+			return err
+		}
+		name, ok := key.(string)
+		if !ok || seen[name] {
+			return errors.New("worker: duplicate control field")
+		}
+		seen[name] = true
+		if err := keys.Decode(new(json.RawMessage)); err != nil {
+			return err
+		}
+	}
+	if _, err := keys.Token(); err != nil {
+		return err
+	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	if err := d.Decode(target); err != nil {
@@ -33,7 +59,10 @@ func (m Message) Validate() error {
 	if m.Version != Version {
 		return fmt.Errorf("worker: unsupported protocol version %d", m.Version)
 	}
-	if m.Error != nil && (m.Error.Code == "" || m.Error.Message == "" || len(m.Error.Message) > 4096) {
+	if len(m.Name) > 64 {
+		return errors.New("worker: message name exceeds byte limit")
+	}
+	if m.Error != nil && (m.Error.Code == "" || len(m.Error.Code) > 64 || m.Error.Message == "" || len(m.Error.Message) > 4096) {
 		return errors.New("worker: invalid error payload")
 	}
 	switch m.Type {
@@ -56,8 +85,11 @@ func (m Message) Validate() error {
 	default:
 		return fmt.Errorf("worker: invalid message type %q", m.Type)
 	}
-	if m.Payload != nil && (!json.Valid(m.Payload) || bytes.Equal(bytes.TrimSpace(m.Payload), []byte("null"))) {
-		return errors.New("worker: invalid payload")
+	if m.Payload != nil {
+		raw := bytes.TrimSpace(m.Payload)
+		if !json.Valid(raw) || len(raw) == 0 || raw[0] != '{' {
+			return errors.New("worker: payload must be a JSON object")
+		}
 	}
 	return nil
 }
