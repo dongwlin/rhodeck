@@ -1,0 +1,100 @@
+name: worker
+
+"on":
+  push:
+    paths:
+      - "apps/core-worker/**"
+      - "packages/control/worker/**"
+      - "packages/maa-go/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/worker.yml"
+  pull_request:
+    paths:
+      - "apps/core-worker/**"
+      - "packages/control/worker/**"
+      - "packages/maa-go/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/worker.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: process tests (${{ matrix.target }}, CGO_ENABLED=0)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux/amd64
+            runner: ubuntu-latest
+          - target: windows/amd64
+            runner: windows-latest
+          - target: darwin/arm64
+            runner: macos-latest
+          - target: darwin/amd64
+            runner: macos-15-intel
+    defaults:
+      run:
+        shell: bash
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+          cache: true
+      - name: Build and vet
+        run: |
+          go build ./apps/core-worker ./packages/control/worker/...
+          go vet ./apps/core-worker ./packages/control/worker/...
+      - name: Unit and process tests (real Core excluded)
+        run: go test ./apps/core-worker ./packages/control/worker/... -skip TestRealCoreWorker -count=1 -timeout=3m
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l apps/core-worker packages/control/worker)"
+          if [ -n "$unformatted" ]; then printf '%s\n' "$unformatted"; exit 1; fi
+
+  race:
+    name: race detector (linux/amd64, real Core excluded)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+          cache: true
+      - name: Unit and process tests with race detector
+        run: go test -race ./apps/core-worker ./packages/control/worker/... -skip TestRealCoreWorker -count=1 -timeout=3m
+
+  cross-build:
+    name: cross-compile (${{ matrix.goos }}/${{ matrix.goarch }}, no execution)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+    env:
+      CGO_ENABLED: "0"
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+          cache: true
+      - name: Compile worker, supervisor and tests
+        run: |
+          go build ./apps/core-worker ./packages/control/worker/...
+          mkdir -p "$RUNNER_TEMP/worker-tests"
+          go test -c -o "$RUNNER_TEMP/worker-tests/" ./apps/core-worker ./packages/control/worker/...
