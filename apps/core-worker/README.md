@@ -102,8 +102,8 @@ implemented, a task type is accepted, or an action will succeed.
 | `click` | `x`, `y` int32 | Nonzero `async_id`: accepted only | implemented |
 | `screencap` | absent or `{}` | Nonzero `async_id`: accepted only | implemented |
 | `attach_window` | `hwnd` uint64, `screencap_method`, `mouse_method`, `keyboard_method` uint64 masks | Nonzero `async_id`: accepted only; a handle beyond the platform pointer width is `invalid_input`, a missing symbol or platform is `unsupported` — never an ADB fallback | implemented |
-| `get_image_png` / `get_image_bgr` | absent or `{}` | `ImageTransfer` describing one owned snapshot of the cached image | reserved |
-| `image_chunk` | `transfer_id`, `offset`, `length` | `ImageChunkResponse` with exactly the requested bytes | reserved |
+| `get_image_png` / `get_image_bgr` | absent or `{}` | `ImageTransfer` describing one owned snapshot of the cached image | implemented |
+| `image_chunk` | `transfer_id`, `offset`, `length` | `ImageChunkResponse` with exactly the requested bytes | implemented |
 | `log` | `level`, `message` | Call accepted; void return carries no completion fact | reserved |
 | `map_level_key` | `key` | Four-field result; zero values mean "not found", not an error | reserved |
 | `item_name` | `id` | `name`; the empty string means "not found", not an error | reserved |
@@ -159,25 +159,31 @@ needs no chunks.
 ### Image transfers
 
 `get_image_png`/`get_image_bgr` read only the Core cache; they never trigger
-a screencap. The worker validates the transfer budget, takes one owned
-snapshot, and answers with `ImageTransfer`: nonzero `transfer_id`, the
-snapshot's `total_bytes`, its SHA256 (64 lowercase hex digits), and
-`chunk_bytes` (at most 4 MiB). The client then fetches chunks with
-`image_chunk` requests — `offset`, `length` within `[1, chunk_bytes]` and
-`offset+length ≤ total_bytes`, in any order — and receives exactly the
-requested bytes as standard base64. The supervisor assembles the payload,
-verifies coverage and the declared SHA256, and only then delivers it; chunks
-never enter the event stream or its sequence domain.
+a screencap. The worker rejects a request beyond the concurrency budget
+before reading any byte, takes one owned snapshot, and answers with
+`ImageTransfer`: nonzero `transfer_id`, the snapshot's `total_bytes`, its
+SHA256 (64 lowercase hex digits), and `chunk_bytes` (at most 4 MiB). The
+snapshot beyond the per-transfer byte budget is the last admission gate —
+the applied limit set was already wire-checked at initialize, so a snapshot
+it could not deliver is rejected instead of retained. The client then
+fetches chunks with `image_chunk` requests — `offset`, `length` within
+`[1, chunk_bytes]` and `offset+length ≤ total_bytes`, in any order — and
+receives exactly the requested bytes as standard base64. The supervisor
+assembles the payload, verifies coverage and the declared SHA256, and only
+then delivers it; chunks never enter the event stream or its sequence
+domain.
 
-Transfers are bounded: at most 2 concurrent, each at most 128 MiB (the
-largest legal binding image maximum), so the aggregate in-flight image memory
-is at most 256 MiB on each side of the pipe. A request beyond these budgets
-is rejected with `limit_exceeded` and the effective maximum before any byte
-is read; an unknown or exhausted transfer id is `invalid_input`. The client
-keeps at most one outstanding chunk request per transfer, so chunk traffic
-cannot flood the outbound queue. The worker releases a snapshot when its last
-byte is served, on any session failure, and at close; the supervisor's
-request deadline bounds every chunk fetch.
+Transfers are bounded: at most 2 concurrently retained, each at most 128 MiB
+(the largest legal binding image maximum), so the aggregate in-flight image
+memory is at most 256 MiB on each side of the pipe. An unknown or exhausted
+transfer id — including one released after its last byte was served — is
+`invalid_input`. A zero-length image is a complete transfer at acceptance:
+it consumes a transfer ID but retains no snapshot and occupies no
+concurrency slot. The worker releases a snapshot when its last byte is
+served, on any session failure, and at close; the supervisor's request
+deadline bounds every chunk fetch, and its pull keeps at most one
+outstanding chunk request per transfer, so chunk traffic cannot flood the
+outbound queue.
 
 Numbers never pass through float64 maps. JSON formatting/escaping may change;
 unknown fields and integer values are retained. Callback and operation producers

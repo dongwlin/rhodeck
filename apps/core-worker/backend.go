@@ -35,6 +35,8 @@ type engine interface {
 	BackToHome() error
 	Status() (protocol.ExecutionStatus, error)
 	UUID() (protocol.UUIDResult, error)
+	GetImagePNG() ([]byte, error)
+	GetImageBGR() ([]byte, error)
 	Observe(context.Context, func(protocol.Callback) error) error
 	Close() error
 }
@@ -325,6 +327,19 @@ func (e *nativeEngine) UUID() (protocol.UUIDResult, error) {
 	uuid, err := e.instance.UUID()
 	return protocol.UUIDResult{UUID: uuid}, err
 }
+
+// GetImagePNG reads the Core's cached PNG encoding (AsstGetImage). The read
+// never triggers a screencap — a fresh image requires the caller to wait for
+// a Screencap operation first. Buffer-limit exhaustion surfaces as
+// limit_exceeded and stays distinguishable from a native rejection.
+func (e *nativeEngine) GetImagePNG() ([]byte, error) { return e.instance.GetImagePNG() }
+
+// GetImageBGR reads the cached BGR pixels (AsstGetImageBgr) when the optional
+// symbol is loaded; a missing symbol surfaces the binding's stable unsupported
+// rejection and never falls back to another read. Size, stride and channel
+// order are decided by Core: the bytes stay opaque and are not interpreted.
+func (e *nativeEngine) GetImageBGR() ([]byte, error) { return e.instance.GetImageBGR() }
+
 func (e *nativeEngine) Observe(ctx context.Context, emit func(protocol.Callback) error) error {
 	for {
 		select {

@@ -27,6 +27,11 @@ type session struct {
 	requests chan protocol.Message
 	mu       sync.Mutex // Orders all event producers and their sequence allocation.
 	sequence uint64
+	// transfers is the retained-image registry of the session. Only the
+	// command-loop goroutine creates, serves and releases snapshots; cleanup
+	// drops them on close and on every failure path.
+	transfers      map[uint64]*imageSnapshot
+	nextTransferID uint64
 }
 
 // serve bounds graceful cleanup even when a native call never returns. main
@@ -35,7 +40,7 @@ func serve(ctx context.Context, input io.ReadCloser, output io.Writer, factory e
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	defer input.Close()
-	s := &session{ctx: ctx, fail: cancel, out: protocol.NewQueue(), requests: make(chan protocol.Message, protocol.RequestQueue)}
+	s := &session{ctx: ctx, fail: cancel, out: protocol.NewQueue(), requests: make(chan protocol.Message, protocol.RequestQueue), transfers: make(map[uint64]*imageSnapshot)}
 	go s.write(output)
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
@@ -185,6 +190,10 @@ func (s *session) commands(factory engineFactory) (result error) {
 	var observed <-chan struct{}
 	var operations sync.WaitGroup
 	cleanup := func() error {
+		// Retained image snapshots never outlive the command loop: freeing
+		// them first releases the aggregate in-flight image memory before the
+		// potentially blocking native close.
+		s.releaseImageTransfers()
 		if core == nil {
 			return nil
 		}
@@ -327,6 +336,21 @@ func (s *session) commands(factory engineFactory) (result error) {
 			case protocol.UUID:
 				if err = emptyPayload(req.Payload); err == nil {
 					out, err = core.UUID()
+				}
+			case protocol.GetImagePNG, protocol.GetImageBGR:
+				// Reading the cache is not a screencap: the snapshot is taken
+				// under the transfer budgets and served chunk by chunk.
+				if err = emptyPayload(req.Payload); err == nil {
+					read := core.GetImagePNG
+					if req.Name == protocol.GetImageBGR {
+						read = core.GetImageBGR
+					}
+					out, err = s.admitImageSnapshot(read)
+				}
+			case protocol.ImageChunk:
+				var chunk protocol.ImageChunkRequest
+				if err = payload(req, &chunk); err == nil {
+					out, err = s.serveImageChunk(&chunk)
 				}
 			default:
 				err = wireError(protocol.Unsupported, "unknown worker command")

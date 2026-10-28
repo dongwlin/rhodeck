@@ -30,6 +30,8 @@ type fakeEngine struct {
 	stop       func() (bool, error)
 	status     func() (protocol.ExecutionStatus, error)
 	uuid       func() (protocol.UUIDResult, error)
+	imagePNG   func() ([]byte, error)
+	imageBGR   func() ([]byte, error)
 	closeHook  func()
 	closeError error
 	// hooks replace the default submission behavior; the default returns the
@@ -109,6 +111,18 @@ func (f *fakeEngine) UUID() (protocol.UUIDResult, error) {
 		return f.uuid()
 	}
 	return protocol.UUIDResult{}, nil
+}
+func (f *fakeEngine) GetImagePNG() ([]byte, error) {
+	if f.imagePNG != nil {
+		return f.imagePNG()
+	}
+	return []byte{}, nil
+}
+func (f *fakeEngine) GetImageBGR() ([]byte, error) {
+	if f.imageBGR != nil {
+		return f.imageBGR()
+	}
+	return []byte{}, nil
 }
 func (f *fakeEngine) Observe(ctx context.Context, emit func(protocol.Callback) error) error {
 	for {
@@ -308,7 +322,7 @@ func TestSessionReservedCommandsStayUnsupported(t *testing.T) {
 	f := newFakeEngine()
 	h := harness(t, fakeFactory(f))
 	h.initialize()
-	for _, name := range []string{protocol.GetImagePNG, protocol.GetImageBGR, protocol.ImageChunk, protocol.Log, protocol.MapLevelKey, protocol.ItemName} {
+	for _, name := range []string{protocol.Log, protocol.MapLevelKey, protocol.ItemName} {
 		m := h.call(name, nil)
 		if m.Error == nil || m.Error.Code != protocol.Unsupported {
 			t.Fatalf("%s must be rejected with unsupported, got %+v", name, m)
@@ -494,7 +508,7 @@ func TestSessionAsyncCompletionDoesNotBlockStop(t *testing.T) {
 func TestSessionSyncControlLifecycleAdmission(t *testing.T) {
 	t.Run("rejected before initialize", func(t *testing.T) {
 		h := harness(t, fakeFactory(newFakeEngine()))
-		for _, name := range []string{protocol.BackToHome, protocol.UUID, protocol.Status, protocol.Stop} {
+		for _, name := range []string{protocol.BackToHome, protocol.UUID, protocol.Status, protocol.Stop, protocol.GetImagePNG, protocol.GetImageBGR, protocol.ImageChunk} {
 			if m := h.call(name, nil); m.Error == nil || m.Error.Code != protocol.InvalidState {
 				t.Fatalf("pre-init %s: %+v", name, m)
 			}
