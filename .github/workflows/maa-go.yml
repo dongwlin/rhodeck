@@ -73,10 +73,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $compilerDir = @('C:\msys64\mingw64\bin', 'C:\msys64\ucrt64\bin') |
+          $compilerDir = @('C:\mingw64\bin', 'C:\msys64\mingw64\bin', 'C:\msys64\ucrt64\bin') |
             Where-Object { Test-Path (Join-Path $_ 'gcc.exe') } |
             Select-Object -First 1
           if (-not $compilerDir) { throw 'Native MinGW gcc is missing from the runner image' }
+          $target = & (Join-Path $compilerDir 'gcc.exe') -dumpmachine
+          if ($target -ne 'x86_64-w64-mingw32') { throw "Expected native Windows amd64 gcc, got $target" }
           Add-Content -Path $env:GITHUB_PATH -Value $compilerDir
       - name: Build layered checker
         run: go build -o maa-go-check.exe ./tools/maa-go-check
