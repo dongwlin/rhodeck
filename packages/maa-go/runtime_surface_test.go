@@ -116,8 +116,9 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		t.Fatal("未找到 Operation 类型的方法声明")
 	}
 
-	// *Runtime 的导出方法集恰为冻结集合(加入 Close)。
-	want := map[string]bool{"Version": true, "Capabilities": true, "NullSize": true, "Log": true, "NewInstance": true, "Close": true}
+	// *Runtime 的导出方法集恰为冻结集合(加入 Close 与两个实验查询)。
+	want := map[string]bool{"Version": true, "Capabilities": true, "NullSize": true, "Log": true,
+		"MapLevelKey": true, "ItemName": true, "NewInstance": true, "Close": true}
 	for m := range want {
 		if !runtimeMethods[m] {
 			t.Errorf("*Runtime 缺少冻结的导出方法 %s", m)
@@ -130,8 +131,8 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	}
 
 	// *Instance 的导出方法集恰为 {Close} + 同步方法 +
-	// 异步提交方法 + 输出读取方法 + 事件与故障观察方法(不含任何 BGR 读取入口:可
-	// 选 BGR 首期只报告 capability, 冻结决策)。
+	// 异步提交方法(含仅 Windows 生效的 AttachWindow) + 输出读取方
+	// 法(含可选能力门下的 GetImageBGR) + 事件与故障观察方法。
 	wantInstance := map[string]bool{
 		"Close":         true,
 		"AppendTask":    true,
@@ -144,7 +145,9 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		"Connect":       true,
 		"Click":         true,
 		"Screencap":     true,
+		"AttachWindow":  true,
 		"GetImagePNG":   true,
+		"GetImageBGR":   true,
 		"UUID":          true,
 		"Tasks":         true,
 		"Events":        true,

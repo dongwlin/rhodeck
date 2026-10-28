@@ -71,6 +71,19 @@ func (c Capabilities) MapLevelKey() bool { return c.mapLevelKey }
 // 原生库导出时为 false。
 func (c Capabilities) ItemName() bool { return c.itemName }
 
+// CapabilitiesForTest 以显式组合构造能力快照,仅供上层测试注入能力
+// 门两侧(生产快照只能由加载事务构造,字段未导出);不在生产链路
+// 使用,存在即测试接缝的一部分。
+func CapabilitiesForTest(create, imageBgr, asyncAttachWindow, mapLevelKey, itemName bool) Capabilities {
+	return Capabilities{
+		create:            create,
+		imageBgr:          imageBgr,
+		asyncAttachWindow: asyncAttachWindow,
+		mapLevelKey:       mapLevelKey,
+		itemName:          itemName,
+	}
+}
+
 // APITable 是加载事务成功后只读发布的 raw API 表句柄:api 指向本次
 // 事务构造并注册完成的临时表,caps 是同一次事务的能力快照。所有
 // 字段未导出;Instance 只经 Runtime 持有该表,不向 worker 导出 raw

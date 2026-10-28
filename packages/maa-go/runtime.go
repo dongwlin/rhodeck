@@ -92,6 +92,10 @@ type Limits struct {
 
 	// ImagePNG 是 PNG 图像缓冲区策略,容量单位为字节。
 	ImagePNG BufferLimits
+	// ImageBGR 是 BGR 像素缓冲区策略,容量单位为字节;仅在能力快照
+	// 报告 ImageBgr 在场时使用,能力缺席时读取方法直接返回
+	// ErrUnsupported,不消费本策略。
+	ImageBGR BufferLimits
 	// UUID 是设备 UUID 缓冲区策略,容量单位为字节。
 	UUID BufferLimits
 	// Tasks 是任务列表缓冲区策略,容量单位为 int32 元素(每元素
@@ -139,6 +143,7 @@ const (
 	configEntriesMax    = 1 << 12 // 4,096
 	configBytesMax      = 1 << 26 // 67,108,864
 	imagePNGCapMax      = 1 << 26 // 67,108,864
+	imageBGRCapMax      = 1 << 27 // 134,217,728
 	uuidCapMax          = 1 << 16 // 65,536
 	tasksCapMax         = 1 << 20 // 1,048,576
 	callbackBytesMax    = 1 << 24 // 16,777,216
@@ -159,6 +164,7 @@ func defaultLimits() Limits {
 		ConfigEntries:     256,
 		ConfigBytes:       4_194_304,
 		ImagePNG:          BufferLimits{Initial: 1_048_576, Max: 33_554_432, GrowthRetries: 5},
+		ImageBGR:          BufferLimits{Initial: 4_194_304, Max: 67_108_864, GrowthRetries: 5},
 		UUID:              BufferLimits{Initial: 64, Max: 4_096, GrowthRetries: 6},
 		Tasks:             BufferLimits{Initial: 64, Max: 65_536, GrowthRetries: 10},
 		CallbackBytes:     1_048_576,
@@ -204,6 +210,9 @@ func validateLimits(l Limits) error {
 		return outOfRange("ConfigBytes", 1, configBytesMax)
 	}
 	if err := checkBuffer("ImagePNG", l.ImagePNG, imagePNGCapMax); err != nil {
+		return err
+	}
+	if err := checkBuffer("ImageBGR", l.ImageBGR, imageBGRCapMax); err != nil {
 		return err
 	}
 	if err := checkBuffer("UUID", l.UUID, uuidCapMax); err != nil {
@@ -876,6 +885,7 @@ func open(cfg RuntimeConfig, env initEnv, gate *lifecycleGate) (*Runtime, error)
 		limits:   snap.limits,
 		gate:     gate,
 		logger:   apiTableLogger{table: sess.table()},
+		querier:  apiTableQuery{table: sess.table()},
 	}
 	gate.publish(rt)
 	return rt, nil
@@ -916,7 +926,8 @@ type Capabilities = native.Capabilities
 // 实例创建与同步业务调用经它调用 raw 函数),caps/version/nullSize/
 // limits 是初始化时复制的不可变元数据与限制快照;gate 是本 Runtime
 // 的生命周期门(唯一实例名额的预留/复核、终止使用与全局 Log 的生
-// 命周期检查经它进行);logger 是全局日志的 native 接缝。
+// 命周期检查经它进行);logger 是全局日志的 native 接缝;querier 是
+// 进程级实验查询(MapLevelKey/ItemName)的 native 接缝。
 type Runtime struct {
 	table    *native.APITable
 	caps     native.Capabilities
@@ -925,6 +936,7 @@ type Runtime struct {
 	limits   Limits
 	gate     *lifecycleGate
 	logger   runtimeLogger
+	querier  runtimeQuerier
 }
 
 // Version 返回初始化时复制的 Core 版本字符串。只读不可变元数据,

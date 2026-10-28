@@ -166,6 +166,18 @@ type fakeAsyncCall struct {
 	connect   *fakeAsyncConnectCall
 	click     *fakeAsyncClickCall
 	screencap *fakeAsyncScreencapCall
+	attach    *fakeAsyncAttachWindowCall
+}
+
+// fakeAsyncAttachWindowCall 记录一次 AttachWindow 提交:窗口句柄与
+// 三个 method 掩码原样记录。
+type fakeAsyncAttachWindowCall struct {
+	handle          uintptr
+	hwnd            uintptr
+	screencapMethod uint64
+	mouseMethod     uint64
+	keyboardMethod  uint64
+	block           uint8
 }
 
 // fakeInstanceCaller 是同步业务调用、异步提交与
@@ -187,12 +199,14 @@ type fakeInstanceCaller struct {
 	boolRets         map[string]uint8
 	asyncRets        map[string]int32
 	imageRespond     func(call fakeOutputCall) uint64
+	imageBgrRespond  func(call fakeOutputCall) uint64
 	uuidRespond      func(call fakeOutputCall) uint64
 	tasksRespond     func(call fakeOutputCall) uint64
 	onStart          func(handle uintptr)
 	onAsyncConnect   func(handle uintptr)
 	onAsyncClick     func(handle uintptr)
 	onAsyncScreencap func(handle uintptr)
+	onAsyncAttach    func(handle uintptr)
 }
 
 // newFakeInstanceCaller 构造 fake caller:全部调用缺省成功(appendTask
@@ -330,6 +344,27 @@ func (f *fakeInstanceCaller) asyncScreencap(handle uintptr, block uint8) int32 {
 	return ret
 }
 
+func (f *fakeInstanceCaller) asyncAttachWindow(handle uintptr, hwnd uintptr, screencapMethod uint64, mouseMethod uint64, keyboardMethod uint64, block uint8) int32 {
+	f.mu.Lock()
+	f.sequence = append(f.sequence, "asyncAttachWindow")
+	call := fakeAsyncCall{name: "asyncAttachWindow", attach: &fakeAsyncAttachWindowCall{
+		handle:          handle,
+		hwnd:            hwnd,
+		screencapMethod: screencapMethod,
+		mouseMethod:     mouseMethod,
+		keyboardMethod:  keyboardMethod,
+		block:           block,
+	}}
+	f.asyncCalls = append(f.asyncCalls, call)
+	ret := f.asyncRetLocked("asyncAttachWindow")
+	hook := f.onAsyncAttach
+	f.mu.Unlock()
+	if hook != nil {
+		hook(handle)
+	}
+	return ret
+}
+
 // asyncRecord 返回第 i 次异步提交调用记录的快照。
 func (f *fakeInstanceCaller) asyncRecord(i int) fakeAsyncCall {
 	f.mu.Lock()
@@ -442,6 +477,21 @@ func (f *fakeInstanceCaller) getImage(handle uintptr, buff unsafe.Pointer, buffS
 	call := fakeOutputCall{name: "getImage", handle: handle, buffPtr: buff, buffSize: buffSize}
 	f.outputCalls = append(f.outputCalls, call)
 	script := f.imageRespond
+	f.mu.Unlock()
+	if script != nil {
+		return script(call)
+	}
+	return 0
+}
+
+// getImageBgr 对应 AsstGetImageBgr:契约与脚本语义同 getImage,经
+// imageBgrRespond 脚本写入 buffer 并决定原生返回值。
+func (f *fakeInstanceCaller) getImageBgr(handle uintptr, buff unsafe.Pointer, buffSize uint64) uint64 {
+	f.mu.Lock()
+	f.sequence = append(f.sequence, "getImageBgr")
+	call := fakeOutputCall{name: "getImageBgr", handle: handle, buffPtr: buff, buffSize: buffSize}
+	f.outputCalls = append(f.outputCalls, call)
+	script := f.imageBgrRespond
 	f.mu.Unlock()
 	if script != nil {
 		return script(call)
@@ -1311,4 +1361,17 @@ func TestRollbackCreationWithoutTokenTail(t *testing.T) {
 	}
 	waitLeaseReleased(t, gate)
 	assertRuntimeTerminated(t, rt, gate, "token registration failed")
+}
+
+// outputRecordAll 返回指定名称全部输出读取调用记录的快照切片。
+func (f *fakeInstanceCaller) outputRecordAll(name string) []fakeOutputCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []fakeOutputCall
+	for _, c := range f.outputCalls {
+		if c.name == name {
+			out = append(out, c)
+		}
+	}
+	return out
 }

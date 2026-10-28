@@ -24,6 +24,7 @@ func newReadRig(t *testing.T, handle uintptr) (*Instance, *createRig) {
 	t.Helper()
 	inst, rig := newAsyncRig(t, handle, func(l *Limits) {
 		l.ImagePNG = BufferLimits{Initial: 8, Max: 64, GrowthRetries: 4}
+		l.ImageBGR = BufferLimits{Initial: 12, Max: 64, GrowthRetries: 4}
 		l.UUID = BufferLimits{Initial: 16, Max: 64, GrowthRetries: 4}
 		l.Tasks = BufferLimits{Initial: 4, Max: 16, GrowthRetries: 4}
 	})
@@ -696,6 +697,76 @@ func TestReadEntriesRejectByLifecycle(t *testing.T) {
 			}
 		case <-time.After(hangGuard):
 			t.Fatal("Close 未在防挂死上限内完成")
+		}
+	})
+}
+
+// TestGetImageBGRCapabilityGate 验证可选 BGR 读取的能力门:能力缺席
+// 时在准入前直接返回 ErrUnsupported——不触达 caller、不占在途计数、
+// 不分配探测 buffer;能力在场时按收紧的 Limits.ImageBGR 走与 PNG 同
+// 一探测契约(实际非空 buffer、扩容、独立快照)。
+func TestGetImageBGRCapabilityGate(t *testing.T) {
+	const handle = uintptr(0x1A20)
+	t.Run("能力缺席返回 ErrUnsupported 且不触达 native", func(t *testing.T) {
+		inst, rig := newReadRig(t, handle)
+		// newReadRig 的能力快照为零值:ImageBgr 关闭。
+		bgr, err := inst.GetImageBGR()
+		if bgr != nil {
+			t.Errorf("能力缺席时 GetImageBGR = %v, want nil", bgr)
+		}
+		if !errors.Is(err, native.ErrUnsupported) {
+			t.Fatalf("能力缺席时错误 = %v, want ErrUnsupported", err)
+		}
+		if n := len(rig.caller.outputRecordAll("getImageBgr")); n != 0 {
+			t.Errorf("能力缺席时 getImageBgr 被调用 %d 次, want 0(准入前拒绝)", n)
+		}
+	})
+	t.Run("能力在场按 Initial 容量探测并返回独立快照", func(t *testing.T) {
+		inst, rig := newReadRig(t, handle)
+		rig.rt.caps = native.CapabilitiesForTest(false, true, false, false, false)
+		rig.caller.imageBgrRespond = func(call fakeOutputCall) uint64 {
+			if call.handle != handle {
+				t.Errorf("GetImageBGR 收到 handle %#x, want %#x", call.handle, handle)
+			}
+			if call.buffSize != 12 {
+				t.Errorf("GetImageBGR 首次探测容量 = %d, want Limits.ImageBGR.Initial 12(字节)", call.buffSize)
+			}
+			return writeOutputBytes(call, []byte{0x00, 0x11, 0x22, 0x33})
+		}
+		bgr, err := inst.GetImageBGR()
+		if err != nil {
+			t.Fatalf("GetImageBGR = %v, want nil", err)
+		}
+		if !slices.Equal(bgr, []byte{0x00, 0x11, 0x22, 0x33}) {
+			t.Fatalf("GetImageBGR = %v, want 已知 BGR 内容", bgr)
+		}
+		// 快照独立性:原地改写结果不影响后续读取。
+		for i := range bgr {
+			bgr[i] = 0xFF
+		}
+		rig.caller.imageBgrRespond = func(call fakeOutputCall) uint64 {
+			return writeOutputBytes(call, []byte{0x00, 0x11, 0x22, 0x33})
+		}
+		again, err := inst.GetImageBGR()
+		if err != nil {
+			t.Fatalf("第二次 GetImageBGR = %v, want nil", err)
+		}
+		if !slices.Equal(again, []byte{0x00, 0x11, 0x22, 0x33}) {
+			t.Fatalf("改写快照后第二次读取 = %v, want 原内容(快照独立)", again)
+		}
+	})
+	t.Run("探测耗尽返回 ErrBufferLimit", func(t *testing.T) {
+		inst, rig := newReadRig(t, handle)
+		rig.rt.caps = native.CapabilitiesForTest(false, true, false, false, false)
+		rig.caller.imageBgrRespond = func(call fakeOutputCall) uint64 {
+			return profileNullSize // 恒 NullSize,耗尽全部重试
+		}
+		_, err := inst.GetImageBGR()
+		if !errors.Is(err, native.ErrBufferLimit) {
+			t.Fatalf("探测耗尽错误 = %v, want ErrBufferLimit", err)
+		}
+		if !strings.Contains(err.Error(), "GetImageBgr") {
+			t.Errorf("耗尽诊断应携带接口名 GetImageBgr: %v", err)
 		}
 	})
 }

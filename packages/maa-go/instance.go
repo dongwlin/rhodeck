@@ -214,8 +214,9 @@ func composeCloseError(fault, stopDiag error) error {
 //
 // 公开业务方法包括同步任务/请求/查询方法(AppendTask、
 // SetTaskParams、Start、Stop、BackToHome、Running、Connected)、异
-// 步提交方法(Connect、Click、Screencap,返回 *Operation)
-// 与图像/UUID/任务列表读取(GetImagePNG、UUID、Tasks)。
+// 步提交方法(Connect、Click、Screencap 与仅 Windows 生效的
+// AttachWindow,返回 *Operation)与图像/UUID/任务列表读取
+// (GetImagePNG、GetImageBGR、UUID、Tasks)。
 type Instance struct {
 	// inst 是私有单次关闭组件:持有共享状态、事件分发器、
 	// callback token 与 native 停止/销毁接缝,Close 委托它的唯一流程。
@@ -325,12 +326,21 @@ type instanceCaller interface {
 	// asyncScreencap 对应 AsstAsyncScreencap(handle, block):异步提
 	// 交截图,契约同 asyncConnect。
 	asyncScreencap(handle uintptr, block uint8) int32
+	// asyncAttachWindow 对应 AsstAsyncAttachWindow(handle, hwnd,
+	// screencapMethod, mouseMethod, keyboardMethod, block):异步提交
+	// Win32 窗口绑定,契约同 asyncConnect;符号仅 Windows 参与查找,
+	// 调用方必须先经平台与能力门判定。调用契约同 asyncConnect。
+	asyncAttachWindow(handle uintptr, hwnd uintptr, screencapMethod uint64, mouseMethod uint64, keyboardMethod uint64, block uint8) int32
 	// getImage 对应 AsstGetImage(handle, buff, buffSize):读取 Core
 	// 缓存图像的 PNG 编码,容量与返回值均为字节数。buff 指向实际分配
 	// 的无 Go 指针字节缓冲区(不以 nil/0 查询所需容量),由调
 	// 用方保活至 raw 返回。调用契约:仅在调用 lease 已准入、raw 串行
 	// 门禁已进入后调用(扩容重试的多次调用同属一次准入)。
 	getImage(handle uintptr, buff unsafe.Pointer, buffSize uint64) uint64
+	// getImageBgr 对应 AsstGetImageBgr(handle, buff, buffSize):读取
+	// Core 缓存图像的 BGR 像素数据,契约同 getImage;符号是可选项,
+	// 调用方必须先经能力门判定。调用契约同 getImage。
+	getImageBgr(handle uintptr, buff unsafe.Pointer, buffSize uint64) uint64
 	// getUUID 对应 AsstGetUUID(handle, buff, buffSize):读取设备
 	// UUID,容量与返回值均为字节数,按返回长度读取、不依赖尾部 NUL。
 	// 调用契约同 getImage。
@@ -377,8 +387,16 @@ func (c apiTableCaller) asyncScreencap(handle uintptr, block uint8) int32 {
 	return c.table.AsyncScreencap(handle, block)
 }
 
+func (c apiTableCaller) asyncAttachWindow(handle uintptr, hwnd uintptr, screencapMethod uint64, mouseMethod uint64, keyboardMethod uint64, block uint8) int32 {
+	return c.table.AsyncAttachWindow(handle, hwnd, screencapMethod, mouseMethod, keyboardMethod, block)
+}
+
 func (c apiTableCaller) getImage(handle uintptr, buff unsafe.Pointer, buffSize uint64) uint64 {
 	return c.table.GetImage(handle, buff, buffSize)
+}
+
+func (c apiTableCaller) getImageBgr(handle uintptr, buff unsafe.Pointer, buffSize uint64) uint64 {
+	return c.table.GetImageBgr(handle, buff, buffSize)
 }
 
 func (c apiTableCaller) getUUID(handle uintptr, buff *byte, buffSize uint64) uint64 {
@@ -701,9 +719,11 @@ func (in *Instance) Connected() (bool, error) {
 
 // ---- 异步提交与结果关联----
 //
-// 三个异步公开入口的公共纪律(提交纪律、 输入限制):
+// 四个异步公开入口的公共纪律(提交纪律、 输入限制):
 //   - 纯 Go 输入校验与快照先行(对照同步入口先例):失败返回
 //     ErrInvalidInput,不触碰生命周期门、不占在途计数、不占 pending;
+//     无输入的 Click/Screencap 与按能力门判定后无校验输入的
+//     AttachWindow 直接进入准入;
 //   - 随后 admitCall 取得调用 lease(生命周期准入,覆盖排队、native
 //     调用与结果接合全过程),再在 raw 串行门禁之前预留 pending 容量
 //     并登记未绑定 ID 的请求 Operation(pending 在调用进入 raw
@@ -711,8 +731,8 @@ func (in *Instance) Connected() (bool, error) {
 //   - 进入 raw 串行门禁后、native 调用前打开早到结果窗口(仅
 //     在「已进入 raw、尚未接合返回 ID」窗口内允许临存一个未知 ID 的
 //     完成结果,EarlyResults 固定为 1),随后以 block=false 调用
-//     native(公共异步方法统一用 block=false,避免把 block 的完
-//     成标记当成成功);
+//     native(公共异步方法统一用 block=false,避免把 block 的完成
+//     标记当成成功);
 //   - raw 返回后在调用 lease 内完成返回 ID 校验与登记
 //     (finishAsyncRaw):ID 0 是明确的提交错误并回收预留;负值/复用
 //     /倒退为 ErrProtocol 故障;登记后按 token、ID、预期 what 接合早
@@ -722,19 +742,20 @@ func (in *Instance) Connected() (bool, error) {
 //
 // 预期 what 冻结自锁定 Core 的 Assistant::call_proc(Assistant.cpp):
 // 异步项执行后以 AsyncCallInfo(message=4)回报 what=Connect/Click/
-// Screencap、async_call_id 与 details.ret;早到接合按该预期校验,
-// 不符为 ErrProtocol。
+// Screencap/AttachWindow、async_call_id 与 details.ret;早到接合按该
+// 预期校验,不符为 ErrProtocol。
 
 // asyncBlockFalse 是三个异步 raw 入口统一使用的 block 取值(冻结:
 // 公共异步方法统一用 block=false)。
 const asyncBlockFalse = uint8(0)
 
-// 异步入口的预期完成 what(raw 返回后按 token、ID、预期 what
-// 接合;值冻结自 Assistant.cpp call_proc)。
+// asyncWhatAttachWindow 等四个异步入口的预期完成 what(raw 返回后按
+// token、ID、预期 what 接合;值冻结自 Assistant.cpp call_proc)。
 const (
-	asyncWhatConnect   = "Connect"
-	asyncWhatClick     = "Click"
-	asyncWhatScreencap = "Screencap"
+	asyncWhatConnect      = "Connect"
+	asyncWhatClick        = "Click"
+	asyncWhatScreencap    = "Screencap"
+	asyncWhatAttachWindow = "AttachWindow"
 )
 
 // asyncCall 执行一次异步提交的公共骨架:生命周期准入 → pending 预留
@@ -829,7 +850,7 @@ func (in *Instance) Screencap() (*Operation, error) {
 
 // ---- 图像、UUID 与任务列表读取 ----
 //
-// 三个输出读取公开入口(GetImagePNG/UUID/Tasks)的公共纪律:
+// 四个输出读取公开入口(GetImagePNG/GetImageBGR/UUID/Tasks)的公共纪律:
 //   - 与同步业务调用同一准入:先 admitCall 取得调用 lease,再进入独
 //     立的 raw 串行门禁;lease 覆盖探测 buffer 分配、raw 调用(含扩
 //     容重试的多次调用)、长度校验、内容校验与最终复制全过程(
@@ -840,34 +861,32 @@ func (in *Instance) Screencap() (*Operation, error) {
 //     询所需容量;返回值校验顺序固定 NullSize → 实际容量 → Go
 //     MaxInt → 转换/切片。哨兵值取 Open 时核验并保存的
 //     Runtime.nullSize,不硬编码。
-//   - 按接口单位计量:PNG 与 UUID 按字节,Tasks 按 int32 元素数(每
-//     元素 4 字节只用于分配前的 Go int 守卫,容量与返回值都不当作
-//     字节数)。
+//   - 按接口单位计量:PNG/BGR 与 UUID 按字节,Tasks 按 int32 元素数
+//     (每元素 4 字节只用于分配前的 Go int 守卫,容量与返回值都不当
+//     作字节数)。
 //   - raw 接线方必须保活本层分配的 buffer:runtime.KeepAlive 持有至
 //     raw 返回(buffer.go 契约:保活责任在 raw 接线方)。
 //   - 返回独立 Go 快照:探测 buffer 不外泄,成功结果复制为
 //     调用者可长期持有、修改的独立数据;返回后原生内容改写或调用者
 //     修改切片都不影响已取得的快照与后续结果。
+//   - 可选 BGR(AsstGetImageBgr)与能力门:符号是可选项,缺失时
+//     GetImageBGR 在准入前直接返回 ErrUnsupported(不进入 native、
+//     不占在途计数、不分配 BGR buffer);在场时按 Limits.ImageBGR
+//     走同一探测契约。不存在可绕过能力判断的公开 BGR 读取路径。
 //
-// 能力决策(冻结):可选 BGR(AsstGetImageBgr)当前只解
-// 析符号并报告 capability(Runtime.Capabilities().ImageBgr),不公开
-// 读取方法、不调用、不分配生产 BGR buffer。契约中「可选
-// BGR 缺失时按能力返回 ErrUnsupported」由该冻结决策实现——不存在可
-// 绕过能力判断的公开 BGR 读取路径;未来公开 BGR 时须重新
-// 补齐生产容量契约后再按能力返回 ErrUnsupported。
-//
-// 三个接口都不是 nil/0 查询所需容量的协议:未初始化、空
+// 四个接口都不是 nil/0 查询所需容量的协议:未初始化、空
 // handle、容量不足均可能返回 NullSize;返回值大于实际容量是
 // ErrProtocol,立即终止、不扩容;合法 0 在实际非空 buffer 上返回空
 // 结果。耗尽返回可辨识的 ErrBufferLimit(诊断含接口、单位、尝试次
 // 数、最后容量、Max 与原始返回值,NullSize 原因不明)。
 
-// 读取接口名常量:三个读取接口在缓冲区探测诊断中的接口名(对应 C
+// 读取接口名常量:四个读取接口在缓冲区探测诊断中的接口名(对应 C
 // 符号去掉 Asst 前缀,与 buffer_test.go 的用例命名一致)。
 const (
-	outputNameImage = "GetImage"
-	outputNameUUID  = "GetUUID"
-	outputNameTasks = "GetTasksList"
+	outputNameImage    = "GetImage"
+	outputNameImageBGR = "GetImageBgr"
+	outputNameUUID     = "GetUUID"
+	outputNameTasks    = "GetTasksList"
 )
 
 // GetImagePNG 读取 Core 缓存图像的 PNG 编码(AsstGetImage):返回的
@@ -889,8 +908,8 @@ func (in *Instance) GetImagePNG() ([]byte, error) {
 		png, err = readOutputBytes(outputNameImage, func(buf []byte) uint64 {
 			ret := in.caller.getImage(handle, unsafe.Pointer(&buf[0]), uint64(len(buf)))
 			// 本层分配的探测 buffer 持有至 raw 返回(保活责任在
-			// raw 接线方);PNG/UUID/Tasks 的扩容重试同属一次 raw 门禁
-			// 段,每次调用各自保活。
+			// raw 接线方);PNG/BGR/UUID/Tasks 的扩容重试同属一次 raw
+			// 门禁段,每次调用各自保活。
 			runtime.KeepAlive(buf)
 			return ret
 		}, in.rt.nullSize, in.rt.limits.ImagePNG)
@@ -900,6 +919,37 @@ func (in *Instance) GetImagePNG() ([]byte, error) {
 		return nil, err
 	}
 	return png, nil
+}
+
+// GetImageBGR 读取 Core 缓存图像的 BGR 像素数据(AsstGetImageBgr,
+// 可选能力):缓存语义与 GetImagePNG 完全一致——读取的是最近一次采
+// 集图像的缓存结果,不触发任何隐式截图,也不承诺缓存采集时间;需要
+// 新截图时先提交 Screencap 并等待其成功结果再读取。返回值是原始
+// BGR 字节(通道序与步长由 Core 决定,binding 不解释,也不返回图
+// 像尺寸),独立 Go 快照,可长期持有、修改。
+//
+// 能力门:符号未随本次加载的原生库导出时,在准入前直接返回包装
+// ErrUnsupported 的错误(不进入 native、不占在途计数、不分配 BGR
+// buffer)。在场时容量探测按 Limits.ImageBGR(字节)执行,错误语义
+// 同 GetImagePNG。
+func (in *Instance) GetImageBGR() ([]byte, error) {
+	if !in.rt.caps.ImageBgr() {
+		return nil, fmt.Errorf("maa: AsstGetImageBgr is not available in this capability set: %w", native.ErrUnsupported)
+	}
+	var bgr []byte
+	err := in.syncCall("GetImageBGR", func(handle uintptr) error {
+		var err error
+		bgr, err = readOutputBytes(outputNameImageBGR, func(buf []byte) uint64 {
+			ret := in.caller.getImageBgr(handle, unsafe.Pointer(&buf[0]), uint64(len(buf)))
+			runtime.KeepAlive(buf)
+			return ret
+		}, in.rt.nullSize, in.rt.limits.ImageBGR)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return bgr, nil
 }
 
 // UUID 读取设备 UUID(AsstGetUUID):按原生返回的长度读取并转换为

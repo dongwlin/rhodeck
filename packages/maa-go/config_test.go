@@ -306,6 +306,7 @@ func TestLimitsValidationAcceptsBoundaries(t *testing.T) {
 		ConfigEntries:     1 << 12,
 		ConfigBytes:       1 << 26,
 		ImagePNG:          BufferLimits{Initial: 1 << 26, Max: 1 << 26, GrowthRetries: 0},
+		ImageBGR:          BufferLimits{Initial: 1 << 27, Max: 1 << 27, GrowthRetries: 16},
 		UUID:              BufferLimits{Initial: 1 << 16, Max: 1 << 16, GrowthRetries: 16},
 		Tasks:             BufferLimits{Initial: 1 << 20, Max: 1 << 20, GrowthRetries: 16},
 		CallbackBytes:     1 << 24,

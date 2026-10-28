@@ -47,15 +47,21 @@ loader fixture、真实 ABI fixture、原生线程 callback fixture，以及真�
 
 | 对象 | 方法 / 类型 |
 |---|---|
-| Runtime | `Open(RuntimeConfig)`、`Version()`、`Capabilities()`、`NullSize()`、`Log(level, message)`、`NewInstance(InstanceConfig)`、`Close()` |
-| Instance | `Close()`、`Events()`、`Done()`、`Err()`、`Fault()`、`Diagnostics()`、`AppendTask(taskType, params)`、`SetTaskParams(id, params)`、`Start()`、`Stop()`、`BackToHome()`、`Running()`、`Connected()`、`Connect(ConnectConfig)`、`Click(x, y)`、`Screencap()`、`GetImagePNG()`、`UUID()`、`Tasks()` |
+| Runtime | `Open(RuntimeConfig)`、`Version()`、`Capabilities()`、`NullSize()`、`Log(level, message)`、`MapLevelKey(key)`、`ItemName(id)`、`NewInstance(InstanceConfig)`、`Close()` |
+| Instance | `Close()`、`Events()`、`Done()`、`Err()`、`Fault()`、`Diagnostics()`、`AppendTask(taskType, params)`、`SetTaskParams(id, params)`、`Start()`、`Stop()`、`BackToHome()`、`Running()`、`Connected()`、`Connect(ConnectConfig)`、`Click(x, y)`、`Screencap()`、`AttachWindow(hwnd, screencap, mouse, keyboard)`（仅 Windows 生效）、`GetImagePNG()`、`GetImageBGR()`、`UUID()`、`Tasks()` |
 | Operation | `ID()`、`Wait(ctx)` |
-| 数据与配置 | `RuntimeConfig`、`InstanceConfig`、`ConnectConfig`、`Limits`、`BufferLimits`、`StaticOption`、`InstanceOption`、`ConnectionExtra`、`Event`、`AsyncResult`、`InstanceDiagnostics`、`TaskID`/`AsyncID`/`MessageID`、状态哨兵错误与加载/符号/注册错误类型 |
+| 数据与配置 | `RuntimeConfig`、`InstanceConfig`、`ConnectConfig`、`Limits`、`BufferLimits`、`StaticOption`、`InstanceOption`、`ConnectionExtra`、`Event`、`AsyncResult`、`InstanceDiagnostics`、`MapLevelKey`、`Win32ScreencapMethod`、`Win32InputMethod`、`TaskID`/`AsyncID`/`MessageID`、状态哨兵错误与加载/符号/注册错误类型 |
 
 C 侧的 `AsstConnect` 与 `AsstAttachWindow` 是 deprecated 对照项，不提供
-公开方法；`AsstCallerExtra.h` 的实验接口不在本包公开范围。`AsstGetImageBgr`
-只报告 `Capabilities().ImageBgr()`，不提供读取方法，也不分配生产 BGR
-缓冲区。
+公开方法。`AsstAsyncAttachWindow`（`AttachWindow`）只在 Windows 平台
+生效：底层符号仅 Windows 参与查找，非 Windows 平台与能力缺席时返回
+`ErrUnsupported`，不在其他系统上模拟成功。`AsstCallerExtra.h` 的两个
+实验接口（`MapLevelKey`、`ItemName`）随 `ASST_WITH_EXTRA_CALLERS` 构建
+选项导出（上游发行包默认仅 Apple 构建打开），能力缺席时同样返回
+`ErrUnsupported`；实验接口无稳定兼容保证。`GetImageBGR` 读取可选的
+`AsstGetImageBgr`：能力缺席时返回 `ErrUnsupported`，在场时按
+`Limits.ImageBGR` 走与 `GetImagePNG` 相同的有界探测契约，返回原始 BGR
+字节（通道序与步长由 Core 决定）。
 
 `Events()` 返回同一条单消费者通道，只有一个读取者推进消费；未知合法
 消息按原文交付，`Event.JSON` 是可安全保留和修改的独立副本。任务完成

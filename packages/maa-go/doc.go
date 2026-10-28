@@ -48,21 +48,35 @@
 // 止/完成等执行语义(接受请求不等于任务执行完成;任务进度只能经
 // Events 中的 Core 原生任务消息观察);Running、Connected 的
 // false 是正常查询结果,不转换成错误。
-// Connect(ConnectConfig)、Click(x, y)、Screencap 以 block=false 异
-// 步提交设备动作并返回 *Operation:非零 ID 只表示提交被接受,最终结
-// 果由 AsyncCallInfo 按 async_call_id 关联确认后经 Operation.Wait 取
-// 得(可重复等待,取消只结束本次等待,不撤销已提交的原生动作);
-// 完成回调先于 raw 返回时按 token + ID + 预期 what 接合,不依赖消息
-// 到达顺序。未结清 Operation 数受 Limits.PendingOperations 约束,重
-// 复、冲突或无法解释的完成信息使实例故障(ErrProtocol),不伪造成
-// 功。实例关闭后 Runtime 进入终止使用状态,后续 Open/NewInstance 返
-// 回 ErrRuntimeTerminated——每进程单 Runtime、单活动实例,不在同进
-// 程重建实例或重试资源组合。
+// Connect(ConnectConfig)、Click(x, y)、Screencap 与 AttachWindow
+// 以 block=false 异步提交并返回 *Operation:非零 ID 只表示提交被接
+// 受,最终结果由 AsyncCallInfo 按 async_call_id 关联确认后经
+// Operation.Wait 取得(可重复等待,取消只结束本次等待,不撤销已提
+// 交的原生动作);完成回调先于 raw 返回时按 token + ID + 预期 what
+// 接合,不依赖消息到达顺序。AttachWindow(AsstAsyncAttachWindow)
+// 只在 Windows 平台生效——底层符号仅 Windows 参与查找,非 Windows
+// 平台与能力缺席时一律返回 ErrUnsupported,binding 不在其他系统上
+// 模拟成功;三个 method 掩码以 Win32ScreencapMethod/Win32InputMethod
+// 常量按位组合。未结清 Operation 数受 Limits.PendingOperations 约
+// 束,重复、冲突或无法解释的完成信息使实例故障(ErrProtocol),不伪
+// 造成功。实例关闭后 Runtime 进入终止使用状态,后续 Open/NewInstance
+// 返回 ErrRuntimeTerminated——每进程单 Runtime、单活动实例,不在同
+// 进程重建实例或重试资源组合。
 //
 // Runtime.Log(level, message) 经 Core 全局日志接口(AsstLog,进程级、
 // 无 handle)写入一条日志:C void 函数,返回 nil 只表示调用已发出并
 // 返回,不构成原生确认成功的证明;错误返回只来自输入校验或 Runtime
 // 生命周期终止。
+//
+// Runtime.MapLevelKey 与 Runtime.ItemName 是 AsstCallerExtra.h 的两
+// 个实验接口(ASST_WITH_EXTRA_CALLERS 条件导出,上游明确不提供稳定
+// 兼容保证):符号未随本次加载的原生库导出时(上游发行包默认仅
+// Apple 构建打开该选项)一律返回 ErrUnsupported,不模拟、不降级。
+// MapLevelKey 未找到匹配关卡时返回零值 MapLevelKey(四字段全空串),
+// 零值即「未找到」;ItemName 对空 Id 返回 "Unknown"、找不到的 Id 返
+// 回空串(空串是正常查询结果)。两者都在原生调用返回后立即把 Core
+// 借出的指针有界复制为独立 Go 数据,界内无 NUL 或非法 UTF-8 是协议
+// 破坏(ErrProtocol);并发安全。
 //
 // 实例与连接、任务输入的数据类型(InstanceConfig、InstanceOption、
 // ConnectConfig)已定义,对应的纯 Go 校验与快照辅助同样遵循
@@ -83,17 +97,19 @@
 // Instance 的图像、UUID 与任务列表读取已接入:GetImagePNG 读取 Core
 // 缓存图像的 PNG 编码——读取的是最近一次采集的缓存结果,不触发任何
 // 隐式截图,也不承诺缓存采集时间,需要新截图时调用方必须先提交
-// Screencap 并等待其成功结果再读取;UUID 按原生返回的长度读取并转
-// 换为 string,不寻找、不要求尾部 NUL,内容含 NUL 或非法 UTF-8 为
-// ErrProtocol;Tasks 返回已入队任务的 ID 列表,容量与返回值均按
-// int32 元素数处理。三者都复用有界输出缓冲区探测:每次调用分配实
-// 际非空 buffer 并传真实容量(不以 nil/0 查询所需容量),返回值校验
-// 顺序固定为 NullSize 哨兵 → 实际容量 → Go int 上限 → 转换/切片,
-// 耗尽返回可辨识的 ErrBufferLimit(NullSize 原因不明),原生返回值
-// 超过实际容量为 ErrProtocol;合法 0 长度返回空结果。返回的都是独
-// 立 Go 快照,可长期持有、修改,不影响后续调用。可选 BGR(=
-// AsstGetImageBgr)只报告能力(Runtime.Capabilities().ImageBgr),
-// 不公开读取方法、不调用、不分配生产 buffer。
+// Screencap 并等待其成功结果再读取;GetImageBGR 读取同一缓存图像的
+// BGR 像素数据(可选能力:符号未随本次加载的原生库导出时在准入前
+// 返回 ErrUnsupported;缓存语义、容量探测与快照独立性与 PNG 一致,
+// 返回原始 BGR 字节,通道序/步长由 Core 决定,binding 不返回图像尺
+// 寸);UUID 按原生返回的长度读取并转换为 string,不寻找、不要求尾
+// 部 NUL,内容含 NUL 或非法 UTF-8 为 ErrProtocol;Tasks 返回已入队
+// 任务的 ID 列表,容量与返回值均按 int32 元素数处理。四者都复用有
+// 界输出缓冲区探测:每次调用分配实际非空 buffer 并传真实容量(不以
+// nil/0 查询所需容量),返回值校验顺序固定为 NullSize 哨兵 → 实际
+// 容量 → Go int 上限 → 转换/切片,耗尽返回可辨识的 ErrBufferLimit
+// (NullSize 原因不明),原生返回值超过实际容量为 ErrProtocol;合法
+// 0 长度返回空结果。返回的都是独立 Go 快照,可长期持有、修改,不影
+// 响后续调用。
 //
 // # 事件流与故障观察
 //
