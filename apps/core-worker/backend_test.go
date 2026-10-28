@@ -233,23 +233,33 @@ func TestOpenEngineRejectsIllegalLimitsBeforeNativeLoad(t *testing.T) {
 }
 
 // TestHwndFromUint64ChecksPointerWidth proves the window-handle conversion
-// never truncates: values within the platform pointer width convert exactly
-// (including the 2^53+1 JSON boundary and the full uint64 range on 64-bit
-// builds), and a value the platform pointer cannot hold is rejected with
-// invalid_input instead of being wrapped.
+// never truncates: every value within the platform pointer width converts
+// exactly, the 2^53+1 JSON boundary converts intact on 64-bit builds, and a
+// value the platform pointer cannot hold (exercisable on 32-bit builds) is
+// rejected with invalid_input instead of being wrapped.
 func TestHwndFromUint64ChecksPointerWidth(t *testing.T) {
 	width := uint64(^uintptr(0))
-	for _, v := range []uint64{1, 1 << 53, (1 << 53) + 1, width} {
+	for _, v := range []uint64{1, 1 << 16, width} {
 		hwnd, err := hwndFromUint64(v)
 		if err != nil || hwnd != uintptr(v) {
 			t.Fatalf("hwndFromUint64(%d) = %d, %v", v, hwnd, err)
 		}
 	}
-	if width < ^uint64(0) {
-		if _, err := hwndFromUint64(width + 1); err == nil {
-			t.Fatal("a value beyond the platform pointer width must be rejected")
-		} else if got := classify(err).Code; got != protocol.InvalidInput {
-			t.Fatalf("overflow code = %s, want invalid_input", got)
+	if width >= 1<<53 {
+		// 64-bit: the full uint64 range fits the pointer width, so the
+		// >2^53 JSON boundary converts exactly and no uint64 can overflow.
+		for _, v := range []uint64{1 << 53, (1 << 53) + 1, ^uint64(0)} {
+			hwnd, err := hwndFromUint64(v)
+			if err != nil || hwnd != uintptr(v) {
+				t.Fatalf("hwndFromUint64(%d) = %d, %v", v, hwnd, err)
+			}
 		}
+		return
+	}
+	// 32-bit: values beyond the pointer width are rejected, not truncated.
+	if _, err := hwndFromUint64(1 << 53); err == nil {
+		t.Fatal("a value beyond the platform pointer width must be rejected")
+	} else if got := classify(err).Code; got != protocol.InvalidInput {
+		t.Fatalf("overflow code = %s, want invalid_input", got)
 	}
 }
