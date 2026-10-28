@@ -251,7 +251,6 @@ type Client struct {
 	instanceSnapshot  *InstanceSnapshot
 	readDone          chan struct{}
 	writeDone         chan struct{}
-	processDone       chan struct{}
 	done              chan struct{}
 	closeOnce         sync.Once
 }
@@ -292,7 +291,7 @@ func Launch(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, err
 	}
 	lifetime, cancel := context.WithCancelCause(context.Background())
-	c := &Client{ctx: lifetime, cancel: cancel, stdin: stdin, stdout: stdout, config: cfg, out: protocol.NewQueue(), pending: make(map[uint64]*pendingRequest), hello: make(chan protocol.Greeting, 1), events: make(chan protocol.Message, protocol.QueueMessages), faultNotify: make(chan struct{}), instanceDone: make(chan struct{}), readDone: make(chan struct{}), writeDone: make(chan struct{}), processDone: make(chan struct{}), done: make(chan struct{})}
+	c := &Client{ctx: lifetime, cancel: cancel, stdin: stdin, stdout: stdout, config: cfg, out: protocol.NewQueue(), pending: make(map[uint64]*pendingRequest), hello: make(chan protocol.Greeting, 1), events: make(chan protocol.Message, protocol.QueueMessages), faultNotify: make(chan struct{}), instanceDone: make(chan struct{}), readDone: make(chan struct{}), writeDone: make(chan struct{}), done: make(chan struct{})}
 	c.cmd = exec.Command(cfg.Executable, cfg.Args...)
 	c.cmd.Env = append(os.Environ(), cfg.Env...)
 	c.cmd.Stdin, c.cmd.Stdout, c.cmd.Stderr = childIn, childOut, &c.logs
@@ -684,7 +683,6 @@ func validateResponse(m protocol.Message) error {
 
 func (c *Client) wait() {
 	err := c.cmd.Wait()
-	close(c.processDone)
 	// Pipes are owned by Client, not Cmd.Wait, so a fast exit cannot discard a
 	// final response. Bound draining if a descendant inherited a stdout handle.
 	timer := time.NewTimer(250 * time.Millisecond)
@@ -704,6 +702,13 @@ func (c *Client) wait() {
 		}
 		c.abort(&Failure{Code: "worker_exited", Unknown: true, Cause: err})
 	}
+	c.mu.Lock()
+	c.finished = true
+	// Release every pending response association: all waiters were unblocked
+	// through the session cause, nothing reads those channels anymore, and the
+	// terminal Client must not retain request state it can never resolve.
+	c.pending = make(map[uint64]*pendingRequest)
+	c.mu.Unlock()
 	c.mu.Lock()
 	c.finished = true
 	c.mu.Unlock()
