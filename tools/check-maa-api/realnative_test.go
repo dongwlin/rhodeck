@@ -167,8 +167,6 @@ func TestRealNativeVariantsFailThroughCLI(t *testing.T) {
 				"var exclusions = []exclusionSpec{",
 				"var exclusions = []exclusionSpec{\n"+
 					"\t{Name: \"AsstAttachWindow\", Header: \"AsstCaller.h\", Reason: \"deprecated\"},\n"+
-					"\t{Name: \"AsstGetMapLevelKey\", Header: \"AsstCallerExtra.h\", Reason: \"experimental\"},\n"+
-					"\t{Name: \"AsstGetItemName\", Header: \"AsstCallerExtra.h\", Reason: \"experimental\"},\n"+
 					"}")
 			fs["api.go"] = mustReplace(t, fs["api.go"],
 				"	Log                 func(level *byte, message *byte)",

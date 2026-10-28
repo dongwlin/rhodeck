@@ -280,12 +280,12 @@ func TestRealHeaderCheckerEndToEnd(t *testing.T) {
 
 	// 关联分类表:Linux 绑定 25 项 + 1 项非目标 windowsOnly + 4 项排除;
 	// Windows 绑定 26 项。
-	if len(linuxRep.Link.Bound) != 25 || len(linuxRep.Link.Excluded) != 4 ||
+	if len(linuxRep.Link.Bound) != 27 || len(linuxRep.Link.Excluded) != 2 ||
 		strings.Join(linuxRep.Link.NonTarget, ",") != "AsstAsyncAttachWindow" {
 		t.Errorf("linux link = bound %d excluded %d nontarget %v",
 			len(linuxRep.Link.Bound), len(linuxRep.Link.Excluded), linuxRep.Link.NonTarget)
 	}
-	if len(winRep.Link.Bound) != 26 || len(winRep.Link.NonTarget) != 0 {
+	if len(winRep.Link.Bound) != 28 || len(winRep.Link.NonTarget) != 0 {
 		t.Errorf("windows link = bound %d nontarget %v", len(winRep.Link.Bound), winRep.Link.NonTarget)
 	}
 
@@ -444,8 +444,8 @@ func TestRealHeaderSignatureSection(t *testing.T) {
 		t.Error("success output including the signatures section must be byte-identical across runs")
 	}
 	linuxRep := parse(linuxOut, "linux")
-	if len(linuxRep.Signatures.Symbols) != 26 {
-		t.Fatalf("linux signature symbols = %d, want 26 (all bindings, including the non-target windowsOnly binding)", len(linuxRep.Signatures.Symbols))
+	if len(linuxRep.Signatures.Symbols) != 28 {
+		t.Fatalf("linux signature symbols = %d, want 28 (all bindings, including the non-target windowsOnly binding)", len(linuxRep.Signatures.Symbols))
 	}
 	for i := 1; i < len(linuxRep.Signatures.Symbols); i++ {
 		if linuxRep.Signatures.Symbols[i-1].Symbol >= linuxRep.Signatures.Symbols[i].Symbol {
@@ -548,8 +548,8 @@ func TestRealHeaderSignatureSection(t *testing.T) {
 	// windows 目标:26 条绑定全部通过,窗口符号经 Bound 分类核验,
 	// hwnd/method 映射与 linux 目标一致,不得重复报错或行为回退。
 	winRep := parse(run("windows"), "windows")
-	if len(winRep.Signatures.Symbols) != 26 {
-		t.Fatalf("windows signature symbols = %d, want 26", len(winRep.Signatures.Symbols))
+	if len(winRep.Signatures.Symbols) != 28 {
+		t.Fatalf("windows signature symbols = %d, want 28", len(winRep.Signatures.Symbols))
 	}
 	aw := symbol(winRep, "AsstAsyncAttachWindow")
 	if p := param(aw, 1); p != (signatureParamJSON{Position: 2, CName: "hwnd", GoName: "hwnd",

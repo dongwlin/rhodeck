@@ -97,8 +97,8 @@ func runStatic(ctx context.Context, env environment) layerResult {
 		return res
 	}
 	defer cleanup()
-	res.merge(runCheckerTarget(ctx, env, bin, "linux", 25, 1, 4))
-	res.merge(runCheckerTarget(ctx, env, bin, "windows", 26, 0, 4))
+	res.merge(runCheckerTarget(ctx, env, bin, "linux", 27, 1, 2))
+	res.merge(runCheckerTarget(ctx, env, bin, "windows", 28, 0, 2))
 	return res
 }
 
@@ -162,7 +162,7 @@ func runABI(ctx context.Context, env environment) layerResult {
 		Timeout:  5 * time.Minute,
 	})
 	if res.Status == statusPass {
-		res.Detail = "real C ABI fixture passed (numbers, params, void, buffers)"
+		res.Detail = "real C ABI fixture passed (numbers, params, void, buffers, struct-return queries)"
 	}
 	return res
 }

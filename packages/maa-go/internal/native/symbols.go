@@ -4,8 +4,11 @@
 //
 // 策略语义:
 //   - R(required)缺失则拒绝初始化,收集全部必需项失败后一次性整体报告;
-//   - O(optional)缺失只关闭对应 capability,不阻塞加载;
-//   - D 与实验项不查找、不注册,只能出现在 exclusions;每条排除记录来源
+//   - O(optional)缺失只关闭对应 capability,不阻塞加载;两个
+//     ASST_WITH_EXTRA_CALLERS 条件的实验导出(AsstGetMapLevelKey、
+//     AsstGetItemName)按 optional 绑定——上游发行包仅在 Apple 构建
+//     打开该选项,其余平台缺席时只关闭能力;
+//   - D 项不查找、不注册,只能出现在 exclusions;每条排除记录来源
 //     头文件与原因,不靠通配符隐藏遗漏。
 //
 // symbolSpecs 只有一条直接 return 的 []symbolSpec 字面量,每条目恰好四个
@@ -40,7 +43,7 @@ type symbolSpec struct {
 	Platform symbolPlatform
 }
 
-// symbolSpecs 返回首期 26 条 R/O 符号清单,条目顺序同 api 字段
+// symbolSpecs 返回首期 28 条 R/O 符号清单,条目顺序同 api 字段
 // 顺序。形式冻结:单一直接 return 字面量,每条目全部四个具名 key。
 func symbolSpecs(table *api) []symbolSpec {
 	return []symbolSpec{
@@ -70,22 +73,22 @@ func symbolSpecs(table *api) []symbolSpec {
 		{Name: "AsstGetVersion", Target: &table.GetVersion, Policy: required, Platform: allPlatforms},
 		{Name: "AsstLog", Target: &table.Log, Policy: required, Platform: allPlatforms},
 		{Name: "AsstAsyncAttachWindow", Target: &table.AsyncAttachWindow, Policy: optional, Platform: windowsOnly},
+		{Name: "AsstGetMapLevelKey", Target: &table.GetMapLevelKey, Policy: optional, Platform: allPlatforms},
+		{Name: "AsstGetItemName", Target: &table.GetItemName, Policy: optional, Platform: allPlatforms},
 	}
 }
 
-// exclusionSpec 记录一条精确排除:D 项与实验项不绑定,Name/
-// Header/Reason 均必填,与的排除表逐字对应。
+// exclusionSpec 记录一条精确排除:D 项不绑定,Name/Header/Reason 均
+// 必填,与的排除表逐字对应。
 type exclusionSpec struct {
 	Name   string
 	Header string
 	Reason string
 }
 
-// exclusions 是唯一的排除清单,恰好 4 条;不得新增排除项,已有
-// 项不得改绑或失效。
+// exclusions 是唯一的排除清单,恰好 2 条 deprecated 项;不得新增
+// 排除项,已有项不得改绑或失效。
 var exclusions = []exclusionSpec{
 	{Name: "AsstConnect", Header: "AsstCaller.h", Reason: "上游 deprecated 注释；同步连接由 AsyncConnect 代替"},
 	{Name: "AsstAttachWindow", Header: "AsstCaller.h", Reason: "上游 deprecated 注释；同步绑定由 AsyncAttachWindow 代替"},
-	{Name: "AsstGetMapLevelKey", Header: "AsstCallerExtra.h", Reason: "实验且返回结构体，超出首期调用范围；struct AsstMapLevelKey ASSTAPI AsstGetMapLevelKey(const char* key)"},
-	{Name: "AsstGetItemName", Header: "AsstCallerExtra.h", Reason: "上游明确无稳定兼容保证；const char* ASSTAPI AsstGetItemName(const char* id)"},
 }

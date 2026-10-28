@@ -41,9 +41,10 @@ func (f *fakeRegistrar) registerFunc(target any, addr uintptr) {
 }
 
 // expectedApplicableSymbols 是手写内联的适用符号期望表,与
-// symbolSpecs 相互独立:非 Windows 平台为 25 项,Windows 为全部
-// 26 项。AsstConnect 与 AsstAttachWindow 是排除项,任何平台都不在
-// 表内。
+// symbolSpecs 相互独立:非 Windows 平台为 27 项,Windows 为全部
+// 28 项。AsstConnect 与 AsstAttachWindow 是排除项,任何平台都不在
+// 表内;AsstGetMapLevelKey 与 AsstGetItemName 是 optional 全平台
+// 条目(实验导出,缺席只关闭能力)。
 var expectedApplicableSymbols = map[string][]string{
 	"linux": {
 		"AsstSetUserDir", "AsstLoadResource", "AsstSetStaticOption", "AsstCreate",
@@ -52,7 +53,7 @@ var expectedApplicableSymbols = map[string][]string{
 		"AsstConnected", "AsstBackToHome", "AsstAsyncConnect", "AsstSetConnectionExtras",
 		"AsstAsyncClick", "AsstAsyncScreencap", "AsstGetImage", "AsstGetImageBgr",
 		"AsstGetUUID", "AsstGetTasksList", "AsstGetNullSize", "AsstGetVersion",
-		"AsstLog",
+		"AsstLog", "AsstGetMapLevelKey", "AsstGetItemName",
 	},
 	"darwin": {
 		"AsstSetUserDir", "AsstLoadResource", "AsstSetStaticOption", "AsstCreate",
@@ -61,7 +62,7 @@ var expectedApplicableSymbols = map[string][]string{
 		"AsstConnected", "AsstBackToHome", "AsstAsyncConnect", "AsstSetConnectionExtras",
 		"AsstAsyncClick", "AsstAsyncScreencap", "AsstGetImage", "AsstGetImageBgr",
 		"AsstGetUUID", "AsstGetTasksList", "AsstGetNullSize", "AsstGetVersion",
-		"AsstLog",
+		"AsstLog", "AsstGetMapLevelKey", "AsstGetItemName",
 	},
 	"windows": {
 		"AsstSetUserDir", "AsstLoadResource", "AsstSetStaticOption", "AsstCreate",
@@ -70,7 +71,7 @@ var expectedApplicableSymbols = map[string][]string{
 		"AsstConnected", "AsstBackToHome", "AsstAsyncConnect", "AsstSetConnectionExtras",
 		"AsstAsyncClick", "AsstAsyncScreencap", "AsstGetImage", "AsstGetImageBgr",
 		"AsstGetUUID", "AsstGetTasksList", "AsstGetNullSize", "AsstGetVersion",
-		"AsstLog", "AsstAsyncAttachWindow",
+		"AsstLog", "AsstAsyncAttachWindow", "AsstGetMapLevelKey", "AsstGetItemName",
 	},
 }
 
@@ -522,8 +523,8 @@ func TestPuregoRegistrarBindsResolvedAddresses(t *testing.T) {
 	want := expectApplicableNames(t)
 	v := reflect.ValueOf(table.funcs()).Elem()
 	typ := v.Type()
-	if typ.NumField() != 26 {
-		t.Fatalf("api 字段数 = %d, want 26(冻结声明)", typ.NumField())
+	if typ.NumField() != 28 {
+		t.Fatalf("api 字段数 = %d, want 28(冻结声明)", typ.NumField())
 	}
 	registered := 0
 	for i := 0; i < typ.NumField(); i++ {

@@ -21,6 +21,10 @@
 //     其余 pointee(含 uint8*、二级指针)无许可映射;
 //   - struct AsstExtAPI*(opaque handle)→ uintptr;
 //   - callback 函数指针 → uintptr;
+//   - 按值返回的 struct AsstMapLevelKey(仅返回位置)→ mapLevelKey
+//     raw 同构,四个 const char* 成员逐位置映射为 *byte 字段(成员名
+//     经 approvedStructFieldNames 映射,顺序与 const 标志冻结);其余
+//     struct 形状无许可映射;
 //   - void* 仅三种冻结上下文许可:C 参数名恰为 custom_arg → uintptr
 //     (token);恰为 hwnd 且符号为被绑定的窗口符号
 //     AsstAsyncAttachWindow → uintptr(窗口句柄);恰为 buff 且符号
@@ -31,7 +35,8 @@
 // 匿名与空白参数名、未批准重命名以及同类型参数调序(x/y、
 // level/message、callback/customArg、窗口 method)因此失败。返回值:
 // C void → Go 必须无结果列表(不虚构成功码);其余按同一类型映射,
-// 返回位置没有参数名,故 void* 返回无许可映射。结果个数恰为 0 或 1
+// 返回位置没有参数名,故 void* 返回无许可映射,按值 struct 返回仅
+// AsstMapLevelKey 有同构许可并附字段级比对。结果个数恰为 0 或 1
 // 由 Go 提取层保证,此处按单一结果值比对。
 //
 // callback 平台适配:C 的 AsstApiCallback 在两
@@ -61,6 +66,16 @@ var approvedParamNames = map[string]string{
 	"screencap_method": "screencapMethod",
 	"mouse_method":     "mouseMethod",
 	"keyboard_method":  "keyboardMethod",
+}
+
+// approvedStructFieldNames 是按值返回 struct 的冻结成员名映射
+// (AsstMapLevelKey 成员 → mapLevelKey 同构字段);其余成员名原样
+// 保留且必然失配。
+var approvedStructFieldNames = map[string]string{
+	"stage_id": "StageID",
+	"code":     "Code",
+	"level_id": "LevelID",
+	"name":     "Name",
 }
 
 // approvedParamName 返回 C 参数名经批准映射后的 Go 参数名;未批准
@@ -153,6 +168,14 @@ func permittedGoTypes(symbol, paramName string, ct CType) []GoSourceType {
 		return nil // 二级指针等无许可映射
 	case CKindFuncPtr:
 		return []GoSourceType{"uintptr"} // callback 函数指针
+	case CKindStruct:
+		// 按值返回的 struct 只有一个许可映射:返回位置(paramName
+		// 为空)的 struct AsstMapLevelKey → mapLevelKey raw 同构;
+		// 其余 struct 形状(含参数位置的同名 struct)无许可映射。
+		if ct.Tag == frozenStructTag && paramName == "" {
+			return []GoSourceType{GoTypeMapLevelKey}
+		}
+		return nil
 	}
 	return nil
 }
@@ -306,7 +329,18 @@ type SignatureReturn struct {
 	GoType string
 }
 
-// SignatureEntry 是一个绑定符号的逐参数核验记录。
+// SignatureField 是按值返回 struct 的一个字段位置的核验记录:位置从
+// 1 起,C 成员名与批准映射后的 Go 字段名、C 规范化拼写与 Go raw 拼写。
+type SignatureField struct {
+	Position int
+	CName    string
+	GoName   string
+	CType    string
+	GoType   string
+}
+
+// SignatureEntry 是一个绑定符号的逐参数核验记录;Fields 仅在 C 返回
+// 按值 struct(AsstGetMapLevelKey)时非空。
 type SignatureEntry struct {
 	Symbol string
 	Field  string
@@ -315,6 +349,7 @@ type SignatureEntry struct {
 	GoFile string
 	GoLine int
 	Params []SignatureParam
+	Fields []SignatureField
 	Return SignatureReturn
 }
 
@@ -335,6 +370,54 @@ type SignatureCallbackEntry struct {
 type SignatureResult struct {
 	Symbols   []SignatureEntry
 	Callbacks []SignatureCallbackEntry
+}
+
+// compareStructFields 逐位置比对按值返回 struct 的 C 成员与 Go 同构
+// 字段:个数、成员名(经批准映射)、类型(const char* → *byte,成员
+// 的 const 标志必须一致)。失败返回第一条 field 级 signature 诊断。
+func compareStructFields(symbol string, def CStruct, gs *GoStruct, cLoc, goLoc sigLocation) ([]SignatureField, *Diagnostic) {
+	if len(def.Members) != len(gs.Fields) {
+		return nil, &Diagnostic{Category: CatSignature, File: goLoc.file, Line: goLoc.line, Symbol: gs.Name,
+			Expected: fmt.Sprintf("%d fields matching the frozen struct members", len(def.Members)),
+			Actual:   fmt.Sprintf("%d fields", len(gs.Fields)),
+			Message:  "struct isomorphism field count differs from the c definition"}
+	}
+	out := make([]SignatureField, 0, len(def.Members))
+	for i := range def.Members {
+		cm, gm := def.Members[i], gs.Fields[i]
+		wantName := approvedStructFieldNames[cm.Name]
+		if wantName == "" {
+			wantName = cm.Name
+		}
+		if gm.Name != wantName {
+			return nil, &Diagnostic{Category: CatSignature, File: goLoc.file, Line: goLoc.line, Symbol: gs.Name,
+				Expected: fmt.Sprintf("field %d name %s", i+1, wantName),
+				Actual:   fmt.Sprintf("field %d name %s", i+1, gm.Name),
+				Message: fmt.Sprintf("c member %q: the go field name must equal the member name after the approved mapping; "+
+					"unapproved renames and reordering fail", cm.Name)}
+		}
+		permitted := permittedStructMemberTypes(cm.Type)
+		if !containsGoType(permitted, gm.Type) {
+			return nil, &Diagnostic{Category: CatSignature, File: goLoc.file, Line: goLoc.line, Symbol: gs.Name,
+				Expected: joinGoTypes(permitted),
+				Actual:   string(gm.Type),
+				Message: fmt.Sprintf("field %d (%s): the go raw type must match the frozen c member mapping",
+					i+1, cm.Name)}
+		}
+		out = append(out, SignatureField{Position: i + 1, CName: cm.Name, GoName: gm.Name,
+			CType: cm.Type.String(), GoType: string(gm.Type)})
+	}
+	return out, nil
+}
+
+// permittedStructMemberTypes 返回 struct 成员的许可 Go raw 类型:
+// const char* → *byte(const 标志必须一致);其余成员类型无许可映射。
+func permittedStructMemberTypes(ct CType) []GoSourceType {
+	if ct.Kind == CKindPointer && ct.Pointee != nil &&
+		ct.Pointee.Kind == CKindScalar && ct.Pointee.Name == "char" && ct.Pointee.Const {
+		return []GoSourceType{"*byte"}
+	}
+	return nil
 }
 
 // CompareSignatures 执行宽度级签名比对:先对每条绑定条目(Bound 与
@@ -359,10 +442,13 @@ func CompareSignatures(c *CExtraction, g *GoExtraction, link *LinkResult) (*Sign
 	}
 
 	res := &SignatureResult{}
-	// compareEntry 比对单个绑定符号的 C 声明与 Go 字段并追加核验记
-	// 录;C 声明或 Go 字段缺失、参数或返回值失配都返回诊断,由调用方
-	// 失败关闭。C 侧一律取完整声明集合(c.Functions 在两目标都含
-	// windowsOnly 声明)。
+	// 按值返回 struct 的成员核验:C 结构体定义(c.Structs 的
+	// AsstMapLevelKey)与 Go 的 mapLevelKey 同构做逐位置字段比对;
+	// 其余符号 Fields 保持为空。
+	structByTag := map[string]CStruct{}
+	for i := range c.Structs {
+		structByTag[c.Structs[i].Tag] = c.Structs[i]
+	}
 	compareEntry := func(symbol, field string) *Diagnostic {
 		cf, ok := cByName[symbol]
 		if !ok {
@@ -391,6 +477,26 @@ func CompareSignatures(c *CExtraction, g *GoExtraction, link *LinkResult) (*Sign
 			entry.Params = append(entry.Params, SignatureParam{Position: i + 1,
 				CName: cf.Params[i].Name, GoName: gf.Params[i].Name,
 				CType: cf.Params[i].Type.String(), GoType: string(gf.Params[i].Type)})
+		}
+		if cf.Ret.Kind == CKindStruct && cf.Ret.Tag == frozenStructTag {
+			def, ok := structByTag[frozenStructTag]
+			if !ok {
+				return &Diagnostic{Category: CatSignature, File: cLoc.file, Line: cLoc.line, Symbol: symbol,
+					Expected: "the frozen struct definition", Actual: "missing",
+					Message: "signature comparison requires the c struct definition of a struct return"}
+			}
+			if g.MapLevelKey == nil {
+				return &Diagnostic{Category: CatSignature, File: goLoc.file, Line: goLoc.line, Symbol: symbol,
+					Expected: "type mapLevelKey (the go struct isomorphism)", Actual: "missing",
+					Message: "signature comparison requires the go struct isomorphism of a struct return"}
+			}
+			fields, d := compareStructFields(symbol, def, g.MapLevelKey,
+				sigLocation{file: def.Header, line: def.Line},
+				sigLocation{file: g.MapLevelKey.File, line: g.MapLevelKey.Line})
+			if d != nil {
+				return d
+			}
+			entry.Fields = fields
 		}
 		res.Symbols = append(res.Symbols, entry)
 		return nil

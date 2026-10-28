@@ -21,8 +21,8 @@ func TestVendoredLockedInputRun(t *testing.T) {
 		bound     int
 		nonTarget int
 	}{
-		{goos: "linux", bound: 25, nonTarget: 1},
-		{goos: "windows", bound: 26, nonTarget: 0},
+		{goos: "linux", bound: 27, nonTarget: 1},
+		{goos: "windows", bound: 28, nonTarget: 0},
 	}
 	for _, tc := range tests {
 		t.Run(tc.goos, func(t *testing.T) {
@@ -53,11 +53,11 @@ func TestVendoredLockedInputRun(t *testing.T) {
 			if len(rep.Link.NonTarget) != tc.nonTarget {
 				t.Fatalf("nontarget bindings = %d, want %d", len(rep.Link.NonTarget), tc.nonTarget)
 			}
-			if len(rep.Link.Excluded) != 4 {
-				t.Fatalf("excluded = %d, want 4", len(rep.Link.Excluded))
+			if len(rep.Link.Excluded) != 2 {
+				t.Fatalf("excluded = %d, want 2", len(rep.Link.Excluded))
 			}
-			if len(rep.Signatures.Symbols) != 26 || len(rep.Signatures.Callbacks) != 2 {
-				t.Fatalf("signatures = %d symbols/%d callbacks, want 26/2",
+			if len(rep.Signatures.Symbols) != 28 || len(rep.Signatures.Callbacks) != 2 {
+				t.Fatalf("signatures = %d symbols/%d callbacks, want 28/2",
 					len(rep.Signatures.Symbols), len(rep.Signatures.Callbacks))
 			}
 			if len(rep.Expect.Symbols) != 30 {

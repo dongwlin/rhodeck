@@ -32,6 +32,7 @@ const (
 	abiFixtureModeParams      = "abifixture-params"
 	abiFixtureModeVoidStrings = "abifixture-void-strings"
 	abiFixtureModeBuffers     = "abifixture-buffers"
+	abiFixtureModeQueries     = "abifixture-queries"
 
 	// abiFixtureSOEnv 向子进程传递夹具.so 的绝对路径;子进程先断言
 	// 其为绝对路径,与 loader 只接受绝对路径的冻结策略一致。
@@ -53,6 +54,7 @@ const (
 	paramsOKMarker      = "MAA_ABI_FIXTURE_PARAMS_OK"
 	voidStringsOKMarker = "MAA_ABI_FIXTURE_VOID_STRINGS_OK"
 	buffersOKMarker     = "MAA_ABI_FIXTURE_BUFFERS_OK"
+	queriesOKMarker     = "MAA_ABI_FIXTURE_QUERIES_OK"
 
 	// abiFixtureChildTimeout 是父进程强制的子进程 wall-clock 上限:
 	// 真实调用毫秒级完成,2 分钟只防御环境异常导致的挂起。
@@ -93,6 +95,7 @@ func init() {
 	ffitest.Register(abiFixtureModeParams, runABIFixtureParamsChild)
 	ffitest.Register(abiFixtureModeVoidStrings, runABIFixtureVoidStringsChild)
 	ffitest.Register(abiFixtureModeBuffers, runABIFixtureBuffersChild)
+	ffitest.Register(abiFixtureModeQueries, runABIFixtureQueriesChild)
 }
 
 // buildABIFixture 编译独立 C ABI 夹具,返回.so 绝对路径。
@@ -705,6 +708,96 @@ func runABIFixtureBuffersChild() int {
 	return 0
 }
 
+// runABIFixtureQueriesChild 验证实验导出的真实 ABI:按值返回的
+// 32 字节 struct(内存返回路径)、全 NULL 未命中、借用指针的复制
+// 语义(thread_local 缓冲被后续调用改写,已复制的 Go 内容不变)。
+func runABIFixtureQueriesChild() int {
+	_, table, ok := abiFixtureOpenChild("queries", os.Getenv(abiFixtureSOEnv))
+	if !ok {
+		return 1
+	}
+	f := table.funcs()
+
+	// 命中:四字段按值返回,内容互不相同且带调用计数;字段错位
+	// (如 code 槽位装了 stage 内容)即可辨。
+	first := f.GetMapLevelKey(abiCBytes("abifx-hit"))
+	stage1 := abiCString(first.StageID, 64)
+	code1 := abiCString(first.Code, 64)
+	level1 := abiCString(first.LevelID, 64)
+	name1 := abiCString(first.Name, 64)
+	if stage1 != "abifx-stage#1" || code1 != "abifx-code#1" ||
+		level1 != "abifx-level#1" || name1 != "abifx-name#1" {
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetMapLevelKey 首次 = %q/%q/%q/%q, want abifx-{stage,code,level,name}#1\n",
+			stage1, code1, level1, name1)
+		return 1
+	}
+
+	// 二次调用:thread_local 缓冲被改写为 #2;首次已复制的 Go 内容
+	// 必须仍为 #1(借用指针不共享、不依赖别名)。
+	second := f.GetMapLevelKey(abiCBytes("abifx-hit"))
+	stage2 := abiCString(second.StageID, 64)
+	if stage2 != "abifx-stage#2" {
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetMapLevelKey 二次 stage = %q, want abifx-stage#2\n", stage2)
+		return 1
+	}
+	if stage1 != "abifx-stage#1" {
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: 首次副本 stage = %q 在原生改写后变为非期望值,借用内容被错误共享\n", stage1)
+		return 1
+	}
+
+	// 未命中:未知 key 返回全 NULL struct(四个成员都为 nil)。
+	miss := f.GetMapLevelKey(abiCBytes("abifx-miss"))
+	if miss.StageID != nil || miss.Code != nil || miss.LevelID != nil || miss.Name != nil {
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetMapLevelKey(未命中) = %+v, want 全 NULL struct\n", miss)
+		return 1
+	}
+	// NULL key 同样全 NULL。
+	nullKey := f.GetMapLevelKey(nil)
+	if nullKey.StageID != nil || nullKey.Code != nil || nullKey.LevelID != nil || nullKey.Name != nil {
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetMapLevelKey(nil) = %+v, want 全 NULL struct\n", nullKey)
+		return 1
+	}
+
+	// ItemName:NULL 与空串 → "Unknown";未知 → 空串(非 NULL,
+	// abiCString 对 nil 返回空串会掩盖 NULL 返回,显式断言非 nil)。
+	empty := f.GetItemName(abiCBytes(""))
+	if empty == nil || abiCString(empty, 64) != "Unknown" {
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName(空串) = %v, want 非nil \"Unknown\"\n", empty)
+		return 1
+	}
+	nullID := f.GetItemName(nil)
+	if nullID == nil || abiCString(nullID, 64) != "Unknown" {
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName(nil) = %v, want 非nil \"Unknown\"\n", nullID)
+		return 1
+	}
+	nope := f.GetItemName(abiCBytes("abifx-nope"))
+	if nope == nil || abiCString(nope, 64) != "" {
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName(未知) = %v, want 非nil 空串\n", nope)
+		return 1
+	}
+	// 已知物品:带调用计数的借用指针;二次调用改写原生缓冲,已复制
+	// 的 Go 内容不变。
+	item1 := f.GetItemName(abiCBytes("abifx-item"))
+	firstItem := abiCString(item1, 64)
+	if firstItem != "abifx-item#1" {
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName 首次 = %q, want abifx-item#1\n", firstItem)
+		return 1
+	}
+	_ = f.GetItemName(abiCBytes("abifx-item"))
+	if got := abiCString(item1, 64); got != "abifx-item#2" {
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: GetItemName 二次读原生 = %q, want abifx-item#2(缓冲已被改写)\n", got)
+		return 1
+	}
+	if firstItem != "abifx-item#1" {
+		fmt.Fprintf(os.Stderr, "abi fixture queries child: 首次副本 %q 在原生改写后变为非期望值\n", firstItem)
+		return 1
+	}
+
+	fmt.Printf("%s stage1=%s stage2=%s miss=0 nullkey=0 item1=abifx-item#1 item2=abifx-item#2\n",
+		queriesOKMarker, stage1, stage2)
+	return 0
+}
+
 // == 父进程用例:每组独立子进程,复验标记行与关键字段 ==
 
 // TestABIFixtureNumeric 验证数值往返组:子进程全部断言通过后打印
@@ -819,6 +912,38 @@ func TestABIFixtureVoidStrings(t *testing.T) {
 	abiCheckField(t, fields, "destroy", strconv.FormatInt(0xDEAD, 10), diag)
 
 	t.Logf("void-strings 子进程真实 ABI 验证通过(void 副作用、借用改写、字符串输入):%s", line)
+}
+
+// TestABIFixtureQueries 验证实验导出组:struct 按值返回、全 NULL
+// 未命中与借用复制语义。父进程独立复验标记行关键字段(纵深防御)。
+func TestABIFixtureQueries(t *testing.T) {
+	soPath := buildABIFixture(t)
+
+	out := ffitest.Run(t, ffitest.Options{
+		Mode:     abiFixtureModeQueries,
+		Timeout:  abiFixtureChildTimeout,
+		ExtraEnv: map[string]string{abiFixtureSOEnv: soPath},
+	})
+	if out.Err != nil {
+		t.Fatalf("queries 子进程失败(非零退出/信号/超时一律视为失败):\n%s", out.Diagnostics())
+	}
+	line, ok := markerLine(out.Stdout, queriesOKMarker)
+	if !ok {
+		t.Fatalf("queries 子进程退出码 0,但 stdout 缺少 %s 标记行:\n%s", queriesOKMarker, out.Diagnostics())
+	}
+	fields, err := parseABIMarkerFields(line, queriesOKMarker)
+	if err != nil {
+		t.Fatalf("queries 标记行 %q 解析失败: %v\n%s", line, err, out.Diagnostics())
+	}
+	diag := out.Diagnostics()
+	abiCheckField(t, fields, "stage1", "abifx-stage#1", diag)
+	abiCheckField(t, fields, "stage2", "abifx-stage#2", diag)
+	abiCheckField(t, fields, "miss", "0", diag)
+	abiCheckField(t, fields, "nullkey", "0", diag)
+	abiCheckField(t, fields, "item1", "abifx-item#1", diag)
+	abiCheckField(t, fields, "item2", "abifx-item#2", diag)
+
+	t.Logf("queries 子进程真实 ABI 验证通过(struct 按值返回、借用复制语义):%s", line)
 }
 
 // TestABIFixtureBuffers 验证缓冲区协议组:NULL/不足/恰好/超容量、

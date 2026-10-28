@@ -3,7 +3,9 @@
  *
  * 定位与边界:
  *   - 本夹具按锁定的 C 头文件 AsstCaller.h(行号见各导出注释)独立
- *     手写 26 个 R/O 导出的真实签名;不由 Go 符号表生成,与空导出的
+ *     手写 26 个 R/O 导出的真实签名,并按 AsstCallerExtra.h 的
+ *     ASST_WITH_EXTRA_CALLERS 分支补写两个实验导出(27-28/28);
+ *     不由 Go 符号表生成,与空导出的
  *     loader fixture(internal/native/testdata/loaderfixture/fixture.c,签名
  *     有意不对应真实 ABI、绝不可被调用)分目录、分统计维护,两者
  *     不得混用;
@@ -89,6 +91,20 @@
  *   - buffSize 按 uint64 处理:高 32 位非零的取值(如
  *     0x1_0000_0000+15)不得被截断成 32 位 —— 截断后该值变为 15,
  *     对 16 字节图像会误判容量不足,Go 侧以此区分截断与否。
+ *
+ * 实验导出(AsstCallerExtra.h,27-28/28):
+ *   - AsstGetMapLevelKey:key == "abifx-hit" 时按值返回四指针
+ *     struct,四个成员写入 thread_local 缓冲,内容互不相同且带调用
+ *     计数("abifx-stage#N"/"abifx-code#N"/"abifx-level#N"/
+ *     "abifx-name#N",N 从 1 起每次调用 +1)——后续调用改写缓冲不
+ *     影响调用方已复制的 Go 内容,字段错位可辨;key 为 NULL 或其他
+ *     值返回全 NULL struct(镜像 Core 的「未找到」语义);
+ *   - AsstGetItemName:id 为 NULL 或空串返回 "Unknown"(静态字面
+ *     量);id == "abifx-item" 返回 thread_local 缓冲的借用指针,
+ *     内容 "abifx-item#N"(N 从 1 起每次调用 +1,后续调用改写不影响
+ *     已复制内容);其余 id 返回空串(非 NULL);
+ *   - 两个符号是可选符号:符号是否在库内由夹具恒导出决定,能力门
+ *     由 Go 侧能力快照表达,与本夹具无关。
  *
  * 其余符号的确定性行为(不验证对应的真实 Core 行为):
  *   - AsstCreate:恒返回 (AsstHandle)0x00C0FFEE(固定非零值,调用方
@@ -399,4 +415,57 @@ void AsstLog(const char* level, const char* message) {
     ++g_log_count;
     snprintf(g_log_level, sizeof g_log_level, "%s", level != NULL ? level : "");
     snprintf(g_log_message, sizeof g_log_message, "%s", message != NULL ? message : "");
+}
+
+/* == 27-28/28: AsstCallerExtra.h 实验导出(ASST_WITH_EXTRA_CALLERS
+ * 分支;类型与成员顺序逐字对应 AsstCallerExtra.h:13-19、32、41) == */
+
+struct AsstMapLevelKey {
+    const char* stage_id;   /* AsstCallerExtra.h:15 */
+    const char* code;       /* AsstCallerExtra.h:16 */
+    const char* level_id;   /* AsstCallerExtra.h:17 */
+    const char* name;       /* AsstCallerExtra.h:18 */
+};
+
+/* 借用指针的 thread_local 存储:每次命中调用整体改写,镜像 Core 的
+ * 借出语义(只在本次调用与同线程的下一次调用之间有效)。 */
+static __thread char abifx_level_stage[32];
+static __thread char abifx_level_code[32];
+static __thread char abifx_level_level[32];
+static __thread char abifx_level_name[32];
+static __thread char abifx_item_name[64];
+static int g_level_counter = 0;
+static int g_item_counter = 0;
+
+/* 27/28: AsstGetMapLevelKey — AsstCallerExtra.h:32;key == "abifx-hit"
+ * 返回带调用计数的四元组(按值返回,32 字节 → 内存返回 ABI),其余
+ * (含 NULL key)返回全 NULL struct */
+struct AsstMapLevelKey AsstGetMapLevelKey(const char* key) {
+    struct AsstMapLevelKey none = {NULL, NULL, NULL, NULL};
+    if (key == NULL || strcmp(key, "abifx-hit") != 0) {
+        return none;
+    }
+    ++g_level_counter;
+    snprintf(abifx_level_stage, sizeof abifx_level_stage, "abifx-stage#%d", g_level_counter);
+    snprintf(abifx_level_code, sizeof abifx_level_code, "abifx-code#%d", g_level_counter);
+    snprintf(abifx_level_level, sizeof abifx_level_level, "abifx-level#%d", g_level_counter);
+    snprintf(abifx_level_name, sizeof abifx_level_name, "abifx-name#%d", g_level_counter);
+    struct AsstMapLevelKey hit = {abifx_level_stage, abifx_level_code,
+                                  abifx_level_level, abifx_level_name};
+    return hit;
+}
+
+/* 28/28: AsstGetItemName — AsstCallerExtra.h:41;NULL/空串 →
+ * "Unknown"(恒非 NULL),已知物品返回带调用计数的借用指针,其余
+ * 返回空串(非 NULL) */
+const char* AsstGetItemName(const char* id) {
+    if (id == NULL || id[0] == '\0') {
+        return "Unknown";
+    }
+    if (strcmp(id, "abifx-item") != 0) {
+        return "";
+    }
+    ++g_item_counter;
+    snprintf(abifx_item_name, sizeof abifx_item_name, "abifx-item#%d", g_item_counter);
+    return abifx_item_name;
 }

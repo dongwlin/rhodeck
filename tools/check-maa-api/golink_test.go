@@ -199,18 +199,29 @@ func TestLinkFailures(t *testing.T) {
 			func(t *testing.T, fs map[string]string) {
 				fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
 					"	{Name: \"AsstGetMapLevelKey\", Header: \"AsstCallerExtra.h\", Reason: \"experimental; struct return\"},\n", "")
-			}, linuxTarget, "not covered by a precise exclusion"},
-		{"experimental export bound", func(t *testing.T, c *CExtraction) {},
+			}, linuxTarget, "neither bound nor covered"},
+		{"experimental export bound as required", func(t *testing.T, c *CExtraction) {},
 			func(t *testing.T, fs map[string]string) {
 				fs["api.go"] = mustReplace(t, fs["api.go"],
 					"	AsyncAttachWindow func(handle uintptr, hwnd uintptr, block uint8) int32",
-					"	AsyncAttachWindow func(handle uintptr, hwnd uintptr, block uint8) int32\n\tGetMapLevelKey    func(key *byte) *byte")
+					"	AsyncAttachWindow func(handle uintptr, hwnd uintptr, block uint8) int32\n\tGetMapLevelKey    func(key *byte) mapLevelKey")
 				fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
 					"		{Name: \"AsstAsyncAttachWindow\", Target: &table.AsyncAttachWindow, Policy: optional, Platform: windowsOnly},",
 					"		{Name: \"AsstAsyncAttachWindow\", Target: &table.AsyncAttachWindow, Policy: optional, Platform: windowsOnly},\n		{Name: \"AsstGetMapLevelKey\", Target: &table.GetMapLevelKey, Policy: required, Platform: allPlatforms},")
 				fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
 					"	{Name: \"AsstGetMapLevelKey\", Header: \"AsstCallerExtra.h\", Reason: \"experimental; struct return\"},\n", "")
-			}, linuxTarget, "must be excluded, never bound"},
+			}, linuxTarget, "must bind optional"},
+		{"experimental export bound as windows-only", func(t *testing.T, c *CExtraction) {},
+			func(t *testing.T, fs map[string]string) {
+				fs["api.go"] = mustReplace(t, fs["api.go"],
+					"	AsyncAttachWindow func(handle uintptr, hwnd uintptr, block uint8) int32",
+					"	AsyncAttachWindow func(handle uintptr, hwnd uintptr, block uint8) int32\n\tGetItemName       func(id *byte) *byte")
+				fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
+					"		{Name: \"AsstAsyncAttachWindow\", Target: &table.AsyncAttachWindow, Policy: optional, Platform: windowsOnly},",
+					"		{Name: \"AsstAsyncAttachWindow\", Target: &table.AsyncAttachWindow, Policy: optional, Platform: windowsOnly},\n		{Name: \"AsstGetItemName\", Target: &table.GetItemName, Policy: optional, Platform: windowsOnly},")
+				fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
+					"	{Name: \"AsstGetItemName\", Header: \"AsstCallerExtra.h\", Reason: \"experimental; no stability guarantee\"},\n", "")
+			}, linuxTarget, "option-conditional, not platform-conditional"},
 		{"windows export without any entry", func(t *testing.T, c *CExtraction) {},
 			func(t *testing.T, fs map[string]string) {
 				fs["symbols.go"] = mustReplace(t, fs["symbols.go"],
@@ -228,6 +239,50 @@ func TestLinkFailures(t *testing.T) {
 			g := mustExtractGo(t, files)
 			mustLinkFail(t, c, g, tc.target, tc.want)
 		})
+	}
+}
+
+// TestLinkExperimentalOptionalBinding 验证实验导出以 optional +
+// allPlatforms 绑定的正例:两个目标的分类都是 Bound,不再要求排除。
+func TestLinkExperimentalOptionalBinding(t *testing.T) {
+	files := copySynthetic()
+	files["api.go"] = mustReplace(t, files["api.go"],
+		"	AsyncAttachWindow func(handle uintptr, hwnd uintptr, block uint8) int32",
+		"	AsyncAttachWindow func(handle uintptr, hwnd uintptr, block uint8) int32\n\tGetMapLevelKey    func(key *byte) mapLevelKey\n\tGetItemName       func(id *byte) *byte")
+	files["symbols.go"] = mustReplace(t, files["symbols.go"],
+		"		{Name: \"AsstAsyncAttachWindow\", Target: &table.AsyncAttachWindow, Policy: optional, Platform: windowsOnly},",
+		"		{Name: \"AsstAsyncAttachWindow\", Target: &table.AsyncAttachWindow, Policy: optional, Platform: windowsOnly},"+
+			"\n		{Name: \"AsstGetMapLevelKey\", Target: &table.GetMapLevelKey, Policy: optional, Platform: allPlatforms},"+
+			"\n		{Name: \"AsstGetItemName\", Target: &table.GetItemName, Policy: optional, Platform: allPlatforms},")
+	files["symbols.go"] = mustReplace(t, files["symbols.go"],
+		"	{Name: \"AsstGetMapLevelKey\", Header: \"AsstCallerExtra.h\", Reason: \"experimental; struct return\"},\n", "")
+	files["symbols.go"] = mustReplace(t, files["symbols.go"],
+		"	{Name: \"AsstGetItemName\", Header: \"AsstCallerExtra.h\", Reason: \"experimental; no stability guarantee\"},\n", "")
+	g := mustExtractGo(t, files)
+
+	for _, target := range []Target{linuxTarget, windowsTarget} {
+		res := mustLink(t, linkCExtraction(target), g, target)
+		bound := make([]string, 0, len(res.Bound))
+		for _, b := range res.Bound {
+			bound = append(bound, b.Symbol)
+		}
+		if strings.Join(res.Excluded, ",") != "AsstConnect" {
+			t.Errorf("%s excluded = %v, want only AsstConnect", target.GOOS, res.Excluded)
+		}
+		want := "AsstCreateEx,AsstGetImage,AsstGetItemName,AsstGetMapLevelKey,AsstLog"
+		if target.GOOS == "windows" {
+			want = "AsstAsyncAttachWindow," + want
+		}
+		if strings.Join(bound, ",") != want {
+			t.Errorf("%s bound = %v, want %v", target.GOOS, bound, want)
+		}
+		for _, b := range res.Bound {
+			if b.Symbol == "AsstGetMapLevelKey" || b.Symbol == "AsstGetItemName" {
+				if b.Policy != "optional" || b.Platform != "allPlatforms" {
+					t.Errorf("%s experimental bound record = %+v", target.GOOS, b)
+				}
+			}
+		}
 	}
 }
 

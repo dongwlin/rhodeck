@@ -42,11 +42,15 @@ func (puregoRegistrar) registerFunc(target any, addr uintptr) {
 // 覆盖;公共层首期统一使用 CreateEx,该能力暂无公开入口,仅如实
 // 反映符号是否在场);ImageBgr 对应 AsstGetImageBgr;AsyncAttachWindow
 // 对应 AsstAsyncAttachWindow,仅 Windows 参与查找,非 Windows 平台
-// 恒为 false。
+// 恒为 false;MapLevelKey 与 ItemName 对应 AsstCallerExtra.h 的两个
+// ASST_WITH_EXTRA_CALLERS 条件实验导出,上游发行包仅在 Apple 构建
+// 导出,缺席平台恒为 false。
 type Capabilities struct {
 	create            bool
 	imageBgr          bool
 	asyncAttachWindow bool
+	mapLevelKey       bool
+	itemName          bool
 }
 
 // Create 报告 AsstCreate 是否在场。
@@ -58,6 +62,14 @@ func (c Capabilities) ImageBgr() bool { return c.imageBgr }
 // AsyncAttachWindow 报告 AsstAsyncAttachWindow 是否在场;非 Windows
 // 平台恒为 false。
 func (c Capabilities) AsyncAttachWindow() bool { return c.asyncAttachWindow }
+
+// MapLevelKey 报告 AsstGetMapLevelKey 是否在场;实验导出未随本次
+// 加载的原生库导出时为 false。
+func (c Capabilities) MapLevelKey() bool { return c.mapLevelKey }
+
+// ItemName 报告 AsstGetItemName 是否在场;实验导出未随本次加载的
+// 原生库导出时为 false。
+func (c Capabilities) ItemName() bool { return c.itemName }
 
 // APITable 是加载事务成功后只读发布的 raw API 表句柄:api 指向本次
 // 事务构造并注册完成的临时表,caps 是同一次事务的能力快照。所有
@@ -98,7 +110,8 @@ func ResolveAndRegister(lib *Library) (*APITable, error) {
 //     字段保持 nil,可选项缺失不阻塞其余符号;
 //   - 成功:记录地址;optional 项以对 spec.Name 的 switch 显式置位
 //     对应 capability(AsstCreate→create、AsstGetImageBgr→imageBgr、
-//     AsstAsyncAttachWindow→asyncAttachWindow),不做反射推断;
+//     AsstAsyncAttachWindow→asyncAttachWindow、AsstGetMapLevelKey→
+//     mapLevelKey、AsstGetItemName→itemName),不做反射推断;
 //   - 非适用项完全跳过:不查找、不注册、不影响能力。
 //
 // 解析阶段结束仍有失败则立即返回 (nil, AggregateError(失败集合)):
@@ -151,6 +164,10 @@ func resolveAndRegister(lib *Library, reg symbolRegistrar) (*APITable, error) {
 				caps.imageBgr = true
 			case "AsstAsyncAttachWindow":
 				caps.asyncAttachWindow = true
+			case "AsstGetMapLevelKey":
+				caps.mapLevelKey = true
+			case "AsstGetItemName":
+				caps.itemName = true
 			}
 		}
 	}

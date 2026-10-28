@@ -1,7 +1,7 @@
 // expect.go 冻结锁定 profile 的独立 R/O 策略期望表并执行期望比对。
 // 期望表是 checker 内部常量,逐项转写自的冻结矩阵(23 项
-// required+allPlatforms、2 项 optional+allPlatforms、1 项
-// optional+windowsOnly、4 项 excluded,共 30 项,与锁定完整导出集合
+// required+allPlatforms、4 项 optional+allPlatforms、1 项
+// optional+windowsOnly、2 项 excluded,共 30 项,与锁定完整导出集合
 // 28 项 Caller + 2 项 Extra 一一对应),不从被检查的 Go 文件推导——
 // 同时改写 Go 符号表与其派生清单使二者一致,只要偏离本表仍失败。
 //
@@ -70,16 +70,19 @@ var lockedPolicyExpectations = map[string]Expectation{
 	"AsstGetNullSize":         {Policy: ExpectPolicyRequired, Platform: ExpectPlatformAll},
 	"AsstGetVersion":          {Policy: ExpectPolicyRequired, Platform: ExpectPlatformAll},
 	"AsstLog":                 {Policy: ExpectPolicyRequired, Platform: ExpectPlatformAll},
-	// optional + allPlatforms(2 项)。
-	"AsstCreate":      {Policy: ExpectPolicyOptional, Platform: ExpectPlatformAll},
-	"AsstGetImageBgr": {Policy: ExpectPolicyOptional, Platform: ExpectPlatformAll},
+	// optional + allPlatforms(4 项):AsstCreate 为保留覆盖;其余三
+	// 项缺失只关闭对应能力,不阻塞初始化——两个实验导出随上游
+	// ASST_WITH_EXTRA_CALLERS 构建选项存在(发行包默认仅 Apple 构建
+	// 打开),AsstGetImageBgr 在部分发行包缺席。
+	"AsstCreate":         {Policy: ExpectPolicyOptional, Platform: ExpectPlatformAll},
+	"AsstGetImageBgr":    {Policy: ExpectPolicyOptional, Platform: ExpectPlatformAll},
+	"AsstGetMapLevelKey": {Policy: ExpectPolicyOptional, Platform: ExpectPlatformAll},
+	"AsstGetItemName":    {Policy: ExpectPolicyOptional, Platform: ExpectPlatformAll},
 	// optional + windowsOnly(1 项)。
 	"AsstAsyncAttachWindow": {Policy: ExpectPolicyOptional, Platform: ExpectPlatformWindows},
-	// excluded(4 项):两个 D 项与两个实验导出;不携带绑定平台。
-	"AsstConnect":        {Policy: ExpectPolicyExcluded},
-	"AsstAttachWindow":   {Policy: ExpectPolicyExcluded},
-	"AsstGetItemName":    {Policy: ExpectPolicyExcluded},
-	"AsstGetMapLevelKey": {Policy: ExpectPolicyExcluded},
+	// excluded(2 项):两个 deprecated D 项;不携带绑定平台。
+	"AsstConnect":      {Policy: ExpectPolicyExcluded},
+	"AsstAttachWindow": {Policy: ExpectPolicyExcluded},
 }
 
 // sortedExpectationSymbols 按符号名排序返回期望表全部键,供成功输出

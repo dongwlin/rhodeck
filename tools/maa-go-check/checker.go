@@ -116,8 +116,8 @@ func runCheckerTarget(ctx context.Context, env environment, bin, goos string, bo
 	if len(rep.Link.Excluded) != excluded {
 		problems = append(problems, fmt.Sprintf("excluded=%d want %d", len(rep.Link.Excluded), excluded))
 	}
-	if len(rep.Signatures.Symbols) != 26 {
-		problems = append(problems, fmt.Sprintf("signature symbols=%d want 26", len(rep.Signatures.Symbols)))
+	if len(rep.Signatures.Symbols) != 28 {
+		problems = append(problems, fmt.Sprintf("signature symbols=%d want 28", len(rep.Signatures.Symbols)))
 	}
 	if len(rep.Signatures.Callbacks) != 2 {
 		problems = append(problems, fmt.Sprintf("signature callbacks=%d want 2", len(rep.Signatures.Callbacks)))

@@ -13,11 +13,19 @@ import (
 )
 
 // syntheticNativeDir 是符合冻结形式的最小 native 包:四个 raw
-// 字段、四条符号条目、一条排除与两个 callback 类型。
+// 字段、四条符号条目、一条排除、两个 callback 类型与 mapLevelKey
+// 同构声明。
 var syntheticNativeDir = map[string]string{
 	"api.go": `package native
 
 import "unsafe"
+
+type mapLevelKey struct {
+	StageID *byte
+	Code    *byte
+	LevelID *byte
+	Name    *byte
+}
 
 type api struct {
 	CreateEx          func(callback uintptr, customArg uintptr) uintptr
@@ -236,6 +244,19 @@ func TestExtractGoPositive(t *testing.T) {
 	if ext.WindowsCallback == nil || ext.WindowsCallback.Result != "uintptr" {
 		t.Errorf("windowsCallback = %+v", ext.WindowsCallback)
 	}
+	mlk := ext.MapLevelKey
+	if mlk == nil || mlk.Name != "mapLevelKey" || mlk.File != "api.go" || mlk.Line <= 0 ||
+		len(mlk.Fields) != 4 {
+		t.Fatalf("mapLevelKey record = %+v", mlk)
+	}
+	for i, want := range []struct {
+		name string
+		typ  GoSourceType
+	}{{"StageID", "*byte"}, {"Code", "*byte"}, {"LevelID", "*byte"}, {"Name", "*byte"}} {
+		if mlk.Fields[i].Name != want.name || mlk.Fields[i].Type != want.typ {
+			t.Errorf("mapLevelKey field %d = %+v, want %s %s", i, mlk.Fields[i], want.name, want.typ)
+		}
+	}
 }
 
 // goMutation 表驱动向量:mutate 修改合成包(或删除文件),expect 为
@@ -415,6 +436,33 @@ func TestExtractGoFormFailures(t *testing.T) {
 				"type windowsCallback func(msg int32, detailsJSON *byte, customArg uintptr) uintptr",
 				"type windowsCallback func(msg int32, detailsJSON *byte, customArg uintptr) int32")
 		}, "windowsCallback", false},
+		{"mapLevelKey not a struct", func(t *testing.T, fs map[string]string) {
+			fs["api.go"] = mustReplace(t, fs["api.go"], "type mapLevelKey struct {",
+				"type mapLevelKey = struct {")
+		}, "not an alias", false},
+		{"mapLevelKey field count", func(t *testing.T, fs map[string]string) {
+			fs["api.go"] = mustReplace(t, fs["api.go"], "\tName    *byte\n}", "\tName    *byte\n\tExtra   *byte\n}")
+		}, "field count mismatch", false},
+		{"mapLevelKey field name", func(t *testing.T, fs map[string]string) {
+			fs["api.go"] = mustReplace(t, fs["api.go"], "\tStageID *byte", "\tStage   *byte")
+		}, "field name or order", false},
+		{"mapLevelKey field type", func(t *testing.T, fs map[string]string) {
+			fs["api.go"] = mustReplace(t, fs["api.go"], "\tStageID *byte", "\tStageID uintptr")
+		}, "does not match the frozen const char* member mapping", false},
+		{"mapLevelKey grouped fields", func(t *testing.T, fs map[string]string) {
+			fs["api.go"] = mustReplace(t, fs["api.go"],
+				"\tStageID *byte\n\tCode    *byte\n\tLevelID *byte\n\tName    *byte\n}",
+				"\tStageID, Code, LevelID, Name *byte\n}")
+		}, "embedded or grouped", false},
+		{"mapLevelKey wrong field type shape", func(t *testing.T, fs map[string]string) {
+			fs["api.go"] = mustReplace(t, fs["api.go"], "\tLevelID *byte", "\tLevelID **byte")
+		}, "frozen vocabulary", false},
+		{"duplicate mapLevelKey", func(t *testing.T, fs map[string]string) {
+			fs["extra.go"] = "package native\n\ntype mapLevelKey struct {\n\tStageID *byte\n\tCode    *byte\n\tLevelID *byte\n\tName    *byte\n}\n"
+		}, "duplicate", false},
+		{"missing mapLevelKey", func(t *testing.T, fs map[string]string) {
+			fs["api.go"] = mustReplace(t, fs["api.go"], "type mapLevelKey struct {\n\tStageID *byte\n\tCode    *byte\n\tLevelID *byte\n\tName    *byte\n}\n\n", "")
+		}, "mapLevelKey struct declaration is missing", false},
 		{"duplicate api struct", func(t *testing.T, fs map[string]string) {
 			fs["extra.go"] = "package native\n\ntype api struct {\n\tX func() uintptr\n}\n"
 		}, "duplicate", false},

@@ -297,10 +297,10 @@ func TestCheckerTargetsUseVendoredInput(t *testing.T) {
 		bound     int
 		nonTarget int
 	}{
-		{goos: "linux", bound: 25, nonTarget: 1},
-		{goos: "windows", bound: 26, nonTarget: 0},
+		{goos: "linux", bound: 27, nonTarget: 1},
+		{goos: "windows", bound: 28, nonTarget: 0},
 	} {
-		res := runCheckerTarget(context.Background(), env, bin, tc.goos, tc.bound, tc.nonTarget, 4)
+		res := runCheckerTarget(context.Background(), env, bin, tc.goos, tc.bound, tc.nonTarget, 2)
 		if res.Status != statusPass {
 			t.Fatalf("checker %s status = %q, want %q (%s)", tc.goos, res.Status, statusPass, res.Detail)
 		}
@@ -319,7 +319,7 @@ func TestCheckerTargetRejectsWrongPolicyCounts(t *testing.T) {
 	}
 	defer cleanup()
 
-	res := runCheckerTarget(context.Background(), env, bin, "linux", 24, 1, 4)
+	res := runCheckerTarget(context.Background(), env, bin, "linux", 26, 1, 2)
 	if res.Status != statusFail {
 		t.Fatalf("wrong bound count status = %q, want %q (%s)", res.Status, statusFail, res.Detail)
 	}

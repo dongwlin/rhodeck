@@ -1,6 +1,6 @@
 // 本文件是 APITable 的 raw 调用包装边界:为 Runtime 初始化所需的 6 个
 // raw 函数、实例创建所需的 2 个 raw 函数、实例同步业务调用所需的 8 个
-// raw 函数、异步提交所需的 3 个 raw 函数与输出缓冲区读取所需的 3 个
+// raw 函数、异步提交所需的 4 个 raw 函数与输出缓冲区读取所需的 4 个
 // raw 函数提供直接转发的方法。函数指针与函数表仍不外泄——APITable 只经
 // 公开层 Runtime 私有持有,本层方法不向公开层暴露任何 func 值;*byte
 // 参数的编码(构造带 NUL 的 UTF-8 buffer 与保活)、返回值的解释与复制
@@ -152,13 +152,49 @@ func (t *APITable) Log(level *byte, message *byte) { t.api.Log(level, message) }
 // 的解释权在调用方——公开层的有界缓冲区探测按固定顺序校验,
 // 不得先传 nil/0 查询所需容量。读取的是最近一次采集的缓存图像,本
 // 调用不触发任何截图,也不承诺缓存采集时间。
-//
-// 可选的 AsstGetImageBgr 首期不进入生产调用(只解析符号并报告
-// capability,不公开读取方法、不调用、不分配生产 BGR buffer),因此
-// 本文件不提供 BGR 包装。
 func (t *APITable) GetImage(handle uintptr, buff unsafe.Pointer, buffSize uint64) uint64 {
 	return t.api.GetImage(handle, buff, buffSize)
 }
+
+// GetImageBgr 对应 AsstGetImageBgr(handle, buff, buff_size):读取
+// Core 缓存图像的 BGR 像素数据,契约同 GetImage——容量与返回值均为
+// 字节数,buff 保活责任在调用方,NullSize 哨兵与合法 0 的解释权在
+// 调用方;像素布局(BGR 通道序、步长)由 Core 决定,本层不解释。
+// 符号是可选项,缺失时字段为 nil,调用方必须先经能力快照判定。
+func (t *APITable) GetImageBgr(handle uintptr, buff unsafe.Pointer, buffSize uint64) uint64 {
+	return t.api.GetImageBgr(handle, buff, buffSize)
+}
+
+// AsyncAttachWindow 对应 AsstAsyncAttachWindow(handle, hwnd,
+// screencap_method, mouse_method, keyboard_method, block):异步提交
+// Win32 窗口绑定。返回值语义同 AsyncConnect——0(InvalidId)表示提交
+// 失败,非零只证明提交已被 Core 接受入队,最终结果以
+// AsyncCallInfo(async_call_id=该 ID,what=AttachWindow)关联确认,
+// 解释权在调用方;block 参数由公开层固定传 0。符号仅 Windows 参与查
+// 找(windowsOnly),缺失时字段为 nil,调用方必须先经能力快照判定;
+// 该符号在场的非 Windows 库不被查找,方法层面只在 Windows 生效。
+func (t *APITable) AsyncAttachWindow(handle uintptr, hwnd uintptr, screencapMethod uint64, mouseMethod uint64, keyboardMethod uint64, block uint8) int32 {
+	return t.api.AsyncAttachWindow(handle, hwnd, screencapMethod, mouseMethod, keyboardMethod, block)
+}
+
+// GetMapLevelKey 对应 AsstGetMapLevelKey(key):按关卡名、code、
+// stageId 或 levelId 查找匹配关卡,按值返回 struct AsstMapLevelKey
+// 的 raw 同构。返回结构体的成员指针由 Core 借出(实现写入
+// thread_local 存储,只在本次调用与同线程的下一次调用之间有效),
+// 调用方必须立即有界复制为 Go 数据,不 free、不缓存、不外泄视图;
+// 找不到匹配关卡(key 为 nil 或无匹配)时全部成员为 nil,由公开层
+// 解释为「未找到」。符号是 ASST_WITH_EXTRA_CALLERS 条件的实验导出,
+// 缺失时字段为 nil,调用方必须先经能力快照判定。
+func (t *APITable) GetMapLevelKey(key *byte) mapLevelKey { return t.api.GetMapLevelKey(key) }
+
+// GetItemName 对应 AsstGetItemName(id):按物品 Id 查找物品名称,
+// 返回借用字符串指针——由 Core 持有(实现写入 thread_local 存储),
+// 调用方必须立即有界复制为 Go 数据,不 free、不缓存、不外泄视图。
+// C 契约:空 Id 返回 "Unknown",找不到的 Id 返回空串,指针恒非 nil,
+// nil 返回是协议破坏,由公开层按 ErrProtocol 处理。符号是
+// ASST_WITH_EXTRA_CALLERS 条件的实验导出,缺失时字段为 nil,调用方
+// 必须先经能力快照判定。
+func (t *APITable) GetItemName(id *byte) *byte { return t.api.GetItemName(id) }
 
 // GetUUID 对应 AsstGetUUID(handle, buff, buff_size):读取设备 UUID。
 // 容量与返回值均为字节数,返回长度是有效内容的全部——不写尾部 NUL,

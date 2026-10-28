@@ -6,10 +6,12 @@
 // 引用包内冻结常量,禁止 helper/append/循环/条件/拼接/反射/间接目标)、
 // 唯一 var exclusions(直接 []exclusionSpec 字面量,三 key,Header 为
 // 裸文件名,Reason 非空)、两个 callback 类型(Unix 无返回、Windows 返
-// 回 uintptr)。参数/返回类型只允许真实预声明 uint8/int32/uint64/
-// uintptr/byte 与精确 import "unsafe" 的 unsafe.Pointer(指针位置仅
-// *byte、*int32);包级不得遮蔽这些名字及 any/iota/unsafe,禁止别名
-// 导入 unsafe。跨入选文件的重复声明失败。规范化类型保留宽度、符号位
+// 回 uintptr)与唯一 type mapLevelKey(struct AsstMapLevelKey 按值返回
+// 的 raw 同构,四字段顺序与 *byte 类型冻结)。参数/返回类型只允许真实
+// 预声明 uint8/int32/uint64/uintptr/byte、精确 import "unsafe" 的
+// unsafe.Pointer(指针位置仅 *byte、*int32)与 mapLevelKey 同构名;
+// 包级不得遮蔽这些名字及 any/iota/unsafe,禁止别名导入 unsafe。跨入
+// 选文件的重复声明失败。规范化类型保留宽度、符号位、const、指针层级
 // 与指针用途,不合并。
 
 package main
@@ -31,6 +33,11 @@ type GoSourceType string
 // GoTypeUnsafePointer 是标准库 unsafe.Pointer 的规范化拼写;其余拼写
 // 直接使用类型名(*byte/*int32 以星号前缀保留指针用途)。
 const GoTypeUnsafePointer GoSourceType = "unsafe.Pointer"
+
+// GoTypeMapLevelKey 是 struct AsstMapLevelKey 按值返回的唯一许可 Go
+// 同构类型名(raw struct,四个 *byte 字段);按值返回的结构体不做
+// 别名合并,只接受该名字。
+const GoTypeMapLevelKey GoSourceType = "mapLevelKey"
 
 // goRawScalarTypes 是 raw 声明允许的预声明标量;byte 与 uint8 拼写
 // 独立保留,不做同宽合并。
@@ -92,6 +99,15 @@ type GoCallback struct {
 	Result GoSourceType
 }
 
+// GoStruct 是一个 raw struct 同构声明:字段名与规范化类型按声明
+// 顺序记录(当前仅 AsstMapLevelKey 的同构 mapLevelKey)。
+type GoStruct struct {
+	Name   string
+	File   string
+	Line   int
+	Fields []GoParam
+}
+
 // GoExtraction 是 Go 提取结果:Fields 为 api 字段(声明顺序),Specs
 // 为符号条目(声明顺序),Exclusions 为排除条目(声明顺序)。
 type GoExtraction struct {
@@ -102,6 +118,7 @@ type GoExtraction struct {
 	Exclusions      []GoExclusion
 	UnixCallback    *GoCallback
 	WindowsCallback *GoCallback
+	MapLevelKey     *GoStruct
 }
 
 // ExtractGo 解析并校验全部入选文件;任何形式、词表、遮蔽或重复声明
@@ -145,7 +162,7 @@ func ExtractGo(sel *GoSelection) (*GoExtraction, []Diagnostic) {
 
 	ext := &GoExtraction{Files: append([]GoSourceFile(nil), sel.Files...), PackageName: pkgName}
 	seenAPI, seenSpecs, seenExclusions := 0, 0, 0
-	seenUnixCb, seenWindowsCb := 0, 0
+	seenUnixCb, seenWindowsCb, seenMapLevelKey := 0, 0, 0
 	consts := map[string]constDecl{}
 
 	for _, pf := range parsed {
@@ -184,6 +201,16 @@ func ExtractGo(sel *GoSelection) (*GoExtraction, []Diagnostic) {
 								return fail(*d)
 							}
 							ext.WindowsCallback = cb
+						case "mapLevelKey":
+							seenMapLevelKey++
+							if seenMapLevelKey > 1 {
+								return fail(duplicateDeclDiag(fset, pf.rel, ts.Pos(), "mapLevelKey"))
+							}
+							st, d := extractMapLevelKeyStruct(fset, pf.rel, ts)
+							if d != nil {
+								return fail(*d)
+							}
+							ext.MapLevelKey = st
 						case "api":
 							if ts.TypeParams != nil {
 								return fail(Diagnostic{Category: CatGoSyntax, File: pf.rel,
@@ -274,6 +301,10 @@ func ExtractGo(sel *GoSelection) (*GoExtraction, []Diagnostic) {
 		return fail(Diagnostic{Category: CatGoSyntax, File: "callback_types.go", Symbol: "windowsCallback",
 			Expected: "type windowsCallback", Actual: "missing",
 			Message: "windowsCallback declaration is missing"})
+	case seenMapLevelKey == 0:
+		return fail(Diagnostic{Category: CatGoSyntax, File: "api.go", Symbol: "mapLevelKey",
+			Expected: "type mapLevelKey", Actual: "missing",
+			Message: "mapLevelKey struct declaration is missing (AsstGetMapLevelKey return isomorphism)"})
 	}
 	return ext, nil
 }
@@ -515,6 +546,9 @@ func goTypeOfExpr(fset *gotoken.FileSet, rel, owner string, e ast.Expr) (GoSourc
 		if goRawScalarTypes[t.Name] {
 			return GoSourceType(t.Name), nil
 		}
+		if t.Name == string(GoTypeMapLevelKey) {
+			return GoTypeMapLevelKey, nil
+		}
 	case *ast.SelectorExpr:
 		if x, ok := t.X.(*ast.Ident); ok && x.Name == "unsafe" && t.Sel.Name == "Pointer" {
 			return GoTypeUnsafePointer, nil
@@ -525,7 +559,7 @@ func goTypeOfExpr(fset *gotoken.FileSet, rel, owner string, e ast.Expr) (GoSourc
 		}
 	}
 	return "", &Diagnostic{Category: CatGoSyntax, File: rel, Line: pos.Line, Symbol: owner,
-		Expected: "one of uint8/int32/uint64/uintptr/byte, unsafe.Pointer, *byte or *int32",
+		Expected: "one of uint8/int32/uint64/uintptr/byte, unsafe.Pointer, *byte, *int32 or mapLevelKey",
 		Actual:   typeNameForDiag(e),
 		Message:  "raw declaration uses a type outside the frozen vocabulary"}
 }
@@ -889,6 +923,74 @@ func extractCallback(fset *gotoken.FileSet, rel string, ts *ast.TypeSpec, window
 			Message: "windows callback must return exactly one uintptr"}
 	}
 	return &GoCallback{Name: ts.Name.Name, File: rel, Line: line, Params: params, Result: result}, nil
+}
+
+// extractMapLevelKeyStruct 校验唯一的 type mapLevelKey 同构声明:
+// 直接是 struct 类型,恰好四个字段,顺序与拼写冻结自 struct
+// AsstMapLevelKey 的四个 const char* 成员(StageID/Code/LevelID/
+// Name),每字段恰好一个名字且类型恰为 *byte;嵌入、分组、类型漂移
+// 一律失败。
+func extractMapLevelKeyStruct(fset *gotoken.FileSet, rel string, ts *ast.TypeSpec) (*GoStruct, *Diagnostic) {
+	line := fset.Position(ts.Pos()).Line
+	failDiag := func(expected, actual, msg string) *Diagnostic {
+		return &Diagnostic{Category: CatGoSyntax, File: rel, Line: line, Symbol: "mapLevelKey",
+			Expected: expected, Actual: actual, Message: msg}
+	}
+	if ts.TypeParams != nil {
+		return nil, failDiag("non-generic type", "type parameters",
+			"mapLevelKey must not be generic")
+	}
+	if ts.Assign.IsValid() {
+		return nil, failDiag("type definition", "alias declaration",
+			"mapLevelKey must be a type definition, not an alias")
+	}
+	st, ok := unwrapParen(ts.Type).(*ast.StructType)
+	if !ok {
+		return nil, failDiag("struct type", typeNameForDiag(ts.Type),
+			"mapLevelKey must be declared as a struct")
+	}
+	if st.Fields != nil {
+		for _, fl := range st.Fields.List {
+			if len(fl.Names) != 1 {
+				return nil, failDiag("exactly one explicit field name per field", "embedded or grouped field",
+					"mapLevelKey fields must not be embedded or grouped")
+			}
+		}
+	}
+	if st.Fields == nil || len(st.Fields.List) != len(frozenStructMembers) {
+		return nil, failDiag(strconv.Itoa(len(frozenStructMembers))+" fields with frozen order",
+			strconv.Itoa(structFieldCount(st)), "mapLevelKey field count mismatch")
+	}
+	out := &GoStruct{Name: ts.Name.Name, File: rel, Line: line}
+	for i, fl := range st.Fields.List {
+		pos := fset.Position(fl.Pos())
+		wantField := approvedStructFieldNames[frozenStructMembers[i]]
+		if fl.Names[0].Name != wantField {
+			return nil, &Diagnostic{Category: CatGoSyntax, File: rel, Line: pos.Line, Symbol: fl.Names[0].Name,
+				Expected: "field " + wantField + " at position " + strconv.Itoa(i+1),
+				Actual:   fl.Names[0].Name,
+				Message:  "mapLevelKey field name or order does not match the frozen struct members"}
+		}
+		typ, d := goTypeOfExpr(fset, rel, "mapLevelKey", fl.Type)
+		if d != nil {
+			return nil, d
+		}
+		if typ != GoSourceType("*byte") {
+			return nil, &Diagnostic{Category: CatGoSyntax, File: rel, Line: pos.Line, Symbol: wantField,
+				Expected: "*byte (borrowed const char* member)", Actual: string(typ),
+				Message: "mapLevelKey field type does not match the frozen const char* member mapping"}
+		}
+		out.Fields = append(out.Fields, GoParam{Name: fl.Names[0].Name, Type: typ})
+	}
+	return out, nil
+}
+
+// structFieldCount 统计 struct 字段数(fl.Fields 为 nil 时为 0)。
+func structFieldCount(st *ast.StructType) int {
+	if st.Fields == nil {
+		return 0
+	}
+	return len(st.Fields.List)
 }
 
 // stringLiteralValue 提取字符串字面量的解码值。

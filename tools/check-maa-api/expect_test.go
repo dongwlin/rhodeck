@@ -42,16 +42,16 @@ func TestLockedPolicyExpectations(t *testing.T) {
 		"AsstGetNullSize":         {Policy: ExpectPolicyRequired, Platform: ExpectPlatformAll},
 		"AsstGetVersion":          {Policy: ExpectPolicyRequired, Platform: ExpectPlatformAll},
 		"AsstLog":                 {Policy: ExpectPolicyRequired, Platform: ExpectPlatformAll},
-		// optional + allPlatforms(2)。
-		"AsstCreate":      {Policy: ExpectPolicyOptional, Platform: ExpectPlatformAll},
-		"AsstGetImageBgr": {Policy: ExpectPolicyOptional, Platform: ExpectPlatformAll},
+		// optional + allPlatforms(4)。
+		"AsstCreate":         {Policy: ExpectPolicyOptional, Platform: ExpectPlatformAll},
+		"AsstGetImageBgr":    {Policy: ExpectPolicyOptional, Platform: ExpectPlatformAll},
+		"AsstGetMapLevelKey": {Policy: ExpectPolicyOptional, Platform: ExpectPlatformAll},
+		"AsstGetItemName":    {Policy: ExpectPolicyOptional, Platform: ExpectPlatformAll},
 		// optional + windowsOnly(1)。
 		"AsstAsyncAttachWindow": {Policy: ExpectPolicyOptional, Platform: ExpectPlatformWindows},
-		// excluded(4):两个 D 项与两个实验导出。
-		"AsstConnect":        {Policy: ExpectPolicyExcluded},
-		"AsstAttachWindow":   {Policy: ExpectPolicyExcluded},
-		"AsstGetItemName":    {Policy: ExpectPolicyExcluded},
-		"AsstGetMapLevelKey": {Policy: ExpectPolicyExcluded},
+		// excluded(2):两个 deprecated D 项。
+		"AsstConnect":      {Policy: ExpectPolicyExcluded},
+		"AsstAttachWindow": {Policy: ExpectPolicyExcluded},
 	}
 	if len(lockedPolicyExpectations) != 30 {
 		t.Fatalf("locked policy expectations has %d entries, want 30", len(lockedPolicyExpectations))
@@ -184,7 +184,7 @@ func TestCompareExpectationsFailures(t *testing.T) {
 		g.Specs = append(g.Specs, GoSymbolSpec{Name: "AsstGetMapLevelKey", Field: "GetMapLevelKey",
 			Policy: ExpectPolicyRequired, Platform: ExpectPlatformAll,
 			File: "symbols.go", Line: 999})
-		mustCompareFail(t, g, "symbols.go", 999, "AsstGetMapLevelKey", "excluded")
+		mustCompareFail(t, g, "symbols.go", 999, "AsstGetMapLevelKey", "Policy optional")
 	})
 	t.Run("required downgraded to optional", func(t *testing.T) {
 		g := base(t)

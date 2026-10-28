@@ -4,11 +4,12 @@
 //   - 每个发现的 C 导出必须恰属其一:适用 R/O 绑定(Name 相等、Target
 //     指向存在字段且字段名=符号去 Asst 前缀)、已知非目标平台条目
 //     (Linux 目标下的 windowsOnly 绑定)或精确排除(Name 相等且 Header
-//     与 C 来源头一致);
+//     与 C 来源头一致);实验导出只能以 optional + allPlatforms 绑定
+//     (构建选项条件,缺席由能力快照关闭),否则必须被排除精确覆盖;
 //   - 反向:每条 symbolSpec 必须有同名 C 导出;每条 exclusion 必须对应
 //     真实存在的 C 声明(陈旧排除失败);同一清单内 Name 重复失败;
-//   - 实验发现不得被绑定,必须被排除精确覆盖;windows 条件导出与
-//     allPlatforms 绑定、all 平台导出与 windowsOnly 绑定的平台矛盾失败;
+//   - windows 条件导出与 allPlatforms 绑定、all 平台导出与 windowsOnly
+//     绑定、required 绑定实验导出的平台/策略矛盾失败;
 //   - api 字段必须恰被一条条目指向,多余 raw func 字段失败。
 //
 // R/O 策略与锁定 profile 的独立期望比对在 link 成功之后执行,
@@ -151,14 +152,22 @@ func LinkCGo(c *CExtraction, g *GoExtraction, target Target) (*LinkResult, []Dia
 	}
 
 	// 平台一致性:windows 条件导出不得绑成 allPlatforms,all 平台导出
-	// 不得绑成 windowsOnly,实验导出不得被绑定。
+	// 不得绑成 windowsOnly;实验导出只能绑成 optional + allPlatforms
+	// (ASST_WITH_EXTRA_CALLERS 是构建选项条件而非平台条件,发行包缺
+	// 席该导出时由能力快照关闭,required 绑定会在缺导出的平台拒绝初
+	// 始化,windowsOnly 绑定会在非 Windows 平台恒关能力,两者都失真);
+	// 实验导出不得绑成 required。
 	for _, s := range g.Specs {
 		fn := cByName[s.Name]
 		switch {
-		case fn.Platform == PlatformExtra:
+		case fn.Platform == PlatformExtra && s.Policy != "optional":
 			return fail(Diagnostic{Category: CatRelation, File: s.File, Line: s.Line, Symbol: s.Name,
-				Expected: "experimental export covered by an exclusion", Actual: "bound by symbolSpecs",
-				Message: "experimental export must be excluded, never bound"})
+				Expected: "Policy optional for an experimental export", Actual: "Policy " + s.Policy,
+				Message: "experimental export must bind optional; a required binding rejects initialization on builds without the export"})
+		case fn.Platform == PlatformExtra && s.Platform != "allPlatforms":
+			return fail(Diagnostic{Category: CatRelation, File: s.File, Line: s.Line, Symbol: s.Name,
+				Expected: "Platform allPlatforms for an experimental export", Actual: s.Platform,
+				Message: "experimental export is option-conditional, not platform-conditional; binding it windows-only distorts the capability"})
 		case fn.Platform == PlatformWindows && s.Platform != "windowsOnly":
 			return fail(Diagnostic{Category: CatRelation, File: s.File, Line: s.Line, Symbol: s.Name,
 				Expected: "Platform windowsOnly for a windows-conditional export", Actual: s.Platform,
@@ -175,13 +184,13 @@ func LinkCGo(c *CExtraction, g *GoExtraction, target Target) (*LinkResult, []Dia
 	for i := range c.Functions {
 		fn := c.Functions[i]
 		name := fn.Name
+		s, hasSpec := specByName[name]
 		_, excluded := exclByName[name]
 		switch {
 		case excluded:
 			res.Excluded = append(res.Excluded, name)
 		case applicable[name]:
-			s, ok := specByName[name]
-			if !ok {
+			if !hasSpec {
 				return fail(Diagnostic{Category: CatRelation, File: fn.Header, Line: fn.Line, Symbol: name,
 					Expected: "symbolSpec entry binding this export", Actual: "no entry",
 					Message: "applicable C export has no symbolSpec binding"})
@@ -189,19 +198,25 @@ func LinkCGo(c *CExtraction, g *GoExtraction, target Target) (*LinkResult, []Dia
 			res.Bound = append(res.Bound, LinkBound{Symbol: name, Field: s.Field,
 				Policy: s.Policy, Platform: s.Platform})
 		case fn.Platform == PlatformWindows:
-			s, ok := specByName[name]
-			if !ok || s.Platform != "windowsOnly" {
+			if !hasSpec || s.Platform != "windowsOnly" {
 				return fail(Diagnostic{Category: CatRelation, File: fn.Header, Line: fn.Line, Symbol: name,
 					Expected: "windowsOnly symbolSpec entry for the non-target platform export",
 					Actual:   "missing or wrongly platformed entry",
 					Message:  "windows export is neither excluded nor bound as windowsOnly"})
 			}
 			res.NonTarget = append(res.NonTarget, name)
+		case fn.Platform == PlatformExtra:
+			if !hasSpec {
+				return fail(Diagnostic{Category: CatRelation, File: fn.Header, Line: fn.Line, Symbol: name,
+					Expected: "symbolSpec binding or exclusion covering the experimental export", Actual: "no entry",
+					Message: "experimental discovery is neither bound nor covered by a precise exclusion"})
+			}
+			res.Bound = append(res.Bound, LinkBound{Symbol: name, Field: s.Field,
+				Policy: s.Policy, Platform: s.Platform})
 		default:
-			// extra 平台且未被排除:实验发现漏排。
 			return fail(Diagnostic{Category: CatRelation, File: fn.Header, Line: fn.Line, Symbol: name,
-				Expected: "exclusion covering the experimental export", Actual: "no exclusion",
-				Message: "experimental discovery is not covered by a precise exclusion"})
+				Expected: "classifiable export (all, windows or extra platform)", Actual: fn.Platform,
+				Message: "c export carries an unknown platform label"})
 		}
 	}
 	sort.Slice(res.Bound, func(i, j int) bool { return res.Bound[i].Symbol < res.Bound[j].Symbol })

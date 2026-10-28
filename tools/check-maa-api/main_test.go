@@ -83,16 +83,16 @@ func TestRunSuccessBothTargets(t *testing.T) {
 			}
 		}
 	}
-	if len(report.Go.Fields) != 26 || len(report.Go.Specs) != 26 || len(report.Go.Exclusions) != 4 {
-		t.Errorf("go summary = fields %d specs %d exclusions %d, want 26/26/4",
+	if len(report.Go.Fields) != 28 || len(report.Go.Specs) != 28 || len(report.Go.Exclusions) != 2 {
+		t.Errorf("go summary = fields %d specs %d exclusions %d, want 28/28/2",
 			len(report.Go.Fields), len(report.Go.Specs), len(report.Go.Exclusions))
 	}
 	if report.Go.Callbacks["unixCallback"].Result != "" ||
 		report.Go.Callbacks["windowsCallback"].Result != "uintptr" {
 		t.Errorf("callbacks = %+v", report.Go.Callbacks)
 	}
-	if len(report.Link.Bound) != 25 || len(report.Link.Excluded) != 4 {
-		t.Errorf("linux link = bound %d excluded %d, want 25/4",
+	if len(report.Link.Bound) != 27 || len(report.Link.Excluded) != 2 {
+		t.Errorf("linux link = bound %d excluded %d, want 27/2",
 			len(report.Link.Bound), len(report.Link.Excluded))
 	}
 	if strings.Join(report.Link.NonTarget, ",") != "AsstAsyncAttachWindow" {
@@ -107,8 +107,8 @@ func TestRunSuccessBothTargets(t *testing.T) {
 	if err := json.Unmarshal([]byte(windows.out), &winReport); err != nil {
 		t.Fatalf("windows stdout is not valid JSON: %v", err)
 	}
-	if len(winReport.C.Applicable) != 28 || len(winReport.Link.Bound) != 26 {
-		t.Errorf("windows applicable=%d bound=%d, want 28/26",
+	if len(winReport.C.Applicable) != 28 || len(winReport.Link.Bound) != 28 {
+		t.Errorf("windows applicable=%d bound=%d, want 28/28",
 			len(winReport.C.Applicable), len(winReport.Link.Bound))
 	}
 	if len(winReport.Link.NonTarget) != 0 {

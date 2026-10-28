@@ -51,18 +51,18 @@ var expectedAPIFields = []struct {
 	{"GetVersion", "func() *byte", "required", "allPlatforms"},
 	{"Log", "func(level *byte, message *byte)", "required", "allPlatforms"},
 	{"AsyncAttachWindow", "func(handle uintptr, hwnd uintptr, screencapMethod uint64, mouseMethod uint64, keyboardMethod uint64, block uint8) int32", "optional", "windowsOnly"},
+	{"GetMapLevelKey", "func(key *byte) mapLevelKey", "optional", "allPlatforms"},
+	{"GetItemName", "func(id *byte) *byte", "optional", "allPlatforms"},
 }
 
-// expectedExclusions 是手写内联的排除期望表:恰好 4 条,名称集合
-// 与顺序、来源头均冻结自,不得新增或改绑。
+// expectedExclusions 是手写内联的排除期望表:恰好 2 条 deprecated
+// 项,名称集合与顺序、来源头均冻结自,不得新增或改绑。
 var expectedExclusions = []struct {
 	name   string
 	header string
 }{
 	{"AsstConnect", "AsstCaller.h"},
 	{"AsstAttachWindow", "AsstCaller.h"},
-	{"AsstGetMapLevelKey", "AsstCallerExtra.h"},
-	{"AsstGetItemName", "AsstCallerExtra.h"},
 }
 
 // expectedCallbackSigs 是手写内联的 callback 期望签名:Unix 无
@@ -84,6 +84,8 @@ var expectedCapabilityFields = map[string]string{
 	"AsstCreate":            "create",
 	"AsstGetImageBgr":       "imageBgr",
 	"AsstAsyncAttachWindow": "asyncAttachWindow",
+	"AsstGetMapLevelKey":    "mapLevelKey",
+	"AsstGetItemName":       "itemName",
 }
 
 // staticFiles 是被静态自检的三个源文件,均不允许平台条件。
@@ -154,9 +156,10 @@ func declKeys(file *ast.File) []string {
 }
 
 // canonicalTypeExpr 把受限类型表达式渲染为规范文本:仅接受预声明
-// 整型标识 uint8/int32/uint64/uintptr/byte、指针、unsafe.Pointer
-// 选择器与函数类型;自定义别名、伪造 unsafe、数组、map、变参等
-// 其他任何表达式一律 Fatal——raw 声明的类型白名单由此钉死。
+// 整型标识 uint8/int32/uint64/uintptr/byte、包内 mapLevelKey 同构名、
+// 指针、unsafe.Pointer 选择器与函数类型;自定义别名、伪造 unsafe、
+// 数组、map、变参等其他任何表达式一律 Fatal——raw 声明的类型白名单
+// 由此钉死。
 func canonicalTypeExpr(t *testing.T, expr ast.Expr) string {
 	t.Helper()
 	switch e := expr.(type) {
@@ -164,8 +167,10 @@ func canonicalTypeExpr(t *testing.T, expr ast.Expr) string {
 		switch e.Name {
 		case "uint8", "int32", "uint64", "uintptr", "byte":
 			return e.Name
+		case "mapLevelKey":
+			return e.Name
 		}
-		t.Fatalf("类型标识 %q 不在白名单内(仅允许 uint8/int32/uint64/uintptr/byte 或 unsafe.Pointer)", e.Name)
+		t.Fatalf("类型标识 %q 不在白名单内(仅允许 uint8/int32/uint64/uintptr/byte、mapLevelKey 或 unsafe.Pointer)", e.Name)
 	case *ast.StarExpr:
 		return "*" + canonicalTypeExpr(t, e.X)
 	case *ast.SelectorExpr:
@@ -259,7 +264,7 @@ func TestStaticTopLevelDeclsWhitelist(t *testing.T) {
 		file string
 		want []string
 	}{
-		{"api.go", []string{`import "unsafe"`, "type api"}},
+		{"api.go", []string{`import "unsafe"`, "type mapLevelKey", "type api"}},
 		{"symbols.go", []string{
 			"type symbolPolicy", "const(required)",
 			"type symbolPlatform", "const(allPlatforms)",

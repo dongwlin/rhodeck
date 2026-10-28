@@ -383,8 +383,8 @@ func TestCompareSignaturesPositiveRealNative(t *testing.T) {
 	if len(diags) != 0 {
 		t.Fatalf("windows CompareSignatures unexpectedly failed: %v", diags)
 	}
-	if len(resw.Symbols) != 26 {
-		t.Fatalf("windows symbols = %d, want 26", len(resw.Symbols))
+	if len(resw.Symbols) != 28 {
+		t.Fatalf("windows symbols = %d, want 28", len(resw.Symbols))
 	}
 	var aw *SignatureEntry
 	for i := range resw.Symbols {
@@ -809,8 +809,8 @@ func TestRealNativeSignatureBaseline(t *testing.T) {
 		t.Error("success output including the signatures section must be byte-identical across runs")
 	}
 	linuxRep := parse(linuxOut, "linux")
-	if len(linuxRep.Signatures.Symbols) != 26 {
-		t.Fatalf("linux signature symbols = %d, want 26 (all bindings, including the non-target windowsOnly binding)", len(linuxRep.Signatures.Symbols))
+	if len(linuxRep.Signatures.Symbols) != 28 {
+		t.Fatalf("linux signature symbols = %d, want 28 (all bindings, including the non-target windowsOnly binding)", len(linuxRep.Signatures.Symbols))
 	}
 	for i := 1; i < len(linuxRep.Signatures.Symbols); i++ {
 		if linuxRep.Signatures.Symbols[i-1].Symbol >= linuxRep.Signatures.Symbols[i].Symbol {
@@ -854,8 +854,8 @@ func TestRealNativeSignatureBaseline(t *testing.T) {
 	}
 
 	winRep := parse(run("windows"), "windows")
-	if len(winRep.Signatures.Symbols) != 26 {
-		t.Fatalf("windows signature symbols = %d, want 26", len(winRep.Signatures.Symbols))
+	if len(winRep.Signatures.Symbols) != 28 {
+		t.Fatalf("windows signature symbols = %d, want 28", len(winRep.Signatures.Symbols))
 	}
 	aw := reportSignatureSymbol(t, winRep, "AsstAsyncAttachWindow")
 	assertReportParam(t, "AsstAsyncAttachWindow", aw.Params[1], 2, "hwnd", "hwnd", "void*", "uintptr")

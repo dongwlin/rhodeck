@@ -129,7 +129,7 @@ func buildLoaderFixture(t *testing.T, missing bool) string {
 	args = append(args, "-o", outPath, src)
 	commandLine := compiler + " " + strings.Join(args, " ")
 
-	variant := "complete(26 导出全部在场)"
+	variant := "complete(28 导出全部在场)"
 	if missing {
 		variant = "missing(-DLOADER_FIXTURE_MISSING,省略 3 个必需符号)"
 	}
@@ -201,6 +201,11 @@ func runLoaderFixtureCompleteChild() int {
 		fmt.Fprintln(os.Stderr, "loader fixture complete child: Capabilities.AsyncAttachWindow() = true, want false(windowsOnly 符号在 Linux 不查找)")
 		return 1
 	}
+	if !caps.MapLevelKey() || !caps.ItemName() {
+		fmt.Fprintf(os.Stderr, "loader fixture complete child: Capabilities.MapLevelKey()=%v ItemName()=%v, want true,true(实验导出在夹具中恒在场)\n",
+			caps.MapLevelKey(), caps.ItemName())
+		return 1
+	}
 
 	_, lookupErr := lib.Lookup(loaderFixtureProbeSymbol)
 	if lookupErr == nil {
@@ -214,9 +219,10 @@ func runLoaderFixtureCompleteChild() int {
 		return 1
 	}
 
-	fmt.Printf("%s symbols=%d caps=create=%d,imageBgr=%d,attach=%d\n",
+	fmt.Printf("%s symbols=%d caps=create=%d,imageBgr=%d,attach=%d,mapLevelKey=%d,itemName=%d\n",
 		completeOKMarker, countApplicableSpecs(),
-		flagBit(caps.Create()), flagBit(caps.ImageBgr()), flagBit(caps.AsyncAttachWindow()))
+		flagBit(caps.Create()), flagBit(caps.ImageBgr()), flagBit(caps.AsyncAttachWindow()),
+		flagBit(caps.MapLevelKey()), flagBit(caps.ItemName()))
 	return 0
 }
 
@@ -325,13 +331,13 @@ func TestLoaderFixtureCompleteLoadsInFreshSubprocess(t *testing.T) {
 			gotSymbols, wantSymbols, out.Diagnostics())
 	}
 
-	create, imageBgr, attach, err := parseMarkerCaps(line)
+	create, imageBgr, attach, mapLevelKey, itemName, err := parseMarkerCaps(line)
 	if err != nil {
 		t.Fatalf("complete 标记行 %q 的 caps 解析失败: %v\n%s", line, err, out.Diagnostics())
 	}
-	if create != 1 || imageBgr != 1 || attach != 0 {
-		t.Fatalf("complete 标记行 caps = create=%d,imageBgr=%d,attach=%d, want create=1,imageBgr=1,attach=0:\n%s",
-			create, imageBgr, attach, out.Diagnostics())
+	if create != 1 || imageBgr != 1 || attach != 0 || mapLevelKey != 1 || itemName != 1 {
+		t.Fatalf("complete 标记行 caps = create=%d,imageBgr=%d,attach=%d,mapLevelKey=%d,itemName=%d, want 1,1,0,1,1:\n%s",
+			create, imageBgr, attach, mapLevelKey, itemName, out.Diagnostics())
 	}
 
 	t.Logf("complete 子进程装载验证通过(单独标记,不计入 ABI 调用通过统计):%s", line)
@@ -424,19 +430,19 @@ func parseMarkerSymbolsList(line string) []string {
 
 // parseMarkerCaps 解析 complete 标记行的 caps=key=value,... 字段,
 // 返回 create/imageBgr/attach 三个能力位。
-func parseMarkerCaps(line string) (create, imageBgr, attach int, err error) {
+func parseMarkerCaps(line string) (create, imageBgr, attach, mapLevelKey, itemName int, err error) {
 	fields := strings.Fields(line)
 	if len(fields) < 3 || !strings.HasPrefix(fields[2], "caps=") {
-		return 0, 0, 0, fmt.Errorf("标记行缺少 caps=... 字段")
+		return 0, 0, 0, 0, 0, fmt.Errorf("标记行缺少 caps=... 字段")
 	}
 	for _, kv := range strings.Split(strings.TrimPrefix(fields[2], "caps="), ",") {
 		key, value, ok := strings.Cut(kv, "=")
 		if !ok {
-			return 0, 0, 0, fmt.Errorf("caps 分量 %q 缺少 key=value 形态", kv)
+			return 0, 0, 0, 0, 0, fmt.Errorf("caps 分量 %q 缺少 key=value 形态", kv)
 		}
 		n, convErr := strconv.Atoi(value)
 		if convErr != nil {
-			return 0, 0, 0, fmt.Errorf("caps 分量 %q 的值不是十进制整数: %w", kv, convErr)
+			return 0, 0, 0, 0, 0, fmt.Errorf("caps 分量 %q 的值不是十进制整数: %w", kv, convErr)
 		}
 		switch key {
 		case "create":
@@ -445,9 +451,13 @@ func parseMarkerCaps(line string) (create, imageBgr, attach int, err error) {
 			imageBgr = n
 		case "attach":
 			attach = n
+		case "mapLevelKey":
+			mapLevelKey = n
+		case "itemName":
+			itemName = n
 		default:
-			return 0, 0, 0, fmt.Errorf("caps 含未知键 %q", key)
+			return 0, 0, 0, 0, 0, fmt.Errorf("caps 含未知键 %q", key)
 		}
 	}
-	return create, imageBgr, attach, nil
+	return create, imageBgr, attach, mapLevelKey, itemName, nil
 }

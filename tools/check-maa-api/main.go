@@ -162,6 +162,7 @@ type signatureSymbolJSON struct {
 	GoFile  string               `json:"go_file"`
 	GoLine  int                  `json:"go_line"`
 	Params  []signatureParamJSON `json:"params"`
+	Fields  []signatureParamJSON `json:"fields,omitempty"`
 	Return  signatureReturnJSON  `json:"return"`
 }
 
@@ -360,11 +361,19 @@ func buildReport(profileID string, target Target, cext *CExtraction, gext *GoExt
 
 	report.Signatures = signatureReport{Symbols: []signatureSymbolJSON{}, Callbacks: []signatureCallbackJSON{}}
 	for _, e := range signatures.Symbols {
-		report.Signatures.Symbols = append(report.Signatures.Symbols, signatureSymbolJSON{
+		entry := signatureSymbolJSON{
 			Symbol: e.Symbol, Field: e.Field, CHeader: e.Header, CLine: e.CLine,
 			GoFile: e.GoFile, GoLine: e.GoLine,
 			Params: signatureParamReports(e.Params),
-			Return: signatureReturnJSON{CType: e.Return.CType, GoType: e.Return.GoType}})
+			Return: signatureReturnJSON{CType: e.Return.CType, GoType: e.Return.GoType}}
+		if len(e.Fields) > 0 {
+			entry.Fields = make([]signatureParamJSON, 0, len(e.Fields))
+			for _, f := range e.Fields {
+				entry.Fields = append(entry.Fields, signatureParamJSON{Position: f.Position,
+					CName: f.CName, GoName: f.GoName, CType: f.CType, GoType: f.GoType})
+			}
+		}
+		report.Signatures.Symbols = append(report.Signatures.Symbols, entry)
 	}
 	for _, cb := range signatures.Callbacks {
 		report.Signatures.Callbacks = append(report.Signatures.Callbacks, signatureCallbackJSON{

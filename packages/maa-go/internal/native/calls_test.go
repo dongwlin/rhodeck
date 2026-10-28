@@ -113,3 +113,76 @@ func cStringPtrForTest(s string) *byte {
 	copy(buf, s)
 	return &buf[0]
 }
+
+// TestAPITableOptionalCallForwarding 验证四个可选 raw 包装的转发:
+// GetImageBgr/AsyncAttachWindow/GetMapLevelKey/GetItemName 恰好命中
+// 对应的 raw 字段,参数逐字传递,返回值原样带回——包括 GetMapLevelKey
+// 的 struct 按值返回(成员指针原样透传,不解引用、不复制)与
+// AsyncAttachWindow 的六参数形状。全程不进入系统 loader、不调用真实
+// 原生地址。
+func TestAPITableOptionalCallForwarding(t *testing.T) {
+	table := &APITable{api: &api{}}
+
+	var (
+		bgrHandle    uintptr
+		bgrBuff      unsafe.Pointer
+		bgrSize      uint64
+		attachCalls  []uintptr
+		levelKeyGot  string
+		itemNameGot  string
+		returnedBgr  = []byte{0xAA, 0xBB}
+		returnedName = []byte{'I', 't', 'e', 'm', 0x00}
+	)
+
+	table.api.GetImageBgr = func(handle uintptr, buff unsafe.Pointer, buffSize uint64) uint64 {
+		bgrHandle, bgrBuff, bgrSize = handle, buff, buffSize
+		return 12
+	}
+	table.api.AsyncAttachWindow = func(handle uintptr, hwnd uintptr, screencapMethod uint64, mouseMethod uint64, keyboardMethod uint64, block uint8) int32 {
+		attachCalls = append(attachCalls, handle, hwnd, uintptr(screencapMethod), uintptr(mouseMethod), uintptr(keyboardMethod), uintptr(block))
+		return 77
+	}
+	table.api.GetMapLevelKey = func(key *byte) mapLevelKey {
+		levelKeyGot = cStringArg(key)
+		return mapLevelKey{}
+	}
+	table.api.GetItemName = func(id *byte) *byte {
+		itemNameGot = cStringArg(id)
+		return &returnedName[0]
+	}
+
+	if got := table.GetImageBgr(0x31, unsafe.Pointer(&returnedBgr[0]), 12); got != 12 {
+		t.Errorf("GetImageBgr 返回 %d, want 12", got)
+	}
+	if bgrHandle != 0x31 || bgrBuff != unsafe.Pointer(&returnedBgr[0]) || bgrSize != 12 {
+		t.Errorf("GetImageBgr 收到的参数 = %#x %p %d, want 0x31 同指针 12", bgrHandle, bgrBuff, bgrSize)
+	}
+
+	if got := table.AsyncAttachWindow(0x32, 0x51, 1<<2, 1<<1, 1, 0); got != 77 {
+		t.Errorf("AsyncAttachWindow 返回 %d, want 77", got)
+	}
+	wantAttach := []uintptr{0x32, 0x51, 1 << 2, 1 << 1, 1, 0}
+	if len(attachCalls) != len(wantAttach) {
+		t.Fatalf("AsyncAttachWindow 收到 %d 个分量, want %d", len(attachCalls), len(wantAttach))
+	}
+	for i := range wantAttach {
+		if attachCalls[i] != wantAttach[i] {
+			t.Errorf("AsyncAttachWindow 分量 #%d = %#x, want %#x(六参数槽位逐字转发)", i, attachCalls[i], wantAttach[i])
+		}
+	}
+
+	if got := table.GetMapLevelKey(cStringPtrForTest("abifx-hit")); got.StageID != nil {
+		t.Errorf("GetMapLevelKey 返回 %+v, want 零值 struct 原样透传", got)
+	}
+	if levelKeyGot != "abifx-hit" {
+		t.Errorf("GetMapLevelKey 收到的 key = %q, want abifx-hit", levelKeyGot)
+	}
+
+	if got := table.GetItemName(cStringPtrForTest("abifx-item")); got != &returnedName[0] {
+		t.Errorf("GetItemName 返回 %p, want 借用指针原样透传", got)
+	}
+	if itemNameGot != "abifx-item" {
+		t.Errorf("GetItemName 收到的 id = %q, want abifx-item", itemNameGot)
+	}
+	_ = returnedBgr
+}
