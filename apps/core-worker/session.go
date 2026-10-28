@@ -214,6 +214,13 @@ func (s *session) commands(factory engineFactory) (result error) {
 					_ = s.respond(req, nil, err, false)
 					continue
 				}
+				// Limits are part of the frozen v1 contract but not applied by
+				// this build yet. Reject them explicitly before the factory so a
+				// caller's capacity configuration can never be silently ignored.
+				if config.Limits != nil {
+					_ = s.respond(req, nil, wireError(protocol.InvalidInput, "explicit Limits are not applied by this worker build"), false)
+					continue
+				}
 				var info protocol.RuntimeInfo
 				core, info, err = factory(config)
 				if err != nil {

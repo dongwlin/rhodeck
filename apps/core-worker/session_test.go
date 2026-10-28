@@ -202,6 +202,43 @@ func TestSessionRawTasksAndUnknownCallbacks(t *testing.T) {
 	}
 }
 
+// TestSessionReservedCommandsStayUnsupported proves the frozen v1 command
+// names are answerable before they are implemented: a reserved command is
+// rejected with the stable unsupported code and the session survives.
+func TestSessionReservedCommandsStayUnsupported(t *testing.T) {
+	f := newFakeEngine()
+	h := harness(t, fakeFactory(f))
+	h.initialize()
+	for _, name := range []string{protocol.GetImagePNG, protocol.AttachWindow, protocol.UUID, protocol.MapLevelKey} {
+		m := h.call(name, nil)
+		if m.Error == nil || m.Error.Code != protocol.Unsupported {
+			t.Fatalf("%s must be rejected with unsupported, got %+v", name, m)
+		}
+	}
+	if m := h.call(protocol.Ping, nil); m.Error != nil {
+		t.Fatalf("session did not survive reserved rejections: %+v", m)
+	}
+}
+
+// TestSessionRejectsExplicitLimitsWithoutApplying proves the frozen Limits
+// field is never silently ignored: an explicit configuration is rejected with
+// invalid_input before the native factory, and the session stays usable.
+func TestSessionRejectsExplicitLimitsWithoutApplying(t *testing.T) {
+	f := newFakeEngine()
+	h := harness(t, fakeFactory(f))
+	req := protocol.InitializeRequest{SnapshotID: "test", Limits: &protocol.Limits{InputJSONBytes: 1024}}
+	m := h.call(protocol.Initialize, req)
+	if m.Error == nil || m.Error.Code != protocol.InvalidInput {
+		t.Fatalf("explicit limits must be rejected before the factory, got %+v", m)
+	}
+	if f.closes.Load() != 0 {
+		t.Fatal("limits rejection must not reach the native factory or end the session")
+	}
+	if m := h.call(protocol.Initialize, protocol.InitializeRequest{SnapshotID: "test"}); m.Error != nil {
+		t.Fatalf("session unusable after limits rejection: %+v", m)
+	}
+}
+
 func TestSessionAsyncCompletionDoesNotBlockStop(t *testing.T) {
 	f := newFakeEngine()
 	f.op = &fakeOperation{done: make(chan struct{})}
