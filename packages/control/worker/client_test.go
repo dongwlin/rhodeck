@@ -358,6 +358,12 @@ func helper(mode string) int {
 				emit(protocol.Response, req.Name, req.ID, 0, nil, &protocol.Error{Code: protocol.LimitExceeded, Message: "fixture exhausted the snapshot"})
 				continue
 			}
+			if mode == "slowchunk" && image.served == 1 {
+				// Announce mid-flight on stderr, then hold the second chunk
+				// response until the supervisor's cancellation kills us.
+				fmt.Fprintln(os.Stderr, "slowchunk: second chunk request received")
+				time.Sleep(30 * time.Second)
+			}
 			data := image.payload[chunk.Offset : chunk.Offset+length]
 			offset := chunk.Offset
 			if mode == "wrongoffset" {
@@ -1132,6 +1138,30 @@ func TestClientRejectsBrokenImageTransfers(t *testing.T) {
 	t.Run("total beyond the frozen budget aborts the session", func(t *testing.T) {
 		c := launchFixture(t, "fatimage")
 		_, err := c.GetImagePNG(context.Background())
+		requireFailure(t, err, true)
+		requireReaped(t, c)
+	})
+	t.Run("mid-transfer cancellation aborts without partial success", func(t *testing.T) {
+		c := launchFixture(t, "slowchunk")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		errCh := make(chan error, 1)
+		go func() { _, err := c.GetImagePNG(ctx); errCh <- err }()
+		// Wait until the second chunk request is provably in flight (the
+		// fixture announces it on stderr), so the cancellation is a
+		// post-enqueue one under the frozen failure discipline.
+		deadline := time.Now().Add(10 * time.Second)
+		for !strings.Contains(c.Diagnostics(), "slowchunk: second chunk request received") {
+			if time.Now().After(deadline) {
+				t.Fatal("second chunk request never arrived")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+		err := <-errCh
+		if err == nil {
+			t.Fatal("cancelled transfer succeeded")
+		}
 		requireFailure(t, err, true)
 		requireReaped(t, c)
 	})
