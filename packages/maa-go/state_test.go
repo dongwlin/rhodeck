@@ -80,6 +80,7 @@ func finishClose(t *testing.T, s *instanceState, finalErr error) {
 	s.closeCallbackGate()
 	s.publishFinalError(finalErr)
 	s.publishClosed()
+	s.publishCloseDone()
 }
 
 // newClosedState 构造一个已完整走完正常关闭的状态(ready → closing
@@ -494,12 +495,60 @@ func TestPublishFinalErrorFirstWriteWins(t *testing.T) {
 
 	s.closeCallbackGate()
 	s.publishClosed()
+	s.publishCloseDone()
 	got := s.waitClose()
 	if got != first {
 		t.Fatalf("waitClose() = %v, want 首次发布的 %v(不得被覆盖)", got, first)
 	}
 	if errors.Is(got, native.ErrClosing) {
 		t.Errorf("最终错误不得混入后到诊断: %v", got)
+	}
+}
+
+func TestCloseCompletionFollowsFinalState(t *testing.T) {
+	s := newInstanceState(0x2101, 128, 1_048_576)
+	s.publishReady()
+	mustElectClose(t, s)
+	s.closeCallbackGate()
+	s.publishFinalError(nil)
+	// 正常最终 nil 也必须保持首次发布,不因后续发布变成错误。
+	s.publishFinalError(native.ErrProtocol)
+	s.publishClosed()
+	select {
+	case <-s.done():
+		t.Fatal("closed 状态发布不得提前通知 Events 已关闭")
+	default:
+	}
+	if s.currentError() != nil {
+		t.Fatal("正常最终错误被后续发布改写")
+	}
+	s.publishCloseDone()
+	if err := s.waitClose(); err != nil {
+		t.Fatalf("waitClose = %v, want nil", err)
+	}
+	assertPanics(t, "重复通知关闭完成", s.publishCloseDone)
+}
+
+func TestStopDiagnosticIsVisibleWithoutFault(t *testing.T) {
+	s := newInstanceState(0x2102, 128, 1_048_576)
+	s.publishReady()
+	mustElectClose(t, s)
+	diagnostic := fmt.Errorf("AsstStop returned 0 (false): %w", native.ErrNativeRejected)
+	s.recordStopDiagnostic(diagnostic)
+	if got := s.currentError(); got != diagnostic {
+		t.Fatalf("关闭中错误 = %v, want Stop 诊断", got)
+	}
+	if got := s.faultDiagnostics(); got.stopDiagnostic != diagnostic || got.firstFault != nil {
+		t.Fatalf("关闭中诊断 = %+v", got)
+	}
+	select {
+	case <-s.faultNotify():
+		t.Fatal("关闭 Stop 拒绝不得触发首次故障通知")
+	default:
+	}
+	finishClose(t, s, s.currentError())
+	if got := s.currentError(); got != s.waitClose() || got != diagnostic {
+		t.Fatalf("完成后的错误 = %v, want 稳定 Stop 诊断", got)
 	}
 }
 
@@ -733,6 +782,7 @@ func TestCallbackGateBasics(t *testing.T) {
 		// 已显式关门,此处只做所有者的错误与终态发布。
 		s.publishFinalError(nil)
 		s.publishClosed()
+		s.publishCloseDone()
 	})
 
 	t.Run("重复关门 panic", func(t *testing.T) {
@@ -789,6 +839,7 @@ func TestCallbackGateBasics(t *testing.T) {
 		s.waitCallbacksDrained()
 		s.publishFinalError(nil)
 		s.publishClosed()
+		s.publishCloseDone()
 		if got := s.currentPhase(); got != phaseClosed {
 			t.Fatalf("关门清空后 publishClosed 后阶段 = %d, want closed", got)
 		}

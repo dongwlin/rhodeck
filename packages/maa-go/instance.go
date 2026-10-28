@@ -20,7 +20,7 @@
 //     dispatcher 对内部队列每项先结算可确认结果、再非阻塞投递公开通道,
 //     无法投递的按溢出契约计丢失并记录故障;到达停止点后把剩余 pending
 //     以 ErrClosed 结算一次,先发布最终错误和 closed 状态,最后由通道
-//     所有者关闭 Events。
+//     所有者关闭 Events,分发器退出后再发布关闭完成通知。
 //
 // 同一流程供创建失败回滚(已取得 handle 后失败执行同一 Stop/Destroy)与
 // Runtime.Close 复用;并发 Instance.Close、Runtime.Close 与创建失败回滚
@@ -133,15 +133,14 @@ func (in *instance) close() error {
 	//    仍开放,同步 Destroyed 照常入队。Stop 拒绝只保存清理诊断,
 	//    继续 Destroy;Destroy 无成功码,不制造成功证据。
 	handle, ok := in.state.closeHandle()
-	var stopDiag error
 	if ok {
 		if in.closer.stop(handle) == 0 {
-			stopDiag = fmt.Errorf("maa: AsstStop returned 0 (false) for handle %#x during instance close: %w",
-				handle, native.ErrNativeRejected)
+			in.state.recordStopDiagnostic(fmt.Errorf("maa: AsstStop returned 0 (false) for handle %#x during instance close: %w",
+				handle, native.ErrNativeRejected))
 		}
 		in.closer.destroy(handle)
 	}
-	return closeTail(in.state, in.disp, in.token, stopDiag)
+	return closeTail(in.state, in.disp, in.token)
 }
 
 // closeTail 是单次关闭流程在「选主、在途调用清零、一次 Stop 与一次
@@ -155,11 +154,11 @@ func (in *instance) close() error {
 //     无 token 可移除(注册表里也从不可能出现该 token,不会有任何回
 //     调准入);
 //   - 排空分发器并结算剩余,发布最终错误(composeCloseError 组合首
-//     因与停止拒绝诊断)与 closed 状态,最后关闭 Events。
+//     因与停止拒绝诊断)与 closed 状态,关闭 Events 后发布关闭完成通知。
 //
 // 调用契约:状态已处于 closing(选主胜出)、在途调用已清零、native
-// 停止/销毁段已结束;stopDiag 是 Stop 拒绝的清理诊断(无则 nil)。
-func closeTail(s *instanceState, d *eventDispatcher, token uintptr, stopDiag error) error {
+// 停止/销毁段已结束,Stop 拒绝的清理诊断已保存至状态。
+func closeTail(s *instanceState, d *eventDispatcher, token uintptr) error {
 	// 4. 关门、等待退空、移除 token(第 4 步): Destroy 返回后才
 	//    关闭 callback 准入;最后一个已准入 callback 退出后才移除
 	//    token,释放注册表对投递函数(及其捕获的实例状态)的强引用。
@@ -180,13 +179,13 @@ func closeTail(s *instanceState, d *eventDispatcher, token uintptr, stopDiag err
 	d.requestDrain()
 	d.waitProcessed()
 	s.settleRemainingPending()
-	s.publishFinalError(composeCloseError(s.currentFault(), stopDiag))
+	s.publishFinalError(s.currentError())
 	s.publishClosed()
-	// 6. 关闭 Events 并收敛(第 5 步):通道所有者触发公开通道关
-	//    闭并等待分发器退出,不残留悬挂 goroutine;返回值即已存储的最
-	//    终错误——发布先于 Events 关闭与任一 Close 返回,观察者见到
-	//    Done 或 Close 返回即见稳定 Err 与全部 Operation 终态。
+	// 6. 关闭 Events、等待分发器退出,再通知 Done/closeDone。
+	//    并发 Close 的等待者不能早于 Events 关闭返回;Done 的观察者
+	//    无需消费 Events 即可见完整关闭结果与稳定的 Err/Operation。
 	d.closeEvents()
+	s.publishCloseDone()
 	return s.finalError()
 }
 
@@ -213,8 +212,7 @@ func composeCloseError(fault, stopDiag error) error {
 // 造函数返回的指针使用)。在 NewInstance 全部创建步骤成功之前,调用
 // 者无法从公开面获得本类型——不存在可获得的半初始化实例。
 //
-// 业务方法(连接、事件流与结果读取)由本层、24 接入;当前公开面
-// 为 Close()、同步任务/请求/查询方法(AppendTask、
+// 公开业务方法包括同步任务/请求/查询方法(AppendTask、
 // SetTaskParams、Start、Stop、BackToHome、Running、Connected)、异
 // 步提交方法(Connect、Click、Screencap,返回 *Operation)
 // 与图像/UUID/任务列表读取(GetImagePNG、UUID、Tasks)。
@@ -518,7 +516,7 @@ func rollbackCreation(rt *Runtime, s *instanceState, d *eventDispatcher, token u
 			err = s.waitClose()
 		} else {
 			s.waitCallsDrained()
-			err = closeTail(s, d, 0, nil)
+			err = closeTail(s, d, 0)
 		}
 	}
 	rt.gate.terminate(err)

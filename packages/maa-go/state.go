@@ -166,11 +166,14 @@ type instanceState struct {
 	// 的哨兵,只在持有 mu 时读写。
 	faultDone     chan struct{}
 	faultNotified bool
+	// stopDiagnostic 只保存关闭所有者的 Stop 拒绝,不触发首次故障通知。
+	stopDiagnostic error
 	// finalErr 是关闭所有者发布的不可变最终错误;所有关闭申请共享
 	// 同一存储(并发 Close 共享同一 closeDone 和最终错误)。
-	finalErr error
-	// closeDone 从构造起即存在,只由所有者在 publishClosed 中关闭
-	// 一次;先于它的最终错误发布保证观察者见到关闭即见稳定终态。
+	finalErr          error
+	finalErrPublished bool
+	// closeDone 从构造起即存在,由所有者在 Events 关闭、分发器退出后
+	// 经 publishCloseDone 关闭一次;观察者见到它即见完整关闭结果。
 	closeDone chan struct{}
 
 	// raw 是独立于 mu 的 raw 串行门禁:不受状态锁保护、也不保护任何
@@ -514,14 +517,14 @@ func (s *instanceState) publishFinalError(err error) {
 	if s.phase != phaseClosing {
 		panic(fmt.Sprintf("maa: instance final error published in phase %d", s.phase))
 	}
-	if s.finalErr == nil {
+	if !s.finalErrPublished {
 		s.finalErr = err
+		s.finalErrPublished = true
 	}
 }
 
-// publishClosed 由关闭所有者发布 closed 终态并关闭共享 closeDone
-// (第 5 步:先发布最终错误和 closed 状态,再关闭 Done 与
-// closeDone;观察到 closeDone 后 Err 已稳定)。调用契约:仅所有者
+// publishClosed 由关闭所有者发布 closed 终态,保留完成通知至 Events
+// 关闭且分发器退出之后。调用契约:仅所有者
 // 在 publishFinalError 之后调用;callback 准入门必须已关闭且已准入
 // callback 全部退出(第 4 步先于第 5 步)。通道只关闭一次;
 // 违反契约即内部不变量破坏,panic。
@@ -538,12 +541,22 @@ func (s *instanceState) publishClosed() {
 		panic(fmt.Sprintf("maa: instance closed published with %d callbacks in flight", s.callbacks))
 	}
 	s.phase = phaseClosed
+}
+
+// publishCloseDone 在 Events 已关闭且分发器退出后发布关闭完成通知。
+// closed 状态与最终错误必须先行发布;仅关闭所有者调用一次。
+func (s *instanceState) publishCloseDone() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.phase != phaseClosed || !s.finalErrPublished {
+		panic("maa: instance close completion published before the final state")
+	}
 	close(s.closeDone)
 }
 
 // done 返回共享 closeDone 的只读视图:非所有者经它等待同一关闭
 // 结果,或以 select 观察关闭完成。通道字段构造后不再改变,读取无需
-// 状态锁;只在 publishClosed 中关闭一次。
+// 状态锁;只在 publishCloseDone 中关闭一次。
 func (s *instanceState) done() <-chan struct{} {
 	return s.closeDone
 }
@@ -563,6 +576,28 @@ func (s *instanceState) finalError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.finalErr
+}
+
+// recordStopDiagnostic 在 Stop 返回后立即保留唯一的关闭诊断,使正在
+// 等待 Destroy 的观察者也可读取;它不是 sticky fault,不关闭 Fault。
+func (s *instanceState) recordStopDiagnostic(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.phase != phaseClosing || s.finalErrPublished || err == nil || s.stopDiagnostic != nil {
+		panic("maa: invalid instance stop diagnostic publication")
+	}
+	s.stopDiagnostic = err
+}
+
+// currentError 在同一状态门内读取可见原因;最终发布后直接返回存储值,
+// 包括正常关闭的 nil,不重新组合或改写最终错误。
+func (s *instanceState) currentError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finalErrPublished {
+		return s.finalErr
+	}
+	return composeCloseError(s.firstFault, s.stopDiagnostic)
 }
 
 // currentPhase 返回当前阶段(只读诊断辅助,无迁移语义)。
@@ -615,9 +650,10 @@ func (s *instanceState) currentLostEvents() uint64 {
 // 独立深拷贝(至多 faultRawPrefixBytes 字节;未保留前缀时为 nil)。
 // 修改副本不影响状态内的原值。
 type faultSnapshot struct {
-	lostEvents uint64
-	firstFault error
-	rawPrefix  []byte
+	lostEvents     uint64
+	firstFault     error
+	rawPrefix      []byte
+	stopDiagnostic error
 }
 
 // faultDiagnostics 返回故障诊断的深拷贝快照:丢失计数、首因与原文
@@ -627,9 +663,10 @@ func (s *instanceState) faultDiagnostics() faultSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return faultSnapshot{
-		lostEvents: s.lostEvents,
-		firstFault: s.firstFault,
-		rawPrefix:  bytes.Clone(s.firstFaultPrefix),
+		lostEvents:     s.lostEvents,
+		firstFault:     s.firstFault,
+		rawPrefix:      bytes.Clone(s.firstFaultPrefix),
+		stopDiagnostic: s.stopDiagnostic,
 	}
 }
 
