@@ -287,6 +287,10 @@ func (s *session) commands(factory engineFactory) (result error) {
 				if err = emptyPayload(req.Payload); err == nil {
 					err = core.Start()
 				}
+			case protocol.BackToHome:
+				if err = emptyPayload(req.Payload); err == nil {
+					err = core.BackToHome()
+				}
 			case protocol.Stop:
 				if err = emptyPayload(req.Payload); err == nil {
 					var stopped bool
@@ -296,6 +300,10 @@ func (s *session) commands(factory engineFactory) (result error) {
 			case protocol.Status:
 				if err = emptyPayload(req.Payload); err == nil {
 					out, err = core.Status()
+				}
+			case protocol.UUID:
+				if err = emptyPayload(req.Payload); err == nil {
+					out, err = core.UUID()
 				}
 			default:
 				err = wireError(protocol.Unsupported, "unknown worker command")

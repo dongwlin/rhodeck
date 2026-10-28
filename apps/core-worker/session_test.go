@@ -21,7 +21,12 @@ type fakeEngine struct {
 	closed     chan struct{}
 	closes     atomic.Int32
 	task       protocol.TaskRequest
+	params     protocol.TaskParamsRequest
 	start      func() error
+	backToHome func() error
+	stop       func() (bool, error)
+	status     func() (protocol.ExecutionStatus, error)
+	uuid       func() (protocol.UUIDResult, error)
 	closeHook  func()
 	closeError error
 	op         *fakeOperation
@@ -35,16 +40,39 @@ func (f *fakeEngine) AppendTask(req protocol.TaskRequest) (int32, error) {
 	f.task = req
 	return 23, nil
 }
-func (f *fakeEngine) SetTaskParams(protocol.TaskParamsRequest) error { return nil }
+func (f *fakeEngine) SetTaskParams(req protocol.TaskParamsRequest) error {
+	f.params = req
+	return nil
+}
 func (f *fakeEngine) Start() error {
 	if f.start != nil {
 		return f.start()
 	}
 	return nil
 }
-func (f *fakeEngine) Stop() (bool, error) { return true, nil }
+func (f *fakeEngine) Stop() (bool, error) {
+	if f.stop != nil {
+		return f.stop()
+	}
+	return true, nil
+}
+func (f *fakeEngine) BackToHome() error {
+	if f.backToHome != nil {
+		return f.backToHome()
+	}
+	return nil
+}
 func (f *fakeEngine) Status() (protocol.ExecutionStatus, error) {
+	if f.status != nil {
+		return f.status()
+	}
 	return protocol.ExecutionStatus{Tasks: []int32{23}}, nil
+}
+func (f *fakeEngine) UUID() (protocol.UUIDResult, error) {
+	if f.uuid != nil {
+		return f.uuid()
+	}
+	return protocol.UUIDResult{}, nil
 }
 func (f *fakeEngine) Observe(ctx context.Context, emit func(protocol.Callback) error) error {
 	for {
@@ -183,6 +211,13 @@ func TestSessionRawTasksAndUnknownCallbacks(t *testing.T) {
 	if f.task.Type != "FutureTask" || string(f.task.Params) != string(raw) {
 		t.Fatalf("task changed: %+v", f.task)
 	}
+	params := json.RawMessage(`{"enable":false,"future":9007199254740993,"nested":{"deep":900719925474099312345}}`)
+	if m := h.call(protocol.SetTaskParams, protocol.TaskParamsRequest{TaskID: -23, Params: params}); m.Error != nil {
+		t.Fatal(m.Error)
+	}
+	if f.params.TaskID != -23 || string(f.params.Params) != string(params) {
+		t.Fatalf("task params changed: %+v", f.params)
+	}
 	f.events <- protocol.Callback{MessageID: 7654321, CoreSequence: 1, JSON: raw}
 	m := h.read()
 	var callback protocol.Callback
@@ -210,7 +245,7 @@ func TestSessionReservedCommandsStayUnsupported(t *testing.T) {
 	f := newFakeEngine()
 	h := harness(t, fakeFactory(f))
 	h.initialize()
-	for _, name := range []string{protocol.GetImagePNG, protocol.AttachWindow, protocol.UUID, protocol.MapLevelKey} {
+	for _, name := range []string{protocol.GetImagePNG, protocol.AttachWindow, protocol.Click, protocol.MapLevelKey} {
 		m := h.call(name, nil)
 		if m.Error == nil || m.Error.Code != protocol.Unsupported {
 			t.Fatalf("%s must be rejected with unsupported, got %+v", name, m)
@@ -383,6 +418,166 @@ func TestSessionAsyncCompletionDoesNotBlockStop(t *testing.T) {
 		t.Fatalf("async result: %+v", result)
 	}
 	h.call(protocol.Close, nil)
+	if err := <-h.done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSessionSyncControlLifecycleAdmission proves the lifecycle admission rules
+// of the synchronous control commands: before initialize every native command
+// is rejected with invalid_state while the session stays usable; a native
+// rejection of BackToHome is native_rejected and never an empty success; and
+// closing/terminated instance rejections keep their stable invalid_state code.
+func TestSessionSyncControlLifecycleAdmission(t *testing.T) {
+	t.Run("rejected before initialize", func(t *testing.T) {
+		h := harness(t, fakeFactory(newFakeEngine()))
+		for _, name := range []string{protocol.BackToHome, protocol.UUID, protocol.Status, protocol.Stop} {
+			if m := h.call(name, nil); m.Error == nil || m.Error.Code != protocol.InvalidState {
+				t.Fatalf("pre-init %s: %+v", name, m)
+			}
+		}
+		if m := h.call(protocol.Ping, nil); m.Error != nil {
+			t.Fatalf("session unusable after pre-init rejections: %+v", m)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("native rejection is not an empty success", func(t *testing.T) {
+		f := newFakeEngine()
+		f.backToHome = func() error { return maa.ErrNativeRejected }
+		h := harness(t, fakeFactory(f))
+		h.initialize()
+		if m := h.call(protocol.BackToHome, nil); m.Error == nil || m.Error.Code != protocol.NativeRejected {
+			t.Fatalf("back_to_home native rejection: %+v", m)
+		}
+		if m := h.call(protocol.Ping, nil); m.Error != nil {
+			t.Fatalf("session damaged by native rejection: %+v", m)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("closing and terminated rejections keep invalid_state", func(t *testing.T) {
+		f := newFakeEngine()
+		f.backToHome = func() error { return maa.ErrClosing }
+		f.uuid = func() (protocol.UUIDResult, error) { return protocol.UUIDResult{}, maa.ErrRuntimeTerminated }
+		h := harness(t, fakeFactory(f))
+		h.initialize()
+		if m := h.call(protocol.BackToHome, nil); m.Error == nil || m.Error.Code != protocol.InvalidState {
+			t.Fatalf("closing rejection: %+v", m)
+		}
+		if m := h.call(protocol.UUID, nil); m.Error == nil || m.Error.Code != protocol.InvalidState {
+			t.Fatalf("terminated rejection: %+v", m)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestSessionUUIDAndStatusObservations proves the read-side contract: the UUID
+// string is delivered verbatim, the empty UUID, empty task list and false
+// running/connected observations are normal results, and a buffer-exhausted
+// read (limit_exceeded) stays distinguishable from bad native output
+// (protocol_error).
+func TestSessionUUIDAndStatusObservations(t *testing.T) {
+	t.Run("verbatim uuid and empty observations", func(t *testing.T) {
+		f := newFakeEngine()
+		uuids := []string{"emulator-5554", ""}
+		f.uuid = func() (protocol.UUIDResult, error) {
+			v := uuids[0]
+			uuids = uuids[1:]
+			return protocol.UUIDResult{UUID: v}, nil
+		}
+		f.status = func() (protocol.ExecutionStatus, error) {
+			return protocol.ExecutionStatus{Tasks: []int32{}}, nil
+		}
+		h := harness(t, fakeFactory(f))
+		h.initialize()
+		if m := h.call(protocol.UUID, nil); m.Error != nil || string(m.Payload) != `{"uuid":"emulator-5554"}` {
+			t.Fatalf("uuid: %+v", m)
+		}
+		if m := h.call(protocol.UUID, nil); m.Error != nil || string(m.Payload) != `{"uuid":""}` {
+			t.Fatalf("empty uuid is a normal result: %+v", m)
+		}
+		if m := h.call(protocol.Status, nil); m.Error != nil || string(m.Payload) != `{"running":false,"connected":false,"tasks":[]}` {
+			t.Fatalf("empty status: %+v", m)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("buffer exhaustion and bad native output are distinguishable", func(t *testing.T) {
+		f := newFakeEngine()
+		f.uuid = func() (protocol.UUIDResult, error) { return protocol.UUIDResult{}, maa.ErrBufferLimit }
+		h := harness(t, fakeFactory(f))
+		h.initialize()
+		if m := h.call(protocol.UUID, nil); m.Error == nil || m.Error.Code != protocol.LimitExceeded {
+			t.Fatalf("buffer exhaustion: %+v", m)
+		}
+		f.uuid = func() (protocol.UUIDResult, error) { return protocol.UUIDResult{}, maa.ErrProtocol }
+		if m := h.call(protocol.UUID, nil); m.Error == nil || m.Error.Code != protocol.ProtocolError {
+			t.Fatalf("bad native output: %+v", m)
+		}
+		if m := h.call(protocol.Ping, nil); m.Error != nil {
+			t.Fatalf("session damaged by read failures: %+v", m)
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestSessionStopAcceptanceAndTerminalStates keeps the three stop facts
+// distinguishable: acceptance (a response without error), the stopped
+// confirmation queried from the native running state, and task terminal states
+// that only arrive as core events. An accepted stop with the queue still
+// running reports stopped=false and invents no completion fact.
+func TestSessionStopAcceptanceAndTerminalStates(t *testing.T) {
+	f := newFakeEngine()
+	f.stop = func() (bool, error) { return false, nil }
+	h := harness(t, fakeFactory(f))
+	h.initialize()
+	m := h.call(protocol.Stop, nil)
+	if m.Error != nil {
+		t.Fatal(m.Error)
+	}
+	var result protocol.StopResult
+	if err := protocol.Decode(m.Payload, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Stopped {
+		t.Fatalf("accepted stop must not fabricate a stopped confirmation: %+v", result)
+	}
+	// A task terminal state is an independent core observation; acceptance
+	// never synthesizes one.
+	f.events <- protocol.Callback{MessageID: 4, CoreSequence: 1, JSON: json.RawMessage(`{"what":"TaskChainCompleted","details":{}}`)}
+	event := h.read()
+	if event.Name != protocol.CoreEvent || !strings.Contains(string(event.Payload), "TaskChainCompleted") {
+		t.Fatalf("terminal state must arrive as a core event: %+v", event)
+	}
+	if m := h.call(protocol.Close, nil); m.Error != nil {
+		t.Fatal(m.Error)
+	}
 	if err := <-h.done; err != nil {
 		t.Fatal(err)
 	}

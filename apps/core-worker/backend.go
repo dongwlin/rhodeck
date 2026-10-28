@@ -29,7 +29,9 @@ type engine interface {
 	SetTaskParams(protocol.TaskParamsRequest) error
 	Start() error
 	Stop() (bool, error)
+	BackToHome() error
 	Status() (protocol.ExecutionStatus, error)
+	UUID() (protocol.UUIDResult, error)
 	Observe(context.Context, func(protocol.Callback) error) error
 	Close() error
 }
@@ -249,6 +251,11 @@ func (e *nativeEngine) Stop() (bool, error) {
 	running, err := e.instance.Running()
 	return !running && err == nil, err
 }
+
+// BackToHome requests the instance to return to the home screen. The binding
+// wraps a native false into ErrNativeRejected, which classifies as
+// native_rejected; a nil return never implies the screen action completed.
+func (e *nativeEngine) BackToHome() error { return e.instance.BackToHome() }
 func (e *nativeEngine) Status() (protocol.ExecutionStatus, error) {
 	var s protocol.ExecutionStatus
 	var err error
@@ -264,6 +271,13 @@ func (e *nativeEngine) Status() (protocol.ExecutionStatus, error) {
 		s.Tasks[i] = int32(id)
 	}
 	return s, err
+}
+
+// UUID reads the device UUID from the Core buffer. The read never connects or
+// performs any other device action, and the empty string is a normal result.
+func (e *nativeEngine) UUID() (protocol.UUIDResult, error) {
+	uuid, err := e.instance.UUID()
+	return protocol.UUIDResult{UUID: uuid}, err
 }
 func (e *nativeEngine) Observe(ctx context.Context, emit func(protocol.Callback) error) error {
 	for {

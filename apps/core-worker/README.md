@@ -97,8 +97,8 @@ implemented, a task type is accepted, or an action will succeed.
 | `status` | absent or `{}` | Native `running`, `connected`, and `tasks` observations | implemented |
 | `ping` | absent or `{}` | IPC loop can respond, including while a native call is blocked | implemented |
 | `close` | absent or `{}` | Stop/Destroy returned, events and operations drained; process exits | implemented |
-| `back_to_home` | absent or `{}` | Call accepted; native void return carries no completion fact | reserved |
-| `uuid` | absent or `{}` | `uuid` string; the empty string is a normal result | reserved |
+| `back_to_home` | absent or `{}` | Call accepted, or `native_rejected` when Core refuses it; acceptance carries no completion fact | implemented |
+| `uuid` | absent or `{}` | `uuid` string read from the Core buffer; the empty string is a normal result and the read never connects | implemented |
 | `click` | `x`, `y` int32 | Nonzero `async_id`: accepted only | reserved |
 | `screencap` | absent or `{}` | Nonzero `async_id`: accepted only | reserved |
 | `attach_window` | `hwnd` uint64, `screencap_method`, `mouse_method`, `keyboard_method` uint64 masks | Nonzero `async_id`: accepted only | reserved |
