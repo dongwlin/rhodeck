@@ -4,6 +4,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -50,6 +51,127 @@ type Config struct {
 type pendingRequest struct {
 	name     string
 	response chan protocol.Message
+	// op is the shared operation state of an accepted async submission. The
+	// read loop assigns it before delivering the acceptance response, so the
+	// handle exists before any operation event can be dispatched.
+	op *operationState
+}
+
+// maxTrackedOperations bounds the operations the client tracks between
+// acceptance and settlement. It mirrors the binding's default pending-operation
+// budget; the worker rejects submissions beyond its own limit first.
+const maxTrackedOperations = 128
+
+// operationState is the shared terminal-state record of one accepted async
+// operation. The read loop creates it on acceptance, settles it exactly once
+// from the matching operation event, and drops it from its tracking map; waiters
+// reach it only through their Operation handle.
+type operationState struct {
+	requestID uint64
+	id        int32
+	what      string
+	done      chan struct{}
+	mu        sync.Mutex
+	settled   bool
+	result    protocol.OperationResult
+}
+
+// settle records the first terminal observation. Later calls never rewrite it:
+// a confirmed result survives every subsequent fault or close.
+func (s *operationState) settle(r protocol.OperationResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.settled {
+		return
+	}
+	s.settled = true
+	s.result = r
+	close(s.done)
+}
+
+// cloneOperationResult returns an independent copy: the details bytes and the
+// structured error are cloned so no two callers ever share a mutable buffer.
+func cloneOperationResult(r protocol.OperationResult) protocol.OperationResult {
+	r.Details = bytes.Clone(r.Details)
+	if r.Error != nil {
+		e := *r.Error
+		if e.Detail != nil {
+			d := *e.Detail
+			e.Detail = &d
+		}
+		r.Error = &e
+	}
+	return r
+}
+
+// Operation is the handle for one accepted async submission (connect, click,
+// screencap, attach_window). The nonzero ID only proves the worker accepted the
+// submission; the terminal state arrives as an operation event that the client
+// dispatches internally — waiting never depends on draining Events. Wait is
+// repeatable and concurrency-safe, and every call returns an independent copy.
+// Use the pointer returned by the submission method; do not copy it.
+type Operation struct {
+	state  *operationState
+	client *Client
+}
+
+// ID returns the accepted submission's nonzero async ID. It is stable and stays
+// readable after settlement; it is not proof that the action succeeded.
+func (o *Operation) ID() int32 { return o.state.id }
+
+// Wait returns the operation's terminal state. Semantics:
+//
+//   - Settled with ok=true: (result, nil).
+//   - Settled with ok=false: (result, *protocol.Error) — the stable Code
+//     distinguishes a native rejection from a lifecycle settlement (close or
+//     fault); the cached result is never rewritten by a later failure.
+//   - ctx cancelled or expired first: (zero, ctx.Err()). This ends only this
+//     wait: it never cancels the submitted native action, kills the worker, or
+//     affects other waiters, and the operation can be waited on again.
+//   - The session terminated before any result arrived: (zero, terminal
+//     failure) — a *Failure with Unknown=true after a fault, or ErrClosed after
+//     a clean close. An unconfirmed result stays unknown; it is never invented.
+func (o *Operation) Wait(ctx context.Context) (protocol.OperationResult, error) {
+	if ctx == nil {
+		return protocol.OperationResult{}, errors.New("worker: operation wait requires a context")
+	}
+	for {
+		o.state.mu.Lock()
+		settled := o.state.settled
+		var result protocol.OperationResult
+		if settled {
+			result = cloneOperationResult(o.state.result)
+		}
+		o.state.mu.Unlock()
+		if settled {
+			if result.Error != nil {
+				return result, result.Error
+			}
+			return result, nil
+		}
+		select {
+		case <-o.state.done:
+			// The terminal state is published; loop to read it.
+		case <-ctx.Done():
+			// The terminal state may have been published in the same instant;
+			// a published result wins over this wait's cancellation.
+			o.state.mu.Lock()
+			settled := o.state.settled
+			o.state.mu.Unlock()
+			if settled {
+				continue
+			}
+			return protocol.OperationResult{}, ctx.Err()
+		case <-o.client.ctx.Done():
+			o.state.mu.Lock()
+			settled := o.state.settled
+			o.state.mu.Unlock()
+			if settled {
+				continue
+			}
+			return protocol.OperationResult{}, context.Cause(o.client.ctx)
+		}
+	}
 }
 
 // Client owns its child process and all IPC goroutines. Use the returned pointer;
@@ -66,7 +188,7 @@ type Client struct {
 	logs              diagnosticTail
 	mu                sync.Mutex
 	nextID            uint64
-	pending           map[uint64]pendingRequest
+	pending           map[uint64]*pendingRequest
 	failure           error
 	finished          bool
 	closing           bool
@@ -117,7 +239,7 @@ func Launch(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, err
 	}
 	lifetime, cancel := context.WithCancelCause(context.Background())
-	c := &Client{ctx: lifetime, cancel: cancel, stdin: stdin, stdout: stdout, config: cfg, out: protocol.NewQueue(), pending: make(map[uint64]pendingRequest), hello: make(chan protocol.Greeting, 1), events: make(chan protocol.Message, protocol.QueueMessages), readDone: make(chan struct{}), writeDone: make(chan struct{}), processDone: make(chan struct{}), done: make(chan struct{})}
+	c := &Client{ctx: lifetime, cancel: cancel, stdin: stdin, stdout: stdout, config: cfg, out: protocol.NewQueue(), pending: make(map[uint64]*pendingRequest), hello: make(chan protocol.Greeting, 1), events: make(chan protocol.Message, protocol.QueueMessages), readDone: make(chan struct{}), writeDone: make(chan struct{}), processDone: make(chan struct{}), done: make(chan struct{})}
 	c.cmd = exec.Command(cfg.Executable, cfg.Args...)
 	c.cmd.Env = append(os.Environ(), cfg.Env...)
 	c.cmd.Stdin, c.cmd.Stdout, c.cmd.Stderr = childIn, childOut, &c.logs
@@ -196,7 +318,7 @@ func (c *Client) read() {
 	var sequence, coreSequence uint64
 	var sizes []int
 	retainedBytes := 0
-	operations := make(map[int32]uint64)
+	operations := make(map[int32]*operationState)
 	for {
 		m, err := reader.Read()
 		if err != nil {
@@ -241,13 +363,18 @@ func (c *Client) read() {
 				c.abort(&Failure{Code: "protocol_error", Unknown: true, Cause: errors.New("unmatched or duplicate response")})
 				return
 			}
-			if m.Name == protocol.Connect && m.Error == nil {
+			if isAsyncOperationCommand(m.Name) && m.Error == nil {
 				var accepted protocol.OperationAccepted
-				if protocol.Decode(m.Payload, &accepted) != nil || accepted.AsyncID == 0 || len(operations) >= 128 || operations[accepted.AsyncID] != 0 {
+				if protocol.Decode(m.Payload, &accepted) != nil || accepted.AsyncID == 0 || len(operations) >= maxTrackedOperations || operations[accepted.AsyncID] != nil {
 					c.abort(&Failure{Code: "protocol_error", Unknown: true, Cause: errors.New("invalid operation acceptance")})
 					return
 				}
-				operations[accepted.AsyncID] = m.ID
+				// The shared state is assigned before the response is delivered:
+				// the submitting goroutine receives a complete handle, and the
+				// dispatch below can never race its creation.
+				state := &operationState{requestID: m.ID, id: accepted.AsyncID, what: expectedWhat(m.Name), done: make(chan struct{})}
+				operations[accepted.AsyncID] = state
+				pending.op = state
 			}
 			pending.response <- m
 		case protocol.Event:
@@ -266,11 +393,20 @@ func (c *Client) read() {
 				coreSequence = callback.CoreSequence
 			case protocol.OperationEvent:
 				var result protocol.OperationResult
-				if protocol.Decode(m.Payload, &result) != nil || result.RequestID == 0 || operations[result.AsyncID] != result.RequestID || result.OK != (result.Error == nil) {
+				if protocol.Decode(m.Payload, &result) != nil || result.RequestID == 0 || result.OK != (result.Error == nil) {
+					c.abort(&Failure{Code: "protocol_error", Unknown: true, Cause: errors.New("unmatched operation result")})
+					return
+				}
+				state := operations[result.AsyncID]
+				// A completion carries its submission's what; a lifecycle
+				// settlement (close or fault) carries no what at all. A wrong
+				// ID/what or a duplicate result is a protocol failure.
+				if state == nil || state.requestID != result.RequestID || (result.What != "" && result.What != state.what) {
 					c.abort(&Failure{Code: "protocol_error", Unknown: true, Cause: errors.New("unmatched operation result")})
 					return
 				}
 				delete(operations, result.AsyncID)
+				state.settle(result)
 			default:
 				c.abort(&Failure{Code: "protocol_error", Unknown: true, Cause: errors.New("unknown worker event")})
 				return
@@ -303,6 +439,31 @@ func (c *Client) read() {
 	}
 }
 
+// isAsyncOperationCommand reports whether a response name is one of the four
+// async submissions whose acceptance creates a waitable operation.
+func isAsyncOperationCommand(name string) bool {
+	switch name {
+	case protocol.Connect, protocol.Click, protocol.Screencap, protocol.AttachWindow:
+		return true
+	}
+	return false
+}
+
+// expectedWhat returns the native completion what the frozen Core reports for
+// an accepted async submission command.
+func expectedWhat(name string) string {
+	switch name {
+	case protocol.Click:
+		return "Click"
+	case protocol.Screencap:
+		return "Screencap"
+	case protocol.AttachWindow:
+		return "AttachWindow"
+	default:
+		return "Connect"
+	}
+}
+
 // Validate before waking a caller or acknowledging close. A fast child exit
 // must not seal a clean session while another goroutine still decodes bad facts.
 func validateResponse(m protocol.Message) error {
@@ -313,7 +474,7 @@ func validateResponse(m protocol.Message) error {
 	switch m.Name {
 	case protocol.Initialize:
 		target = &protocol.RuntimeInfo{}
-	case protocol.Connect:
+	case protocol.Connect, protocol.Click, protocol.Screencap, protocol.AttachWindow:
 		target = &protocol.OperationAccepted{}
 	case protocol.AppendTask:
 		target = &protocol.TaskAccepted{}
@@ -379,15 +540,10 @@ func (c *Client) wait() {
 	close(c.done)
 }
 
-func (c *Client) request(ctx context.Context, name string, input any, closing bool) (json.RawMessage, error) {
-	if ctx == nil {
-		return nil, errors.New("worker: request requires a context")
-	}
-	ctx, stop := context.WithTimeout(ctx, c.config.RequestTimeout)
-	defer stop()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
+// openRequest validates session admission, reserves the next request ID, and
+// enqueues the frame. The returned entry owns the response channel; the read
+// loop matches responses to it by ID and name.
+func (c *Client) openRequest(name string, input any, closing bool) (*pendingRequest, error) {
 	c.mu.Lock()
 	if c.ctx.Err() != nil || (c.closing && !closing) {
 		err := c.failure
@@ -408,15 +564,22 @@ func (c *Client) request(ctx context.Context, name string, input any, closing bo
 		c.mu.Unlock()
 		return nil, err
 	}
-	pending := pendingRequest{name: name, response: make(chan protocol.Message, 1)}
+	pending := &pendingRequest{name: name, response: make(chan protocol.Message, 1)}
 	c.pending[id] = pending
-	_, err = c.out.Send(m)
-	if err != nil {
+	if _, err := c.out.Send(m); err != nil {
 		delete(c.pending, id)
 		c.mu.Unlock()
 		return nil, err
 	}
 	c.mu.Unlock()
+	return pending, nil
+}
+
+// awaitResponse waits for one response. A timeout or cancellation while the
+// request might already have reached the worker terminates the session and
+// reports unknown under the frozen failure discipline; the response, if it
+// arrives in the same instant, still wins.
+func (c *Client) awaitResponse(ctx context.Context, pending *pendingRequest) (protocol.Message, error) {
 	var response protocol.Message
 	select {
 	case response = <-pending.response:
@@ -424,16 +587,36 @@ func (c *Client) request(ctx context.Context, name string, input any, closing bo
 		select {
 		case response = <-pending.response:
 		default:
-			err = &Failure{Code: "request_timeout", Unknown: true, Cause: ctx.Err()}
+			err := &Failure{Code: "request_timeout", Unknown: true, Cause: ctx.Err()}
 			c.abort(err)
-			return nil, err
+			return protocol.Message{}, err
 		}
 	case <-c.ctx.Done():
 		select {
 		case response = <-pending.response:
 		default:
-			return nil, context.Cause(c.ctx)
+			return protocol.Message{}, context.Cause(c.ctx)
 		}
+	}
+	return response, nil
+}
+
+func (c *Client) request(ctx context.Context, name string, input any, closing bool) (json.RawMessage, error) {
+	if ctx == nil {
+		return nil, errors.New("worker: request requires a context")
+	}
+	ctx, stop := context.WithTimeout(ctx, c.config.RequestTimeout)
+	defer stop()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	pending, err := c.openRequest(name, input, closing)
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.awaitResponse(ctx, pending)
+	if err != nil {
+		return nil, err
 	}
 	if response.Error != nil {
 		return response.Payload, response.Error
@@ -459,10 +642,68 @@ func (c *Client) Initialize(ctx context.Context, req protocol.InitializeRequest)
 	err := c.decode(ctx, protocol.Initialize, req, &r)
 	return r, err
 }
-func (c *Client) Connect(ctx context.Context, req protocol.ConnectRequest) (protocol.OperationAccepted, error) {
-	var r protocol.OperationAccepted
-	err := c.decode(ctx, protocol.Connect, req, &r)
-	return r, err
+// submitOperation sends one async submission command and returns the handle to
+// its waitable terminal state. The read loop attaches the shared state before
+// the acceptance response is delivered, so the handle always exists before any
+// operation event can be dispatched. A rejection returns the worker's
+// *protocol.Error and no operation.
+func (c *Client) submitOperation(ctx context.Context, name string, input any) (*Operation, error) {
+	if ctx == nil {
+		return nil, errors.New("worker: request requires a context")
+	}
+	ctx, stop := context.WithTimeout(ctx, c.config.RequestTimeout)
+	defer stop()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	pending, err := c.openRequest(name, input, false)
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.awaitResponse(ctx, pending)
+	if err != nil {
+		return nil, err
+	}
+	if response.Error != nil {
+		return nil, response.Error
+	}
+	if pending.op == nil {
+		// The read loop aborts the session on an acceptance it cannot pair with
+		// a state; reaching this means that guarantee was violated.
+		failure := &Failure{Code: "protocol_error", Unknown: true, Cause: errors.New("acceptance without an operation state")}
+		c.abort(failure)
+		return nil, failure
+	}
+	return &Operation{state: pending.op, client: c}, nil
+}
+
+// Connect asynchronously submits a device connection. A returned *Operation
+// proves only that the worker accepted the submission; Wait reports the
+// terminal state from the native AsyncCallInfo event. A submission rejection is
+// a *protocol.Error.
+func (c *Client) Connect(ctx context.Context, req protocol.ConnectRequest) (*Operation, error) {
+	return c.submitOperation(ctx, protocol.Connect, req)
+}
+
+// Click asynchronously submits a click at device coordinates. The *Operation
+// semantics are Connect's; the nonzero ID is not proof the click completed.
+func (c *Client) Click(ctx context.Context, req protocol.ClickRequest) (*Operation, error) {
+	return c.submitOperation(ctx, protocol.Click, req)
+}
+
+// Screencap asynchronously submits a screen capture. Wait only confirms the
+// capture request's native outcome; reading the cached image afterwards is a
+// separate image transfer.
+func (c *Client) Screencap(ctx context.Context) (*Operation, error) {
+	return c.submitOperation(ctx, protocol.Screencap, nil)
+}
+
+// AttachWindow asynchronously submits the Win32 window binding. The handle and
+// method masks travel as unsigned 64-bit integers without loss; a missing
+// native symbol or platform support arrives as the worker's stable
+// unsupported rejection, never as a fallback to another transport.
+func (c *Client) AttachWindow(ctx context.Context, req protocol.AttachWindowRequest) (*Operation, error) {
+	return c.submitOperation(ctx, protocol.AttachWindow, req)
 }
 func (c *Client) AppendTask(ctx context.Context, req protocol.TaskRequest) (protocol.TaskAccepted, error) {
 	var r protocol.TaskAccepted

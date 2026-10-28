@@ -89,6 +89,8 @@ func helper(mode string) int {
 	var last uint64
 	var held *protocol.Message
 	var sequence uint64
+	var nextAsync int32 = 41
+	var firstConnectID uint64
 	for {
 		req, err := reader.Read()
 		if err != nil {
@@ -141,7 +143,64 @@ func helper(mode string) int {
 				continue
 			}
 			respond(fixtureRuntimeInfo())
-		case protocol.Connect:
+		case protocol.Connect, protocol.Click, protocol.Screencap, protocol.AttachWindow:
+			what := map[string]string{protocol.Connect: "Connect", protocol.Click: "Click", protocol.Screencap: "Screencap", protocol.AttachWindow: "AttachWindow"}[req.Name]
+			if req.Name == protocol.Click {
+				var click protocol.ClickRequest
+				if protocol.Decode(req.Payload, &click) != nil || click.X != -5 || click.Y != 7 {
+					return 13
+				}
+			}
+			if req.Name == protocol.AttachWindow && mode == "winmask" {
+				var w protocol.AttachWindowRequest
+				if protocol.Decode(req.Payload, &w) != nil || w.Hwnd != 9007199254740993 || w.ScreencapMethod != math.MaxUint64 || w.MouseMethod != math.MaxUint64 || w.KeyboardMethod != 1<<40 {
+					return 13
+				}
+			}
+			if mode == "pendingops" {
+				firstConnectID = req.ID
+				respond(protocol.OperationAccepted{AsyncID: 41})
+				continue
+			}
+			if mode == "wrongwhat" || mode == "wrongasync" || mode == "duplicateoperation" {
+				respond(protocol.OperationAccepted{AsyncID: 41})
+				id := int32(41)
+				if mode == "wrongasync" {
+					id = 99
+				}
+				if mode == "wrongwhat" {
+					what = "Screencap"
+				}
+				sequence++
+				emit(protocol.Event, protocol.OperationEvent, 0, sequence, protocol.OperationResult{RequestID: req.ID, AsyncID: id, What: what, OK: true, Details: json.RawMessage(`{"ret":true}`)}, nil)
+				if mode == "duplicateoperation" {
+					sequence++
+					emit(protocol.Event, protocol.OperationEvent, 0, sequence, protocol.OperationResult{RequestID: req.ID, AsyncID: 41, What: what, OK: true, Details: json.RawMessage(`{"ret":true}`)}, nil)
+				}
+				continue
+			}
+			if mode == "reversedops" && req.Name == protocol.Connect {
+				if firstConnectID == 0 {
+					firstConnectID = req.ID
+					respond(protocol.OperationAccepted{AsyncID: 41})
+					continue
+				}
+				respond(protocol.OperationAccepted{AsyncID: 42})
+				// Complete the second submission first; the client must keep
+				// every result keyed to its own request and async ID.
+				sequence++
+				emit(protocol.Event, protocol.OperationEvent, 0, sequence, protocol.OperationResult{RequestID: req.ID, AsyncID: 42, What: "Connect", OK: true, Details: json.RawMessage(`{"ret":true}`)}, nil)
+				sequence++
+				emit(protocol.Event, protocol.OperationEvent, 0, sequence, protocol.OperationResult{RequestID: firstConnectID, AsyncID: 41, What: "Connect", OK: true, Details: json.RawMessage(`{"ret":true}`)}, nil)
+				continue
+			}
+			if req.Name != protocol.Connect {
+				nextAsync++
+				respond(protocol.OperationAccepted{AsyncID: nextAsync})
+				sequence++
+				emit(protocol.Event, protocol.OperationEvent, 0, sequence, protocol.OperationResult{RequestID: req.ID, AsyncID: nextAsync, What: what, OK: true, Details: json.RawMessage(`{"ret":true}`)}, nil)
+				continue
+			}
 			respond(protocol.OperationAccepted{AsyncID: 41})
 			if mode == "missingoperation" {
 				continue
@@ -215,6 +274,12 @@ func helper(mode string) int {
 		case protocol.Stop:
 			respond(protocol.StopResult{Stopped: true})
 		case protocol.Close:
+			if mode == "pendingops" && firstConnectID != 0 {
+				// Settle the still-pending operation as a lifecycle result
+				// before acknowledging close, like the real worker does.
+				sequence++
+				emit(protocol.Event, protocol.OperationEvent, 0, sequence, protocol.OperationResult{RequestID: firstConnectID, AsyncID: 41, OK: false, Error: &protocol.Error{Code: protocol.InvalidState, Message: "fixture close settlement"}}, nil)
+			}
 			if mode == "badclose" {
 				respond(map[string]bool{"invalid": true})
 				return 0
@@ -295,8 +360,8 @@ func TestClientFullConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	op, err := c.Connect(ctx, protocol.ConnectRequest{})
-	if err != nil || op.AsyncID != 41 {
-		t.Fatalf("connect: %+v, %v", op, err)
+	if err != nil || op.ID() != 41 {
+		t.Fatalf("connect: %v, %v", op, err)
 	}
 	first := <-c.Events()
 	if !strings.Contains(string(first.Payload), "900719925474099312345") {
@@ -309,6 +374,13 @@ func TestClientFullConversation(t *testing.T) {
 	}
 	if result.OK || result.Error.Code != protocol.NativeRejected || first.Sequence != 1 || second.Sequence != 2 {
 		t.Fatalf("completion: %+v", result)
+	}
+	// The same terminal state is reachable through the operation object without
+	// depending on the event consumer.
+	waited, waitErr := op.Wait(ctx)
+	var rejected *protocol.Error
+	if !errors.As(waitErr, &rejected) || rejected.Code != protocol.NativeRejected || waited.OK || waited.AsyncID != 41 {
+		t.Fatalf("operation wait: %+v, %v", waited, waitErr)
 	}
 	if err := c.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -558,4 +630,234 @@ func TestClientBoundedDiagnostics(t *testing.T) {
 	if len(logs) != diagnosticBytes || !strings.HasSuffix(logs, "fixture log tail") {
 		t.Fatalf("diagnostics: %d bytes", len(logs))
 	}
+}
+
+// TestClientAsyncOperationsEndToEnd proves the four async submissions share one
+// waitable contract: each acceptance yields an operation with a stable nonzero
+// ID, the native rejection is a stable code through Wait, successful
+// completions arrive per command, and the session closes cleanly afterwards.
+func TestClientAsyncOperationsEndToEnd(t *testing.T) {
+	c := launchFixture(t, "flow")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	connect, err := c.Connect(ctx, protocol.ConnectRequest{})
+	if err != nil || connect.ID() != 41 {
+		t.Fatalf("connect: %v, %v", connect, err)
+	}
+	click, err := c.Click(ctx, protocol.ClickRequest{X: -5, Y: 7})
+	if err != nil || click.ID() != 42 {
+		t.Fatalf("click: %v, %v", click, err)
+	}
+	cap, err := c.Screencap(ctx)
+	if err != nil || cap.ID() != 43 {
+		t.Fatalf("screencap: %v, %v", cap, err)
+	}
+	window, err := c.AttachWindow(ctx, protocol.AttachWindowRequest{Hwnd: 9007199254740993, ScreencapMethod: 1 << 63, MouseMethod: math.MaxUint64, KeyboardMethod: 1 << 40})
+	if err != nil || window.ID() != 44 {
+		t.Fatalf("attach_window: %v, %v", window, err)
+	}
+	res, waitErr := connect.Wait(ctx)
+	var rejected *protocol.Error
+	if !errors.As(waitErr, &rejected) || rejected.Code != protocol.NativeRejected || res.OK || res.AsyncID != 41 {
+		t.Fatalf("connect terminal state: %+v, %v", res, waitErr)
+	}
+	for _, op := range []*Operation{click, cap, window} {
+		res, waitErr := op.Wait(ctx)
+		if waitErr != nil || !res.OK || res.What == "" || res.AsyncID != op.ID() {
+			t.Fatalf("%d terminal state: %+v, %v", op.ID(), res, waitErr)
+		}
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireReaped(t, c)
+	// IDs stay readable after settlement and after the session is gone.
+	if connect.ID() != 41 || window.ID() != 44 {
+		t.Fatalf("IDs changed after settlement: %d %d", connect.ID(), window.ID())
+	}
+}
+
+// TestClientOperationWaitIsRepeatableAndConcurrent proves Wait is repeatable
+// and concurrency-safe: repeated and concurrent waits observe the same cached
+// terminal state, every call receives an independent copy whose mutation
+// cannot rewrite the cache or other callers' results.
+func TestClientOperationWaitIsRepeatableAndConcurrent(t *testing.T) {
+	c := launchFixture(t, "flow")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	op, err := c.Connect(ctx, protocol.ConnectRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, waitErr := op.Wait(ctx)
+	var rejected *protocol.Error
+	if !errors.As(waitErr, &rejected) || rejected.Code != protocol.NativeRejected {
+		t.Fatalf("first wait: %+v, %v", first, waitErr)
+	}
+	results := make([]protocol.OperationResult, 8)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Go(func() {
+			r, err := op.Wait(ctx)
+			var rejected *protocol.Error
+			if !errors.As(err, &rejected) || rejected.Code != protocol.NativeRejected {
+				t.Errorf("concurrent wait: %+v, %v", r, err)
+			}
+			results[i] = r
+		})
+	}
+	wg.Wait()
+	for i, r := range results {
+		if r.AsyncID != first.AsyncID || r.What != first.What || r.OK != first.OK || string(r.Details) != string(first.Details) {
+			t.Fatalf("wait %d diverged: %+v vs %+v", i, r, first)
+		}
+	}
+	// Mutating one returned copy leaves the cache untouched.
+	first.Details[0] = 'X'
+	again, waitErr := op.Wait(ctx)
+	var stillRejected *protocol.Error
+	if !errors.As(waitErr, &stillRejected) || stillRejected.Code != protocol.NativeRejected || string(again.Details) != `{"ret":false}` {
+		t.Fatalf("cached result was rewritten through a returned copy: %s, %v", again.Details, waitErr)
+	}
+	if op.ID() != 41 {
+		t.Fatalf("ID changed after settlement: %d", op.ID())
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireReaped(t, c)
+}
+
+// TestClientWaitCancellationIsLocal proves a cancelled or timed-out wait ends
+// only that wait: the worker stays alive, the submission keeps its native slot,
+// a later wait still works, and the eventual close settlement arrives as a
+// distinguishable lifecycle error rather than unknown.
+func TestClientWaitCancellationIsLocal(t *testing.T) {
+	c := launchFixture(t, "pendingops")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	op, err := c.Connect(ctx, protocol.ConnectRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		waitCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		if _, err := op.Wait(waitCtx); !errors.Is(err, context.DeadlineExceeded) {
+			cancel()
+			t.Fatalf("timed-out wait: %v", err)
+		}
+		cancel()
+	}
+	if err := c.Ping(ctx); err != nil {
+		t.Fatalf("cancelled wait damaged the session: %v", err)
+	}
+	type settled struct {
+		result protocol.OperationResult
+		err    error
+	}
+	done := make(chan settled, 1)
+	go func() {
+		r, err := op.Wait(ctx)
+		done <- settled{r, err}
+	}()
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	var lifecycle *protocol.Error
+	if !errors.As(got.err, &lifecycle) || lifecycle.Code != protocol.InvalidState || got.result.OK || got.result.What != "" {
+		t.Fatalf("close settlement: %+v, %v", got.result, got.err)
+	}
+	requireReaped(t, c)
+}
+
+// TestClientRejectsWrongOperationAttributes proves the client validates every
+// operation result against its acceptance: a wrong what, an unknown async ID,
+// and a duplicate result each abort the session as a protocol failure instead
+// of being matched loosely.
+func TestClientRejectsWrongOperationAttributes(t *testing.T) {
+	for _, mode := range []string{"wrongwhat", "wrongasync", "duplicateoperation"} {
+		t.Run(mode, func(t *testing.T) {
+			c := launchFixture(t, mode)
+			ctx := context.Background()
+			if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = c.Connect(ctx, protocol.ConnectRequest{})
+			select {
+			case <-c.Done():
+			case <-time.After(5 * time.Second):
+				t.Fatal("session survived a wrong operation result")
+			}
+			requireFailure(t, c.Err(), true)
+			requireReaped(t, c)
+		})
+	}
+}
+
+// TestClientAsyncCompletionOutOfOrder proves completions may arrive in any
+// order: each operation object is matched to its own request and async ID even
+// when the later submission settles first.
+func TestClientAsyncCompletionOutOfOrder(t *testing.T) {
+	c := launchFixture(t, "reversedops")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := c.Connect(ctx, protocol.ConnectRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := c.Connect(ctx, protocol.ConnectRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ID() != 41 || b.ID() != 42 {
+		t.Fatalf("async ids: %d %d", a.ID(), b.ID())
+	}
+	rb, err := b.Wait(ctx)
+	if err != nil || !rb.OK || rb.AsyncID != 42 {
+		t.Fatalf("second completion: %+v, %v", rb, err)
+	}
+	ra, err := a.Wait(ctx)
+	if err != nil || !ra.OK || ra.AsyncID != 41 {
+		t.Fatalf("first completion: %+v, %v", ra, err)
+	}
+	if ra.RequestID == rb.RequestID {
+		t.Fatal("results crossed their request IDs")
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireReaped(t, c)
+}
+
+// TestClientAttachWindowWireIsLossless proves the window handle and method
+// masks cross the client without numeric loss: the fixture exits with an error
+// if the decoded values differ from the >2^53 handle and full-width masks the
+// test submitted, so reaching the happy path is the precision proof.
+func TestClientAttachWindowWireIsLossless(t *testing.T) {
+	c := launchFixture(t, "winmask")
+	ctx := context.Background()
+	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	op, err := c.AttachWindow(ctx, protocol.AttachWindowRequest{Hwnd: 9007199254740993, ScreencapMethod: math.MaxUint64, MouseMethod: math.MaxUint64, KeyboardMethod: 1 << 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, waitErr := op.Wait(ctx)
+	if waitErr != nil || !res.OK || res.What != "AttachWindow" {
+		t.Fatalf("attach_window terminal state: %+v, %v", res, waitErr)
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireReaped(t, c)
 }
