@@ -275,9 +275,12 @@ func TestOptionalMissingClosesCapabilityOnly(t *testing.T) {
 			}
 
 			caps := table.Capabilities()
-			if caps.Create() || caps.ImageBgr() || caps.AsyncAttachWindow() {
-				t.Errorf("缺失的可选能力必须全部关闭, got Create=%v ImageBgr=%v AsyncAttachWindow=%v",
-					caps.Create(), caps.ImageBgr(), caps.AsyncAttachWindow())
+			// Windows 的 AsstAsyncAttachWindow 在假库中仍然存在,
+			// 只有本用例移除的两个可选项应关闭。
+			wantAttachWindow := runtime.GOOS == "windows"
+			if caps.Create() || caps.ImageBgr() || caps.AsyncAttachWindow() != wantAttachWindow {
+				t.Errorf("可选能力不符, got Create=%v ImageBgr=%v AsyncAttachWindow=%v; want false,false,%v",
+					caps.Create(), caps.ImageBgr(), caps.AsyncAttachWindow(), wantAttachWindow)
 			}
 			wantCalls := len(expectApplicableNames(t)) - missingO
 			if n := len(reg.calls); n != wantCalls {
