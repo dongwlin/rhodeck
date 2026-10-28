@@ -130,7 +130,7 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	}
 
 	// *Instance 的导出方法集恰为 {Close} + 同步方法 +
-	// 异步提交方法 + 输出读取方法(不含任何 BGR 读取入口:可
+	// 异步提交方法 + 输出读取方法 + 事件与故障观察方法(不含任何 BGR 读取入口:可
 	// 选 BGR 首期只报告 capability, 冻结决策)。
 	wantInstance := map[string]bool{
 		"Close":         true,
@@ -147,6 +147,11 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		"GetImagePNG":   true,
 		"UUID":          true,
 		"Tasks":         true,
+		"Events":        true,
+		"Done":          true,
+		"Err":           true,
+		"Fault":         true,
+		"Diagnostics":   true,
 	}
 	for m := range wantInstance {
 		if !instanceMethods[m] {
