@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -21,8 +22,13 @@ type operation interface {
 	Wait(context.Context) (protocol.OperationResult, error)
 }
 
-// The command loop owns all native calls. Observe consumes the binding's one
-// event stream independently; it never writes to IPC on a callback thread.
+// eventEmitter delivers one named session event with its payload. Emission
+// never waits for a consumer: the outbound queue is bounded and a full queue
+// fails the session, so every report is either enqueued or loudly lost.
+type eventEmitter func(name string, payload any) error
+
+// The command loop owns all native calls. Observe consumes the binding's
+// observations independently; it never writes to IPC on a callback thread.
 type engine interface {
 	Connect(protocol.ConnectRequest) (operation, error)
 	Click(protocol.ClickRequest) (operation, error)
@@ -40,7 +46,7 @@ type engine interface {
 	ItemName(protocol.ItemNameRequest) (protocol.ItemNameResult, error)
 	GetImagePNG() ([]byte, error)
 	GetImageBGR() ([]byte, error)
-	Observe(context.Context, func(protocol.Callback) error) error
+	Observe(context.Context, eventEmitter) error
 	Close() error
 }
 
@@ -375,24 +381,162 @@ func (e *nativeEngine) GetImagePNG() ([]byte, error) { return e.instance.GetImag
 // order are decided by Core: the bytes stay opaque and are not interpreted.
 func (e *nativeEngine) GetImageBGR() ([]byte, error) { return e.instance.GetImageBGR() }
 
-func (e *nativeEngine) Observe(ctx context.Context, emit func(protocol.Callback) error) error {
-	for {
+// instanceObservations is the observation surface of one native instance that
+// Observe consumes. *maa.Instance satisfies it; the indirection keeps the
+// observation pipeline testable without a native library.
+type instanceObservations interface {
+	Events() <-chan maa.Event
+	Fault() <-chan struct{}
+	Done() <-chan struct{}
+	Diagnostics() maa.InstanceDiagnostics
+}
+
+// Observe carries the binding's observations across the process boundary
+// through the session's ordered event stream: every Core callback as a core
+// event, the first instance fault as a fault event, and the terminal
+// diagnostics snapshot as a diagnostics event.
+//
+// The Events stream keeps its single reader. The one-shot fault notification
+// and the terminal snapshot are watched outside that reader, so an event
+// flood, a stalled consumer or big-data occupancy can never delay a fault
+// report — the notification channel is independent of the event queue. The
+// fault report precedes the diagnostics report; the snapshot is taken once
+// after native Done, when Err and the diagnostics are stable. Observe returns
+// when the event stream has ended and the terminal report was made (or became
+// impossible), so the close path — which waits for Observe — always answers
+// after the snapshot was enqueued. Every emission failure has already failed
+// the session, so a report is either delivered or the session fails.
+func (e *nativeEngine) Observe(ctx context.Context, emit eventEmitter) error {
+	return observeInstance(ctx, e.instance, emit)
+}
+
+// observeInstance implements the observation pipeline against one instance's
+// channels. See nativeEngine.Observe for the frozen delivery contract.
+func observeInstance(ctx context.Context, in instanceObservations, emit eventEmitter) error {
+	// The internal context releases every watcher as soon as the observation
+	// ends — cleanly or through a failure — so a failed report never leaks a
+	// goroutine into a session that is already being torn down.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	readerDone := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				readerDone <- ctx.Err()
+				return
+			case event, ok := <-in.Events():
+				if !ok {
+					// The stream ends as the instance reaches its terminal
+					// state; the outcome itself travels as the diagnostics
+					// event instead of a reader failure.
+					readerDone <- nil
+					return
+				}
+				if err := emit(protocol.CoreEvent, protocol.Callback{MessageID: int32(event.MessageID), CoreSequence: event.Sequence, JSON: event.JSON}); err != nil {
+					readerDone <- err
+					return
+				}
+			}
+		}
+	}()
+
+	// faultComplete closes once the fault report was enqueued, once the
+	// instance terminated without a fault, or once the session gave up.
+	faultComplete := make(chan struct{})
+	go func() {
+		defer close(faultComplete)
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case <-e.instance.Fault():
-			return e.instance.Err()
-		case event, ok := <-e.instance.Events():
-			if !ok {
-				// Close reports a Stop rejection through its response. Only an
-				// actual binding fault interrupts the transport independently.
-				return e.instance.Diagnostics().FirstFault
+			return
+		case <-in.Fault():
+			reportFault(in, emit)
+		case <-in.Done():
+			// Done and Fault may become ready together: the notification is
+			// closed forever once fired, and every fault is recorded before
+			// the close completion is published, so a non-blocking re-check
+			// settles whether a first fault linearized before the terminal
+			// state. Missing it here would report the first cause only
+			// through the diagnostics snapshot.
+			select {
+			case <-in.Fault():
+				reportFault(in, emit)
+			default:
 			}
-			if err := emit(protocol.Callback{MessageID: int32(event.MessageID), CoreSequence: event.Sequence, JSON: event.JSON}); err != nil {
-				return err
+		}
+	}()
+
+	terminal := make(chan error, 1)
+	go func() {
+		select {
+		case <-ctx.Done():
+			terminal <- ctx.Err()
+		case <-in.Done():
+			select {
+			case <-faultComplete:
+			case <-ctx.Done():
+				terminal <- ctx.Err()
+				return
+			}
+			terminal <- emit(protocol.DiagnosticsEvent, wireDiagnostics(in.Diagnostics()))
+		}
+	}()
+
+	// Both watchers always terminate — on the context, on their observation,
+	// or released by the cancellation below — and the observation is over
+	// only when both have, so the close path (which waits for Observe)
+	// always answers after the snapshot was enqueued. A failed emission has
+	// already failed the session; cancelling then releases the other watcher
+	// instead of waiting for a fact the broken transport can no longer carry.
+	var readerErr, terminalErr error
+	for readerDone != nil || terminal != nil {
+		select {
+		case err := <-readerDone:
+			readerErr, readerDone = err, nil
+			if err != nil {
+				cancel()
+			}
+		case err := <-terminal:
+			terminalErr, terminal = err, nil
+			if err != nil {
+				cancel()
 			}
 		}
 	}
+	return errors.Join(readerErr, terminalErr)
+}
+
+// reportFault enqueues the one-shot fault event. The first fault is recorded
+// before the notification closes, so the reason is always present; a missing
+// reason is reported as an internal error instead of an unattributable fault.
+// Emission failures have already failed the session.
+func reportFault(in instanceObservations, emit eventEmitter) {
+	cause := in.Diagnostics().FirstFault
+	if cause == nil {
+		cause = errors.New("maa: fault notification fired without a recorded first fault")
+	}
+	_ = emit(protocol.FaultEvent, protocol.FaultNotice{Error: *classify(cause)})
+}
+
+// wireDiagnostics maps the binding's bounded diagnostics snapshot onto the
+// frozen wire form. The snapshot already holds independent copies; the raw
+// prefix travels as standard base64 so bytes that are neither valid UTF-8 nor
+// valid JSON survive byte for byte, and a normal close leaves the three
+// optional fields absent.
+func wireDiagnostics(snap maa.InstanceDiagnostics) protocol.InstanceDiagnostics {
+	var out protocol.InstanceDiagnostics
+	out.LostEvents = snap.LostEvents
+	if snap.FirstFault != nil {
+		out.FirstFault = classify(snap.FirstFault)
+	}
+	if len(snap.RawPrefix) > 0 {
+		out.RawPrefix = base64.StdEncoding.EncodeToString(snap.RawPrefix)
+	}
+	if snap.StopDiagnostic != nil {
+		out.StopDiagnostic = classify(snap.StopDiagnostic)
+	}
+	return out
 }
 func (e *nativeEngine) Close() error { return e.runtime.Close() }
 
@@ -407,6 +551,28 @@ func wireError(code, message string) *protocol.Error {
 	return &protocol.Error{Code: code, Message: message}
 }
 
+// boundDetail clamps a structured-detail string to the wire's 128-byte bound
+// on a rune boundary, mirroring wireError's message handling. The detail
+// fields qualify the stable code; truncation never turns a long diagnostic
+// into an invalid frame.
+func boundDetail(s string) string {
+	if len(s) <= 128 {
+		return s
+	}
+	s = s[:128]
+	for !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+// classify maps one binding error onto the stable wire error. The code is the
+// only control-plane discriminator and is never derived from diagnostic text;
+// the bounded structured detail carries only facts the binding's error types
+// expose as data. Limit sentinels are wrapped errors whose numbers exist only
+// in their diagnostic text, so their details name the reason family and leave
+// the numeric fields absent — absent means unknown here, never zero, and no
+// number is parsed out of text or invented.
 func classify(err error) *protocol.Error {
 	if err == nil {
 		return nil
@@ -416,16 +582,23 @@ func classify(err error) *protocol.Error {
 		return existing
 	}
 	code := protocol.InternalError
+	var detail *protocol.ErrorDetail
 	var load *maa.LibraryLoadError
 	var symbol *maa.SymbolLookupError
 	var registration *maa.FunctionRegistrationError
 	switch {
 	case errors.As(err, &load):
 		code = protocol.LoadFailed
+		detail = &protocol.ErrorDetail{Kind: "library_load", Field: boundDetail(load.LibraryName)}
 	case errors.As(err, &symbol):
+		// errors.As traverses an AggregateError member by member, so an
+		// aggregate maps to the family of its first matching member and the
+		// full member list stays in the bounded message.
 		code = protocol.SymbolMissing
+		detail = &protocol.ErrorDetail{Kind: "symbol_lookup", Field: boundDetail(symbol.Symbol)}
 	case errors.As(err, &registration):
 		code = protocol.RegistrationFailed
+		detail = &protocol.ErrorDetail{Kind: "function_registration", Field: boundDetail(registration.Symbol)}
 	case errors.Is(err, maa.ErrInvalidInput):
 		code = protocol.InvalidInput
 	case errors.Is(err, maa.ErrEventOverflow), errors.Is(err, protocol.ErrQueueFull):
@@ -436,10 +609,14 @@ func classify(err error) *protocol.Error {
 		code = protocol.Unsupported
 	case errors.Is(err, maa.ErrNativeRejected):
 		code = protocol.NativeRejected
-	case errors.Is(err, maa.ErrBufferLimit), errors.Is(err, maa.ErrOperationLimit):
-		code = protocol.LimitExceeded
+	case errors.Is(err, maa.ErrBufferLimit):
+		code, detail = protocol.LimitExceeded, &protocol.ErrorDetail{Kind: "buffer_limit"}
+	case errors.Is(err, maa.ErrOperationLimit):
+		code, detail = protocol.LimitExceeded, &protocol.ErrorDetail{Kind: "operation_limit"}
 	case errors.Is(err, maa.ErrClosed), errors.Is(err, maa.ErrClosing), errors.Is(err, maa.ErrRuntimeInUse), errors.Is(err, maa.ErrRuntimeTerminated):
 		code = protocol.InvalidState
 	}
-	return wireError(code, err.Error())
+	out := wireError(code, err.Error())
+	out.Detail = detail
+	return out
 }

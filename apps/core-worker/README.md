@@ -207,12 +207,17 @@ Remote error codes are `invalid_input`, `invalid_state`, `native_rejected`,
 `snapshot_mismatch`, `limit_exceeded`, `event_overflow`, `protocol_error` and
 `internal_error`. The code is the only control-plane discriminator; mapping
 uses Go error identity/types, not native text parsing. An optional bounded
-`detail` object qualifies capacity rejections with machine-readable fields —
-reason `kind`, the limited buffer/interface, its unit, the limits field path,
-probe attempts, the observed capacity, and the effective wire maximum — so a
-merged code such as `limit_exceeded` still distinguishes native buffer
-exhaustion from operation-count limits and transport-budget rejections
-without parsing messages.
+`detail` object qualifies rejections with machine-readable fields — reason
+`kind`, the limited buffer/interface, its unit, the limits field path, and the
+effective wire maximum — so a merged code such as `limit_exceeded` still
+distinguishes transport-budget rejections (`transport_budget` with the frozen
+maximum) from native buffer exhaustion (`buffer_limit`) and operation-count
+limits (`operation_limit`). The load/symbol/registration families carry the
+identifying library or symbol as data. Fields the binding only renders into
+diagnostic text (a limit sentinel's probe attempts and last capacity) are
+never parsed out of that text nor invented: they stay absent, which the
+contract defines as unknown rather than zero, and the full bounded message
+retains them for humans.
 
 Any initialization attempt reaching the native factory is terminal on failure;
 the caller starts a fresh worker to recover. Payload schema rejections —

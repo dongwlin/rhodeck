@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"strings"
@@ -16,9 +18,84 @@ import (
 	maa "github.com/dongwlin/rhodeck/packages/maa-go"
 )
 
+// fakeInstance mimics the native instance's observation surface: an event
+// stream that closes as the instance reaches its terminal state, a one-shot
+// fault notification independent of that stream, and a bounded diagnostics
+// snapshot that is read after the terminal notification.
+type fakeInstance struct {
+	events    chan maa.Event
+	fault     chan struct{}
+	done      chan struct{}
+	faultOnce sync.Once
+	doneOnce  sync.Once
+	// sendMu serializes producers against the terminal close: the binding's
+	// dispatcher stops before the stream closes, and the fake gives test
+	// producers the same guarantee.
+	sendMu   sync.Mutex
+	faultErr error
+	snapshot func() maa.InstanceDiagnostics
+}
+
+func newFakeInstance() *fakeInstance {
+	return &fakeInstance{events: make(chan maa.Event, 256), fault: make(chan struct{}), done: make(chan struct{})}
+}
+
+func (fi *fakeInstance) Events() <-chan maa.Event { return fi.events }
+func (fi *fakeInstance) Fault() <-chan struct{}   { return fi.fault }
+func (fi *fakeInstance) Done() <-chan struct{}    { return fi.done }
+
+// Diagnostics returns the configured snapshot; like the binding, an unset
+// configuration is the zero snapshot — or the recorded first fault — not an
+// error.
+func (fi *fakeInstance) Diagnostics() maa.InstanceDiagnostics {
+	if fi.snapshot != nil {
+		return fi.snapshot()
+	}
+	return maa.InstanceDiagnostics{FirstFault: fi.faultErr}
+}
+
+// faultNow records the first fault and fires the one-shot notification, the
+// binding's linearization order.
+func (fi *fakeInstance) faultNow(cause error) {
+	fi.faultOnce.Do(func() {
+		fi.faultErr = cause
+		close(fi.fault)
+	})
+}
+
+// sendEvent delivers one event the way the binding's dispatcher does: it
+// stops at the terminal state instead of sending on a closed stream, so test
+// producers can never race the close. A producer blocked on a full stream
+// holds the gate, so the close waits for it — tests keep their floods within
+// the buffer capacity, like real dispatchers bounded by their budgets.
+func (fi *fakeInstance) sendEvent(ev maa.Event) {
+	fi.sendMu.Lock()
+	defer fi.sendMu.Unlock()
+	select {
+	case <-fi.done:
+		return
+	default:
+	}
+	select {
+	case fi.events <- ev:
+	case <-fi.done:
+	}
+}
+
+// finish terminates the fake instance: the event stream closes first, then
+// the terminal notification, like the binding's close completion. The send
+// gate guarantees no producer is mid-send when the stream closes.
+func (fi *fakeInstance) finish() {
+	fi.doneOnce.Do(func() {
+		fi.sendMu.Lock()
+		defer fi.sendMu.Unlock()
+		close(fi.events)
+		close(fi.done)
+	})
+}
+
 type fakeEngine struct {
-	events     chan protocol.Callback
-	closed     chan struct{}
+	inst       *fakeInstance
 	closes     atomic.Int32
 	task       protocol.TaskRequest
 	params     protocol.TaskParamsRequest
@@ -51,7 +128,7 @@ type fakeEngine struct {
 }
 
 func newFakeEngine() *fakeEngine {
-	return &fakeEngine{events: make(chan protocol.Callback, 256), closed: make(chan struct{})}
+	return &fakeEngine{inst: newFakeInstance()}
 }
 func (f *fakeEngine) Connect(req protocol.ConnectRequest) (operation, error) {
 	f.connect = req
@@ -151,26 +228,15 @@ func (f *fakeEngine) GetImageBGR() ([]byte, error) {
 	}
 	return []byte{}, nil
 }
-func (f *fakeEngine) Observe(ctx context.Context, emit func(protocol.Callback) error) error {
-	for {
-		select {
-		case c := <-f.events:
-			if err := emit(c); err != nil {
-				return err
-			}
-		case <-f.closed:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
+func (f *fakeEngine) Observe(ctx context.Context, emit eventEmitter) error {
+	return observeInstance(ctx, f.inst, emit)
 }
 func (f *fakeEngine) Close() error {
 	f.closes.Add(1)
 	if f.closeHook != nil {
 		f.closeHook()
 	}
-	close(f.closed)
+	f.inst.finish()
 	for _, op := range f.created {
 		op.finish()
 	}
@@ -322,7 +388,7 @@ func TestSessionRawTasksAndUnknownCallbacks(t *testing.T) {
 	if f.params.TaskID != -23 || string(f.params.Params) != string(params) {
 		t.Fatalf("task params changed: %+v", f.params)
 	}
-	f.events <- protocol.Callback{MessageID: 7654321, CoreSequence: 1, JSON: raw}
+	f.inst.sendEvent(maa.Event{MessageID: 7654321, Sequence: 1, JSON: raw})
 	m := h.read()
 	var callback protocol.Callback
 	if err := protocol.Decode(m.Payload, &callback); err != nil {
@@ -822,7 +888,7 @@ func TestSessionStopAcceptanceAndTerminalStates(t *testing.T) {
 	}
 	// A task terminal state is an independent core observation; acceptance
 	// never synthesizes one.
-	f.events <- protocol.Callback{MessageID: 4, CoreSequence: 1, JSON: json.RawMessage(`{"what":"TaskChainCompleted","details":{}}`)}
+	f.inst.sendEvent(maa.Event{MessageID: 4, Sequence: 1, JSON: json.RawMessage(`{"what":"TaskChainCompleted","details":{}}`)})
 	event := h.read()
 	if event.Name != protocol.CoreEvent || !strings.Contains(string(event.Payload), "TaskChainCompleted") {
 		t.Fatalf("terminal state must arrive as a core event: %+v", event)
@@ -928,7 +994,7 @@ func TestSessionShutdownDeadlineAndOutputOverflow(t *testing.T) {
 		h := harness(t, fakeFactory(f))
 		h.initialize()
 		for i := range 128 {
-			f.events <- protocol.Callback{MessageID: 1, CoreSequence: uint64(i + 1), JSON: json.RawMessage(`{}`)}
+			f.inst.sendEvent(maa.Event{MessageID: 1, Sequence: uint64(i + 1), JSON: json.RawMessage(`{}`)})
 		}
 		if err := <-h.done; !errors.Is(err, protocol.ErrQueueFull) {
 			t.Fatalf("output overflow: %v", err)
@@ -1179,4 +1245,148 @@ func TestSessionCloseSettlesPendingOperations(t *testing.T) {
 	if err := <-h.done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+// namedEvents returns the collected session events with the given name, in
+// arrival order.
+func namedEvents(h *sessionHarness, name string) []protocol.Message {
+	var out []protocol.Message
+	for _, m := range h.events {
+		if m.Name == name {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// TestSessionFaultReportIsIndependentOfTheEventsReader proves the frozen
+// fault contract end to end at the session layer: the fault event is
+// delivered on the ordered session sequence while the single Events reader is
+// blocked, the first fault travels with its stable classified code, and the
+// terminal snapshot follows it with the saturated lost count and a raw prefix
+// that is neither valid UTF-8 nor valid JSON transported byte for byte.
+func TestSessionFaultReportIsIndependentOfTheEventsReader(t *testing.T) {
+	f := newFakeEngine()
+	f.inst.events = make(chan maa.Event) // unbuffered: every send synchronizes with the reader
+	h := harness(t, fakeFactory(f))
+	h.initialize()
+
+	// One core event: the send completes when the reader receives it, and
+	// waiting for its frame leaves the reader blocked on the empty stream.
+	f.inst.sendEvent(maa.Event{MessageID: 7654321, Sequence: 1, JSON: json.RawMessage(`{}`)})
+	if m := h.read(); m.Name != protocol.CoreEvent || m.Sequence != 1 {
+		t.Fatalf("core event: %+v", m)
+	}
+
+	// Arm the fault while the reader is blocked: the report must not wait
+	// for any further event consumption.
+	f.inst.faultNow(fmt.Errorf("probe exhausted: %w", maa.ErrEventOverflow))
+	m := h.read()
+	if m.Name != protocol.FaultEvent || m.Sequence != 2 {
+		t.Fatalf("fault event: %+v", m)
+	}
+	var notice protocol.FaultNotice
+	if err := protocol.Decode(m.Payload, &notice); err != nil {
+		t.Fatal(err)
+	}
+	if notice.Error.Code != protocol.EventOverflow {
+		t.Fatalf("fault code = %s, want event_overflow", notice.Error.Code)
+	}
+
+	// The reader is still blocked: no further core event was consumed. The
+	// close completes cleanly and delivers the terminal snapshot afterwards.
+	f.inst.snapshot = func() maa.InstanceDiagnostics {
+		return maa.InstanceDiagnostics{
+			LostEvents: math.MaxUint64,
+			FirstFault: f.inst.faultErr,
+			RawPrefix:  []byte{0xDE, 0x00, 0xFF, 0xFE},
+		}
+	}
+	if m := h.call(protocol.Close, nil); m.Error != nil {
+		t.Fatal(m.Error)
+	}
+	if err := <-h.done; err != nil {
+		t.Fatal(err)
+	}
+	reports := namedEvents(h, protocol.DiagnosticsEvent)
+	if len(reports) != 1 {
+		t.Fatalf("diagnostics events = %d, want exactly one", len(reports))
+	}
+	// The fault event was read above at sequence 2; the terminal snapshot
+	// must follow it on the same ordered sequence.
+	if reports[0].Sequence != 3 {
+		t.Fatalf("the terminal snapshot must follow the fault report: sequence %d", reports[0].Sequence)
+	}
+	var report protocol.InstanceDiagnostics
+	if err := protocol.Decode(reports[0].Payload, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.LostEvents != math.MaxUint64 {
+		t.Fatalf("lost_events = %d, want the saturated count", report.LostEvents)
+	}
+	if report.FirstFault == nil || report.FirstFault.Code != protocol.EventOverflow || report.StopDiagnostic != nil {
+		t.Fatalf("snapshot = %+v", report)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(report.RawPrefix)
+	if err != nil || string(decoded) != string([]byte{0xDE, 0x00, 0xFF, 0xFE}) {
+		t.Fatalf("raw prefix changed: %v, %q", err, decoded)
+	}
+}
+
+// TestSessionDiagnosticsWithoutFault proves the terminal snapshot is a normal
+// close fact: a clean close omits every optional field, and a stop-only
+// diagnostic is delivered as a stop diagnostic — never fabricated into a
+// fault event.
+func TestSessionDiagnosticsWithoutFault(t *testing.T) {
+	t.Run("clean close keeps every optional field absent", func(t *testing.T) {
+		f := newFakeEngine()
+		h := harness(t, fakeFactory(f))
+		h.initialize()
+		f.inst.snapshot = func() maa.InstanceDiagnostics { return maa.InstanceDiagnostics{LostEvents: 3} }
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+		if got := namedEvents(h, protocol.FaultEvent); len(got) != 0 {
+			t.Fatalf("a clean close must not report a fault: %+v", got)
+		}
+		reports := namedEvents(h, protocol.DiagnosticsEvent)
+		if len(reports) != 1 {
+			t.Fatalf("diagnostics events = %d, want exactly one", len(reports))
+		}
+		var report protocol.InstanceDiagnostics
+		if err := protocol.Decode(reports[0].Payload, &report); err != nil {
+			t.Fatal(err)
+		}
+		if report.LostEvents != 3 || report.FirstFault != nil || report.RawPrefix != "" || report.StopDiagnostic != nil {
+			t.Fatalf("snapshot = %+v", report)
+		}
+	})
+
+	t.Run("a stop-only diagnostic is not a fault", func(t *testing.T) {
+		f := newFakeEngine()
+		h := harness(t, fakeFactory(f))
+		h.initialize()
+		f.inst.snapshot = func() maa.InstanceDiagnostics {
+			return maa.InstanceDiagnostics{StopDiagnostic: fmt.Errorf("stop returned 0: %w", maa.ErrNativeRejected)}
+		}
+		if m := h.call(protocol.Close, nil); m.Error != nil {
+			t.Fatal(m.Error)
+		}
+		if err := <-h.done; err != nil {
+			t.Fatal(err)
+		}
+		if got := namedEvents(h, protocol.FaultEvent); len(got) != 0 {
+			t.Fatalf("a stop diagnostic must not fabricate a fault: %+v", got)
+		}
+		var report protocol.InstanceDiagnostics
+		if err := protocol.Decode(namedEvents(h, protocol.DiagnosticsEvent)[0].Payload, &report); err != nil {
+			t.Fatal(err)
+		}
+		if report.StopDiagnostic == nil || report.StopDiagnostic.Code != protocol.NativeRejected || report.FirstFault != nil {
+			t.Fatalf("snapshot = %+v", report)
+		}
+	})
 }

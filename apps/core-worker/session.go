@@ -246,7 +246,7 @@ func (s *session) commands(factory engineFactory) (result error) {
 				observed = done
 				go func(e engine) {
 					defer close(done)
-					if err := e.Observe(s.ctx, func(c protocol.Callback) error { return s.event(protocol.CoreEvent, c) }); err != nil {
+					if err := e.Observe(s.ctx, s.event); err != nil {
 						s.fail(err)
 					}
 				}(core)

@@ -356,7 +356,7 @@ func TestSessionImageTransferReleaseAndClose(t *testing.T) {
 			}
 		}
 		for i := range 128 {
-			f.events <- protocol.Callback{MessageID: 1, CoreSequence: uint64(i + 1), JSON: []byte(`{}`)}
+			f.inst.sendEvent(maa.Event{MessageID: 1, Sequence: uint64(i + 1), JSON: []byte(`{}`)})
 		}
 		if err := <-h.done; !errors.Is(err, protocol.ErrQueueFull) {
 			t.Fatalf("session failure with retained snapshots: %v", err)
