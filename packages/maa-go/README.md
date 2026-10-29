@@ -223,7 +223,8 @@ skip 事件中、因此不计入 `Skipped`；详情与 JSON 的 `skip_filter` �
 
 ## 已知限制
 
-- BGR 读取未公开；只有能力探测。
+- `GetImageBGR` 返回原始 BGR 字节，不公开宽、高与步长元数据，通道序与
+  步长由 Core 决定；符号缺席时返回 `ErrUnsupported`，只有能力探测结果。
 - 真实 MaaCore 运行支持仅限 Linux amd64/glibc；macOS、Windows 的
   测试覆盖原生 loader 与夹具，真实 MaaCore 运行未验证；musl 与静态
   单文件部署未验证。

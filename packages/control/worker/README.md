@@ -3,6 +3,9 @@
 `worker.Client` owns one child process, its versioned JSONL channel, stderr tail,
 and cleanup. It depends only on Go and the [protocol package](protocol/protocol.go);
 only [core-worker](../../../apps/core-worker/README.md) imports the native binding.
+The wire side is frozen protocol v1: the client verifies the version on the
+greeting and refuses an incompatible worker before sending any request, so no
+device action can cross a version boundary.
 
 ```go
 client, err := worker.Launch(ctx, worker.Config{
@@ -28,15 +31,94 @@ select defaults: startup 10s, requests 30s, shutdown 5s. Negative values fail be
 process launch. Its context bounds startup only; `Close` owns the established
 session lifetime. `ExpectedWorkerVersion` can enforce an exact build version.
 
-Use the typed Initialize/Connect/AppendTask/SetTaskParams/Start/Stop/Status/Ping
-methods. Calls are concurrent-safe; a single writer preserves request ID order,
-and responses can arrive in any order. Connect returns acceptance and later emits
-an `operation` event. Task completion must be interpreted from native callbacks;
-the supervisor does not infer success from status or acknowledgments.
+Use the typed Initialize/Connect/Click/Screencap/AttachWindow/AppendTask/
+SetTaskParams/Start/Stop/BackToHome/Status/UUID/Log/MapLevelKey/ItemName/
+GetImagePNG/GetImageBGR/Ping methods. Calls are
+concurrent-safe; a single writer preserves request ID order, and responses can
+arrive in any order. The four async submissions return an `*Operation` whose
+`Wait` reports the native terminal state (see the frozen client contract below);
+task and other screen-action completion must still be interpreted from native
+callbacks — the supervisor does not infer success from status or
+acknowledgments. `UUID` reads the device UUID from the Core cache without
+connecting; the empty string and an empty task list are normal results.
+`Log` feeds the process-level native log; a nil error only states that the
+void call returned. `MapLevelKey`/`ItemName` run the experiment queries; the
+zero-valued level result, an empty item name, and the native "Unknown" are
+normal results, and a missing optional symbol arrives as the stable
+unsupported rejection without any native call.
+`GetImagePNG`/`GetImageBGR` return one fully assembled, independently owned
+snapshot of the cached image; they never trigger a screencap, so a fresh
+image requires waiting for a Screencap operation's real success first.
 
-`Events()` is a bounded single-consumer stream. Unknown native messages stay in
-their raw JSON. Observe it alongside `Done()`/`Err()`; do not wait only for a task
-callback when the process may have failed. After Done, Events is closed and any
+`Initialize` returns the worker's read-only runtime snapshot: the native Core
+version, the library SHA256, one digest per available `resource/version.json`,
+the optional-symbol capabilities, the effective limit set the worker applies
+(the whole default set when the request omitted `limits`), and the native
+`null_size` sentinel. The value is a detached copy: mutating it cannot affect
+the worker or later operations. Capabilities describe native symbol presence
+only — never that a wire command is implemented, a task type is accepted, or an
+action will succeed; implemented commands are defined by the frozen protocol
+table, and unimplemented ones fail with stable `unsupported`. A snapshot
+missing the limit set or null size, or reporting limits above the wire
+budgets, is a protocol failure.
+
+### Frozen client contract for the reserved command set
+
+The protocol freezes the v1 command/event tables (see the
+[core worker README](../../../apps/core-worker/README.md)); the client grows
+the surfaces below together with the worker commands they drive, and never
+exposes a command the connected build rejects:
+
+- **Async operations.** Each accepted async submission (`connect`, `click`,
+  `screencap`, `attach_window`) yields one operation object carrying the
+  request ID, nonzero async ID, and `what`. `Wait(ctx)` is repeatable and
+  concurrency-safe: the first terminal observation is cached and immutable —
+  a later fault or close never rewrites a confirmed result — and unconfirmed
+  operations stay distinguishable as pending, session-closed, or unknown.
+  Cancelling a `Wait` ends only that wait: it never cancels the submitted
+  native action, kills the worker, or unblocks other waiters. A request that
+  was enqueued but whose acceptance is unknown still terminates the session
+  under the failure discipline below.
+- **Image transfers.** `get_image_png`/`get_image_bgr` return a fully
+  assembled, independently owned byte snapshot: the client drives the
+  `image_chunk` pulls (at most one outstanding chunk per transfer), verifies
+  offsets, lengths, and the declared SHA256, and delivers only a complete,
+  verified payload. Chunk traffic never appears in the event stream. The
+  configured binding image maxima (default PNG 32 MiB, BGR 64 MiB; explicit
+  maxima within the frozen ceilings) are carried by bounded chunking, not by
+  larger frames; capacity conflicts are rejected by the worker before any
+  transfer starts.
+- **Instance observations.** `fault` and `diagnostics` events carry the native
+  instance's first fault and bounded diagnostics snapshot (saturating lost
+  event count, structured first fault and stop diagnostic, base64 raw prefix
+  that may be invalid UTF-8/JSON). The client validates them, caches them, and
+  exposes the native equivalents separately from its own process-level
+  facts: `Fault()` closes when the fault event was received — independent of
+  any consumer draining `Events()` — `InstanceErr()` returns that first fault,
+  and `InstanceDone()`/`InstanceDiagnostics()` report the terminal state and
+  its decoded snapshot (ok=false until delivered, never fabricated). A forced
+  kill is reported as process-level failure with unknown facts and closes
+  `Done()` but neither `Fault()` nor `InstanceDone()`; the stderr tail stays
+  on `Diagnostics() string`.
+- **Queries.** `uuid`, `map_level_key`, `item_name`, and `log` return the
+  frozen result DTOs; empty strings, zero-valued results, and empty lists are
+  normal observations, not errors.
+
+### Cancellation and waiting
+
+Cancelling a request's context before it is enqueued rejects it locally and
+leaves the session intact. Cancellation or timeout after enqueueing
+terminates the session because execution may already have begun; such results
+stay unknown. Waiting is different: waiting for an operation's terminal state
+can be cancelled freely and repeatedly without side effects on the worker,
+the native action, or other waiters.
+
+`Events()` is a bounded single-consumer stream. The frozen v1 event names are
+`core`, `operation`, `fault`, and `diagnostics`; an unknown event name aborts
+the session as a protocol error, and a build that does not yet emit the newer
+events simply never sends them. Unknown native messages stay in
+their raw JSON. Observe it alongside `Done()`/`Err()`; do not wait only for a
+task callback when the process may have failed. After Done, Events is closed and any
 buffered events remain readable. Close does not wait for the consumer. Diagnostics
 returns up to 64 KiB of raw stderr tail, which may contain private connection or
 native diagnostic data; callers decide where it can be displayed or stored.

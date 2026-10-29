@@ -27,6 +27,11 @@ type session struct {
 	requests chan protocol.Message
 	mu       sync.Mutex // Orders all event producers and their sequence allocation.
 	sequence uint64
+	// transfers is the retained-image registry of the session. Only the
+	// command-loop goroutine creates, serves and releases snapshots; cleanup
+	// drops them on close and on every failure path.
+	transfers      map[uint64]*imageSnapshot
+	nextTransferID uint64
 }
 
 // serve bounds graceful cleanup even when a native call never returns. main
@@ -35,7 +40,7 @@ func serve(ctx context.Context, input io.ReadCloser, output io.Writer, factory e
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	defer input.Close()
-	s := &session{ctx: ctx, fail: cancel, out: protocol.NewQueue(), requests: make(chan protocol.Message, protocol.RequestQueue)}
+	s := &session{ctx: ctx, fail: cancel, out: protocol.NewQueue(), requests: make(chan protocol.Message, protocol.RequestQueue), transfers: make(map[uint64]*imageSnapshot)}
 	go s.write(output)
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
@@ -185,6 +190,10 @@ func (s *session) commands(factory engineFactory) (result error) {
 	var observed <-chan struct{}
 	var operations sync.WaitGroup
 	cleanup := func() error {
+		// Retained image snapshots never outlive the command loop: freeing
+		// them first releases the aggregate in-flight image memory before the
+		// potentially blocking native close.
+		s.releaseImageTransfers()
 		if core == nil {
 			return nil
 		}
@@ -214,6 +223,19 @@ func (s *session) commands(factory engineFactory) (result error) {
 					_ = s.respond(req, nil, err, false)
 					continue
 				}
+				// Omitted limits select the whole default set as one applied
+				// configuration. The frozen wire budgets are enforced before
+				// the native factory, so an undeliverable configuration fails
+				// with limit_exceeded and the effective maximum instead of a
+				// mid-session delivery failure; the binding's own range and
+				// cross-field validation happens inside the factory and any
+				// failure there is terminal.
+				limits := effectiveLimits(config.Limits)
+				if err := protocol.CheckWireLimits(&limits); err != nil {
+					_ = s.respond(req, nil, err, false)
+					continue
+				}
+				config.Limits = &limits
 				var info protocol.RuntimeInfo
 				core, info, err = factory(config)
 				if err != nil {
@@ -224,7 +246,7 @@ func (s *session) commands(factory engineFactory) (result error) {
 				observed = done
 				go func(e engine) {
 					defer close(done)
-					if err := e.Observe(s.ctx, func(c protocol.Callback) error { return s.event(protocol.CoreEvent, c) }); err != nil {
+					if err := e.Observe(s.ctx, s.event); err != nil {
 						s.fail(err)
 					}
 				}(core)
@@ -258,6 +280,29 @@ func (s *session) commands(factory engineFactory) (result error) {
 				if err == nil {
 					out = protocol.OperationAccepted{AsyncID: op.ID()}
 				}
+			case protocol.Click:
+				var cfg protocol.ClickRequest
+				if err = payload(req, &cfg); err == nil {
+					op, err = core.Click(cfg)
+				}
+				if err == nil {
+					out = protocol.OperationAccepted{AsyncID: op.ID()}
+				}
+			case protocol.Screencap:
+				if err = emptyPayload(req.Payload); err == nil {
+					op, err = core.Screencap()
+				}
+				if err == nil {
+					out = protocol.OperationAccepted{AsyncID: op.ID()}
+				}
+			case protocol.AttachWindow:
+				var cfg protocol.AttachWindowRequest
+				if err = payload(req, &cfg); err == nil {
+					op, err = core.AttachWindow(cfg)
+				}
+				if err == nil {
+					out = protocol.OperationAccepted{AsyncID: op.ID()}
+				}
 			case protocol.AppendTask:
 				var task protocol.TaskRequest
 				if err = payload(req, &task); err == nil {
@@ -274,6 +319,10 @@ func (s *session) commands(factory engineFactory) (result error) {
 				if err = emptyPayload(req.Payload); err == nil {
 					err = core.Start()
 				}
+			case protocol.BackToHome:
+				if err = emptyPayload(req.Payload); err == nil {
+					err = core.BackToHome()
+				}
 			case protocol.Stop:
 				if err = emptyPayload(req.Payload); err == nil {
 					var stopped bool
@@ -283,6 +332,40 @@ func (s *session) commands(factory engineFactory) (result error) {
 			case protocol.Status:
 				if err = emptyPayload(req.Payload); err == nil {
 					out, err = core.Status()
+				}
+			case protocol.UUID:
+				if err = emptyPayload(req.Payload); err == nil {
+					out, err = core.UUID()
+				}
+			case protocol.Log:
+				var input protocol.LogRequest
+				if err = payload(req, &input); err == nil {
+					err = core.Log(input)
+				}
+			case protocol.MapLevelKey:
+				var query protocol.MapLevelKeyRequest
+				if err = payload(req, &query); err == nil {
+					out, err = core.MapLevelKey(query)
+				}
+			case protocol.ItemName:
+				var query protocol.ItemNameRequest
+				if err = payload(req, &query); err == nil {
+					out, err = core.ItemName(query)
+				}
+			case protocol.GetImagePNG, protocol.GetImageBGR:
+				// Reading the cache is not a screencap: the snapshot is taken
+				// under the transfer budgets and served chunk by chunk.
+				if err = emptyPayload(req.Payload); err == nil {
+					read := core.GetImagePNG
+					if req.Name == protocol.GetImageBGR {
+						read = core.GetImageBGR
+					}
+					out, err = s.admitImageSnapshot(read)
+				}
+			case protocol.ImageChunk:
+				var chunk protocol.ImageChunkRequest
+				if err = payload(req, &chunk); err == nil {
+					out, err = s.serveImageChunk(&chunk)
 				}
 			default:
 				err = wireError(protocol.Unsupported, "unknown worker command")

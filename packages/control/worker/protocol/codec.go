@@ -55,6 +55,24 @@ func Decode(raw []byte, target any) error {
 	return nil
 }
 
+// validateBoundedError checks one structured wire error: a stable code, a
+// bounded message, and bounded detail strings. Frame-level validation and the
+// fault/diagnostics payload validation share it, so a nested error obeys the
+// same bounds as a top-level one.
+func validateBoundedError(e *Error) error {
+	if e.Code == "" || len(e.Code) > 64 || e.Message == "" || len(e.Message) > 4096 {
+		return errors.New("worker: invalid error payload")
+	}
+	if d := e.Detail; d != nil {
+		for _, s := range [4]string{d.Kind, d.Buffer, d.Unit, d.Field} {
+			if len(s) > 128 {
+				return errors.New("worker: invalid error detail")
+			}
+		}
+	}
+	return nil
+}
+
 func (m Message) Validate() error {
 	if m.Version != Version {
 		return fmt.Errorf("worker: unsupported protocol version %d", m.Version)
@@ -62,8 +80,10 @@ func (m Message) Validate() error {
 	if len(m.Name) > 64 {
 		return errors.New("worker: message name exceeds byte limit")
 	}
-	if m.Error != nil && (m.Error.Code == "" || len(m.Error.Code) > 64 || m.Error.Message == "" || len(m.Error.Message) > 4096) {
-		return errors.New("worker: invalid error payload")
+	if m.Error != nil {
+		if err := validateBoundedError(m.Error); err != nil {
+			return err
+		}
 	}
 	switch m.Type {
 	case Hello:
