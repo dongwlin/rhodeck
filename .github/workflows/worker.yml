@@ -1,6 +1,7 @@
 name: worker
 
-# Platform matrix for the full worker: runtime tests on Linux/Windows amd64
+# Platform matrix for the worker, control runtime and standalone CLI:
+# runtime tests on Linux/Windows amd64
 # and macOS amd64/arm64 (CGO_ENABLED=0, real MaaCore excluded), a Linux race
 # job, and linux/windows/darwin x amd64/arm64 cross-compilation of packages
 # and test binaries without execution.
@@ -10,14 +11,15 @@ name: worker
 # installed explicitly. The API coverage drift gate (tools/api-coverage) runs
 # on Linux as the integrity entry for the frozen full-worker mapping.
 #
-# The real-Core no-device test (TestRealCoreWorkerNoDevice) stays explicitly
+# The real-Core no-device tests (worker and control Doctor) stay explicitly
 # excluded: it is opt-in through caller-owned environment inputs on a machine
 # that provides MaaCore, and a CI skip never counts as a verified pass.
 "on":
   push:
     paths:
       - "apps/core-worker/**"
-      - "packages/control/worker/**"
+      - "apps/cli/**"
+      - "packages/control/**"
       - "packages/maa-go/**"
       - "tools/api-coverage/**"
       - "go.mod"
@@ -26,7 +28,8 @@ name: worker
   pull_request:
     paths:
       - "apps/core-worker/**"
-      - "packages/control/worker/**"
+      - "apps/cli/**"
+      - "packages/control/**"
       - "packages/maa-go/**"
       - "tools/api-coverage/**"
       - "go.mod"
@@ -70,10 +73,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential
       - name: Build and vet
         run: |
-          go build ./apps/core-worker ./packages/control/worker/... ./tools/api-coverage
-          go vet ./apps/core-worker ./packages/control/worker/... ./tools/api-coverage
+          go build ./apps/core-worker ./apps/cli ./packages/control/... ./tools/api-coverage
+          go vet ./apps/core-worker ./apps/cli ./packages/control/... ./tools/api-coverage
       - name: Unit and process tests with native fixtures (real Core excluded)
-        run: go test ./apps/core-worker ./packages/control/worker/... -skip TestRealCoreWorker -count=1 -timeout=3m
+        run: go test ./apps/core-worker ./apps/cli ./packages/control/... -skip TestRealCore -count=1 -timeout=3m
       - name: API coverage drift gate
         if: runner.os == 'Linux'
         run: |
@@ -81,7 +84,7 @@ jobs:
           go run ./tools/api-coverage --root .
       - name: Check formatting
         run: |
-          unformatted="$(gofmt -l apps/core-worker packages/control/worker tools/api-coverage)"
+          unformatted="$(gofmt -l apps/core-worker apps/cli packages/control tools/api-coverage)"
           if [ -n "$unformatted" ]; then printf '%s\n' "$unformatted"; exit 1; fi
 
   race:
@@ -97,7 +100,7 @@ jobs:
       - name: Install C toolchain for native fixtures
         run: sudo apt-get update && sudo apt-get install -y build-essential
       - name: Unit and process tests with race detector
-        run: go test -race ./apps/core-worker ./packages/control/worker/... -skip TestRealCoreWorker -count=1 -timeout=8m
+        run: go test -race ./apps/core-worker ./apps/cli ./packages/control/... -skip TestRealCore -count=1 -timeout=8m
 
   cross-build:
     name: cross-compile (${{ matrix.goos }}/${{ matrix.goarch }}, no execution)
@@ -118,8 +121,8 @@ jobs:
         with:
           go-version: "1.26.9"
           cache: true
-      - name: Compile worker, supervisor and tests
+      - name: Compile worker, control, CLI and tests
         run: |
-          go build ./apps/core-worker ./packages/control/worker/...
+          go build ./apps/core-worker ./apps/cli ./packages/control/...
           mkdir -p "$RUNNER_TEMP/worker-tests"
-          go test -c -o "$RUNNER_TEMP/worker-tests/" ./apps/core-worker ./packages/control/worker/...
+          go test -c -o "$RUNNER_TEMP/worker-tests/" ./apps/core-worker ./apps/cli ./packages/control/...
