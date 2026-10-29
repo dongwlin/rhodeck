@@ -97,7 +97,7 @@ type Event struct {
 	State         State           `json:"state,omitempty"`
 	TaskID        string          `json:"task_id,omitempty"`
 	CoreTaskID    int32           `json:"core_task_id,omitempty"`
-	MessageID     int32           `json:"message_id,omitempty"`
+	MessageID     int32           `json:"message_id"`
 	CoreSequence  uint64          `json:"core_sequence,omitempty"`
 	Details       json.RawMessage `json:"details,omitempty"`
 	Code          string          `json:"code,omitempty"`

@@ -128,7 +128,8 @@ func makePrivateDirectory(path string) error {
 		if !info.IsDir() {
 			return errors.New("control: expected directory")
 		}
-		return nil
+		// Complete a preceding creator's interrupted directory sync as well.
+		return syncDirectory(filepath.Dir(path))
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return err
