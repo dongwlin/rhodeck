@@ -12,7 +12,16 @@ func TestOutputAbortNeverStartsAnotherWrite(t *testing.T) {
 	sink := newBlockingWriter()
 	t.Cleanup(sink.unblock)
 	writer := newRunOutput(json.NewEncoder(sink))
-	if err := writer.write(context.Background(), nil, envelope{SchemaVersion: 1, Type: "event"}, 20*time.Millisecond, func() {}); !errors.Is(err, errOutputTimeout) {
+	result := make(chan error, 1)
+	go func() {
+		result <- writer.write(context.Background(), nil, envelope{SchemaVersion: 1, Type: "event"}, 20*time.Millisecond, func() {})
+	}()
+	select {
+	case <-sink.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("output write never started")
+	}
+	if err := <-result; !errors.Is(err, errOutputTimeout) {
 		t.Fatalf("write = %v, want output timeout", err)
 	}
 	writer.close()

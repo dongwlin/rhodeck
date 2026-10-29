@@ -413,13 +413,14 @@ func TestStartupTimeoutUsesTimeoutExitCode(t *testing.T) {
 }
 
 type blockingWriter struct {
-	started     chan struct{}
-	release     chan struct{}
-	returned    chan struct{}
-	startOnce   sync.Once
-	releaseOnce sync.Once
-	returnOnce  sync.Once
-	writes      atomic.Int32
+	started      chan struct{}
+	release      chan struct{}
+	returned     chan struct{}
+	startOnce    sync.Once
+	releaseOnce  sync.Once
+	returnOnce   sync.Once
+	writes       atomic.Int32
+	terminalOnly bool
 }
 
 func newBlockingWriter() *blockingWriter {
@@ -428,6 +429,9 @@ func newBlockingWriter() *blockingWriter {
 
 func (w *blockingWriter) Write(p []byte) (int, error) {
 	w.writes.Add(1)
+	if w.terminalOnly && !bytes.Contains(p, []byte(`"type":"terminal"`)) {
+		return len(p), nil
+	}
 	w.startOnce.Do(func() { close(w.started) })
 	<-w.release
 	w.returnOnce.Do(func() { close(w.returned) })
@@ -451,6 +455,7 @@ func TestBlockedOutputReleasesRuntimeAfterCancellationOrCompletion(t *testing.T)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			out := newBlockingWriter()
+			out.terminalOnly = !tc.cancel
 			t.Cleanup(out.unblock)
 			var diagnostics bytes.Buffer
 			finished := make(chan int, 1)
@@ -482,13 +487,24 @@ func TestBlockedOutputReleasesRuntimeAfterCancellationOrCompletion(t *testing.T)
 			if err := rt.Close(context.Background()); err != nil {
 				t.Fatal(err)
 			}
+			if !tc.cancel {
+				entries, err := os.ReadDir(filepath.Join(dir, "runs"))
+				if err != nil || len(entries) != 1 {
+					t.Fatalf("completed run record missing: %v", err)
+				}
+				record, err := control.ReadRecord(dir, strings.TrimSuffix(entries[0].Name(), ".json"))
+				if err != nil || record.Result.State != control.Succeeded || record.Result.Cleanup != "complete" {
+					t.Fatalf("output failure changed confirmed native facts: %+v (%v)", record.Result, err)
+				}
+			}
+			writesBeforeRelease := out.writes.Load()
 			out.unblock()
 			select {
 			case <-out.returned:
 			case <-time.After(5 * time.Second):
 				t.Fatal("test output writer did not terminate after release")
 			}
-			if out.writes.Load() != 1 {
+			if out.writes.Load() != writesBeforeRelease {
 				t.Fatalf("output was retried after abort: %d writes", out.writes.Load())
 			}
 		})
