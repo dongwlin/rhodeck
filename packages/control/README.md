@@ -18,7 +18,7 @@ if err != nil { return err }
 // remain readable and run.Snapshot() contains the result including cleanup.
 ```
 
-Generic plans use schema version 1, explicit absolute installation/ADB paths, one
+Plans use schema version 1, explicit absolute installation/ADB paths, one
 connection, and an ordered batch of 1–128 tasks. Each task has a caller-owned
 unique `id`, an open string `type`, and raw JSON object `params`. `host_run_id`
 is optional host correlation metadata; the application generates its own
@@ -29,8 +29,8 @@ unknown fields and large integers. `ValidatePlan` checks syntax and local/wire
 budgets. Core task acceptance, native limit cross-field rules and device
 preconditions remain unverified until the selected installation is used.
 
-Explicit [typed adapters](typed-adapters.md) use plan version 2 and a
-runtime-local registry. `PreparePlan` provides a pure compiled preview; task
+Explicit [typed adapters](typed-adapters.md) extend the same schema with an
+optional selection and a runtime-local registry. `PreparePlan` provides a pure compiled preview; task
 names alone never enable an adapter. No task-specific adapters are bundled.
 
 ## Results and stopping
@@ -81,8 +81,7 @@ ends when the process exits. It is a data-directory lock; different directories
 or another CLI may still address the same device. The integrating host must
 serialize those device owners.
 
-Records are `<data-dir>/runs/<run_id>.json`, schema version 1 for generic runs
-and version 2 for explicit adapters, containing the
+Records are `<data-dir>/runs/<run_id>.json`, schema version 1 for all runs, containing the
 explicit plan, task associations, runtime/library/resource snapshot and result.
 The application persists admission before worker launch and metadata before
 connection, then saves each newly confirmed terminal task fact while the batch
@@ -107,10 +106,10 @@ inspection; it does not acquire execution ownership.
 Records include raw task parameters, paths and connection data and may contain
 secrets. Keep the data directory private. Retention, backup and deletion belong
 to its owner; this version neither uploads records nor deletes old evidence.
-Raw callback streams are transient and are not journaled. This storage format
-accepts legacy version 1 and adapted version 2, rejects unknown future versions
-and does not downgrade adapted records for older programs. An older program
-rejects version 2 records rather than silently losing target facts.
+Raw callback streams are transient and are not journaled. The current schema
+is still under development and is extended directly before the first release;
+unpublished snapshots have no compatibility or migration guarantee. Unsupported
+versions and malformed records are rejected without deleting or replaying them.
 
 `Doctor` acquires directory ownership and initializes an explicit installation
 in a supervised child, then closes and reaps it. It never connects, appends or

@@ -11,14 +11,8 @@ import (
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
 
-// SchemaVersion is the unchanged generic plan and machine envelope version.
+// SchemaVersion identifies the current in-development control data format.
 const SchemaVersion = 1
-
-// AdaptedSchemaVersion identifies explicit adapter plans and their containers.
-const AdaptedSchemaVersion = 2
-
-// TypedSchemaVersion versions the nested typed result independently.
-const TypedSchemaVersion = 1
 
 const (
 	MaxPlanBytes = 16 << 20

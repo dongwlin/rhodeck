@@ -37,7 +37,7 @@ func fixtureAdapter(reducer TaskReducer) TaskAdapter {
 func typedRuntimePlan(t *testing.T) Plan {
 	t.Helper()
 	plan := runtimePlan(t)
-	plan.SchemaVersion = AdaptedSchemaVersion
+	plan.SchemaVersion = SchemaVersion
 	ref := runtimeAdapterFixture{}.Descriptor()
 	plan.Tasks[0].Adapter = &ref
 	return plan
@@ -79,7 +79,7 @@ func TestRuntimeTypedChainAndBusinessResults(t *testing.T) {
 			}
 			plan.Tasks[0].Adapter.Name = "mutated"
 			events, result := waitRuntimeRun(t, r)
-			if result.SchemaVersion != AdaptedSchemaVersion || result.State != test.state || result.Code != test.code || result.Cleanup != "complete" {
+			if result.SchemaVersion != SchemaVersion || result.State != test.state || result.Code != test.code || result.Cleanup != "complete" {
 				t.Fatalf("business result = %+v", result)
 			}
 			if result.Tasks[0].State != Succeeded || result.Tasks[1].Typed != nil || result.Tasks[0].Typed.Targets[0].Outcome != test.outcome {
@@ -94,7 +94,7 @@ func TestRuntimeTypedChainAndBusinessResults(t *testing.T) {
 					continue
 				}
 				typedEvents++
-				if e.SchemaVersion != AdaptedSchemaVersion || e.TaskID != "first" || e.CoreTaskID != 101 || e.Typed == nil {
+				if e.SchemaVersion != SchemaVersion || e.TaskID != "first" || e.CoreTaskID != 101 || e.Typed == nil {
 					t.Fatalf("typed association = %+v", e)
 				}
 				e.Typed.Targets[0].Outcome = TargetAmbiguous
@@ -275,7 +275,7 @@ func typedObservationHarness(t *testing.T, reducer TaskReducer) *Run {
 	t.Cleanup(func() { cancel(); _ = s.close() })
 	prepared.Tasks[0].CoreTaskID, prepared.Tasks[0].State = 101, Started
 	return &Run{runtime: &Runtime{store: s}, plan: prepared.Plan, sourcePlan: clonePlan(plan),
-		result: Result{SchemaVersion: AdaptedSchemaVersion, RunID: newRunID(), State: Started, Cleanup: "pending", Tasks: prepared.Tasks},
+		result: Result{SchemaVersion: SchemaVersion, RunID: newRunID(), State: Started, Cleanup: "pending", Tasks: prepared.Tasks},
 		events: make(chan Event, runEventMessages), done: make(chan struct{}), changed: make(chan struct{}, 1),
 		commands: ctx, cancelCommands: cancel, taskIndex: map[int32]int{101: 0}, reducers: prepared.reducers, startIssued: true}
 }

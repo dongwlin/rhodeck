@@ -29,14 +29,14 @@ func (testTaskReducer) Observe(Observation) (TypedUpdate, error) { return TypedU
 func adaptedTestPlan(t *testing.T) (Plan, *testTaskAdapter) {
 	t.Helper()
 	p := validTestPlan(t)
-	p.SchemaVersion = AdaptedSchemaVersion
+	p.SchemaVersion = SchemaVersion
 	ref := AdapterRef{Name: "test-adapter", Version: 1}
 	p.Tasks[0].Adapter = &ref
 	return p, &testTaskAdapter{ref: ref}
 }
 
 func testTypedResult(ids ...string) *TypedResult {
-	r := &TypedResult{SchemaVersion: TypedSchemaVersion, Adapter: AdapterRef{Name: "test", Version: 1}}
+	r := &TypedResult{SchemaVersion: SchemaVersion, Adapter: AdapterRef{Name: "test", Version: 1}}
 	for _, id := range ids {
 		r.Targets = append(r.Targets, TargetResult{ID: id, Outcome: TargetUnobserved})
 	}
@@ -112,12 +112,8 @@ func TestPreparePlanRejectsInvalidSelectionsAndCompilerOutput(t *testing.T) {
 		"duplicate registry": func(_ *Plan, a *testTaskAdapter) []TaskAdapter { return []TaskAdapter{a, a} },
 		"nil adapter":        func(*Plan, *testTaskAdapter) []TaskAdapter { return []TaskAdapter{nil} },
 		"typed nil adapter":  func(*Plan, *testTaskAdapter) []TaskAdapter { return []TaskAdapter{(*testTaskAdapter)(nil)} },
-		"legacy adapter": func(p *Plan, a *testTaskAdapter) []TaskAdapter {
-			p.SchemaVersion = SchemaVersion
-			return []TaskAdapter{a}
-		},
-		"no adapted task": func(p *Plan, a *testTaskAdapter) []TaskAdapter {
-			p.Tasks[0].Adapter = nil
+		"future schema": func(p *Plan, a *testTaskAdapter) []TaskAdapter {
+			p.SchemaVersion = SchemaVersion + 1
 			return []TaskAdapter{a}
 		},
 		"zero version": func(p *Plan, a *testTaskAdapter) []TaskAdapter {
@@ -162,7 +158,7 @@ func TestAdapterControlDecoding(t *testing.T) {
 	for _, changed := range []string{
 		strings.Replace(string(raw), `"name":"test-adapter"`, `"name":"test-adapter","name":"other"`, 1),
 		strings.Replace(string(raw), `"version":1`, `"version":1,"future":true`, 1),
-		strings.Replace(string(raw), `"schema_version":2`, `"schema_version":3`, 1),
+		strings.Replace(string(raw), `"schema_version":1`, `"schema_version":2`, 1),
 	} {
 		if _, err := DecodePlan(strings.NewReader(changed)); !errors.Is(err, ErrInvalidPlan) {
 			t.Fatalf("ambiguous or future adapter plan accepted: %v", err)

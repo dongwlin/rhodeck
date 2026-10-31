@@ -19,14 +19,18 @@ stable, unique target IDs. `PreparedPlan.Plan` contains the compiled parameters.
 The runtime prepares its own detached submission and keeps the original caller
 plan in the private record. Mutating a preview cannot alter an admitted run.
 
-## Versions
+## Schema
 
 | Container | Generic input | Explicit adapter input |
 | --- | --- | --- |
-| Plan | `schema_version: 1`, no `adapter` | `schema_version: 2`, at least one explicit adapter; mixed raw tasks allowed |
-| Result, Event, Record | Version 1, unchanged fields | Version 2, optional nested `typed` on task results and typed events |
-| TypedResult | Absent | Independently versioned `schema_version: 1` |
-| CLI envelope | Version 1 | Envelope remains version 1; nested objects carry their own versions |
+| Plan | `schema_version: 1` | Same schema, optional per-task `adapter`; mixed raw tasks allowed |
+| Result, Event, Record | `schema_version: 1` | Same schema, optional `typed` on task results and typed events |
+| TypedResult | Absent | `schema_version: 1` |
+| CLI envelope | `schema_version: 1` | `schema_version: 1` |
+
+The schema is under development and extends version 1 directly before the first
+release. Unpublished snapshots have no compatibility guarantee. Adapter versions
+select reducer implementations and do not denote product releases.
 
 `DecodePlan` and `ValidatePlan` check structural versions and budgets.
 `PreparePlan` additionally resolves adapter identity/version and validates
@@ -34,12 +38,12 @@ adapter output. `Runtime.Run` prepares before admission or launching a worker;
 an unknown adapter returns `ErrInvalidPlan`. The standalone CLI's generic
 dry-run checks syntax and budgets; it does not prepare an adapter.
 
-New readers accept both record versions without requiring the original adapter
-to be installed. Recovery retains the record version and confirmed facts,
-marks unfinished work unknown, and executes nothing. Older readers continue
-to read generic version 1 records and reject adapted version 2 records. Future
-container or nested result versions, malformed associations and over-budget
-records refuse reading/startup. There is no automatic migration or downgrade.
+Records do not require the original adapter to be installed for reading.
+Recovery retains confirmed facts, marks unfinished work unknown, and executes
+nothing. Omitted optional adapter/result fields use the generic path.
+Unsupported container or nested result versions, malformed associations and
+over-budget records refuse reading/startup. No automatic migration, deletion or
+replay is performed for records from unpublished snapshots.
 
 ## Observations and results
 

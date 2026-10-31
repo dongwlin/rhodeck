@@ -240,27 +240,13 @@ func ReadRecord(dataDir, runID string) (Record, error) {
 	return record, nil
 }
 
-// Adapted records require the complete versioned association, without loading
-// the adapter or installation. Recovery only preserves facts; it never prepares
-// or resumes device work. Legacy records retain their original version.
+// Records require complete plan/result associations without loading an adapter
+// or installation. Recovery only preserves facts; it never prepares or resumes
+// device work. Unknown data formats are rejected instead of migrated.
 func validateRecord(record Record) error {
-	v := record.SchemaVersion
-	if (v != SchemaVersion && v != AdaptedSchemaVersion) || record.Result.SchemaVersion != v ||
-		record.Plan.SchemaVersion != v || !runIDPattern.MatchString(record.Result.RunID) {
+	if record.SchemaVersion != SchemaVersion || record.Result.SchemaVersion != SchemaVersion ||
+		record.Plan.SchemaVersion != SchemaVersion || !runIDPattern.MatchString(record.Result.RunID) {
 		return errors.New("control: record identity or version mismatch")
-	}
-	if v == SchemaVersion {
-		for _, task := range record.Plan.Tasks {
-			if task.Adapter != nil {
-				return errors.New("control: adapted task requires a versioned record")
-			}
-		}
-		for _, task := range record.Result.Tasks {
-			if task.Typed != nil {
-				return errors.New("control: typed result requires a versioned record")
-			}
-		}
-		return nil
 	}
 	if err := ValidatePlan(record.Plan); err != nil {
 		return fmt.Errorf("control: invalid record plan: %w", err)

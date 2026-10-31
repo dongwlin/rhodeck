@@ -164,7 +164,7 @@ func PreparePlan(p Plan, adapters ...TaskAdapter) (PreparedPlan, error) {
 			return bad("adapter returned invalid Core params")
 		}
 		out.Plan.Tasks[i].Params = bytes.Clone(prepared.Params)
-		typed := &TypedResult{SchemaVersion: TypedSchemaVersion, Adapter: *task.Adapter}
+		typed := &TypedResult{SchemaVersion: SchemaVersion, Adapter: *task.Adapter}
 		for _, id := range prepared.Targets {
 			typed.Targets = append(typed.Targets, TargetResult{ID: id, Outcome: TargetUnobserved})
 		}
@@ -261,7 +261,7 @@ func validateTypedResult(in *TypedResult) error {
 	if in == nil {
 		return nil
 	}
-	if in.SchemaVersion != TypedSchemaVersion || !validAdapterRef(in.Adapter) {
+	if in.SchemaVersion != SchemaVersion || !validAdapterRef(in.Adapter) {
 		return typedError("unsupported typed schema or adapter identity")
 	}
 	if len(in.Targets) == 0 {

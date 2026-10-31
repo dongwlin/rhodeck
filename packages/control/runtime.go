@@ -710,7 +710,7 @@ func (r *Run) observe(m protocol.Message) {
 		e.Details = bytes.Clone(callback.JSON)
 	}
 	r.mu.Lock()
-	if !r.result.FinishedAt.IsZero() || (r.plan.SchemaVersion == AdaptedSchemaVersion && r.proof != "") {
+	if !r.result.FinishedAt.IsZero() || (len(r.reducers) > 0 && r.proof != "") {
 		r.mu.Unlock()
 		return
 	}
