@@ -510,7 +510,11 @@ func TestConfirmedStopSurvivesCleanupFailure(t *testing.T) {
 		t.Fatalf("missing terminal: %s", out.String())
 	}
 	result := terminal.Result
-	if result.State != control.Stopped || result.Cleanup != "failed" || result.CleanupCode != "close_failed" {
+	// A worker that reports a Close error and exits immediately can be observed
+	// either through that error or through the following disconnect. Both are
+	// cleanup failures, and neither may rewrite the confirmed stop.
+	if result.State != control.Stopped || result.Cleanup != "failed" ||
+		(result.CleanupCode != "close_failed" && result.CleanupCode != "disconnected") {
 		t.Fatalf("confirmed stop was rewritten by cleanup: %+v", result)
 	}
 }
@@ -534,8 +538,12 @@ func TestStopWithEstablishedTypedFailureSurvivesCleanupFailure(t *testing.T) {
 		t.Fatalf("missing terminal: %s", out.String())
 	}
 	result := terminal.Result
+	// As above, the close error and the disconnect are transport-equivalent
+	// cleanup failures; the established typed failure and its target fact must
+	// survive either observation.
 	if result.State != control.Failed || result.Code != "typed_failed" ||
-		result.Cleanup != "failed" || result.CleanupCode != "close_failed" {
+		result.Cleanup != "failed" ||
+		(result.CleanupCode != "close_failed" && result.CleanupCode != "disconnected") {
 		t.Fatalf("established failure was rewritten by cleanup: %+v", result)
 	}
 	grow := taskResult(t, result.Tasks, "grow-1")
