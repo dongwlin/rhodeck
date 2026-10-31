@@ -544,7 +544,16 @@ func TestControlledNativeFaultMatrix(t *testing.T) {
 		c := launchAsyncFixtureWorker(t)
 		initializeAsyncFixtureWorker(t, c, library)
 
-		asyncfxTriggerLog(t, c, "asyncfx-badjson")
+		// The callback is produced inside the native Log call, but Observe
+		// encodes it independently. The resulting session failure can win the
+		// race against the Log response; both an acknowledgment and an unknown
+		// process/transport failure are valid trigger outcomes.
+		if err := c.Log(context.Background(), protocol.LogRequest{Level: "asyncfx", Message: "asyncfx-badjson"}); err != nil {
+			failure := &worker.Failure{}
+			if !errors.As(err, &failure) || !failure.Unknown {
+				t.Fatalf("malformed callback trigger = %v, want acknowledgment or a *Failure with unknown=true; diagnostics: %s", err, c.Diagnostics())
+			}
+		}
 		// Invalid native callback bytes are not valid JSON and can never be
 		// encoded onto the wire: the worker fails its own session instead of
 		// delivering lossy output, the process exits and the client reports a
