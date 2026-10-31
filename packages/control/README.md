@@ -31,7 +31,8 @@ preconditions remain unverified until the selected installation is used.
 
 Explicit [typed adapters](typed-adapters.md) extend the same schema with an
 optional selection and a runtime-local registry. `PreparePlan` provides a pure compiled preview; task
-names alone never enable an adapter. No task-specific adapters are bundled.
+names alone never enable an adapter. The package bundles the strict `oper_progress`
+adapter (`NewOperProgressAdapter`), which callers must register explicitly.
 
 ## Results and stopping
 

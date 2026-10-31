@@ -11,8 +11,19 @@ initial target results. Preparation does not create directories, take locks,
 launch workers, load native code or connect devices. Each adapter must implement
 deterministic preparation without side effects, reject incompatible task types,
 and create a fresh reducer for each task. Adapters may be prepared concurrently.
-No task-specific adapter implementations are bundled with this package or
-registered by the standalone CLI.
+The package currently bundles one strict adapter, `NewOperProgressAdapter`
+(`oper_progress`, version 1); the standalone CLI does not register it yet. Its
+input accepts only exact, case-sensitive `plans` entries with `role`, `name` and
+exactly one of `elite`, `skill_level` or `skill_mastery`:
+
+```json
+{"plans":[{"role":"Warrior","name":"Example","elite":2}]}
+```
+
+Unknown fields, explicit nulls, duplicate keys at any depth, unpaired UTF-16
+surrogate escapes and duplicate `(role, name)` entries are rejected with
+`ErrInvalidPlan`. See `ExampleNewOperProgressAdapter` for a deterministic
+preview of compiled params and target IDs.
 
 `PreparedTask.Params` is the final Core object; `PreparedTask.Targets` contains
 stable, unique target IDs. `PreparedPlan.Plan` contains the compiled parameters.
