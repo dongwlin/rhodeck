@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -91,7 +92,7 @@ func (rt *Runtime) Run(ctx context.Context, plan Plan) (*Run, error) {
 	}
 	if err := rt.store.save(Record{SchemaVersion: sourcePlan.SchemaVersion, Plan: sourcePlan, Result: r.result}); err != nil {
 		cancel()
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrRecordWrite, err)
 	}
 	rt.active = r
 	r.emit(Event{Type: "state", State: Admitted})
@@ -333,7 +334,10 @@ func (r *Run) persist() error {
 	r.mu.Lock()
 	record := Record{SchemaVersion: r.sourcePlan.SchemaVersion, Plan: r.sourcePlan, Result: cloneResult(r.result)}
 	r.mu.Unlock()
-	return r.runtime.store.save(record)
+	if err := r.runtime.store.save(record); err != nil {
+		return fmt.Errorf("%w: %w", ErrRecordWrite, err)
+	}
+	return nil
 }
 
 func (r *Run) interrupted() bool {
@@ -376,9 +380,9 @@ func (r *Run) execute() {
 				cleanup, cleanupCode = "failed", r.fatal
 			}
 		}
-		if cleanup != "complete" && r.proof == "" && outcome != Rejected && outcome != Unknown {
-			outcome, code = Unknown, cleanupCode
-		}
+		// Cleanup is reported separately. A late cleanup failure changes the
+		// cleanup fields and the CLI exit code, never an established business
+		// state such as succeeded, failed, stopped or rejected.
 		r.result.State, r.result.Code = outcome, code
 		r.result.Cleanup, r.result.CleanupCode = cleanup, cleanupCode
 		r.result.FinishedAt = time.Now().UTC()

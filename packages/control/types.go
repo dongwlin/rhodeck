@@ -23,6 +23,10 @@ var (
 	ErrBusy        = errors.New("control: runtime or data directory is busy")
 	ErrClosed      = errors.New("control: runtime is closed")
 	ErrInvalidPlan = errors.New("control: invalid plan")
+	// ErrRecordWrite marks a failure to persist a run record during admission or
+	// later in the run. Callers can map it to the stable record_write_failed code
+	// instead of treating an I/O failure as an input rejection.
+	ErrRecordWrite = errors.New("control: record write failed")
 )
 
 type State string

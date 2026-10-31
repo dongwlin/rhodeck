@@ -32,7 +32,11 @@ preconditions remain unverified until the selected installation is used.
 Explicit [typed adapters](typed-adapters.md) extend the same schema with an
 optional selection and a runtime-local registry. `PreparePlan` provides a pure compiled preview; task
 names alone never enable an adapter. The package bundles the strict `oper_progress`
-adapter (`NewOperProgressAdapter`), which callers must register explicitly.
+(`NewOperProgressAdapter`) and `switch_theme` (`NewSwitchThemeAdapter`) adapters,
+which callers must register explicitly; the standalone CLI registers both for
+`run` and `dry-run`. Adapter inputs and results are locally implemented and
+tested without authorized device acceptance, so capability output does not claim
+they work on a device.
 
 ## Results and stopping
 
@@ -50,7 +54,11 @@ For an explicitly adapted task, `TaskResult.State` remains the chain fact while
 `TaskResult.Typed` carries independent target facts. A matching completed batch
 also requires every typed target to be achieved or already set before the run
 can succeed. A typed failure makes the run failed; incomplete evidence makes it
-unknown. Reported training startup and a confirmation observation do not prove
+unknown. A fault, lost event or unconfirmed stop before a business conclusion
+keeps the run unknown even when typed facts already recorded a failure; those
+facts remain preserved. A confirmed stop without an established failure stays
+stopped, while a confirmed stop that already recorded a task or typed failure is
+failed. Reported training startup and a confirmation observation do not prove
 achievement.
 Missing/malformed terminal associations, lost events and unconfirmed process
 failure preserve `unknown`. Acceptance, Start acknowledgment and
@@ -61,7 +69,10 @@ stop. Commands use independent bounded request contexts so cancellation does
 not casually abandon an enqueued command. Stop confirmation has a separate
 five-second default grace period; the supervisor retains its own startup,
 request and shutdown deadlines. Unconfirmed work stays unknown after forced
-termination. `Runtime.Close` prevents admission, stops an active run, waits for
+termination. A late cleanup failure is recorded in `cleanup` and `cleanup_code`
+but does not rewrite an established `succeeded`, `failed`, `stopped` or
+`rejected` state; a confirmed stop without an established failure stays
+`stopped`. `Runtime.Close` prevents admission, stops an active run, waits for
 worker reaping and then releases storage ownership. A caller's expired Close
 context ends that wait; cleanup continues. No component retries, reconnects or
 replays device actions automatically.
@@ -94,6 +105,10 @@ atomic replacement. Newly created directories and replacements are synced on
 Linux/macOS; Windows flushes record contents before replacement, and power-loss
 durability of directory metadata has not been verified. Process-crash recovery
 and file replacement are covered separately from platform power-loss behavior.
+A record persistence failure wraps `ErrRecordWrite`. This includes the admission
+save returned by `Runtime.Run`, later run saves and a recovery resave during
+`New`; the corresponding code is `record_write_failed`. It is a persistence
+failure, not input or environment rejection; the CLI maps it to exit `6`.
 
 On reopening a directory, unfinished records become `unknown` with
 `host_interrupted` and unconfirmed cleanup. Already confirmed task facts stay

@@ -111,7 +111,7 @@ func (s *store) recover() error {
 				}
 			}
 			if err := s.save(record); err != nil {
-				return err
+				return fmt.Errorf("%w: %w", ErrRecordWrite, err)
 			}
 		}
 		if readErr == io.EOF {

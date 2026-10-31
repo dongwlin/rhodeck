@@ -11,24 +11,34 @@ initial target results. Preparation does not create directories, take locks,
 launch workers, load native code or connect devices. Each adapter must implement
 deterministic preparation without side effects, reject incompatible task types,
 and create a fresh reducer for each task. Adapters may be prepared concurrently.
-The package currently bundles two strict adapters: `NewOperProgressAdapter`
+The package bundles two strict adapters: `NewOperProgressAdapter`
 (`oper_progress`, version 1) and `NewSwitchThemeAdapter` (`switch_theme`,
-version 1). The standalone CLI does not register either yet. The OperProgress
+version 1). The [standalone CLI](../../apps/cli/README.md) registers both
+explicitly for `run` and `dry-run`; a task still selects one only through
+`Task.Adapter`. Neither adapter has authorized device acceptance. The CLI
+capability report keeps the reviewed MAA source revision, the `v6.20.1` release
+candidate snapshot, the uninspected installation and the missing device
+acceptance separate.
+The OperProgress
 input accepts only exact, case-sensitive `plans` entries with `role`, `name` and
-exactly one of `elite`, `skill_level` or `skill_mastery`:
+exactly one of `elite` (1-2), `skill_level` (2-7) or `skill_mastery` (three
+integers, exactly one nonzero slot in 1-3):
 
 ```json
 {"plans":[{"role":"Warrior","name":"Example","elite":2}]}
 ```
 
-Unknown fields, explicit nulls, duplicate keys at any depth, unpaired UTF-16
-surrogate escapes and duplicate `(role, name)` entries are rejected with
-`ErrInvalidPlan`. See `ExampleNewOperProgressAdapter` for a deterministic
-preview of compiled params and target IDs.
+`role` is exactly one of `Pioneer`, `Warrior`, `Tank`, `Sniper`, `Caster`,
+`Medic`, `Support` or `Special`. `name` must be valid UTF-8, 1-256 bytes,
+contain no NUL and not be all whitespace; names are never trimmed or
+translated. Unknown fields, explicit nulls, duplicate keys at any depth,
+unpaired UTF-16 surrogate escapes and duplicate `(role, name)` entries are
+rejected with `ErrInvalidPlan`. See `ExampleNewOperProgressAdapter` for a
+deterministic preview of compiled params and target IDs.
 
 The SwitchTheme input accepts only an exact, case-sensitive `themes` array of
-1-32 distinct, non-blank names (valid UTF-8, 1-256 bytes, no NUL or surrounding
-whitespace):
+1-32 distinct names. Each name must be valid UTF-8, 1-256 bytes, contain no NUL
+and have no leading or trailing whitespace:
 
 ```json
 {"themes":["Theme One","Theme Two"]}
@@ -70,8 +80,11 @@ select reducer implementations and do not denote product releases.
 `DecodePlan` and `ValidatePlan` check structural versions and budgets.
 `PreparePlan` additionally resolves adapter identity/version and validates
 adapter output. `Runtime.Run` prepares before admission or launching a worker;
-an unknown adapter returns `ErrInvalidPlan`. The standalone CLI's generic
-dry-run checks syntax and budgets; it does not prepare an adapter.
+an unknown adapter returns `ErrInvalidPlan`. The standalone CLI's `run` prepares
+the same registry before `control.New`, so an unsupported selection or rejected
+strict input exits `2` with `invalid_plan` before any directory, lock or worker
+exists. Its dry-run prints the compiled plan, each task's unobserved target
+preview and adapter-specific unverified conditions without side effects.
 
 Records do not require the original adapter to be installed for reading.
 Recovery retains confirmed facts, marks unfinished work unknown, and executes
@@ -109,8 +122,13 @@ All targets must contribute success evidence for `TypedResult.State` to be
 aggregate is `unknown` with `typed_incomplete`. Native task-chain state remains
 in `TaskResult.State`. For a matching completed batch, failure wins over unknown,
 which wins over success. A confirmed stop retains target facts and the existing
-stopped result unless a failure has already been established. Cleanup remains
-independent; incomplete or failed cleanup never produces a successful CLI exit.
+stopped result unless a failure has already been established; a stop that
+already recorded a task or typed failure stays failed. A worker fault, lost
+event or unconfirmed stop before a business conclusion keeps the run unknown
+even when a typed failure was already recorded; confirmed target facts are
+preserved. Cleanup remains
+independent: a cleanup failure never produces a successful CLI exit and does not
+rewrite an established business state.
 
 Every changed fact is validated and saved before its `type: "typed"` event is
 published. Typed events include a full detached task `TypedResult` and work
@@ -139,8 +157,12 @@ outcomes and inconsistent aggregates are rejected. Retained results contain
 current immutable facts, not callback histories.
 
 Result validation errors support `errors.Is` with `ErrTypedResult`,
-`ErrTypedBudget` and `ErrTypedConflict`. Runtime codes are `typed_invalid_event`,
-`typed_result_overflow`, `typed_event_overflow` and `typed_conflict`.
+`ErrTypedBudget` and `ErrTypedConflict`. Record persistence errors wrap
+`ErrRecordWrite`, including an admission save returned by `Runtime.Run`, a later
+run save and a recovery resave during `New`; the run result itself uses the
+stable `record_write_failed` code. Runtime codes are `typed_invalid_event`,
+`typed_result_overflow`, `typed_event_overflow`, `typed_conflict` and
+`record_write_failed`.
 Rejected updates preserve confirmed facts and cannot turn the run into success.
 Queue overflow stops work without waiting for the consumer to drain. Raw
 callbacks remain transient and require the separate diagnostic opt-in; original

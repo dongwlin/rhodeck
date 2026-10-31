@@ -32,6 +32,14 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// cliFixtureTask records one accepted task so Start can emit callbacks for the
+// exact Core task ID and type that were requested.
+type cliFixtureTask struct {
+	id     int32
+	core   string
+	params json.RawMessage
+}
+
 func cliWorker(mode string) int {
 	if mode == "nohello" {
 		time.Sleep(time.Hour)
@@ -60,9 +68,18 @@ func cliWorker(mode string) int {
 		coreSequence++
 		emit(protocol.Event, protocol.CoreEvent, 0, protocol.Callback{MessageID: id, CoreSequence: coreSequence, JSON: json.RawMessage(raw)}, nil)
 	}
+	coreJSON := func(id int32, value any) {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			panic(err)
+		}
+		core(id, string(raw))
+	}
 	emit(protocol.Hello, "", 0, protocol.Greeting{WorkerVersion: "cli-fixture", SessionID: "cli-fixture-session",
 		OS: "fixture", Arch: "fixture", MaxFrameBytes: protocol.MaxFrameBytes, QueueMessages: protocol.QueueMessages, QueueBytes: protocol.QueueBytes}, nil)
 	reader := protocol.NewReader(os.Stdin)
+	var tasks []cliFixtureTask
+	nextTaskID := int32(23)
 	for {
 		req, err := reader.Read()
 		if err != nil {
@@ -83,6 +100,21 @@ func cliWorker(mode string) int {
 			if protocol.Decode(req.Payload, &init) != nil {
 				return 13
 			}
+			if mode == "initslow" {
+				// Give the parent test time to make the run directory unwritable
+				// before the post-initialize record save.
+				release := os.Getenv("RHODECK_CLI_INIT_RELEASE")
+				deadline := time.Now().Add(10 * time.Second)
+				for {
+					if _, err := os.Stat(release); err == nil {
+						break
+					}
+					if time.Now().After(deadline) {
+						return 16
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+			}
 			respond(protocol.RuntimeInfo{SnapshotID: init.SnapshotID, CoreVersion: "fixture-core", LibrarySHA256: strings.Repeat("a", 64),
 				Resources: []protocol.Resource{{Root: init.ResourceRoots[0]}}, Limits: &protocol.Limits{InputStringBytes: 1024,
 					InputJSONBytes: 4096, ConfigEntries: 128, ConfigBytes: 4096, ImagePNG: protocol.BufferLimits{Initial: 1, Max: 1},
@@ -98,39 +130,217 @@ func cliWorker(mode string) int {
 				continue
 			}
 			var task protocol.TaskRequest
-			if protocol.Decode(req.Payload, &task) != nil || !bytes.Contains(task.Params, []byte("900719925474099312345")) {
+			if protocol.Decode(req.Payload, &task) != nil {
 				return 14
 			}
-			respond(protocol.TaskAccepted{TaskID: 23})
+			trimmed := bytes.TrimSpace(task.Params)
+			if len(trimmed) == 0 || trimmed[0] != '{' {
+				return 14
+			}
+			// The raw FutureTask fixture still proves that its exact large
+			// integer literal crossed the input path. Strict adapters send a
+			// compiled object instead and are not inspected here.
+			if task.Type == "FutureTask" && !bytes.Contains(task.Params, []byte("900719925474099312345")) {
+				return 14
+			}
+			id := nextTaskID
+			nextTaskID++
+			tasks = append(tasks, cliFixtureTask{id: id, core: task.Type, params: task.Params})
+			if path := os.Getenv("RHODECK_CLI_TASK_TRACE"); path != "" {
+				f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+				if err != nil {
+					return 12
+				}
+				fmt.Fprintf(f, "%s\t%s\n", task.Type, task.Params)
+				f.Close()
+			}
+			respond(protocol.TaskAccepted{TaskID: id})
 		case protocol.Start:
 			if mode == "crash" {
 				return 7
 			}
 			respond(struct{}{})
-			core(10001, `{"taskid":23,"taskchain":"FutureTask"}`)
-			if mode == "wait" {
+			if fixtureHasTypedType(tasks) {
+				// The supervisor marks Start as issued after it reads the
+				// response. A typed callback that arrives earlier is rejected as
+				// unassociated, so this real-child fixture allows that handoff.
+				time.Sleep(50 * time.Millisecond)
+			}
+			for _, task := range tasks {
+				coreJSON(10001, map[string]any{"taskid": task.id, "taskchain": task.core, "secret": "private-secret"})
+			}
+			if fixtureSendsTyped(mode) {
+				for _, task := range tasks {
+					fixtureTypedCallbacks(task, mode, coreJSON)
+				}
+			}
+			finish := func(failing bool) {
+				for _, task := range tasks {
+					if failing && task.core != "OperProgress" && task.core != "SwitchTheme" {
+						coreJSON(10000, map[string]any{"taskid": task.id, "taskchain": task.core, "secret": "private-secret"})
+					} else {
+						coreJSON(10002, map[string]any{"taskid": task.id, "taskchain": task.core, "secret": "private-secret"})
+					}
+				}
+				finished := make([]int32, len(tasks))
+				for i, task := range tasks {
+					finished[i] = task.id
+				}
+				coreJSON(3, map[string]any{"finished_tasks": finished})
+			}
+			switch mode {
+			case "wait", "stopcleanupfail", "stoptypedcleanupfail":
+				continue
+			case "fault":
+				emit(protocol.Event, protocol.FaultEvent, 0, protocol.FaultNotice{Error: protocol.Error{Code: "instance_fault", Message: "fixture fault"}}, nil)
+				continue
+			case "prooffault":
+				// Establish the batch proof first, then report a fault before
+				// cleanup so the established state and cleanup stay separate.
+				finish(false)
+				emit(protocol.Event, protocol.FaultEvent, 0, protocol.FaultNotice{Error: protocol.Error{Code: "instance_fault", Message: "fixture fault"}}, nil)
 				continue
 			}
-			if mode == "failure" {
-				core(10000, `{"taskid":23,"taskchain":"FutureTask","secret":"private-secret"}`)
-			} else {
-				core(10002, `{"taskid":23,"taskchain":"FutureTask","secret":"private-secret"}`)
-			}
-			core(3, `{"finished_tasks":[23]}`)
+			finish(mode == "failure")
 		case protocol.Stop:
 			respond(protocol.StopResult{Stopped: true})
-			if mode == "wait" {
-				core(10004, `{"taskid":23,"taskchain":"FutureTask"}`)
+			switch mode {
+			case "wait", "stopcleanupfail", "stoptypedcleanupfail":
+				for _, task := range tasks {
+					coreJSON(10004, map[string]any{"taskid": task.id})
+				}
 			}
 		case protocol.Status:
 			respond(protocol.ExecutionStatus{Running: false, Connected: true, Tasks: []int32{}})
 		case protocol.Close:
+			if mode == "stopcleanupfail" || mode == "stoptypedcleanupfail" {
+				emit(protocol.Response, req.Name, req.ID, nil, &protocol.Error{Code: "close_failed", Message: "fixture close failure"})
+				return 0
+			}
 			emit(protocol.Event, protocol.DiagnosticsEvent, 0, protocol.InstanceDiagnostics{}, nil)
 			respond(struct{}{})
 			return 0
 		default:
 			return 15
 		}
+	}
+}
+
+// fixtureHasTypedType reports whether any accepted task uses a Core type with a
+// local adapter. Raw tasks of the same type are unaffected; the Reducer check in
+// the runtime still keeps them on the raw path.
+func fixtureHasTypedType(tasks []cliFixtureTask) bool {
+	for _, task := range tasks {
+		if task.core == "OperProgress" || task.core == "SwitchTheme" {
+			return true
+		}
+	}
+	return false
+}
+
+// fixtureSendsTyped reports whether a mode emits adapter callbacks.
+func fixtureSendsTyped(mode string) bool {
+	switch mode {
+	case "success", "failure", "fault", "reported", "prooffault", "stoptypedcleanupfail":
+		return true
+	default:
+		return false
+	}
+}
+
+// fixtureTypedCallbacks emits synthetic native callbacks for the two strict
+// adapters. The extra rect/score/private fields prove that only filtered
+// business facts reach default output.
+func fixtureTypedCallbacks(task cliFixtureTask, mode string, coreJSON func(int32, any)) {
+	if !fixtureSendsTyped(mode) {
+		return
+	}
+	switch task.core {
+	case "OperProgress":
+		fixtureOperProgressCallbacks(task, mode, coreJSON)
+	case "SwitchTheme":
+		fixtureSwitchThemeCallbacks(task, mode, coreJSON)
+	}
+}
+
+type fixtureOperProgressPlan struct {
+	Role         string `json:"role"`
+	Name         string `json:"name"`
+	Elite        *int   `json:"elite"`
+	SkillLevel   *int   `json:"skill_level"`
+	SkillMastery []int  `json:"skill_mastery"`
+}
+
+func fixtureOperProgressCallbacks(task cliFixtureTask, mode string, coreJSON func(int32, any)) {
+	var params struct {
+		Plans []fixtureOperProgressPlan `json:"plans"`
+	}
+	if json.Unmarshal(task.params, &params) != nil {
+		return
+	}
+	for _, plan := range params.Plans {
+		details := map[string]any{
+			"role": plan.Role, "name": plan.Name,
+			"rect": []int{1, 2, 3, 4}, "score": 0.99, "private": "private-secret",
+		}
+		switch mode {
+		case "success":
+			details["result"], details["result_detail"] = "Success", "Completed"
+			switch {
+			case plan.Elite != nil:
+				details["elite"] = *plan.Elite
+			case plan.SkillLevel != nil:
+				details["skill_level"] = *plan.SkillLevel
+			case len(plan.SkillMastery) == 3:
+				details["skill_mastery"] = plan.SkillMastery
+			}
+		case "failure", "fault", "prooffault", "stoptypedcleanupfail":
+			details["result"], details["result_detail"] = "Failed", "ResourceInsufficient"
+		case "reported":
+			// A mastery plan reports the prerequisite level that actually
+			// started, never the final target.
+			details["result"], details["result_detail"] = "Success", "PrerequisiteTraining"
+			mastery := append([]int(nil), plan.SkillMastery...)
+			started := false
+			for i, level := range mastery {
+				if level > 1 {
+					mastery[i] = level - 1
+					started = true
+				}
+			}
+			if !started {
+				continue
+			}
+			details["skill_mastery"] = mastery
+		}
+		coreJSON(20003, map[string]any{"taskchain": "OperProgress", "taskid": task.id, "what": "OperProgressDetail", "details": details})
+	}
+	coreJSON(20003, map[string]any{"taskchain": "OperProgress", "taskid": task.id, "what": "OperProgressSummary",
+		"details": map[string]any{"finished": []any{}, "success": 0, "failed": 0, "skipped": 0}})
+}
+
+func fixtureSwitchThemeCallbacks(task cliFixtureTask, mode string, coreJSON func(int32, any)) {
+	var params struct {
+		Themes []string `json:"themes"`
+	}
+	if json.Unmarshal(task.params, &params) != nil || len(params.Themes) == 0 {
+		return
+	}
+	coreJSON(20002, map[string]any{"taskchain": "SwitchTheme", "taskid": task.id, "subtask": "ProcessTask",
+		"details": map[string]any{"task": "SwitchThemeByNameSelectTheme",
+			"result": map[string]any{"text": params.Themes[0], "score": 0.98, "rect": []int{1, 2, 3, 4}}}})
+	node := ""
+	switch mode {
+	case "success":
+		node = "SwitchThemeByNameAlreadySet"
+	case "failure", "fault", "prooffault", "stoptypedcleanupfail":
+		node = "SwitchThemeByNameLockedTheme"
+	case "reported":
+		node = "SwitchThemeByNameConfirmTheme"
+	}
+	if node != "" {
+		coreJSON(20002, map[string]any{"taskchain": "SwitchTheme", "taskid": task.id, "subtask": "ProcessTask",
+			"details": map[string]any{"task": node}})
 	}
 }
 
