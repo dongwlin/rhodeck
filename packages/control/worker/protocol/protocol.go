@@ -168,7 +168,7 @@ type Capabilities struct {
 
 // RuntimeInfo is the immutable metadata copied at initialization. Limits is the
 // effective (post-validation) limit set the worker applies, and NullSize is the
-// native output-buffer capacity sentinel (locked profile: math.MaxUint64).
+// native output-buffer capacity sentinel (math.MaxUint64).
 type RuntimeInfo struct {
 	SnapshotID    string       `json:"snapshot_id"`
 	CoreVersion   string       `json:"core_version"`

@@ -11,9 +11,9 @@ import (
 // It names the reviewed source revision and states that nothing was executed.
 const adapterBasis = "MAA source 9b75f9f7b103079458414c6e20216c8c531d6987 static review; adapters were not executed"
 
-// staticSnapshotBasis separates the release candidate's library and resource
-// snapshot from the reviewed source revision.
-const staticSnapshotBasis = "MAA v6.20.1 release candidate is a separate library and resource snapshot; not executed"
+// coreVersionPolicy describes installation selection without claiming that a
+// source review verifies any installed library, resources or task capability.
+const coreVersionPolicy = "rolling; use the latest caller-provided Core and resources; no fixed Core version or old-version compatibility guarantee; no automatic downloads or updates; only the actual combination verified by doctor/run/record is evidence"
 
 // installationFacts states what capability discovery knows about an installed
 // Core. Discovery takes no plan and never loads native code.

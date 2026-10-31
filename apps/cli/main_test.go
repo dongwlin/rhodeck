@@ -124,7 +124,7 @@ func cliWorker(mode string) int {
 				}
 			}
 			respond(protocol.RuntimeInfo{SnapshotID: init.SnapshotID, CoreVersion: "fixture-core", LibrarySHA256: strings.Repeat("a", 64),
-				Resources: []protocol.Resource{{Root: init.ResourceRoots[0]}}, Limits: &protocol.Limits{InputStringBytes: 1024,
+				Resources: []protocol.Resource{{Root: init.ResourceRoots[0], VersionSHA256: strings.Repeat("b", 64)}}, Limits: &protocol.Limits{InputStringBytes: 1024,
 					InputJSONBytes: 4096, ConfigEntries: 128, ConfigBytes: 4096, ImagePNG: protocol.BufferLimits{Initial: 1, Max: 1},
 					ImageBGR: protocol.BufferLimits{Initial: 1, Max: 1}, UUID: protocol.BufferLimits{Initial: 1, Max: 1},
 					Tasks: protocol.BufferLimits{Initial: 1, Max: 1}, CallbackBytes: 4096, InternalEvents: 64, InternalBytes: 4096,
@@ -477,6 +477,12 @@ func TestRunMachineTerminalAndExitCodes(t *testing.T) {
 			if len(lines) == 0 || json.Unmarshal(lines[len(lines)-1], &last) != nil || last.Type != "terminal" || last.Result == nil || last.Result.State != tc.state {
 				t.Fatalf("missing authoritative terminal: %s", out.String())
 			}
+			checkInstallationMetadata(t, last.Result.RuntimeInfo, plan)
+			record, err := control.ReadRecord(dir, last.Result.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkInstallationMetadata(t, record.Result.RuntimeInfo, plan)
 			if bytes.Contains(out.Bytes(), []byte("private-secret")) || strings.Contains(diagnostics.String(), "private-secret") {
 				t.Fatalf("raw diagnostics leaked: %s (%s)", out.String(), diagnostics.String())
 			}
@@ -501,6 +507,22 @@ func TestDoctorDoesNotSubmitDeviceActions(t *testing.T) {
 		t.Fatalf("doctor commands: %s", commands)
 	}
 	decodeLines(t, out.Bytes())
+	var report envelope
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	checkInstallationMetadata(t, report.RuntimeInfo, plan)
+}
+
+// checkInstallationMetadata keeps host-manifest correlation fields intact
+// across diagnosis, terminal output and durable records, without a fixed release.
+func checkInstallationMetadata(t *testing.T, info *protocol.RuntimeInfo, plan control.Plan) {
+	t.Helper()
+	if info == nil || info.SnapshotID != plan.Initialize.SnapshotID || info.CoreVersion != "fixture-core" ||
+		info.LibrarySHA256 != strings.Repeat("a", 64) || len(info.Resources) != 1 ||
+		info.Resources[0].Root != plan.Initialize.ResourceRoots[0] || info.Resources[0].VersionSHA256 != strings.Repeat("b", 64) {
+		t.Fatalf("installation metadata was lost: %+v", info)
+	}
 }
 
 func TestDoctorMissingADBStillReportsCoreSnapshot(t *testing.T) {

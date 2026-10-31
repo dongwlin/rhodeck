@@ -221,7 +221,7 @@ var mappings = map[string]Mapping{
 		Client: "Client.Initialize",
 		Test:   "TestSessionAppliesLimitsContract,TestClientInitializeSnapshotIsLosslessAndDetached",
 		Status: "done",
-		Note:   "worker 填充 rt.NullSize()（锁定 profile 经绑定核验为 math.MaxUint64），uint64 传输无损；客户端快照往返断言哨兵值精确到达。",
+		Note:   "worker 填充 rt.NullSize()（经绑定核验为 math.MaxUint64），uint64 传输无损；客户端快照往返断言哨兵值精确到达。",
 	},
 	"entry Runtime.NewInstance": {
 		DTO:    "InitializeRequest.InstanceOptions",
@@ -610,7 +610,7 @@ var mappings = map[string]Mapping{
 		Client: "Client.Initialize",
 		Test:   "TestEffectiveLimitsSelectsWholeDefaultOrExplicitCopy,TestSessionAppliesLimitsContract,TestOpenEngineRejectsIllegalLimitsBeforeNativeLoad,TestWorkerProcess",
 		Status: "done",
-		Note:   "nil=整套默认（worker 物化锁定 profile 的整套默认值并交绑定逐项校验），非 nil=完整显式、0 不静默补默认；wire 预算由 CheckWireLimits 在触碰原生库前以 limit_exceeded+有效上限拒绝，绑定范围/跨字段校验失败即初始化失败并终止会话；快照为脱离请求的独立副本。",
+		Note:   "nil=整套默认（worker 物化绑定的整套默认值并交绑定逐项校验），非 nil=完整显式、0 不静默补默认；wire 预算由 CheckWireLimits 在触碰原生库前以 limit_exceeded+有效上限拒绝，绑定范围/跨字段校验失败即初始化失败并终止会话；快照为脱离请求的独立副本。",
 	},
 	"type BufferLimits": {
 		DTO:    "BufferLimits",

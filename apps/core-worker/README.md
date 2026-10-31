@@ -44,12 +44,16 @@ IDs terminate the session. Unknown fields inside raw task/extra JSON are retaine
 For example, an initialization request is:
 
 ```json
-{"version":1,"type":"request","id":1,"name":"initialize","payload":{"snapshot_id":"installed-snapshot","library_path":"/opt/maa/libMaaCore.so","user_dir":"/var/lib/rhodeck/core","resource_roots":["/opt/maa"],"expected_core_version":"v6.20.1"}}
+{"version":1,"type":"request","id":1,"name":"initialize","payload":{"snapshot_id":"installed-snapshot","library_path":"/opt/maa/libMaaCore.so","user_dir":"/var/lib/rhodeck/core","resource_roots":["/opt/maa"]}}
 ```
 
 Paths must be explicit and absolute. `resource_roots` is ordered; each root
 contains `resource/`. Optional `static_options`, `instance_options` and
 `connection_extras` use the [protocol DTOs](../../packages/control/worker/protocol/protocol.go).
+Optional `expected_core_version` and `expected_library_sha256` check the caller's
+chosen installation; no version is imposed by the repository. Use the latest
+host-provided combination and record its actual metadata and
+[host-maintained resource provenance](../cli/installation-provenance.md).
 
 `limits` is the full explicit [binding limit configuration](../../packages/control/worker/protocol/contract.go)
 (`Limits`); omitting it selects the binding's whole default set, and a present
@@ -66,7 +70,7 @@ session like any other failed initialization.
 
 The initialize response reports the effective `limits` — exactly the applied
 configuration, materialized from the whole default set when omitted — and the
-native `null_size` capacity sentinel (`math.MaxUint64` for the locked profile)
+native `null_size` capacity sentinel (`math.MaxUint64`, checked by the binding)
 alongside the facts below.
 
 `snapshot_id` is an identifier supplied by the installation owner. Initialization

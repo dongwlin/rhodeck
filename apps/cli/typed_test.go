@@ -131,8 +131,13 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 	if strings.Contains(caps.AdapterBasis, "v6.20.1") {
 		t.Fatalf("source review conflates the release candidate: %q", caps.AdapterBasis)
 	}
-	if !strings.Contains(caps.StaticSnapshotBasis, "v6.20.1") || !strings.Contains(caps.StaticSnapshotBasis, "separate") {
-		t.Fatalf("static snapshot basis = %q", caps.StaticSnapshotBasis)
+	for _, fragment := range []string{"rolling", "caller-provided", "no fixed Core version", "old-version compatibility", "doctor/run/record"} {
+		if !strings.Contains(caps.CoreVersionPolicy, fragment) {
+			t.Fatalf("Core version policy lacks %q: %q", fragment, caps.CoreVersionPolicy)
+		}
+	}
+	if bytes.Contains(out.Bytes(), []byte(`"static_snapshot_basis"`)) || bytes.Contains(out.Bytes(), []byte("v6.20.1")) {
+		t.Fatalf("capabilities retains a fixed release snapshot: %s", out.String())
 	}
 	if !strings.Contains(caps.InstallationFacts, "not inspected") {
 		t.Fatalf("installation facts = %q", caps.InstallationFacts)

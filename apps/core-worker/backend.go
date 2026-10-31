@@ -52,11 +52,11 @@ type engine interface {
 
 type engineFactory func(protocol.InitializeRequest) (engine, protocol.RuntimeInfo, error)
 
-// bindingDefaultLimits materializes the whole default limit set of the locked
-// binding profile (frozen numbers of packages/maa-go's defaultLimits). When
+// bindingDefaultLimits materializes the whole default limit set of the
+// binding (frozen numbers of packages/maa-go's defaultLimits). When
 // the caller omits limits this is the applied configuration, so the reported
 // effective set is exactly the set handed to the binding; the binding
-// re-validates it on every initialize, so a profile change cannot diverge
+// re-validates it on every initialize, so a default change cannot diverge
 // silently.
 var bindingDefaultLimits = protocol.Limits{
 	InputStringBytes:  65_536,

@@ -32,9 +32,9 @@ and command list it reports:
 - `adapter_basis`: the reviewed implementation source revision (MAA source
   `9b75f9f7b103079458414c6e20216c8c531d6987`) and that the adapters were not
   executed;
-- `static_snapshot_basis`: the `MAA v6.20.1` release candidate is a separate
-  library and resource snapshot, not the reviewed source revision, and was not
-  executed;
+- `core_version_policy`: rolling validation of the latest caller-provided Core
+  and resources, with no fixed Core version or old-version compatibility
+  guarantee; Rhodeck performs no automatic downloads or updates;
 - `installation_facts`: `not inspected`. `capabilities` performs no installation
   discovery or native loading; run `doctor` with an explicit plan to inspect an
   installation;
@@ -46,6 +46,12 @@ Core API enumerating supported task types, and an installed Core version string
 does not prove that a task or adapter works. `help` restates the adapter names,
 the explicit `task.adapter` selection rule and the missing device acceptance.
 The generic `task_input` continues to describe the open raw path.
+
+The unpublished schema version 1 replaces `static_snapshot_basis` with
+`core_version_policy`. Actual installation facts remain in `doctor` output and
+run results/records, independently of the historical adapter source review.
+See [installation provenance](installation-provenance.md) for the host manifest
+template and reconciliation of each resource root and version-file digest.
 
 ## Explicit plan input
 
@@ -287,8 +293,9 @@ provides no task presets, scheduler, HTTP API, installer/updater, cross-runtime
 device lock, Docker image or La Pluma Next integration. `oper_progress` and
 `switch_theme` validate strict input and interpret filtered business facts, but
 neither has authorized device acceptance; the static basis is a review of MAA
-source `9b75f9f7b103079458414c6e20216c8c531d6987`, while the `v6.20.1` release
-candidate remains a separate, unexecuted library/resource snapshot. All target
+source `9b75f9f7b103079458414c6e20216c8c531d6987`. Actual Core and resource
+combinations are recorded and verified separately under the rolling version
+policy; a source review does not prove installation or task support. All target
 semantics remain unverified on a device. The open
 raw path still accepts any Core task type. A data directory lock does not
 establish mutual exclusion with another directory, external CLI or host.

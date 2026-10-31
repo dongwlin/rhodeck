@@ -16,9 +16,10 @@ The package bundles two strict adapters: `NewOperProgressAdapter`
 version 1). The [standalone CLI](../../apps/cli/README.md) registers both
 explicitly for `run` and `dry-run`; a task still selects one only through
 `Task.Adapter`. Neither adapter has authorized device acceptance. The CLI
-capability report keeps the reviewed MAA source revision, the `v6.20.1` release
-candidate snapshot, the uninspected installation and the missing device
-acceptance separate.
+capability report keeps the reviewed MAA source revision, the rolling Core
+version policy, the uninspected installation and the missing device acceptance
+separate. Actual versions and digests come from doctor/run/record; the host
+maintains [installation provenance](../../apps/cli/installation-provenance.md).
 The OperProgress
 input accepts only exact, case-sensitive `plans` entries with `role`, `name` and
 exactly one of `elite` (1-2), `skill_level` (2-7) or `skill_mastery` (three

@@ -77,7 +77,7 @@ type capabilities struct {
 	TaskInput           string              `json:"task_input"`
 	TaskAdapters        []adapterCapability `json:"task_adapters"`
 	AdapterBasis        string              `json:"adapter_basis"`
-	StaticSnapshotBasis string              `json:"static_snapshot_basis"`
+	CoreVersionPolicy   string              `json:"core_version_policy"`
 	InstallationFacts   string              `json:"installation_facts"`
 	DeviceAcceptance    string              `json:"device_acceptance"`
 	NativeTaskDiscovery bool                `json:"native_task_discovery"`
@@ -131,7 +131,7 @@ func runCLI(parent context.Context, args []string, stdin io.Reader, stdout, stde
 				Commands:     []string{"run", "dry-run", "doctor", "capabilities", "version", "help"},
 				TaskInput:    "string task type and raw JSON object parameters",
 				TaskAdapters: cliAdapterCapabilities(),
-				AdapterBasis: adapterBasis, StaticSnapshotBasis: staticSnapshotBasis,
+				AdapterBasis: adapterBasis, CoreVersionPolicy: coreVersionPolicy,
 				InstallationFacts: installationFacts, DeviceAcceptance: deviceAcceptance,
 				TaskAcceptance: "determined by the explicitly selected Core and resources at execution",
 			}
