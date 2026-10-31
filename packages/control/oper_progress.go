@@ -78,6 +78,18 @@ type operProgressTarget struct {
 // structure and budgets only; operator identity, role agreement with installed
 // battle data, skill existence, elite prerequisites, materials, inventory,
 // training-room state and device readiness remain unverified.
+//
+// During a run the reducer consumes only Core message 20003 with
+// what=OperProgressDetail or what=OperProgressSummary for this task's chain.
+// Elite and skill-level Completed details become achieved only when the reported
+// level matches the requested level; AlreadySatisfied details require at least
+// the requested level. A mastery Completed detail reports that training at the
+// target level started, not that it finished; PrerequisiteTraining reports only
+// the lower level that actually started. A uniquely associated Failed detail
+// reports a target failure with a stable lowercase reason code, and a
+// Skipped TrainingRoomBusy detail contributes only to the summary skip count.
+// Incomplete, malformed or incompatible details never become success, and a
+// late task-chain success does not replace a target failure.
 func NewOperProgressAdapter() TaskAdapter { return operProgressAdapter{} }
 
 type operProgressAdapter struct{}
