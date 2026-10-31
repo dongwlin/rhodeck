@@ -5,7 +5,8 @@
 // 测试 fixture(模拟原生库的 C 代码)与 race 检查(-race 需要 cgo
 // 运行时),不是生产构建或运行依赖。
 //
-// 已验证平台为 Linux amd64/glibc。其他平台的支持状态不因交叉编译
+// 真实库无设备验证入口为 Linux amd64/glibc,结论限于记录的实际组合。
+// 本包不固定 Core 版本,不保证旧版本兼容。其他平台的支持状态不因交叉编译
 // 或声明层检查而成立;本包不承诺任何未经验证的平台。支持声明、
 // 已知限制与版本升级复验步骤见仓库 packages/maa-go/README.md。
 // Linux/macOS loader 使用 dlopen/dlsym,Windows 使用 LoadLibraryExW/

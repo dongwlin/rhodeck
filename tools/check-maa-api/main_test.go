@@ -1,8 +1,4 @@
-// main_test.go 覆盖完整命令入口 Run:合成 profile + 真实仓库 go-root
-// 的端到端成功(两目标、确定性输出),以及参数解析、profile/目标、
-// c 输入与 go 根目录各层失败的端到端行为(非零退出、stderr 类别与
-// 定位、绝不输出 PASS)。测试 profile 注入只存在于本 _test.go 可达
-// 的注册表接口。
+// 本文件覆盖完整命令入口的显式 C 输入、Go 声明、输出和失败诊断。
 
 package main
 
@@ -50,7 +46,7 @@ func TestRunSuccessBothTargets(t *testing.T) {
 	}
 	run := func(goos string) result {
 		code, out, errOut := mustRun(t, []string{
-			"--profile", testProfileID, "--goos", goos, "--goarch", "amd64",
+			"--goos", goos, "--goarch", "amd64",
 			"--c-input", dir, "--go-root", goRoot,
 		})
 		return result{code, out, errOut}
@@ -67,7 +63,7 @@ func TestRunSuccessBothTargets(t *testing.T) {
 	if err := json.Unmarshal([]byte(linux.out), &report); err != nil {
 		t.Fatalf("linux stdout is not valid JSON: %v\n%s", err, linux.out)
 	}
-	if report.Profile != testProfileID || report.Target.GOOS != "linux" || report.Target.GOARCH != "amd64" {
+	if report.Input.SnapshotID != testProfileID || report.Target.GOOS != "linux" || report.Target.GOARCH != "amd64" {
 		t.Errorf("report header = %+v", report.Target)
 	}
 	if len(report.C.Full) != 30 || len(report.C.Discovery) != 2 {
@@ -145,7 +141,7 @@ func TestRunArgumentFailures(t *testing.T) {
 	registerTestProfile(t, testProfileFromFiles(files))
 	dir := writeCInputDir(t, files, nil)
 	goRoot := repoRoot(t)
-	base := []string{"--profile", testProfileID, "--goos", "linux", "--goarch", "amd64",
+	base := []string{"--goos", "linux", "--goarch", "amd64",
 		"--c-input", dir, "--go-root", goRoot}
 
 	cases := []struct {
@@ -157,11 +153,11 @@ func TestRunArgumentFailures(t *testing.T) {
 		{"unknown flag", append(append([]string{}, base...), "--bogus"), []string{"input", "bogus"}},
 		{"extra positional argument", append(append([]string{}, base...), "extra"),
 			[]string{"input", "positional"}},
-		{"unknown profile", []string{"--profile", "maa-v9.9.9", "--goos", "linux", "--goarch", "amd64",
-			"--c-input", dir, "--go-root", goRoot}, []string{"input", "maa-v9.9.9"}},
-		{"unknown goos", []string{"--profile", testProfileID, "--goos", "darwin", "--goarch", "amd64",
+		{"removed profile flag", []string{"--profile", "maa-v9.9.9", "--goos", "linux", "--goarch", "amd64",
+			"--c-input", dir, "--go-root", goRoot}, []string{"input", "profile"}},
+		{"unknown goos", []string{"--goos", "darwin", "--goarch", "amd64",
 			"--c-input", dir, "--go-root", goRoot}, []string{"input", "darwin"}},
-		{"unknown goarch", []string{"--profile", testProfileID, "--goos", "linux", "--goarch", "arm64",
+		{"unknown goarch", []string{"--goos", "linux", "--goarch", "arm64",
 			"--c-input", dir, "--go-root", goRoot}, []string{"input", "arm64"}},
 	}
 	for _, tc := range cases {
@@ -198,7 +194,7 @@ func TestRunInputFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		code, out, errOut := mustRun(t, []string{
-			"--profile", testProfileID, "--goos", "linux", "--goarch", "amd64",
+			"--goos", "linux", "--goarch", "amd64",
 			"--c-input", dir, "--go-root", goRoot,
 		})
 		if code == 0 || out != "" || strings.Contains(out+errOut, "PASS") {
@@ -210,7 +206,7 @@ func TestRunInputFailures(t *testing.T) {
 	})
 	t.Run("missing inputs.json", func(t *testing.T) {
 		code, out, errOut := mustRun(t, []string{
-			"--profile", testProfileID, "--goos", "linux", "--goarch", "amd64",
+			"--goos", "linux", "--goarch", "amd64",
 			"--c-input", t.TempDir(), "--go-root", goRoot,
 		})
 		if code == 0 || out != "" || strings.Contains(out+errOut, "PASS") {
@@ -223,7 +219,7 @@ func TestRunInputFailures(t *testing.T) {
 	t.Run("go-root without native package", func(t *testing.T) {
 		dir := writeCInputDir(t, files, nil)
 		code, out, errOut := mustRun(t, []string{
-			"--profile", testProfileID, "--goos", "linux", "--goarch", "amd64",
+			"--goos", "linux", "--goarch", "amd64",
 			"--c-input", dir, "--go-root", t.TempDir(),
 		})
 		if code == 0 || out != "" || strings.Contains(out+errOut, "PASS") {

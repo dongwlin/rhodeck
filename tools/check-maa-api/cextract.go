@@ -239,13 +239,13 @@ func ExtractC(input *CInput, target Target) (*CExtraction, []Diagnostic) {
 	if len(discovery) != len(frozenExperimentalOrder) {
 		return fail(Diagnostic{Category: CatCSyntax, File: FileAsstCallerExtra, Symbol: "discovery",
 			Expected: sprintfNames(frozenExperimentalOrder), Actual: discoveryNames(discovery),
-			Message: "experimental export discovery does not match the locked profile"})
+			Message: "experimental export discovery does not match the reviewed ABI surface"})
 	}
 	for i, want := range frozenExperimentalOrder {
 		if discovery[i].Name != want {
 			return fail(Diagnostic{Category: CatCSyntax, File: discovery[i].Header, Line: discovery[i].Line,
 				Symbol: discovery[i].Name, Expected: want, Actual: discovery[i].Name,
-				Message: "experimental export discovery does not match the locked profile"})
+				Message: "experimental export discovery does not match the reviewed ABI surface"})
 		}
 	}
 
@@ -852,7 +852,7 @@ func (p *cparser) expandExportMacro(name string, line int) (string, string, *Dia
 	}
 	if callconv != CallConvNone && callconv != CallConvStdcall {
 		return "", "", p.diag(line, name, "empty or __stdcall call convention", callconv,
-			"call convention outside the locked profile (Wine/Cygwin are rejected)")
+			"call convention outside the reviewed ABI surface (Wine/Cygwin are rejected)")
 	}
 	return linkage, callconv, nil
 }

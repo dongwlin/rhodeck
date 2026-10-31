@@ -9,6 +9,9 @@ name: maa-go
 # (`core`) layer is local-only and is never claimed by this workflow. A skip
 # or missing toolchain in a selected layer is UNVERIFIED (binary exit 2); a
 # real failure is exit 1. Either fails the job.
+# Static input is the provenance-backed, unversioned header snapshot selected
+# explicitly below. Its source and per-file digests are retained in the report;
+# they identify verification input and do not pin the installed MaaCore version.
 #
 # The race layer uses -race and CGO_ENABLED=1 but skips real-core acceptance
 # (TestRealCore); that remains local-only and is covered by the core layer.
@@ -83,7 +86,16 @@ jobs:
       - name: Build layered checker
         run: go build -o maa-go-check.exe ./tools/maa-go-check
       - name: Run layered checks
-        run: ./maa-go-check.exe --layers '${{ matrix.layers }}'
+        run: |
+          set -o pipefail
+          ./maa-go-check.exe --layers '${{ matrix.layers }}' --c-input tools/check-maa-api/testdata/snapshot --json | tee maa-go-check-report.json
+      - name: Preserve verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maa-go-check-${{ runner.os }}-${{ runner.arch }}
+          path: maa-go-check-report.json
+          if-no-files-found: warn
 
   race:
     name: race detector (linux/amd64, real-core acceptance excluded)

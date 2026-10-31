@@ -10,7 +10,7 @@
 // The CI selection (--layers ci) contains only layers that can run on a
 // clean Linux amd64 machine with a C compiler and the vendored checker
 // input. The real-MaaCore layer (--layers core) is local-only: it needs the
-// locked release tarball, and CI never claims it.
+// explicitly supplied installation or tarball, and CI never claims it.
 package main
 
 import (
@@ -32,9 +32,6 @@ import (
 	"time"
 )
 
-// coreProfile is the only MaaCore release profile locked by this repository.
-const coreProfile = "maa-v6.20.1"
-
 // Layer status values. Statuses are deliberately not booleans: UNVERIFIED
 // exists so a missing toolchain or native library can never be rendered as
 // a pass.
@@ -50,16 +47,17 @@ const (
 // top-level Go test or a command step); Skipped counts tests that never ran
 // their assertions; Failed counts failed tests or commands.
 type layerResult struct {
-	Name            string   `json:"name"`
-	Status          string   `json:"status"`
-	Detail          string   `json:"detail,omitempty"`
-	Passed          int      `json:"passed"`
-	Skipped         int      `json:"skipped"`
-	Failed          int      `json:"failed"`
-	ExpectedSkips   []string `json:"expected_skips,omitempty"`
-	UnexpectedSkips []string `json:"unexpected_skips,omitempty"`
-	SkipFilter      string   `json:"skip_filter,omitempty"`
-	Failures        []string `json:"failures,omitempty"`
+	Name            string              `json:"name"`
+	Status          string              `json:"status"`
+	Detail          string              `json:"detail,omitempty"`
+	Passed          int                 `json:"passed"`
+	Skipped         int                 `json:"skipped"`
+	Failed          int                 `json:"failed"`
+	ExpectedSkips   []string            `json:"expected_skips,omitempty"`
+	UnexpectedSkips []string            `json:"unexpected_skips,omitempty"`
+	SkipFilter      string              `json:"skip_filter,omitempty"`
+	Failures        []string            `json:"failures,omitempty"`
+	HeaderInput     *checkerInputReport `json:"header_input,omitempty"`
 }
 
 func newLayerResult(name string) layerResult {
@@ -82,6 +80,9 @@ func (r *layerResult) merge(other layerResult) {
 		r.SkipFilter += other.SkipFilter
 	}
 	r.Failures = append(r.Failures, other.Failures...)
+	if r.HeaderInput == nil {
+		r.HeaderInput = other.HeaderInput
+	}
 	switch other.Status {
 	case statusFail:
 		r.Status = statusFail
@@ -106,29 +107,34 @@ func (r *layerResult) merge(other layerResult) {
 // intentionally not serialized: reports must not contain absolute home
 // paths or repository-external locations.
 type environment struct {
-	Root       string
-	GoVersion  string
-	GOOS       string
-	GOARCH     string
-	Purego     string
-	CGOEnabled string
-	CC         string
-	CCVersion  string
-	CoreSHA256 string
-	GitCommit  string
+	Root              string
+	GoVersion         string
+	GOOS              string
+	GOARCH            string
+	Purego            string
+	CGOEnabled        string
+	CC                string
+	CCVersion         string
+	CInput            string
+	CoreInput         string
+	CoreExpectations  bool
+	CoreTarballSHA256 string
+	CoreLibrarySHA256 string
+	GitCommit         string
 }
 
 type envReport struct {
-	GoVersion   string `json:"go_version"`
-	GOOS        string `json:"goos"`
-	GOARCH      string `json:"goarch"`
-	Purego      string `json:"purego"`
-	CGOEnv      string `json:"cgo_env"`
-	CC          string `json:"cc"`
-	CCVersion   string `json:"cc_version"`
-	CoreProfile string `json:"core_profile"`
-	CoreSHA256  string `json:"core_tarball_sha256"`
-	GitCommit   string `json:"git_commit"`
+	GoVersion         string `json:"go_version"`
+	GOOS              string `json:"goos"`
+	GOARCH            string `json:"goarch"`
+	Purego            string `json:"purego"`
+	CGOEnv            string `json:"cgo_env"`
+	CC                string `json:"cc"`
+	CCVersion         string `json:"cc_version"`
+	CoreInput         string `json:"core_input"`
+	CoreTarballSHA256 string `json:"core_tarball_sha256,omitempty"`
+	CoreLibrarySHA256 string `json:"core_library_sha256,omitempty"`
+	GitCommit         string `json:"git_commit"`
 }
 
 type report struct {
@@ -140,10 +146,11 @@ type report struct {
 }
 
 func main() {
-	var layersFlag, rootFlag string
+	var layersFlag, rootFlag, cInputFlag string
 	var list, jsonOut bool
 	flag.StringVar(&layersFlag, "layers", "ci", "comma-separated layers or aliases: ci, all, static, go, loader, abi, callback, core, build, fmt, race")
 	flag.StringVar(&rootFlag, "root", "", "repository root (default: nearest ancestor containing go.mod)")
+	flag.StringVar(&cInputFlag, "c-input", "", "C header input directory (default: repository provenance snapshot)")
 	flag.BoolVar(&list, "list", false, "list layers and exit")
 	flag.BoolVar(&jsonOut, "json", false, "print the machine-readable report instead of the table")
 	flag.Parse()
@@ -169,6 +176,13 @@ func main() {
 	}
 
 	env := collectEnvironment(root)
+	if cInputFlag != "" {
+		env.CInput, err = filepath.Abs(cInputFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "maa-go-check: resolve --c-input: %v\n", err)
+			os.Exit(2)
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -224,9 +238,13 @@ func requirementError(name string, env environment) error {
 		if env.CC == "" {
 			return errors.New("C compiler cc/gcc not found; C fixture layer is unverified")
 		}
-	case "tarball":
-		if env.CoreSHA256 == "" {
-			return errors.New("locked MaaCore tarball missing (set MAA_CORE_TARBALL or place MAA-v6.20.1-linux-x86_64.tar.gz in the user cache); real-core layer is unverified")
+	case "headers":
+		if _, err := os.Stat(filepath.Join(env.CInput, "inputs.json")); err != nil {
+			return errors.New("C header input manifest unavailable (set --c-input); static layer is unverified")
+		}
+	case "core-input":
+		if !env.CoreExpectations && (env.CoreInput == "" || env.CoreInput == "incomplete") {
+			return errors.New("explicit MaaCore input missing or incomplete (set MAA_CORE_LIB_PATH and MAA_CORE_RESOURCE_ROOT, or MAA_CORE_TARBALL); real-core layer is unverified")
 		}
 	default:
 		return fmt.Errorf("unknown layer requirement %q", name)
@@ -318,14 +336,17 @@ func printLayerList(defs []layer) {
 
 func collectEnvironment(root string) environment {
 	env := environment{
-		Root:       root,
-		GoVersion:  goEnv(root, "GOVERSION"),
-		GOOS:       runtime.GOOS,
-		GOARCH:     runtime.GOARCH,
-		Purego:     puregoVersion(root),
-		CGOEnabled: goEnv(root, "CGO_ENABLED"),
-		CC:         firstLookPath("cc", "gcc"),
-		GitCommit:  gitCommit(root),
+		Root:             root,
+		CInput:           filepath.Join(root, "tools", "check-maa-api", "testdata", "snapshot"),
+		CoreInput:        coreInputKind(os.Getenv("MAA_CORE_TARBALL"), os.Getenv("MAA_CORE_LIB_PATH"), os.Getenv("MAA_CORE_RESOURCE_ROOT")),
+		CoreExpectations: hasCoreExpectations(os.Environ()),
+		GoVersion:        goEnv(root, "GOVERSION"),
+		GOOS:             runtime.GOOS,
+		GOARCH:           runtime.GOARCH,
+		Purego:           puregoVersion(root),
+		CGOEnabled:       goEnv(root, "CGO_ENABLED"),
+		CC:               firstLookPath("cc", "gcc"),
+		GitCommit:        gitCommit(root),
 	}
 	if env.GoVersion == "" {
 		env.GoVersion = runtime.Version()
@@ -334,9 +355,8 @@ func collectEnvironment(root string) environment {
 		env.CGOEnabled = os.Getenv("CGO_ENABLED")
 	}
 	env.CCVersion = ccVersion(env.CC)
-	if sha, ok := coreTarballSHA256(); ok {
-		env.CoreSHA256 = sha
-	}
+	env.CoreTarballSHA256 = fileSHA256(os.Getenv("MAA_CORE_TARBALL"))
+	env.CoreLibrarySHA256 = fileSHA256(os.Getenv("MAA_CORE_LIB_PATH"))
 	return env
 }
 
@@ -375,25 +395,52 @@ func firstLookPath(names ...string) string {
 	return ""
 }
 
-func coreTarballSHA256() (string, bool) {
-	path := os.Getenv("MAA_CORE_TARBALL")
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", false
+// coreInputKind classifies presence only. Invalid explicit paths and
+// conflicting inputs are passed to the acceptance tests so they fail rather
+// than being hidden behind an UNVERIFIED preflight.
+func coreInputKind(tarball, library, resources string) string {
+	if tarball != "" {
+		if library != "" || resources != "" {
+			return "conflicting"
 		}
-		path = filepath.Join(home, ".cache", "maa", "MAA-v6.20.1-linux-x86_64.tar.gz")
+		return "tarball"
+	}
+	if library != "" && resources != "" {
+		return "installation"
+	}
+	if library != "" || resources != "" {
+		return "incomplete"
+	}
+	return ""
+}
+
+// Acceptance tests validate explicit expectations before classifying missing
+// inputs. Let them reject invalid expectations rather than hiding the error
+// behind the layer's missing-resource preflight.
+func hasCoreExpectations(values []string) bool {
+	for _, entry := range values {
+		name, value, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, "MAA_CORE_EXPECTED_") && value != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func fileSHA256(path string) string {
+	if path == "" {
+		return ""
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", false
+		return ""
 	}
 	defer f.Close()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return "", false
+		return ""
 	}
-	return hex.EncodeToString(h.Sum(nil)), true
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func ccVersion(name string) string {
@@ -427,16 +474,17 @@ func buildReport(env environment, selected map[string]bool, results []layerResul
 	return report{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Environment: envReport{
-			GoVersion:   env.GoVersion,
-			GOOS:        env.GOOS,
-			GOARCH:      env.GOARCH,
-			Purego:      env.Purego,
-			CGOEnv:      env.CGOEnabled,
-			CC:          env.CC,
-			CCVersion:   env.CCVersion,
-			CoreProfile: coreProfile,
-			CoreSHA256:  env.CoreSHA256,
-			GitCommit:   env.GitCommit,
+			GoVersion:         env.GoVersion,
+			GOOS:              env.GOOS,
+			GOARCH:            env.GOARCH,
+			Purego:            env.Purego,
+			CGOEnv:            env.CGOEnabled,
+			CC:                env.CC,
+			CCVersion:         env.CCVersion,
+			CoreInput:         env.CoreInput,
+			CoreTarballSHA256: env.CoreTarballSHA256,
+			CoreLibrarySHA256: env.CoreLibrarySHA256,
+			GitCommit:         env.GitCommit,
 		},
 		Selected:   selectedNames,
 		Layers:     results,
@@ -514,13 +562,15 @@ func exitCode(rep report) int {
 func printSummary(rep report) {
 	fmt.Println()
 	fmt.Println("maa-go layered verification")
-	fmt.Printf("environment: go=%s %s/%s purego=%s cgo_env=%s cc=%s core_sha256=%s git=%s\n",
+	fmt.Printf("environment: go=%s %s/%s purego=%s cgo_env=%s cc=%s core_input=%s core_tarball_sha256=%s core_library_sha256=%s git=%s\n",
 		rep.Environment.GoVersion,
 		rep.Environment.GOOS, rep.Environment.GOARCH,
 		orAbsent(rep.Environment.Purego),
 		orAbsent(rep.Environment.CGOEnv),
 		orAbsent(rep.Environment.CC),
-		shortSHA(rep.Environment.CoreSHA256),
+		orAbsent(rep.Environment.CoreInput),
+		shortSHA(rep.Environment.CoreTarballSHA256),
+		shortSHA(rep.Environment.CoreLibrarySHA256),
 		orAbsent(rep.Environment.GitCommit),
 	)
 	if rep.Environment.CCVersion != "" {

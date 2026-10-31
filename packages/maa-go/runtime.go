@@ -297,7 +297,7 @@ func validateConfigContent(cfg RuntimeConfig, limits Limits) error {
 		if opt.Key == 0 {
 			// StaticOptionKey 的 Invalid=0,在纯 Go 校验中返回
 			// ErrInvalidInput,不触发原生调用、不消耗生命周期。
-			// 不得透传给原生:锁定 Core 对 key 0 走 default 返回失败,
+			// 不得透传给原生:Core 对 key 0 走 default 返回失败,
 			// 真实库上只会以 ErrNativeRejected 烧掉进程生命周期。
 			return fmt.Errorf("maa: StaticOptions[%d].Key must not be 0 (Invalid): %w", i, native.ErrInvalidInput)
 		}
@@ -758,7 +758,7 @@ func (s nativeSession) setConnectionExtras(name *byte, extras *byte) {
 	s.apiTable.SetConnectionExtras(name, extras)
 }
 
-// profileNullSize 是锁定 profile(maa-v6.20.1)的 NullSize 失败哨兵
+// profileNullSize 是 MaaCore 输出缓冲区协议的 NullSize 失败哨兵
 // GetNullSize 必须返回该值,否则输出缓冲区容量协议
 // 无法成立,视为协议错误。核验通过后作为元数据保存,供外部核验。
 const profileNullSize = math.MaxUint64
@@ -826,11 +826,11 @@ func open(cfg RuntimeConfig, env initEnv, gate *lifecycleGate) (*Runtime, error)
 		gate.terminate(err)
 		return nil, err
 	}
-	// b. NullSize:必须等于锁定 profile 的失败哨兵,否则输出缓冲区
+	// b. NullSize:必须等于输出缓冲区协议的失败哨兵,否则输出缓冲区
 	// 容量协议无法成立。
 	ns := sess.nullSize()
 	if ns != profileNullSize {
-		err := fmt.Errorf("maa: GetNullSize returned %#x, want the locked profile sentinel (%#x): %w",
+		err := fmt.Errorf("maa: GetNullSize returned %#x, want the ABI sentinel (%#x): %w",
 			ns, uint64(profileNullSize), native.ErrProtocol)
 		gate.terminate(err)
 		return nil, err
@@ -947,7 +947,7 @@ func (rt *Runtime) Version() string { return rt.version }
 // 不触发任何原生调用;并发安全。
 func (rt *Runtime) Capabilities() Capabilities { return rt.caps }
 
-// NullSize 返回初始化时核验并保存的 NullSize 哨兵值(锁定 profile
+// NullSize 返回初始化时核验并保存的 NullSize 哨兵值(输出缓冲区协议
 // 约定为 math.MaxUint64)。它是输出缓冲区容量协议的锚点,供外部
 // 核验;只读不可变元数据,不触发任何原生调用;并发安全。
 func (rt *Runtime) NullSize() uint64 { return rt.nullSize }

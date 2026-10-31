@@ -428,7 +428,7 @@ func (p *cparser) checkIncludes() *Diagnostic {
 	}
 	return p.diag(0, "#include", "frozen include set: "+join(want),
 		"actual includes: "+join(p.includes),
-		"include set of this header does not match the locked profile")
+		"include set of this header does not match the reviewed ABI surface")
 }
 
 func (p *cparser) directive(trimmed string, line int) *Diagnostic {
@@ -497,7 +497,7 @@ func (p *cparser) directive(trimmed string, line int) *Diagnostic {
 
 func (p *cparser) unknownCondition(line int, text string) *Diagnostic {
 	return p.diag(line, "condition", "one of the locked conditional expressions", text,
-		"conditional expression is not part of the locked profile syntax")
+		"conditional expression is not part of the reviewed ABI surface syntax")
 }
 
 func (p *cparser) pushConditional(spec condSpec) *Diagnostic {

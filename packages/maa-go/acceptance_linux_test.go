@@ -1,6 +1,6 @@
 //go:build linux
 
-// 本文件验证真实 MaaCore 的加载与元数据读取:从锁定发行包缓存流式解包,
+// 本文件验证真实 MaaCore 的加载与元数据读取:显式安装输入或发行包流式解包,
 // 在子进程中经公开 Open 完成 libMaaCore.so 加载、Version/NullSize 读取,
 // 并验证缺库失败的生命周期语义与执行器超时语义。
 package maa
@@ -20,7 +20,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,36 +28,29 @@ import (
 	"time"
 )
 
-// 锁定基线(证据冻结):发行包、libMaaCore.so 与
-// resource/version.json 的 SHA256,以及 Core 预期版本字符串。任何
-// 一项不符都是测试失败(锁定基线被破坏),不是 skip。
+// 实际安装输入不固化版本;摘要期望仅由调用方显式给出。
 const (
-	lockedTarballSHA256  = "814a128d24c8183b38003284facd56789fe8346b8a66932f9ff885df48d48bc1"
-	lockedCoreSHA256     = "1e44dbf35a9ad84a62faa90af34412f8ed038f6dcb6de6db5a8eb016902bbb85"
-	lockedVersionSHA256  = "3178eda0c620b87a0c91b02f92da40fbc603230fb19135ad0adb37258873ecd1"
-	lockedCoreVersion    = "v6.20.1"
-	lockedCoreSOName     = "libMaaCore.so"
-	lockedVersionRelPath = "resource/version.json"
+	coreSOName            = "libMaaCore.so"
+	versionRelPath        = "resource/version.json"
+	childModeEnv          = "MAA_CORE_CHILD_MODE"
+	childModeSuccess      = "success"
+	childModeMissing      = "missing-lib"
+	childModeHang         = "hang"
+	libPathEnv            = "MAA_CORE_LIB_PATH"
+	resourceRootEnv       = "MAA_CORE_RESOURCE_ROOT"
+	userDirEnv            = "MAA_CORE_USER_DIR"
+	tarballOverrideEv     = "MAA_CORE_TARBALL"
+	expectedVersionEnv    = "MAA_CORE_EXPECTED_VERSION"
+	expectedLibrarySHAEnv = "MAA_CORE_EXPECTED_LIBRARY_SHA256"
+	expectedTarballSHAEnv = "MAA_CORE_EXPECTED_TARBALL_SHA256"
+	expectedVersionSHAEnv = "MAA_CORE_EXPECTED_VERSION_SHA256"
+	successMarker         = "MAA_CORE_SUCCESS"
+	missingOKMarker       = "MAA_CORE_MISSING_LIB_OK"
+	hangMarker            = "MAA_CORE_HANG"
 )
 
-// 子进程分派与资源传递的环境变量。
-const (
-	childModeEnv      = "MAA_CORE_CHILD_MODE"     // 子进程模式标记;缺省即父进程,照常执行测试框架
-	childModeSuccess  = "success"                 // 真实库成功路径:公开 Open → 元数据断言 → 打印 capabilities
-	childModeMissing  = "missing-lib"             // 缺库失败路径:errors.As 命中 LibraryLoadError → 同进程再 Open 得 terminated
-	childModeHang     = "hang"                    // 挂起模式:长时间 sleep,供父进程验收超时终止语义
-	libPathEnv        = "MAA_CORE_LIB_PATH"       // 解包出的 libMaaCore.so 绝对路径
-	resourceRootEnv   = "MAA_CORE_RESOURCE_ROOT"  // 解包根目录绝对路径(其下含 resource/)
-	userDirEnv        = "MAA_CORE_USER_DIR"       // 子进程专用的可写用户目录绝对路径
-	tarballOverrideEv = "MAA_CORE_TARBALL"        // 测试专用:覆盖锁定发行包缓存路径
-	successMarker     = "MAA_CORE_SUCCESS"        // success 子进程的 stdout 成功标记
-	missingOKMarker   = "MAA_CORE_MISSING_LIB_OK" // missing-lib 子进程的 stdout 成功标记
-	hangMarker        = "MAA_CORE_HANG"           // hang 子进程的 stdout 启动标记
-)
-
-// errTarballMissing 表示锁定发行包缓存缺失:真实库验收受阻,计为
-// SKIP——跳过不是通过,不得冒充真实环境验收。
-var errTarballMissing = errors.New("locked release tarball missing")
+// 输入不完整只说明真实库未验证;已给出的无效输入则是失败。
+var errCoreInputMissing = errors.New("explicit real-library inputs are incomplete")
 
 // 子进程超时参数:Core 加载约 280MB 资源需要时间,成功路径给足
 // 10 分钟;缺库路径 dlopen 立即失败,同样给 10 分钟以免慢环境误杀;
@@ -88,132 +80,126 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// unpackState 汇集父进程的锁定资源解包结果:once 保证每父进程至多
-// 解包一次(惰性共享);err 为 errTarballMissing 时计为 skip,其余
-// 错误(哈希不符、成员缺失、IO 失败)都是测试失败。
+// 每个父进程惰性准备一次输入,只清理由本进程解包的临时目录。
 var unpackState struct {
-	once    sync.Once
-	root    string // 解包根目录(其下平铺 *.so* 并含 resource/);"" 表示未解包
-	libPath string // 解包出的 libMaaCore.so 绝对路径
-	err     error
+	once      sync.Once
+	resources coreResources
+	err       error
 }
 
-// tarballPath 返回锁定发行包缓存路径:默认用户缓存,可经
-// tarballOverrideEv 覆盖(测试专用,不改任何全局状态)。
-func tarballPath() string {
-	if p := os.Getenv(tarballOverrideEv); p != "" {
-		return p
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".cache", "maa", "MAA-v6.20.1-linux-x86_64.tar.gz")
+type coreResources struct {
+	root, libPath, cleanupRoot         string
+	tarballSHA, librarySHA, versionSHA string
 }
 
-// cleanupUnpackedResources 在 TestMain 末尾移除父进程解包的临时目录;
-// 未解包过(或仅子进程模式)时不做任何事。
 func cleanupUnpackedResources() {
-	if unpackState.root != "" {
-		os.RemoveAll(unpackState.root)
+	if unpackState.resources.cleanupRoot != "" {
+		os.RemoveAll(unpackState.resources.cleanupRoot)
 	}
 }
 
-// requireUnpackedResources 为父进程用例取得锁定资源:非 linux/amd64
-// 运行环境跳过(构建约束已限定 linux);缓存缺失跳过并写明受阻原因;
-// 其余解包/校验失败一律 Fatal——锁定基线被破坏不是环境受限。
-// 返回 libMaaCore.so 绝对路径与资源根(解包根目录,其下含 resource/)。
 func requireUnpackedResources(t *testing.T) (libPath, resourceRoot string) {
 	t.Helper()
-	if runtime.GOARCH != "amd64" {
-		t.Skipf("real-library admission blocked: architecture %s is not in the locked baseline (linux amd64)", runtime.GOARCH)
-	}
-	unpackState.once.Do(unpackLockedRelease)
-	if errors.Is(unpackState.err, errTarballMissing) {
-		t.Skipf("real-library admission blocked: locked release tarball missing (%s)", tarballPath())
+	unpackState.once.Do(func() { unpackState.resources, unpackState.err = prepareCoreResources(os.Getenv) })
+	if errors.Is(unpackState.err, errCoreInputMissing) {
+		t.Skipf("real-library admission UNVERIFIED: %v; provide %s and %s, or %s; SKIP is not a pass", unpackState.err, libPathEnv, resourceRootEnv, tarballOverrideEv)
 	}
 	if unpackState.err != nil {
-		t.Fatalf("locked release tarball unpack/verification failed: %v", unpackState.err)
+		t.Fatalf("real-library input preparation failed: %v", unpackState.err)
 	}
-	return unpackState.libPath, unpackState.root
+	r := unpackState.resources
+	t.Logf("actual installation: library SHA256=%s resource/version.json SHA256=%s tarball SHA256=%s (empty when not supplied); resource provenance is maintained by the host", r.librarySHA, r.versionSHA, r.tarballSHA)
+	return r.libPath, r.root
 }
 
-// unpackLockedRelease 执行一次性的锁定资源准备:
-//  1. 核验整包 SHA256;
-//  2. 流式解包(top-level *.so* 全部 + resource/ 整目录)到
-//     os.MkdirTemp 临时目录,成员逐项过滤并拒绝路径穿越;
-//  3. 核验解出的 libMaaCore.so 与 resource/version.json 的 SHA256。
-//
-// 任何失败都记录进 unpackState.err,由调用方决定 skip 或 Fatal。
-func unpackLockedRelease() {
-	tarball := tarballPath()
-	if tarball == "" {
-		unpackState.err = fmt.Errorf("%w: cannot locate the user home directory", errTarballMissing)
-		return
+// prepareCoreResources 不访问默认缓存、不下载资源,也不修改已有安装。
+func prepareCoreResources(getenv func(string) string) (r coreResources, err error) {
+	lib, root, archive := getenv(libPathEnv), getenv(resourceRootEnv), getenv(tarballOverrideEv)
+	if archive != "" && (lib != "" || root != "") {
+		return r, errors.New("provide either an installed library/resource root or a tarball, not both")
 	}
-	if _, err := os.Stat(tarball); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			unpackState.err = fmt.Errorf("%w: %s", errTarballMissing, tarball)
-			return
+	if archive == "" && getenv(expectedTarballSHAEnv) != "" {
+		return r, fmt.Errorf("%s requires %s", expectedTarballSHAEnv, tarballOverrideEv)
+	}
+	for _, key := range []string{expectedLibrarySHAEnv, expectedTarballSHAEnv, expectedVersionSHAEnv} {
+		if value := getenv(key); value != "" {
+			decoded, decodeErr := hex.DecodeString(value)
+			if decodeErr != nil || len(decoded) != sha256.Size {
+				return r, fmt.Errorf("%s must contain a SHA256 hexadecimal digest", key)
+			}
 		}
-		unpackState.err = fmt.Errorf("stat %s: %w", tarball, err)
-		return
 	}
-
-	// 整包哈希:先全量读一遍核对,再打开解包。
-	got, err := sha256File(tarball)
-	if err != nil {
-		unpackState.err = fmt.Errorf("hash %s: %w", tarball, err)
-		return
+	if archive == "" && (lib == "" || root == "") {
+		return r, errCoreInputMissing
 	}
-	if got != lockedTarballSHA256 {
-		unpackState.err = fmt.Errorf("release tarball SHA256 = %s, want %s (locked baseline broken)", got, lockedTarballSHA256)
-		return
+	if archive != "" {
+		if !filepath.IsAbs(archive) {
+			return r, fmt.Errorf("%s must be an absolute path", tarballOverrideEv)
+		}
+		if r.tarballSHA, err = checkFileSHA(archive, getenv(expectedTarballSHAEnv)); err != nil {
+			return r, err
+		}
+		r.root, err = os.MkdirTemp("", "maa-core-accept-")
+		if err != nil {
+			return r, err
+		}
+		r.cleanupRoot = r.root
+		defer func() {
+			if err != nil {
+				os.RemoveAll(r.cleanupRoot)
+			}
+		}()
+		if err = extractCoreMembers(r.root, archive); err != nil {
+			return r, err
+		}
+		r.libPath = filepath.Join(r.root, coreSOName)
+	} else {
+		if !filepath.IsAbs(lib) || !filepath.IsAbs(root) {
+			return r, fmt.Errorf("%s and %s must be absolute paths", libPathEnv, resourceRootEnv)
+		}
+		r.libPath, r.root = filepath.Clean(lib), filepath.Clean(root)
 	}
-
-	root, err := os.MkdirTemp("", "maa-m1-accept-")
-	if err != nil {
-		unpackState.err = fmt.Errorf("MkdirTemp: %w", err)
-		return
+	if r.librarySHA, err = checkFileSHA(r.libPath, getenv(expectedLibrarySHAEnv)); err != nil {
+		return r, err
 	}
-	unpackState.root = root
-
-	if err := extractLockedMembers(root, tarball); err != nil {
-		unpackState.err = err
-		return
+	if r.versionSHA, err = checkFileSHA(filepath.Join(r.root, versionRelPath), getenv(expectedVersionSHAEnv)); err != nil {
+		return r, err
 	}
-	if unpackState.libPath == "" {
-		unpackState.err = fmt.Errorf("%s not found in the release tarball", lockedCoreSOName)
-		return
-	}
-	if !sawLockedVersionJSON {
-		unpackState.err = fmt.Errorf("%s not found in the release tarball", lockedVersionRelPath)
-		return
-	}
+	return r, nil
 }
 
-// sawLockedVersionJSON 记录解包过程中是否流过 resource/version.json
-// (extractLockedMembers 成员核验通过后置位)。
-var sawLockedVersionJSON bool
-
-// extractLockedMembers 流式解包锁定成员:tar+gzip 逐成员过滤,顶层
-// *.so* 全部保留、resource/ 整目录保留,其余成员(头文件、Python、
-// maa 目录等)跳过。libMaaCore.so 与 resource/version.json 边复制边
-// 算哈希并当场核对。本发行包只含普通文件与目录(无符号链接/硬链接),
-// 其余成员类型按锁定基线破坏处理,不猜测语义。
-func extractLockedMembers(root, tarball string) error {
-	f, err := os.Open(tarball)
+func checkFileSHA(path, want string) (string, error) {
+	info, err := os.Stat(path)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", tarball, err)
+		return "", fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file", path)
+	}
+	got, err := sha256File(path)
+	if err != nil {
+		return "", fmt.Errorf("hash %s: %w", path, err)
+	}
+	if want != "" && !strings.EqualFold(got, want) {
+		return "", fmt.Errorf("%s SHA256 = %s, want %s", path, got, want)
+	}
+	return got, nil
+}
+
+// 只提取顶层动态库及 resource/;链接仅允许指向解包内的顶层动态库。
+func extractCoreMembers(root, archive string) error {
+	f, err := os.Open(archive)
+	if err != nil {
+		return err
 	}
 	defer f.Close()
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return fmt.Errorf("gzip %s: %w", tarball, err)
+		return fmt.Errorf("gzip %s: %w", archive, err)
 	}
 	defer gz.Close()
-
 	tr := tar.NewReader(gz)
+	seen := make(map[string]bool)
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -223,85 +209,87 @@ func extractLockedMembers(root, tarball string) error {
 			return fmt.Errorf("read tar: %w", err)
 		}
 		name := strings.TrimPrefix(hdr.Name, "./")
-		if name == "" || !lockedMemberWanted(name) {
+		if name == "" || name == "." {
+			if hdr.Typeflag != tar.TypeDir {
+				return fmt.Errorf("archive root member %q is not a directory", hdr.Name)
+			}
 			continue
+		}
+		dest, err := safeJoin(root, name)
+		if err != nil {
+			return err
+		}
+		if !coreMemberWanted(name) {
+			continue
+		}
+		if seen[dest] {
+			return fmt.Errorf("duplicate archive member %q", name)
+		}
+		seen[dest] = true
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return err
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(name)), 0o755); err != nil {
-				return fmt.Errorf("mkdir %s: %w", name, err)
+			if err := os.MkdirAll(dest, 0o755); err != nil {
+				return err
 			}
 		case tar.TypeReg:
-			dest, err := safeJoin(root, name)
-			if err != nil {
-				return fmt.Errorf("member %s has an illegal path: %w", name, err)
-			}
-			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-				return fmt.Errorf("mkdir for %s: %w", name, err)
-			}
-			pinned := ""
-			switch name {
-			case lockedCoreSOName:
-				pinned = lockedCoreSHA256
-			case lockedVersionRelPath:
-				pinned = lockedVersionSHA256
-			}
-			if err := extractFile(tr, dest, hdr.FileInfo().Mode().Perm(), pinned); err != nil {
+			if err := extractFile(tr, dest, hdr.FileInfo().Mode().Perm()); err != nil {
 				return fmt.Errorf("extract %s: %w", name, err)
 			}
-			switch name {
-			case lockedCoreSOName:
-				unpackState.libPath = dest
-			case lockedVersionRelPath:
-				sawLockedVersionJSON = true
+		case tar.TypeSymlink:
+			if strings.Contains(name, "/") || strings.Contains(hdr.Linkname, "/") || !coreMemberWanted(hdr.Linkname) {
+				return fmt.Errorf("member %s has an unsafe symlink target %q", name, hdr.Linkname)
+			}
+			if _, err := safeJoin(root, hdr.Linkname); err != nil {
+				return err
+			}
+			if err := os.Symlink(hdr.Linkname, dest); err != nil {
+				return err
 			}
 		default:
-			return fmt.Errorf("member %s has type %q outside the locked baseline (only regular files and directories)", name, hdr.Typeflag)
+			return fmt.Errorf("member %s has unsupported type %q", name, hdr.Typeflag)
 		}
 	}
 }
 
-// lockedMemberWanted 报告成员是否属于解包集合:顶层 *.so* 全部
-// (libMaaCore.so 与 8 个捆绑依赖,DT_RUNPATH=$ORIGIN/ 依赖同目录
-// 解析)或 resource/ 整目录。拒绝绝对路径与路径穿越分量。
-func lockedMemberWanted(name string) bool {
-	if strings.HasPrefix(name, "/") || name == ".." || strings.Contains(name, "/../") || strings.HasSuffix(name, "/..") {
-		return false
-	}
+func coreMemberWanted(name string) bool {
 	if !strings.Contains(name, "/") {
 		return strings.HasPrefix(name, "lib") && (strings.HasSuffix(name, ".so") || strings.Contains(name, ".so."))
 	}
 	return strings.HasPrefix(name, "resource/")
 }
 
-// safeJoin 把 tar 成员名安全地拼接进 root:拒绝绝对路径与任何..
-// 分量,防止路径穿越逃出解包目录。
 func safeJoin(root, name string) (string, error) {
-	if !filepath.IsAbs(name) && !strings.HasPrefix(name, "..") && !strings.Contains(name, "/../") {
-		return filepath.Join(root, filepath.FromSlash(name)), nil
+	if !filepath.IsLocal(name) {
+		return "", fmt.Errorf("refusing unsafe member path %q", name)
 	}
-	return "", fmt.Errorf("refusing unsafe member path %q", name)
+	for _, part := range strings.Split(name, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("refusing unsafe member path %q", name)
+		}
+	}
+	return filepath.Join(root, filepath.FromSlash(name)), nil
 }
 
-// extractFile 把当前 tar 成员复制到 dest:mode 取 tar 头权限;
-// want 为非空时边复制边计算 SHA256 并当场核对(锁定成员哈希不符
-// 即失败)。复制完成并核验后才保留文件。
-func extractFile(r io.Reader, dest string, mode fs.FileMode, want string) error {
-	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+func extractFile(r io.Reader, dest string, mode fs.FileMode) error {
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	if want == "" {
-		_, err := io.Copy(out, r)
-		return err
+	_, copyErr := io.Copy(out, r)
+	closeErr := out.Close()
+	return errors.Join(copyErr, closeErr)
+}
+
+// verifyCoreVersion 核对实际非空版本和调用方可选期望,不推断任务能力。
+func verifyCoreVersion(version, expected string) error {
+	if version == "" {
+		return errors.New("Core version is empty")
 	}
-	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(out, h), r); err != nil {
-		return err
-	}
-	if got := hex.EncodeToString(h.Sum(nil)); got != want {
-		return fmt.Errorf("SHA256 = %s, want %s (locked baseline broken)", got, want)
+	if expected != "" && version != expected {
+		return fmt.Errorf("Core version = %q, want %q", version, expected)
 	}
 	return nil
 }
@@ -373,9 +361,9 @@ func runCoreOpenChild(t *testing.T, timeout time.Duration, mode string, extraEnv
 
 // childEnviron 构造子进程环境:父进程环境剥离动态链接器注入变量
 // (LD_LIBRARY_PATH/LD_PRELOAD/LD_AUDIT)后原样继承,再附上模式标记。
-// 锁定策略是不依赖任何 LD_* 配置——libMaaCore.so 的依赖只经
+// 隔离策略是不依赖任何 LD_* 配置——libMaaCore.so 的依赖只经
 // $ORIGIN RUNPATH 与系统默认路径解析;父进程环境残留这些变量(如指向
-// 其他 MAA 安装的 LD_LIBRARY_PATH)会把子进程的依赖解析带离锁定策略,
+// 其他 MAA 安装的 LD_LIBRARY_PATH)会把子进程的依赖解析带离隔离策略,
 // 故三种模式的子进程一律在无 LD_* 注入的环境下验收,其余变量不受影响。
 func childEnviron(mode string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
@@ -408,7 +396,7 @@ func childDiagnostics(mode string, out childOutcome) string {
 
 // verifySuccessChildMetadata 对 success 子进程的 stdout 做父进程侧
 // 元数据复验:解析 successMarker 行打印的 version= 与 nullSize= 实际
-// 值,独立核对锁定基线。子进程内的同名断言与本复验互相独立(纵深
+// 值,独立核对实际安装组合。子进程内的同名断言与本复验互相独立(纵深
 // 防御):父进程不信任子进程内的断言是否真实执行,只以 stdout 实际
 // 打印值为准——缺行、格式异常或任一值不符都判定父测试失败。
 func verifySuccessChildMetadata(stdout string) error {
@@ -418,15 +406,15 @@ func verifySuccessChildMetadata(stdout string) error {
 	}
 	fields := strings.Fields(line)
 	gotVersion := strings.TrimPrefix(fields[1], "version=")
-	if gotVersion != lockedCoreVersion {
-		return fmt.Errorf("stdout re-verification Version = %q, want %q (locked baseline)", gotVersion, lockedCoreVersion)
+	if err := verifyCoreVersion(gotVersion, os.Getenv(expectedVersionEnv)); err != nil {
+		return fmt.Errorf("stdout re-verification: %w", err)
 	}
 	gotNullSize, err := strconv.ParseUint(strings.TrimPrefix(fields[2], "nullSize="), 10, 64)
 	if err != nil {
 		return fmt.Errorf("stdout re-verification nullSize %q is not a decimal uint64: %w", fields[2], err)
 	}
 	if gotNullSize != math.MaxUint64 {
-		return fmt.Errorf("stdout re-verification NullSize = %d (0x%x), want %d (0x%x, locked profile sentinel)",
+		return fmt.Errorf("stdout re-verification NullSize = %d (0x%x), want %d (0x%x, ABI sentinel)",
 			gotNullSize, gotNullSize, uint64(math.MaxUint64), uint64(math.MaxUint64))
 	}
 	return nil
@@ -449,8 +437,8 @@ func successMetadataLine(stdout string) (string, bool) {
 }
 
 // TestRealCoreOpenSucceedsInFreshProcess 验收真实库成功路径:
-// 在全新子进程中经公开 Open 加载锁定的 libMaaCore.so 并完成初始化,
-// 断言 Version 与 NullSize 符合锁定 profile,打印 Capabilities 实际
+// 在全新子进程中经公开 Open 加载显式的 libMaaCore.so 并完成初始化,
+// 核对实际版本与可选期望、NullSize ABI 哨兵,打印 Capabilities 实际
 // 值供父进程记录(不硬断言具体能力位)。随后再启动一次新的 success
 // 子进程且同样成功——与 missing-lib 模式共同证明:同进程失败后拒绝
 // 再次 Open,恢复只能来自新进程。退出码非 0、被信号杀死、超时都
@@ -532,7 +520,7 @@ func TestRealCoreTimeoutKillReportedAsFailure(t *testing.T) {
 }
 
 // runSuccessChild 是 childModeSuccess 子进程入口:经公开 Open 完成
-// 真实库初始化,断言锁定 profile 的 Version 与 NullSize,把
+// 真实库初始化,核对实际版本与可选期望、NullSize ABI 哨兵,把
 // Capabilities 实际值打印到 stdout 供父进程记录。不创建实例、不连
 // 设备。断言失败输出诊断并以非 0 退出。
 func runSuccessChild() int {
@@ -559,12 +547,12 @@ func runSuccessChild() int {
 		fmt.Fprintf(os.Stderr, "success child: Open(%s) failed: %v\n", libPath, err)
 		return 1
 	}
-	if got := rt.Version(); got != lockedCoreVersion {
-		fmt.Fprintf(os.Stderr, "success child: Version() = %q, want %q\n", got, lockedCoreVersion)
+	if err := verifyCoreVersion(rt.Version(), os.Getenv(expectedVersionEnv)); err != nil {
+		fmt.Fprintf(os.Stderr, "success child: %v\n", err)
 		return 1
 	}
 	if got := rt.NullSize(); got != math.MaxUint64 {
-		fmt.Fprintf(os.Stderr, "success child: NullSize() = %#x, want %#x (locked profile sentinel)\n", got, uint64(math.MaxUint64))
+		fmt.Fprintf(os.Stderr, "success child: NullSize() = %#x, want %#x (ABI sentinel)\n", got, uint64(math.MaxUint64))
 		return 1
 	}
 	caps := rt.Capabilities()

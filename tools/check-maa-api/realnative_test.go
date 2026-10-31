@@ -1,7 +1,7 @@
 // realnative_test.go 以真实仓库 native 目录(复制到临时目录构造变体
 // go-root)做最小破坏变体,走完整命令入口 Run 验收失败行为:空清单、
 // 漏绑、错误 Target、多余字段、陈旧/重复排除、Name 拼错、重复绑定、
-// 共用文件缺失/被约束隐藏、平台矛盾,以及锁定 profile 独立期望比对
+// 共用文件缺失/被约束隐藏、平台矛盾,以及独立期望比对
 // 的策略破坏(required↔optional 互换、D 项改绑、适用导出被排除),
 // 各断言非零退出、诊断类别、定位与绝不输出 PASS。期望比对在 link 之
 // 后执行:策略类变体以 policy 类诊断失败;平台互换已被 link 先行以
@@ -200,7 +200,7 @@ func TestRealNativeVariantsFailThroughCLI(t *testing.T) {
 			goRoot := writeMutatedGoRoot(t, files)
 			var stdout, stderr bytes.Buffer
 			code := Run([]string{
-				"--profile", testProfileID, "--goos", tc.goos, "--goarch", "amd64",
+				"--goos", tc.goos, "--goarch", "amd64",
 				"--c-input", cInput, "--go-root", goRoot,
 			}, &stdout, &stderr)
 			if code == 0 {
@@ -239,7 +239,7 @@ func TestRealNativePolicyExpectationBaseline(t *testing.T) {
 	for _, goos := range []string{"linux", "windows"} {
 		var stdout, stderr bytes.Buffer
 		code := Run([]string{
-			"--profile", testProfileID, "--goos", goos, "--goarch", "amd64",
+			"--goos", goos, "--goarch", "amd64",
 			"--c-input", cInput, "--go-root", repoRoot(t),
 		}, &stdout, &stderr)
 		if code != 0 {
@@ -258,7 +258,7 @@ func TestRealNativePolicyExpectationBaseline(t *testing.T) {
 			if e.Symbol != wantSym {
 				t.Errorf("%s expect[%d].Symbol = %q, want %q (must be sorted)", goos, i, e.Symbol, wantSym)
 			}
-			want := lockedPolicyExpectations[e.Symbol]
+			want := policyExpectations[e.Symbol]
 			if e.Expected.Policy != want.Policy || e.Expected.Platform != want.Platform {
 				t.Errorf("%s expect[%d] expected = %+v, want %+v", goos, i, e.Expected, want)
 			}
@@ -281,7 +281,7 @@ func TestRealNativeSelectionBaseline(t *testing.T) {
 	for _, goos := range []string{"linux", "windows"} {
 		var stdout, stderr bytes.Buffer
 		code := Run([]string{
-			"--profile", testProfileID, "--goos", goos, "--goarch", "amd64",
+			"--goos", goos, "--goarch", "amd64",
 			"--c-input", cInput, "--go-root", repoRoot(t),
 		}, &stdout, &stderr)
 		if code != 0 {

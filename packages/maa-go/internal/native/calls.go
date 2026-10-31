@@ -19,7 +19,7 @@ import "unsafe"
 func (t *APITable) GetVersion() *byte { return t.api.GetVersion() }
 
 // GetNullSize 对应 AsstGetNullSize():输出缓冲区协议的失败哨兵值。
-// 锁定 profile(maa-v6.20.1)约定为 math.MaxUint64,由公开层核验。
+// 输出缓冲区协议约定为 math.MaxUint64,由公开层核验。
 func (t *APITable) GetNullSize() uint64 { return t.api.GetNullSize() }
 
 // SetUserDir 对应 AsstSetUserDir(path):设置进程级用户目录。返回 0

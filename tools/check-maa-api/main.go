@@ -1,10 +1,4 @@
-// Command check-maa-api 是 maa-go 的最小静态 API checker 命令入口:
-// 解析五个必需 flag → profile → 目标 → LoadCInput → ExtractC → Go 文件
-// 选择 → Go 提取 → C↔Go 关联 → 锁定 profile 独立策略期望比对 → 宽度
-// 级 C↔Go 逐参数签名比对与 callback 平台适配比对。成功退出 0,并在
-// stdout 输出键序稳定的 JSON 结果;任何失败都以非零退出码结束,stderr
-// 输出 profile、目标与诊断(Diagnostic.String()),绝不输出 PASS。生产
-// 入口不提供跳过摘要、未锁定 profile 或其他逃逸参数。
+// Command check-maa-api 对显式 MaaCore 头文件与 Go raw 声明进行独立比对。
 
 package main
 
@@ -18,11 +12,9 @@ import (
 	"strings"
 )
 
-const usageText = `usage: check-maa-api --profile maa-v6.20.1 --goos linux --goarch amd64 ` +
-	`--c-input /path/to/maa-c-input --go-root /path/to/rhodeck
+const usageText = `usage: check-maa-api --goos linux --goarch amd64 --c-input /path/to/maa-c-input --go-root /path/to/rhodeck
 
 flags:
-  --profile   locked profile id (only maa-v6.20.1 is registered)
   --goos      static target GOOS: linux or windows
   --goarch    static target GOARCH: amd64
   --c-input   directory containing inputs.json and its relative-path files
@@ -36,7 +28,7 @@ func main() {
 // reportJSON 是成功输出的顶层 JSON 结构:字段顺序即键序,列表一律
 // 按名称排序,保证输出确定性。
 type reportJSON struct {
-	Profile    string          `json:"profile"`
+	Input      manifest        `json:"input"`
 	Target     targetJSON      `json:"target"`
 	C          cReport         `json:"c"`
 	Go         goReport        `json:"go"`
@@ -181,14 +173,13 @@ type signatureReport struct {
 
 // Run 承载全部命令逻辑;返回进程退出码。stdout 只在成功时收到 JSON。
 func Run(args []string, stdout, stderr io.Writer) int {
-	profileID := ""
+	snapshotID := ""
 	goosArg, goarchArg := "", ""
 	cInputArg, goRootArg := "", ""
 
 	fs := flag.NewFlagSet("check-maa-api", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, usageText) }
-	fs.StringVar(&profileID, "profile", "", "locked profile id (required)")
 	fs.StringVar(&goosArg, "goos", "", "static target GOOS (required)")
 	fs.StringVar(&goarchArg, "goarch", "", "static target GOARCH (required)")
 	fs.StringVar(&cInputArg, "c-input", "", "c input directory (required)")
@@ -196,18 +187,18 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	target := Target{GOOS: goosArg, GOARCH: goarchArg}
 	fail := func(diags []Diagnostic) int {
-		printFailure(stderr, profileID, target, diags)
+		printFailure(stderr, snapshotID, target, diags)
 		return 1
 	}
 	if err := fs.Parse(args); err != nil {
 		return fail([]Diagnostic{{Category: CatInput, Symbol: "arguments",
-			Expected: "the frozen five-flag command line", Actual: err.Error(),
+			Expected: "the explicit-input command line", Actual: err.Error(),
 			Message: "argument parsing failed; see usage above"}})
 	}
 	target = Target{GOOS: goosArg, GOARCH: goarchArg}
 	var missing []string
 	for name, value := range map[string]string{
-		"--profile": profileID, "--goos": goosArg, "--goarch": goarchArg,
+		"--goos": goosArg, "--goarch": goarchArg,
 		"--c-input": cInputArg, "--go-root": goRootArg,
 	} {
 		if value == "" {
@@ -217,7 +208,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		return fail([]Diagnostic{{Category: CatInput, Symbol: missing[0],
-			Expected: "all five flags provided", Actual: "missing " + strings.Join(missing, ", "),
+			Expected: "all four flags provided", Actual: "missing " + strings.Join(missing, ", "),
 			Message: "every flag is required"}})
 	}
 	if fs.NArg() > 0 {
@@ -226,12 +217,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			Message: "unexpected positional arguments"}})
 	}
 
-	profile, ok := LookupProfile(profileID)
-	if !ok {
-		return fail([]Diagnostic{{Category: CatInput, Symbol: "profile",
-			Expected: "registered profile id", Actual: profileID,
-			Message: "unknown profile; the production registry contains only the locked profile"}})
-	}
 	if diags := ValidateTarget(target); len(diags) > 0 {
 		return fail(diags)
 	}
@@ -241,10 +226,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return fail([]Diagnostic{*d})
 	}
 
-	input, diags := LoadCInput(cInputArg, profile)
+	input, diags := LoadCInput(cInputArg)
 	if len(diags) > 0 {
 		return fail(diags)
 	}
+	snapshotID = input.Profile.ID
 	cext, diags := ExtractC(input, target)
 	if len(diags) > 0 {
 		return fail(diags)
@@ -270,7 +256,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return fail(diags)
 	}
 
-	report := buildReport(profileID, target, cext, gext, sel, link, expect, signatures)
+	report := buildReport(target, cext, gext, sel, link, expect, signatures)
+	report.Input = input.Manifest
 	enc, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fail([]Diagnostic{{Category: CatInput, Symbol: "report",
@@ -281,10 +268,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// printFailure 输出 profile/目标头信息与诊断;失败路径绝不输出 PASS。
-func printFailure(stderr io.Writer, profileID string, target Target, diags []Diagnostic) {
-	if profileID != "" {
-		fmt.Fprintf(stderr, "check-maa-api: profile: %s\n", profileID)
+// printFailure 输出输入身份/目标头信息与诊断;失败路径绝不输出 PASS。
+func printFailure(stderr io.Writer, snapshotID string, target Target, diags []Diagnostic) {
+	if snapshotID != "" {
+		fmt.Fprintf(stderr, "check-maa-api: input snapshot: %s\n", snapshotID)
 	}
 	if target.GOOS != "" || target.GOARCH != "" {
 		fmt.Fprintf(stderr, "check-maa-api: target: %s\n", fmtTarget(target))
@@ -298,14 +285,13 @@ func printFailure(stderr io.Writer, profileID string, target Target, diags []Dia
 // 为 [],不输出 null。expect 段给出冻结期望表的逐符号 policy/platform
 // 期望与实际对照(30 项,按符号名排序,与目标无关);signatures 段
 // 给出宽度级逐参数核验记录(全部绑定符号——目标适用绑定与非目标平
-// 台的 windowsOnly 绑定,两目标均为 26 项——按符号名排序,两个
+// 台的 windowsOnly 绑定,两目标均为 28 项——按符号名排序,两个
 // callback 固定顺序),含每个参数位置的 C/Go 名称与类型、返回映射与
 // 双方声明位置。
-func buildReport(profileID string, target Target, cext *CExtraction, gext *GoExtraction,
+func buildReport(target Target, cext *CExtraction, gext *GoExtraction,
 	sel *GoSelection, link *LinkResult, expect *ExpectResult, signatures *SignatureResult) reportJSON {
 	report := reportJSON{
-		Profile: profileID,
-		Target:  targetJSON{GOOS: target.GOOS, GOARCH: target.GOARCH},
+		Target: targetJSON{GOOS: target.GOOS, GOARCH: target.GOARCH},
 	}
 	report.C = cReport{
 		Full:       sortedFunctionNames(cext.Functions),

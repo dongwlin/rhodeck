@@ -53,15 +53,15 @@ func TestLockedPolicyExpectations(t *testing.T) {
 		"AsstConnect":      {Policy: ExpectPolicyExcluded},
 		"AsstAttachWindow": {Policy: ExpectPolicyExcluded},
 	}
-	if len(lockedPolicyExpectations) != 30 {
-		t.Fatalf("locked policy expectations has %d entries, want 30", len(lockedPolicyExpectations))
+	if len(policyExpectations) != 30 {
+		t.Fatalf("locked policy expectations has %d entries, want 30", len(policyExpectations))
 	}
-	if len(lockedPolicyExpectations) != len(want) {
+	if len(policyExpectations) != len(want) {
 		t.Fatalf("locked policy expectations has %d entries, want %d",
-			len(lockedPolicyExpectations), len(want))
+			len(policyExpectations), len(want))
 	}
 	for symbol, w := range want {
-		got, ok := lockedPolicyExpectations[symbol]
+		got, ok := policyExpectations[symbol]
 		if !ok {
 			t.Fatalf("locked policy expectations is missing %s", symbol)
 		}
@@ -70,7 +70,7 @@ func TestLockedPolicyExpectations(t *testing.T) {
 		}
 	}
 	// 词表冻结:policy/platform 取值只允许期望常量。
-	for symbol, e := range lockedPolicyExpectations {
+	for symbol, e := range policyExpectations {
 		switch e.Policy {
 		case ExpectPolicyRequired, ExpectPolicyOptional, ExpectPolicyExcluded:
 		default:
@@ -107,7 +107,7 @@ func TestCompareExpectationsPositive(t *testing.T) {
 		if e.Symbol != wantSym {
 			t.Fatalf("entries[%d].Symbol = %q, want %q (must be sorted)", i, e.Symbol, wantSym)
 		}
-		want := lockedPolicyExpectations[e.Symbol]
+		want := policyExpectations[e.Symbol]
 		if e.Expected.Policy != want.Policy || e.Expected.Platform != want.Platform {
 			t.Errorf("%s expected = %+v, want %+v", e.Symbol, e.Expected, want)
 		}

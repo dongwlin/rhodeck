@@ -1,0 +1,29 @@
+{
+  "manifest_schema_version": 1,
+  "snapshot_id": "REPLACE_WITH_PLAN_SNAPSHOT_ID",
+  "core_version": "REPLACE_WITH_OBSERVED_CORE_VERSION",
+  "library_sha256": "REPLACE_WITH_OBSERVED_LIBRARY_SHA256",
+  "library_source": {
+    "status": "unrecorded",
+    "repository": "",
+    "reference": "",
+    "download_url": ""
+  },
+  "resources": [
+    {
+      "root": "/REPLACE_WITH_EXACT_RESOURCE_ROOT",
+      "version_sha256": "REPLACE_WITH_OBSERVED_VERSION_SHA256",
+      "version_digest_coverage": {
+        "algorithm": "sha256",
+        "paths": ["resource/version.json"]
+      },
+      "source": {
+        "status": "unrecorded",
+        "repository": "",
+        "reference": "",
+        "download_url": ""
+      },
+      "additional_digests": []
+    }
+  ]
+}

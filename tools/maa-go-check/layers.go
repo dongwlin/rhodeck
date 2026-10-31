@@ -20,7 +20,8 @@ func definitions() []layer {
 	return []layer{
 		{
 			Name:        "static",
-			Description: "locked C/Go declaration checker (linux+windows)",
+			Description: "C/Go declaration checker (linux+windows)",
+			Requires:    []string{"headers"},
 			Run:         runStatic,
 		},
 		{
@@ -50,7 +51,7 @@ func definitions() []layer {
 		{
 			Name:        "core",
 			Description: "real MaaCore no-device chain",
-			Requires:    []string{"tarball"},
+			Requires:    []string{"core-input"},
 			Run:         runCore,
 		},
 		{
@@ -73,12 +74,11 @@ func definitions() []layer {
 }
 
 // runStatic combines the checker's own unit/counterexample suite with two
-// real runs over the repository-internal locked C input. The tarball-backed
-// real-header tests are excluded here because the vendored input is the CI
-// source; runCheckerTarget asserts the policy counts independently.
+// real runs over the selected C input. Header tests requiring external input
+// are excluded here; runCheckerTarget asserts the policy counts independently.
 func runStatic(ctx context.Context, env environment) layerResult {
 	res := newLayerResult("static")
-	res.Detail = "checker tests plus locked C input (linux/windows)"
+	res.Detail = "checker tests plus selected C input (linux/windows)"
 	res.merge(runGoTest(ctx, env, goTestStep{
 		Name:     "checker tests",
 		Packages: []string{"./tools/check-maa-api/"},
@@ -190,7 +190,7 @@ func runCore(ctx context.Context, env environment) layerResult {
 		Timeout:  30 * time.Minute,
 	})
 	if res.Status == statusPass {
-		res.Detail = "real MaaCore v6.20.1 no-device chain passed"
+		res.Detail = "explicit MaaCore installation no-device chain passed"
 	}
 	return res
 }

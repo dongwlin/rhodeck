@@ -300,7 +300,7 @@ func TestOpenSessionStepsAndMetadata(t *testing.T) {
 		t.Errorf("Version() = %q, want %q", v, "6.20.1")
 	}
 	if ns := rt.NullSize(); ns != profileNullSize {
-		t.Errorf("NullSize() = %#x, want the locked profile sentinel %#x", ns, uint64(profileNullSize))
+		t.Errorf("NullSize() = %#x, want the ABI sentinel %#x", ns, uint64(profileNullSize))
 	}
 	caps := rt.Capabilities()
 	if caps.Create() || caps.ImageBgr() || caps.AsyncAttachWindow() {

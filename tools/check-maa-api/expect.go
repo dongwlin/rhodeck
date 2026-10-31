@@ -1,4 +1,4 @@
-// expect.go 冻结锁定 profile 的独立 R/O 策略期望表并执行期望比对。
+// expect.go 冻结独立 R/O 策略期望表并执行期望比对。
 // 期望表是 checker 内部常量,逐项转写自的冻结矩阵(23 项
 // required+allPlatforms、4 项 optional+allPlatforms、1 项
 // optional+windowsOnly、2 项 excluded,共 30 项,与锁定完整导出集合
@@ -42,10 +42,10 @@ type Expectation struct {
 	Platform string
 }
 
-// lockedPolicyExpectations 是 maa-v6.20.1 的冻结独立期望表:键为 C
+// policyExpectations 是 绑定的独立策略期望表:键为 C
 // 符号名,值转写自逐符号矩阵的分类列(R/O/D 与平台条件),
 // 不随被检查输入变化。
-var lockedPolicyExpectations = map[string]Expectation{
+var policyExpectations = map[string]Expectation{
 	// required + allPlatforms(23 项)。
 	"AsstSetUserDir":          {Policy: ExpectPolicyRequired, Platform: ExpectPlatformAll},
 	"AsstLoadResource":        {Policy: ExpectPolicyRequired, Platform: ExpectPlatformAll},
@@ -88,8 +88,8 @@ var lockedPolicyExpectations = map[string]Expectation{
 // sortedExpectationSymbols 按符号名排序返回期望表全部键,供成功输出
 // 与比对收尾使用,保证确定性。
 func sortedExpectationSymbols() []string {
-	out := make([]string, 0, len(lockedPolicyExpectations))
-	for name := range lockedPolicyExpectations {
+	out := make([]string, 0, len(policyExpectations))
+	for name := range policyExpectations {
 		out = append(out, name)
 	}
 	sort.Strings(out)
@@ -142,12 +142,12 @@ func CompareExpectations(g *GoExtraction) (*ExpectResult, []Diagnostic) {
 	// 绑定侧:每条 spec 声明都必须落在冻结期望上;遍历保持声明顺序,
 	// 失败报告第一条。
 	for _, s := range g.Specs {
-		want, ok := lockedPolicyExpectations[s.Name]
+		want, ok := policyExpectations[s.Name]
 		if !ok {
 			return fail(Diagnostic{Category: CatPolicy, File: s.File, Line: s.Line, Symbol: s.Name,
-				Expected: "an entry in the locked profile expectation table",
+				Expected: "an entry in the independent binding expectation table",
 				Actual:   "no frozen expectation for this symbol",
-				Message:  "bound symbol is not frozen in the locked profile expectation table; unfrozen bindings are rejected"})
+				Message:  "bound symbol is not frozen in the independent binding expectation table; unfrozen bindings are rejected"})
 		}
 		if want.Policy == ExpectPolicyExcluded {
 			return fail(Diagnostic{Category: CatPolicy, File: s.File, Line: s.Line, Symbol: s.Name,
@@ -170,7 +170,7 @@ func CompareExpectations(g *GoExtraction) (*ExpectResult, []Diagnostic) {
 	// 排除侧:期望绑定的符号不得被排除(期望 excluded 的符号必须被
 	// 排除由 link 的精确排除检查保证,此处独立复核绑定方向)。
 	for _, e := range g.Exclusions {
-		want, ok := lockedPolicyExpectations[e.Name]
+		want, ok := policyExpectations[e.Name]
 		if ok && want.Policy != ExpectPolicyExcluded {
 			return fail(Diagnostic{Category: CatPolicy, File: e.File, Line: e.Line, Symbol: e.Name,
 				Expected: want.Policy + "/" + want.Platform + " binding without an exclusion",
@@ -181,7 +181,7 @@ func CompareExpectations(g *GoExtraction) (*ExpectResult, []Diagnostic) {
 
 	// 收尾:期望绑定的符号必须存在绑定(既无绑定也无排除即失败)。
 	for _, name := range sortedExpectationSymbols() {
-		want := lockedPolicyExpectations[name]
+		want := policyExpectations[name]
 		if want.Policy == ExpectPolicyExcluded {
 			continue
 		}
@@ -195,9 +195,9 @@ func CompareExpectations(g *GoExtraction) (*ExpectResult, []Diagnostic) {
 	}
 
 	// 组装全部 30 项的期望/实际对照,按符号名排序。
-	res := &ExpectResult{Entries: make([]ExpectEntry, 0, len(lockedPolicyExpectations))}
+	res := &ExpectResult{Entries: make([]ExpectEntry, 0, len(policyExpectations))}
 	for _, name := range sortedExpectationSymbols() {
-		want := lockedPolicyExpectations[name]
+		want := policyExpectations[name]
 		var actual ExpectSide
 		switch {
 		case want.Policy == ExpectPolicyExcluded:

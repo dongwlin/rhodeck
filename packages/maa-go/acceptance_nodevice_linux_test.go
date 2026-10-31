@@ -1,6 +1,6 @@
 //go:build linux
 
-// 本文件验证真实 MaaCore 的无设备链路:从锁定发行包解包真实 Core 与资源,
+// 本文件验证真实 MaaCore 的无设备链路:从显式安装输入或发行包读取真实 Core 与资源,
 // 在全新子进程中经公开 API 跑通 Version/NullSize/资源加载 → NewInstance
 // → 未连接 Screencap 失败关联 → 任务入队与 Tasks 读取 → Instance.Close
 // → Runtime.Close,并验证执行器超时与原生依赖缺失的可见失败。
@@ -9,6 +9,7 @@ package maa
 import (
 	"bytes"
 	"context"
+	"debug/elf"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,10 +43,11 @@ const (
 // 子进程 stdout 标记:META 在 Open 成功后立即打印(链路中途死亡的
 // 诊断);OK 仅在子进程全部断言通过后打印(父进程复验其字段)。
 const (
-	noDeviceMetaMarker = "MAA_CORE_NODEVICE_META"
-	noDeviceOKMarker   = "MAA_CORE_NODEVICE_OK"
-	noDeviceHangMarker = "MAA_CORE_NODEVICE_HANG_STARTED"
-	noDeviceDepsMarker = "MAA_CORE_NODEVICE_MISSING_DEPS_OK"
+	noDeviceMetaMarker           = "MAA_CORE_NODEVICE_META"
+	noDeviceOKMarker             = "MAA_CORE_NODEVICE_OK"
+	noDeviceHangMarker           = "MAA_CORE_NODEVICE_HANG_STARTED"
+	noDeviceDepsMarker           = "MAA_CORE_NODEVICE_MISSING_DEPS_OK"
+	noDeviceDepsUnverifiedMarker = "MAA_CORE_NODEVICE_MISSING_DEPS_UNVERIFIED"
 )
 
 // 子进程超时与等待参数:链路与依赖缺失路径给足 10 分钟(Core 加载
@@ -65,7 +67,7 @@ const (
 // noDeviceDestroyedMessageID 是 AsstMsg::Destroyed 的消息编号,冻结自
 // MaaAssistantArknights src/MaaCore/Common/AsstMsg.h(InternalError=0、
 // InitFailed=1、ConnectionInfo=2、AllTasksCompleted=3、AsyncCallInfo=4、
-// Destroyed=5)。锁定 Core 在 Destroy 调用线程 join 全部线程后同步
+// Destroyed=5)。实际 Core 在 Destroy 调用线程 join 全部线程后同步
 // 触发该消息(Assistant.cpp ~Assistant)。
 const noDeviceDestroyedMessageID = MessageID(5)
 
@@ -75,7 +77,7 @@ const noDeviceDestroyedMessageID = MessageID(5)
 const noDeviceTaskType = "Award"
 
 // TestRealCoreNoDeviceChain 验收真实库无设备完整链路(见文件头映
-// 射):父进程准备锁定资源与临时用户目录后启动子进程;子进程内断言
+// 射):父进程准备显式资源与临时用户目录后启动子进程;子进程内断言
 // 全部通过才退出 0。退出码非 0、被信号杀死、超时都是本测试的明确
 // 失败,不重试;父进程并对 stdout 的 OK 标记行做独立元数据复验。
 func TestRealCoreNoDeviceChain(t *testing.T) {
@@ -103,8 +105,7 @@ func TestRealCoreNoDeviceChain(t *testing.T) {
 	if out.stderr != "" {
 		t.Logf("chain child stderr:\n%s", out.stderr)
 	}
-	t.Logf("locked baseline: tarball SHA256=%s, core SHA256=%s, resource/version.json SHA256=%s, core version=%s",
-		lockedTarballSHA256, lockedCoreSHA256, lockedVersionSHA256, lockedCoreVersion)
+	t.Logf("actual installation digests were recorded during input preparation; the child reports its actual Core version")
 }
 
 // TestRealCoreNoDeviceExecutorTimeoutKillReportedAsFailure 验收本文件执行
@@ -140,33 +141,43 @@ func TestRealCoreNoDeviceExecutorTimeoutKillReportedAsFailure(t *testing.T) {
 }
 
 // TestRealCoreNoDeviceMissingNativeDepsReportedAsFailure 验收原生依赖缺失
-// 的可见失败:libMaaCore.so 的捆绑依赖(OpenCV/ONNX Runtime 等 8 个
-// .so,DT_RUNPATH=$ORIGIN)不在系统默认路径,仅复制 libMaaCore.so 的
-// 隔离目录必然 dlopen 失败。子进程断言该失败以 *LibraryLoadError 可
-// 见地返回(原始错误直接返回,不包 ErrRuntimeTerminated),且同进程
-// 二次 Open 返回 errors.Is(…, ErrRuntimeTerminated)(预占即不可回
-// 头);两条断言都通过才退出 0。
+// 的可见失败:按 ELF 导入表识别同目录捆绑依赖,再只复制主库到隔离目录。
+// 依赖未被系统解析时,公开 Open 必须报告 LibraryLoadError,同进程二次
+// Open 必须报告 ErrRuntimeTerminated。没有可隔离依赖或系统仍能解析
+// 全部依赖时明确 SKIP/UNVERIFIED,不要求安装保留某组历史依赖布局。
 func TestRealCoreNoDeviceMissingNativeDepsReportedAsFailure(t *testing.T) {
 	if os.Getenv(noDeviceChildModeEnv) == noDeviceModeMissingDeps {
 		runCoreNoDeviceMissingDepsChild(t)
 		return
 	}
-	libPath, _ := requireUnpackedResources(t)
+	libPath, resourceRoot := requireUnpackedResources(t)
+	deps, err := bundledCoreDependencies(libPath)
+	if err != nil {
+		t.Fatalf("inspect installed ELF dependencies: %v", err)
+	}
+	if len(deps) == 0 {
+		t.Skip("missing-dependency check UNVERIFIED: no colocated imported libraries can be isolated; SKIP is not a pass")
+	}
+	t.Logf("isolating installed library from colocated imports: %v", deps)
 
 	// 隔离目录:只放 libMaaCore.so,不含任何捆绑依赖。
 	isolated := t.TempDir()
-	isolatedLib := filepath.Join(isolated, lockedCoreSOName)
+	isolatedLib := filepath.Join(isolated, coreSOName)
 	if err := copyFile(libPath, isolatedLib); err != nil {
 		t.Fatalf("failed to copy libMaaCore.so into the isolated directory: %v", err)
 	}
 
 	out := runCoreNoDeviceChild(t, noDeviceDepsChildTimeout, noDeviceModeMissingDeps, map[string]string{
-		noDeviceLibPathEnv: isolatedLib,
-		noDeviceUserDirEnv: t.TempDir(),
+		noDeviceLibPathEnv:  isolatedLib,
+		noDeviceResourceEnv: resourceRoot,
+		noDeviceUserDirEnv:  t.TempDir(),
 	})
 	if out.err != nil {
 		t.Fatalf("missing-deps child failed (its internal assertions did not all pass):\n%s",
 			childDiagnostics(noDeviceModeMissingDeps, out))
+	}
+	if strings.Contains(out.stdout, noDeviceDepsUnverifiedMarker) {
+		t.Skip("missing-dependency check UNVERIFIED: the system resolved every dependency after isolation; SKIP is not a pass")
 	}
 	if !strings.Contains(out.stdout, noDeviceDepsMarker) {
 		t.Fatalf("missing-deps child exited with exit code 0, but stdout lacks the success marker:\n%s",
@@ -175,7 +186,37 @@ func TestRealCoreNoDeviceMissingNativeDepsReportedAsFailure(t *testing.T) {
 	t.Logf("missing-deps child internal assertions all passed:\n%s", out.stdout)
 }
 
-// runCoreNoDeviceChainChild 是 noDeviceModeChain 子进程入口:真实锁定库上的
+// bundledCoreDependencies 只报告主库直接导入且当前同目录实际存在的依赖。
+func bundledCoreDependencies(libPath string) ([]string, error) {
+	f, err := elf.Open(libPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	imports, err := f.ImportedLibraries()
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	for _, name := range imports {
+		if name != filepath.Base(name) {
+			continue
+		}
+		info, err := os.Stat(filepath.Join(filepath.Dir(libPath), name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode().IsRegular() {
+			result = append(result, name)
+		}
+	}
+	return result, nil
+}
+
+// runCoreNoDeviceChainChild 是 noDeviceModeChain 子进程入口:真实库上的
 // 无设备公开链路,步骤与断言见文件头映射。红线:全程不调用 Start、
 // Connect、Click,不触达任何设备动作。断言失败以非 0 退出。
 func runCoreNoDeviceChainChild(t *testing.T) {
@@ -200,11 +241,11 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open(%s) failed: %v", libPath, err)
 	}
-	if got := rt.Version(); got != lockedCoreVersion {
-		t.Fatalf("Version() = %q, want %q (locked baseline)", got, lockedCoreVersion)
+	if err := verifyCoreVersion(rt.Version(), os.Getenv(expectedVersionEnv)); err != nil {
+		t.Fatal(err)
 	}
 	if got := rt.NullSize(); got != math.MaxUint64 {
-		t.Fatalf("NullSize() = %#x, want %#x (locked profile sentinel)", got, uint64(math.MaxUint64))
+		t.Fatalf("NullSize() = %#x, want %#x (ABI sentinel)", got, uint64(math.MaxUint64))
 	}
 	if entries, err := os.ReadDir(userDir); err == nil {
 		names := make([]string, 0, len(entries))
@@ -247,7 +288,7 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 		t.Fatalf("AsyncResult.OK = true, unconnected screencap must fail")
 	}
 	if res.What != asyncWhatScreencap {
-		t.Fatalf("AsyncResult.What = %q, want %q (frozen value from the locked Core call_proc)", res.What, asyncWhatScreencap)
+		t.Fatalf("AsyncResult.What = %q, want %q (expected callback discriminator)", res.What, asyncWhatScreencap)
 	}
 	if res.ID != op.ID() {
 		t.Fatalf("AsyncResult.ID = %d, want the submitted ID %d (async_call_id correlation broken)", res.ID, op.ID())
@@ -365,8 +406,9 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 func runCoreNoDeviceMissingDepsChild(t *testing.T) {
 	libPath := os.Getenv(noDeviceLibPathEnv)
 	userDir := os.Getenv(noDeviceUserDirEnv)
+	resourceRoot := os.Getenv(noDeviceResourceEnv)
 	for _, e := range []struct{ name, value string }{
-		{noDeviceLibPathEnv, libPath}, {noDeviceUserDirEnv, userDir},
+		{noDeviceLibPathEnv, libPath}, {noDeviceResourceEnv, resourceRoot}, {noDeviceUserDirEnv, userDir},
 	} {
 		if !filepath.IsAbs(e.value) {
 			t.Fatalf("%s = %q is not an absolute path", e.name, e.value)
@@ -376,9 +418,16 @@ func runCoreNoDeviceMissingDepsChild(t *testing.T) {
 	cfg := RuntimeConfig{
 		LibraryPath:   libPath,
 		UserDir:       userDir,
-		ResourceRoots: []string{userDir},
+		ResourceRoots: []string{resourceRoot},
 	}
 	rt, err := Open(cfg)
+	if rt != nil && err == nil {
+		if err := rt.Close(); err != nil {
+			t.Fatalf("close after system resolved dependencies: %v", err)
+		}
+		fmt.Println(noDeviceDepsUnverifiedMarker + " all_dependencies_resolved=true")
+		return
+	}
 	if rt != nil || err == nil {
 		t.Fatalf("Open on the isolated directory (missing bundled deps) = (%v, %v), want (nil, error)", rt, err)
 	}
@@ -445,9 +494,9 @@ func runCoreNoDeviceChild(t *testing.T, timeout time.Duration, mode string, extr
 
 // noDeviceChildEnviron 构造子进程环境:与真实库链路的 childEnviron 同一策略——
 // 剥离动态链接器注入变量(LD_LIBRARY_PATH/LD_PRELOAD/LD_AUDIT)后
-// 原样继承,再附上无设备链路模式标记。锁定策略不依赖任何 LD_* 配置
+// 原样继承,再附上无设备链路模式标记。隔离策略不依赖任何 LD_* 配置
 // (libMaaCore.so 的依赖只经 $ORIGIN RUNPATH 与系统默认路径解析),
-// 父进程环境残留会把子进程的依赖解析带离锁定策略。
+// 父进程环境残留会把子进程的依赖解析带离隔离策略。
 func noDeviceChildEnviron(mode string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
@@ -492,7 +541,7 @@ func renderEvents(evs []Event) string {
 
 // verifyCoreNoDeviceChildMetadata 对 chain 子进程的 stdout 做父进程侧元数据复
 // 验:解析 OK 标记行的 version=/nullSize=/screencap_what=/screencap_
-// ok/tasks= 实际值,独立核对锁定基线与链路结论(与子进程内断言互相
+// ok/tasks= 实际值,独立核对显式期望与链路结论(与子进程内断言互相
 // 独立的纵深防御):缺行、格式异常或任一值不符都判定父测试失败。
 func verifyCoreNoDeviceChildMetadata(stdout string) error {
 	var (
@@ -527,15 +576,15 @@ func verifyCoreNoDeviceChildMetadata(stdout string) error {
 	if !found {
 		return fmt.Errorf("stdout missing %s metadata line", noDeviceOKMarker)
 	}
-	if version != lockedCoreVersion {
-		return fmt.Errorf("stdout re-verification Version = %q, want %q (locked baseline)", version, lockedCoreVersion)
+	if err := verifyCoreVersion(version, os.Getenv(expectedVersionEnv)); err != nil {
+		return fmt.Errorf("stdout re-verification: %w", err)
 	}
 	gotNullSize, err := strconv.ParseUint(nullSize, 10, 64)
 	if err != nil {
 		return fmt.Errorf("stdout re-verification nullSize %q is not a decimal uint64: %w", nullSize, err)
 	}
 	if gotNullSize != math.MaxUint64 {
-		return fmt.Errorf("stdout re-verification NullSize = %d (0x%x), want %d (0x%x, locked profile sentinel)",
+		return fmt.Errorf("stdout re-verification NullSize = %d (0x%x), want %d (0x%x, ABI sentinel)",
 			gotNullSize, gotNullSize, uint64(math.MaxUint64), uint64(math.MaxUint64))
 	}
 	if what != asyncWhatScreencap {

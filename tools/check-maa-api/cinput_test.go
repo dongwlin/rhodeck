@@ -18,6 +18,8 @@ import (
 
 const testProfileID = "test-fixture-v1"
 
+var profileRegistry = map[string]Profile{}
+
 func loadFixture(t *testing.T, name string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", name))
@@ -42,6 +44,8 @@ func fixturePurpose(path string) string {
 	switch path {
 	case FileAsstCaller, FileAsstPort, FileAsstCallerExtra:
 		return PurposeCheckerInput
+	case FileLicense:
+		return PurposeUpstreamLicense
 	default:
 		return PurposeSemanticReference
 	}
@@ -57,7 +61,7 @@ func sortManifestFiles(fs []manifestFile) {
 func defaultManifest(files map[string]string) manifest {
 	m := manifest{
 		SchemaVersion: intPtr(1),
-		ProfileID:     testProfileID,
+		SnapshotID:    testProfileID,
 		Source: manifestSource{
 			Repository: "https://example.com/fixture",
 			Tag:        "fixture-tag",
@@ -82,7 +86,7 @@ func defaultManifest(files map[string]string) manifest {
 // 经仅测试可达的注册表变量注入)。
 func testProfileFromFiles(files map[string]string) Profile {
 	m := defaultManifest(files)
-	p := Profile{ID: m.ProfileID, SourceRepository: m.Source.Repository,
+	p := Profile{ID: m.SnapshotID, SourceRepository: m.Source.Repository,
 		SourceTag: m.Source.Tag, SourceCommit: m.Source.Commit,
 		Files: map[string]ProfileFile{}}
 	for _, e := range m.Files {
@@ -148,9 +152,14 @@ func mustReplace(t *testing.T, s, old, new string) string {
 	return strings.Replace(s, old, new, 1)
 }
 
+func lookupTestProfile(id string) (Profile, bool) {
+	p, ok := profileRegistry[id]
+	return p, ok
+}
+
 func testProfile(t *testing.T) Profile {
 	t.Helper()
-	prof, ok := LookupProfile(testProfileID)
+	prof, ok := lookupTestProfile(testProfileID)
 	if !ok {
 		t.Fatal("test profile is not registered")
 	}
@@ -255,7 +264,7 @@ func TestLoadCInputManifestFailures(t *testing.T) {
 	}{
 		{"missing schema version", func(m *manifest) { m.SchemaVersion = nil }, "schema_version"},
 		{"wrong schema version", func(m *manifest) { m.SchemaVersion = intPtr(2) }, "schema_version"},
-		{"wrong profile id", func(m *manifest) { m.ProfileID = "other-profile" }, "profile_id"},
+		{"wrong profile id", func(m *manifest) { m.SnapshotID = "other-profile" }, "snapshot_id"},
 		{"wrong repository", func(m *manifest) { m.Source.Repository = "https://elsewhere.example" }, "source.repository"},
 		{"wrong tag", func(m *manifest) { m.Source.Tag = "v0.0.0" }, "source.tag"},
 		{"wrong commit", func(m *manifest) { m.Source.Commit = strings.Repeat("0", 40) }, "source.commit"},

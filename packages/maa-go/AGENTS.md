@@ -3,7 +3,7 @@
 ## 分层与 ABI
 
 - 公开包名是 `maa`。公开层负责校验、快照、状态门和错误语义；`internal/native` 负责 raw 调用、符号注册、loader 与 callback 装配，不承载任务业务模型。
-- 当前 ABI profile 锁定 `maa-v6.20.1`。raw 字段名对应 C 符号去掉 `Asst` 前缀；保持 C 宽度、参数顺序、指针角色和 void 返回语义，不用 Go `bool` / `int` 替换 ABI 类型。
+- ABI 检查使用显式头文件或有来源的未版本化快照，不固定发行版本、不保证旧版本兼容。raw 字段名对应 C 符号去掉 `Asst` 前缀；保持 C 宽度、参数顺序、指针角色和 void 返回语义，不用 Go `bool` / `int` 替换 ABI 类型。
 - `api.go`、`symbols.go`、`callback_types.go` 必须无条件参与构建。声明 checker 要求可静态提取的直接声明，不改成 helper、循环或运行时拼接清单。
 - 新增/改变绑定时同步核对 raw 声明、required/optional 与平台策略、注册包装、公开入口和 C 夹具；保留 checker 独立期望表，不能只让 Go 声明与其派生清单自洽。
 - optional 符号缺席只关闭对应 capability，调用返回 `ErrUnsupported`；窗口绑定只在 Windows 生效。实验查询无稳定兼容保证，不用版本字符串猜测能力。
@@ -25,7 +25,7 @@
 - 真实 FFI 用例使用 `internal/ffitest` 的新子进程和外部超时。loader fixture 的空导出仅用于装载/注册，绝不能调用；ABI 与 callback 行为使用各自签名正确的 C 夹具。
 - 签名、符号策略或 checker 修改先跑 `static`，再按影响选 `loader`、`abi`、`callback`；这些均是 `go run ./tools/maa-go-check --layers <layer>` 的层名。增加验证用例时确认对应层确实选中它们。
 - 并发修改追加 `go run ./tools/maa-go-check --layers race`；需要 C 工具链和 cgo race 运行时，该层排除真实 Core。
-- 升级 Core/profile 时同步锁定头、`inputs.json`、checker profile/期望表与夹具，再运行 `go run ./tools/maa-go-check --layers core` 验证真实库。真实库依赖锁定发行包及其完整原生依赖，不能只复制主库或跳过摘要验证。
+- 升级 Core 时先用显式头文件核对 raw 声明、独立期望表与夹具；更新仓库头快照时同步 `inputs.json` 的来源与摘要。再以显式库 + 资源根或 tarball 运行 `go run ./tools/maa-go-check --layers core`。保留完整原生依赖，记录实际版本与摘要；调用方显式期望不匹配必须失败，缺少输入保持 UNVERIFIED。
 - 分层工具二进制退出 1 表示 FAIL、2 表示 UNVERIFIED；需要区分时先构建工具再执行，`go run` 不保留这两种 shell 退出码的区别。
 
 ## 延伸阅读
@@ -37,4 +37,4 @@
 | [夹具与真实库说明](testdata/README.md) | 编写 FFI 用例、准备 C 工具链或真实发行包时读取 |
 | [分层工具说明](../../tools/maa-go-check/README.md) | 选择层、处理 skip/退出码或修改检查入口时读取 |
 | [声明 checker 说明](../../tools/check-maa-api/README.md) | 修改 ABI 声明或 checker 时读取输入语法、目标与失败规则 |
-| [锁定输入说明](../../tools/check-maa-api/testdata/locked/README.md) | 更新上游版本、头文件、摘要或许可证时读取 |
+| [头文件快照说明](../../tools/check-maa-api/testdata/snapshot/README.md) | 更新上游版本、头文件、摘要或许可证时读取 |
