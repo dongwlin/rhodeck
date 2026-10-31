@@ -382,9 +382,13 @@ func TestRuntimeSlowConsumerDoesNotBlockCleanup(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// The byte-overflow fixture delivers six 3 MiB callbacks, so decoding
+			// them dominates wall time under the race detector; cleanup itself
+			// finishes within milliseconds. This bound only has to distinguish
+			// "cleanup finished" from "cleanup waits for the consumer forever".
 			select {
 			case <-r.Done():
-			case <-time.After(15 * time.Second):
+			case <-time.After(60 * time.Second):
 				t.Fatal("cleanup depended on event consumer")
 			}
 			if result := r.Snapshot(); result.State != Unknown || result.Code != "event_overflow" {
