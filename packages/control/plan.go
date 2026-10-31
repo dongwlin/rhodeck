@@ -118,6 +118,14 @@ func ValidatePlan(p Plan) error {
 			return bad("invalid or duplicate task ID")
 		}
 		seen[t.ID] = true
+		if t.Adapter != nil {
+			if !validAdapterRef(*t.Adapter) {
+				return bad("invalid adapter")
+			}
+			if len(t.Params) > MaxAdapterParamsBytes {
+				return bad("adapter params exceed byte limit")
+			}
+		}
 		if !validText(t.Type, strMax, false) || !validObject(t.Params, jsonMax) {
 			return bad("invalid task input")
 		}
@@ -250,6 +258,10 @@ func clonePlan(p Plan) Plan {
 	p.Tasks = append([]Task(nil), p.Tasks...)
 	for j := range p.Tasks {
 		p.Tasks[j].Params = bytes.Clone(p.Tasks[j].Params)
+		if p.Tasks[j].Adapter != nil {
+			ref := *p.Tasks[j].Adapter
+			p.Tasks[j].Adapter = &ref
+		}
 	}
 	return p
 }

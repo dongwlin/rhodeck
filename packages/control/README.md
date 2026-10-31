@@ -29,6 +29,15 @@ unknown fields and large integers. `ValidatePlan` checks syntax and local/wire
 budgets. Core task acceptance, native limit cross-field rules and device
 preconditions remain unverified until the selected installation is used.
 
+Explicit [typed adapters](typed-adapters.md) extend the same schema with an
+optional selection and a runtime-local registry. `PreparePlan` provides a pure compiled preview; task
+names alone never enable an adapter. The package bundles the strict `oper_progress`
+(`NewOperProgressAdapter`) and `switch_theme` (`NewSwitchThemeAdapter`) adapters,
+which callers must register explicitly; the standalone CLI registers both for
+`run` and `dry-run`. Adapter inputs and results are locally implemented and
+tested without authorized device acceptance, so capability output does not claim
+they work on a device.
+
 ## Results and stopping
 
 The application observes admitted, connecting, submitted, started and stopping
@@ -41,6 +50,16 @@ Success requires each submitted Core task ID to have a `TaskChainCompleted`
 callback and `AllTasksCompleted.finished_tasks` to match the whole batch.
 `TaskChainError` remains a failure even if that ID appears in `finished_tasks`.
 Subtask errors alone are progress observations because Core may recover them.
+For an explicitly adapted task, `TaskResult.State` remains the chain fact while
+`TaskResult.Typed` carries independent target facts. A matching completed batch
+also requires every typed target to be achieved or already set before the run
+can succeed. A typed failure makes the run failed; incomplete evidence makes it
+unknown. A fault, lost event or unconfirmed stop before a business conclusion
+keeps the run unknown even when typed facts already recorded a failure; those
+facts remain preserved. A confirmed stop without an established failure stays
+stopped, while a confirmed stop that already recorded a task or typed failure is
+failed. Reported training startup and a confirmation observation do not prove
+achievement.
 Missing/malformed terminal associations, lost events and unconfirmed process
 failure preserve `unknown`. Acceptance, Start acknowledgment and
 `Running=false` cannot establish success.
@@ -50,7 +69,10 @@ stop. Commands use independent bounded request contexts so cancellation does
 not casually abandon an enqueued command. Stop confirmation has a separate
 five-second default grace period; the supervisor retains its own startup,
 request and shutdown deadlines. Unconfirmed work stays unknown after forced
-termination. `Runtime.Close` prevents admission, stops an active run, waits for
+termination. A late cleanup failure is recorded in `cleanup` and `cleanup_code`
+but does not rewrite an established `succeeded`, `failed`, `stopped` or
+`rejected` state; a confirmed stop without an established failure stays
+`stopped`. `Runtime.Close` prevents admission, stops an active run, waits for
 worker reaping and then releases storage ownership. A caller's expired Close
 context ends that wait; cleanup continues. No component retries, reconnects or
 replays device actions automatically.
@@ -71,15 +93,22 @@ ends when the process exits. It is a data-directory lock; different directories
 or another CLI may still address the same device. The integrating host must
 serialize those device owners.
 
-Records are `<data-dir>/runs/<run_id>.json`, schema version 1, containing the
+Records are `<data-dir>/runs/<run_id>.json`, schema version 1 for all runs, containing the
 explicit plan, task associations, runtime/library/resource snapshot and result.
 The application persists admission before worker launch and metadata before
 connection, then saves each newly confirmed terminal task fact while the batch
-is still running. Records use private file permissions, a flushed temporary file and
+is still running. Adapted target facts are also saved synchronously before
+their typed event is published. The record retains the original caller plan;
+the worker receives the separately compiled parameters. Records use private
+file permissions, a flushed temporary file and
 atomic replacement. Newly created directories and replacements are synced on
 Linux/macOS; Windows flushes record contents before replacement, and power-loss
 durability of directory metadata has not been verified. Process-crash recovery
 and file replacement are covered separately from platform power-loss behavior.
+A record persistence failure wraps `ErrRecordWrite`. This includes the admission
+save returned by `Runtime.Run`, later run saves and a recovery resave during
+`New`; the corresponding code is `record_write_failed`. It is a persistence
+failure, not input or environment rejection; the CLI maps it to exit `6`.
 
 On reopening a directory, unfinished records become `unknown` with
 `host_interrupted` and unconfirmed cleanup. Already confirmed task facts stay
@@ -93,8 +122,10 @@ inspection; it does not acquire execution ownership.
 Records include raw task parameters, paths and connection data and may contain
 secrets. Keep the data directory private. Retention, backup and deletion belong
 to its owner; this version neither uploads records nor deletes old evidence.
-Raw callback streams are transient and are not journaled. This storage format
-has no migration from future schema versions.
+Raw callback streams are transient and are not journaled. The current schema
+is still under development and is extended directly before the first release;
+unpublished snapshots have no compatibility or migration guarantee. Unsupported
+versions and malformed records are rejected without deleting or replaying them.
 
 `Doctor` acquires directory ownership and initializes an explicit installation
 in a supervised child, then closes and reaps it. It never connects, appends or

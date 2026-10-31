@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -110,7 +111,7 @@ func (s *store) recover() error {
 				}
 			}
 			if err := s.save(record); err != nil {
-				return err
+				return fmt.Errorf("%w: %w", ErrRecordWrite, err)
 			}
 		}
 		if readErr == io.EOF {
@@ -157,8 +158,8 @@ func (s *store) save(record Record) error {
 	if s.lock == nil {
 		return ErrClosed
 	}
-	if record.SchemaVersion != SchemaVersion || record.Result.SchemaVersion != SchemaVersion || !runIDPattern.MatchString(record.Result.RunID) {
-		return errors.New("control: invalid record identity")
+	if err := validateRecord(record); err != nil {
+		return err
 	}
 	raw, err := json.Marshal(record)
 	if err != nil {
@@ -222,11 +223,48 @@ func ReadRecord(dataDir, runID string) (Record, error) {
 	if len(raw) > maxRecordBytes {
 		return record, errors.New("control: record exceeds byte limit")
 	}
+	keys := json.NewDecoder(bytes.NewReader(raw))
+	keys.UseNumber()
+	if err := checkControlKeys(keys); err != nil {
+		return Record{}, errors.New("control: ambiguous record fields")
+	}
 	if err = protocol.Decode(raw, &record); err != nil {
 		return record, fmt.Errorf("control: invalid record: %w", err)
 	}
-	if record.SchemaVersion != SchemaVersion || record.Result.SchemaVersion != SchemaVersion || record.Result.RunID != runID {
+	if record.Result.RunID != runID {
 		return Record{}, errors.New("control: record identity or version mismatch")
 	}
+	if err := validateRecord(record); err != nil {
+		return Record{}, err
+	}
 	return record, nil
+}
+
+// Records require complete plan/result associations without loading an adapter
+// or installation. Recovery only preserves facts; it never prepares or resumes
+// device work. Unknown data formats are rejected instead of migrated.
+func validateRecord(record Record) error {
+	if record.SchemaVersion != SchemaVersion || record.Result.SchemaVersion != SchemaVersion ||
+		record.Plan.SchemaVersion != SchemaVersion || !runIDPattern.MatchString(record.Result.RunID) {
+		return errors.New("control: record identity or version mismatch")
+	}
+	if err := ValidatePlan(record.Plan); err != nil {
+		return fmt.Errorf("control: invalid record plan: %w", err)
+	}
+	if len(record.Plan.Tasks) != len(record.Result.Tasks) {
+		return errors.New("control: record task association mismatch")
+	}
+	for i, task := range record.Plan.Tasks {
+		result := record.Result.Tasks[i]
+		if task.ID != result.ID || (task.Adapter == nil) != (result.Typed == nil) {
+			return errors.New("control: record task association mismatch")
+		}
+		if task.Adapter != nil && *task.Adapter != result.Typed.Adapter {
+			return errors.New("control: record adapter association mismatch")
+		}
+		if record.Result.State == Succeeded && (result.State != Succeeded || (result.Typed != nil && result.Typed.State != Succeeded)) {
+			return errors.New("control: record success lacks confirmed task facts")
+		}
+	}
+	return validateTypedResults(record.Result.Tasks)
 }

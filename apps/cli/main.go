@@ -47,6 +47,7 @@ type envelope struct {
 	Usage         string                `json:"usage,omitempty"`
 	Result        *control.Result       `json:"result,omitempty"`
 	Plan          *control.Plan         `json:"plan,omitempty"`
+	Tasks         []control.TaskResult  `json:"tasks,omitempty"`
 	Sources       *planSources          `json:"sources,omitempty"`
 	Unverified    []string              `json:"unverified,omitempty"`
 	RuntimeInfo   *protocol.RuntimeInfo `json:"runtime_info,omitempty"`
@@ -66,16 +67,21 @@ type planSources struct {
 }
 
 type capabilities struct {
-	SchemaVersion       int      `json:"schema_version"`
-	Type                string   `json:"type"`
-	Version             string   `json:"cli_version"`
-	ProtocolVersion     int      `json:"worker_protocol_version"`
-	OS                  string   `json:"os"`
-	Arch                string   `json:"arch"`
-	Commands            []string `json:"commands"`
-	TaskInput           string   `json:"task_input"`
-	NativeTaskDiscovery bool     `json:"native_task_discovery"`
-	TaskAcceptance      string   `json:"task_acceptance"`
+	SchemaVersion       int                 `json:"schema_version"`
+	Type                string              `json:"type"`
+	Version             string              `json:"cli_version"`
+	ProtocolVersion     int                 `json:"worker_protocol_version"`
+	OS                  string              `json:"os"`
+	Arch                string              `json:"arch"`
+	Commands            []string            `json:"commands"`
+	TaskInput           string              `json:"task_input"`
+	TaskAdapters        []adapterCapability `json:"task_adapters"`
+	AdapterBasis        string              `json:"adapter_basis"`
+	StaticSnapshotBasis string              `json:"static_snapshot_basis"`
+	InstallationFacts   string              `json:"installation_facts"`
+	DeviceAcceptance    string              `json:"device_acceptance"`
+	NativeTaskDiscovery bool                `json:"native_task_discovery"`
+	TaskAcceptance      string              `json:"task_acceptance"`
 }
 
 type options struct {
@@ -108,7 +114,7 @@ func runCLI(parent context.Context, args []string, stdin io.Reader, stdout, stde
 	if command == "help" || command == "--help" || command == "-h" ||
 		((command == "run" || command == "dry-run" || command == "doctor") && len(args) == 2 && (args[1] == "--help" || args[1] == "-h")) {
 		if err := encoder.Encode(envelope{SchemaVersion: control.SchemaVersion, Type: "help",
-			Usage: "rhodeck-cli capabilities|version; rhodeck-cli run|dry-run|doctor --input FILE|- --worker ABS_PATH --data-dir ABS_PATH [--timeout DURATION] [--startup-timeout 10s] [--request-timeout 30s] [--stop-timeout 5s] [--shutdown-timeout 5s] [--output-timeout 5s] [--include-raw-events]; run also accepts --dry-run"}); err != nil {
+			Usage: "rhodeck-cli capabilities|version; rhodeck-cli run|dry-run|doctor --input FILE|- --worker ABS_PATH --data-dir ABS_PATH [--timeout DURATION] [--startup-timeout 10s] [--request-timeout 30s] [--stop-timeout 5s] [--shutdown-timeout 5s] [--output-timeout 5s] [--include-raw-events]; run also accepts --dry-run. Explicit task adapters " + cliAdapterSummary() + " require task.adapter; tasks without it stay raw. dry-run compiles selected adapters and previews unobserved targets without side effects. Both adapters are locally implemented without authorized device acceptance."}); err != nil {
 			return fail("output_failed", exitUnknown)
 		}
 		return exitSuccess
@@ -122,8 +128,11 @@ func runCLI(parent context.Context, args []string, stdin io.Reader, stdout, stde
 			output = capabilities{
 				SchemaVersion: control.SchemaVersion, Type: "capabilities", Version: version,
 				ProtocolVersion: protocol.Version, OS: runtime.GOOS, Arch: runtime.GOARCH,
-				Commands:       []string{"run", "dry-run", "doctor", "capabilities", "version", "help"},
-				TaskInput:      "string task type and raw JSON object parameters",
+				Commands:     []string{"run", "dry-run", "doctor", "capabilities", "version", "help"},
+				TaskInput:    "string task type and raw JSON object parameters",
+				TaskAdapters: cliAdapterCapabilities(),
+				AdapterBasis: adapterBasis, StaticSnapshotBasis: staticSnapshotBasis,
+				InstallationFacts: installationFacts, DeviceAcceptance: deviceAcceptance,
 				TaskAcceptance: "determined by the explicitly selected Core and resources at execution",
 			}
 		}
@@ -143,16 +152,33 @@ func runCLI(parent context.Context, args []string, stdin io.Reader, stdout, stde
 	if err != nil {
 		return fail("invalid_plan", exitRejected)
 	}
+	adapters := cliAdapters()
 	if command == "dry-run" || opts.dryRun {
+		// Preparation compiles selected adapters and creates an unobserved target
+		// preview. It creates no directory, takes no lock, launches no worker,
+		// loads no native code and connects no device.
+		prepared, err := control.PreparePlan(plan, adapters...)
+		if err != nil {
+			return fail("invalid_plan", exitRejected)
+		}
+		unverified := []string{"Core task acceptance and semantics", "installation and native dependencies", "device connection and task preconditions"}
+		unverified = append(unverified, adapterUnverified(plan)...)
 		output := envelope{
-			SchemaVersion: control.SchemaVersion, Type: "plan", Plan: &plan,
+			SchemaVersion: control.SchemaVersion, Type: "plan", Plan: &prepared.Plan, Tasks: prepared.Tasks,
 			Sources:    &planSources{Input: opts.input, Worker: opts.worker, DataDir: opts.dataDir},
-			Unverified: []string{"Core task acceptance and semantics", "installation and native dependencies", "device connection and task preconditions"},
+			Unverified: unverified,
 		}
 		if err := encoder.Encode(output); err != nil {
 			return fail("output_failed", exitUnknown)
 		}
 		return exitSuccess
+	}
+	if command == "run" {
+		// Reject unknown adapter selections and strict input before New creates
+		// or locks the data directory. Run prepares again for the submission.
+		if _, err := control.PreparePlan(plan, adapters...); err != nil {
+			return fail("invalid_plan", exitRejected)
+		}
 	}
 	checks, pathsOK, nativeReady := checkLocalPaths(opts, plan)
 	if command != "doctor" && !pathsOK {
@@ -167,6 +193,7 @@ func runCLI(parent context.Context, args []string, stdin io.Reader, stdout, stde
 	}
 	cfg := control.Config{
 		DataDir: opts.dataDir, StopTimeout: opts.stopTimeout, IncludeRawEvents: opts.includeRaw,
+		Adapters: adapters,
 		Worker: worker.Config{Executable: opts.worker, StartupTimeout: opts.startupTimeout,
 			RequestTimeout: opts.requestTimeout, ShutdownTimeout: opts.shutdownTimeout},
 	}
@@ -360,7 +387,11 @@ func checkLocalPaths(o options, plan control.Plan) (checks []localCheck, allOK, 
 }
 
 func resultExit(r control.Result) int {
-	if r.Cleanup != "complete" || timeoutCode(r.Code) || timeoutCode(r.CleanupCode) {
+	// A persistence failure is not an input rejection even when the run entered
+	// the rejected state before any device work. A failed cleanup or timeout
+	// likewise maps to exit 6 without changing the run's business state.
+	if r.Cleanup != "complete" || r.Code == "record_write_failed" || r.CleanupCode == "record_write_failed" ||
+		timeoutCode(r.Code) || timeoutCode(r.CleanupCode) {
 		return exitUnknown
 	}
 	switch r.State {
@@ -386,7 +417,8 @@ func errorExit(err error) int {
 		return exitBusy
 	}
 	var failure *worker.Failure
-	if errors.As(err, &failure) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	if errors.Is(err, control.ErrRecordWrite) || errors.As(err, &failure) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return exitUnknown
 	}
 	return exitRejected
@@ -395,6 +427,9 @@ func errorExit(err error) int {
 func errorCode(err error) string {
 	if errors.Is(err, control.ErrBusy) {
 		return "busy"
+	}
+	if errors.Is(err, control.ErrRecordWrite) {
+		return "record_write_failed"
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "deadline_exceeded"

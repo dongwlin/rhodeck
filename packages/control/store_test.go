@@ -19,7 +19,12 @@ func TestStoreRecoversWithoutReplaying(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := newRunID()
-	rec := Record{SchemaVersion: SchemaVersion, Plan: validTestPlan(t), Result: Result{SchemaVersion: SchemaVersion, RunID: id, State: Started, Cleanup: "pending", Tasks: []TaskResult{{ID: "done", State: Succeeded}, {ID: "pending", State: Started}}}}
+	plan := validTestPlan(t)
+	plan.Tasks[0].ID = "done"
+	pending := plan.Tasks[0]
+	pending.ID = "pending"
+	plan.Tasks = append(plan.Tasks, pending)
+	rec := Record{SchemaVersion: SchemaVersion, Plan: plan, Result: Result{SchemaVersion: SchemaVersion, RunID: id, State: Started, Cleanup: "pending", Tasks: []TaskResult{{ID: "done", State: Succeeded}, {ID: "pending", State: Started}}}}
 	if err := s.save(rec); err != nil {
 		t.Fatal(err)
 	}
