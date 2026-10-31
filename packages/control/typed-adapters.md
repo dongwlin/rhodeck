@@ -11,8 +11,9 @@ initial target results. Preparation does not create directories, take locks,
 launch workers, load native code or connect devices. Each adapter must implement
 deterministic preparation without side effects, reject incompatible task types,
 and create a fresh reducer for each task. Adapters may be prepared concurrently.
-The package currently bundles one strict adapter, `NewOperProgressAdapter`
-(`oper_progress`, version 1); the standalone CLI does not register it yet. Its
+The package currently bundles two strict adapters: `NewOperProgressAdapter`
+(`oper_progress`, version 1) and `NewSwitchThemeAdapter` (`switch_theme`,
+version 1). The standalone CLI does not register either yet. The OperProgress
 input accepts only exact, case-sensitive `plans` entries with `role`, `name` and
 exactly one of `elite`, `skill_level` or `skill_mastery`:
 
@@ -24,6 +25,29 @@ Unknown fields, explicit nulls, duplicate keys at any depth, unpaired UTF-16
 surrogate escapes and duplicate `(role, name)` entries are rejected with
 `ErrInvalidPlan`. See `ExampleNewOperProgressAdapter` for a deterministic
 preview of compiled params and target IDs.
+
+The SwitchTheme input accepts only an exact, case-sensitive `themes` array of
+1-32 distinct, non-blank names (valid UTF-8, 1-256 bytes, no NUL or surrounding
+whitespace):
+
+```json
+{"themes":["Theme One","Theme Two"]}
+```
+
+The compiled Core array keeps input order and the sole target is
+`theme-selection`. Multiple candidates mean Core selects one at random once; the
+order is not a retry, progressive-switch or fallback sequence. A selected theme
+is recorded only after a completed `SwitchThemeByNameSelectTheme` node whose
+`details.result.text` exactly and uniquely matches a candidate. Subsequent
+`SwitchThemeByNameAlreadySet`, `SwitchThemeByNameLockedTheme` and
+`SwitchThemeByNameConfirmTheme` nodes become `already_set`, `locked` and
+`confirmation_observed`; a matching `SwitchThemeNotFound` extra-info event
+becomes `not_found`. Skipped, start-only, missing OCR text and conflicting
+selections remain incomplete. Details contain only the associated theme name,
+and confirmation never implies an actual change or a verified final state.
+Unknown fields, explicit nulls, duplicate keys at any depth, unpaired UTF-16
+surrogate escapes and duplicate candidates are rejected with `ErrInvalidPlan`.
+See `ExampleNewSwitchThemeAdapter` for a deterministic preview.
 
 `PreparedTask.Params` is the final Core object; `PreparedTask.Targets` contains
 stable, unique target IDs. `PreparedPlan.Plan` contains the compiled parameters.
