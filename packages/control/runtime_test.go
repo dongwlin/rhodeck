@@ -27,6 +27,13 @@ func TestMain(m *testing.M) {
 // The helper is a real child, so deadlines, broken pipes, pending operations,
 // process waiting and late cleanup all cross the production supervisor boundary.
 func controlWorkerHelper(mode string) int {
+	// Tests that verify process reaping record the fixture PID before any other
+	// work; a missing marker is a fixture failure, not a pass.
+	if path := os.Getenv("RHODECK_TEST_CONTROL_WORKER_PID"); path != "" {
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("%d", os.Getpid())), 0600); err != nil {
+			return 7
+		}
+	}
 	var sequence, coreSequence uint64
 	emit := func(kind, name string, id uint64, body any, cause *protocol.Error) {
 		m, err := protocol.NewMessage(kind, name, id, body)

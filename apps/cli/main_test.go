@@ -41,6 +41,14 @@ type cliFixtureTask struct {
 }
 
 func cliWorker(mode string) int {
+	// A test that verifies worker reaping records the fixture PID before any
+	// other work, so a missing marker is a fixture failure rather than a false
+	// pass.
+	if path := os.Getenv("RHODECK_CLI_WORKER_PID"); path != "" {
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("%d", os.Getpid())), 0600); err != nil {
+			return 18
+		}
+	}
 	if mode == "nohello" {
 		time.Sleep(time.Hour)
 		return 9
@@ -160,12 +168,6 @@ func cliWorker(mode string) int {
 				return 7
 			}
 			respond(struct{}{})
-			if fixtureHasTypedType(tasks) {
-				// The supervisor marks Start as issued after it reads the
-				// response. A typed callback that arrives earlier is rejected as
-				// unassociated, so this real-child fixture allows that handoff.
-				time.Sleep(50 * time.Millisecond)
-			}
 			for _, task := range tasks {
 				coreJSON(10001, map[string]any{"taskid": task.id, "taskchain": task.core, "secret": "private-secret"})
 			}
@@ -189,7 +191,7 @@ func cliWorker(mode string) int {
 				coreJSON(3, map[string]any{"finished_tasks": finished})
 			}
 			switch mode {
-			case "wait", "stopcleanupfail", "stoptypedcleanupfail":
+			case "wait", "stopcleanupfail", "stoptypedcleanupfail", "typedhold", "typedcrash":
 				continue
 			case "fault":
 				emit(protocol.Event, protocol.FaultEvent, 0, protocol.FaultNotice{Error: protocol.Error{Code: "instance_fault", Message: "fixture fault"}}, nil)
@@ -203,9 +205,14 @@ func cliWorker(mode string) int {
 			}
 			finish(mode == "failure")
 		case protocol.Stop:
+			if mode == "typedcrash" {
+				// Crash while stopping: no Stop response is sent. The supervisor
+				// must report the run unknown and keep confirmed facts.
+				return 7
+			}
 			respond(protocol.StopResult{Stopped: true})
 			switch mode {
-			case "wait", "stopcleanupfail", "stoptypedcleanupfail":
+			case "wait", "stopcleanupfail", "stoptypedcleanupfail", "typedhold":
 				for _, task := range tasks {
 					coreJSON(10004, map[string]any{"taskid": task.id})
 				}
@@ -226,22 +233,11 @@ func cliWorker(mode string) int {
 	}
 }
 
-// fixtureHasTypedType reports whether any accepted task uses a Core type with a
-// local adapter. Raw tasks of the same type are unaffected; the Reducer check in
-// the runtime still keeps them on the raw path.
-func fixtureHasTypedType(tasks []cliFixtureTask) bool {
-	for _, task := range tasks {
-		if task.core == "OperProgress" || task.core == "SwitchTheme" {
-			return true
-		}
-	}
-	return false
-}
-
 // fixtureSendsTyped reports whether a mode emits adapter callbacks.
 func fixtureSendsTyped(mode string) bool {
 	switch mode {
-	case "success", "failure", "fault", "reported", "prooffault", "stoptypedcleanupfail":
+	case "success", "failure", "fault", "reported", "prooffault", "stoptypedcleanupfail",
+		"partial", "typedhold", "typedcrash":
 		return true
 	default:
 		return false
@@ -278,13 +274,18 @@ func fixtureOperProgressCallbacks(task cliFixtureTask, mode string, coreJSON fun
 	if json.Unmarshal(task.params, &params) != nil {
 		return
 	}
-	for _, plan := range params.Plans {
+	for i, plan := range params.Plans {
+		if mode == "partial" && i > 0 {
+			// A later plan receives no detail at all; the summary must not fill
+			// in the missing target.
+			continue
+		}
 		details := map[string]any{
 			"role": plan.Role, "name": plan.Name,
 			"rect": []int{1, 2, 3, 4}, "score": 0.99, "private": "private-secret",
 		}
 		switch mode {
-		case "success":
+		case "success", "partial", "typedhold", "typedcrash":
 			details["result"], details["result_detail"] = "Success", "Completed"
 			switch {
 			case plan.Elite != nil:
@@ -331,7 +332,7 @@ func fixtureSwitchThemeCallbacks(task cliFixtureTask, mode string, coreJSON func
 			"result": map[string]any{"text": params.Themes[0], "score": 0.98, "rect": []int{1, 2, 3, 4}}}})
 	node := ""
 	switch mode {
-	case "success":
+	case "success", "typedhold", "typedcrash":
 		node = "SwitchThemeByNameAlreadySet"
 	case "failure", "fault", "prooffault", "stoptypedcleanupfail":
 		node = "SwitchThemeByNameLockedTheme"

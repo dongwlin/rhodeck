@@ -221,11 +221,19 @@ func TestTypedDryRunPreviewsCompiledTargetsWithoutEffects(t *testing.T) {
 			if !strings.Contains(joined, "oper_progress:") || !strings.Contains(joined, "switch_theme:") {
 				t.Fatalf("adapter caveats missing: %v", preview.Unverified)
 			}
-			if !strings.Contains(joined, "random selection") || !strings.Contains(joined, "not a sequential retry") {
-				t.Fatalf("random single-selection semantics missing: %v", preview.Unverified)
-			}
-			if !strings.Contains(joined, "mastery Completed report means training at the target level started") {
-				t.Fatalf("mastery startup semantics missing: %v", preview.Unverified)
+			// The preview must name every condition strict local preparation
+			// cannot verify, not just a sample of them.
+			for _, fragment := range []string{
+				"operator identity", "role agreement", "skill existence", "elite prerequisites",
+				"materials", "inventory", "training-room state",
+				"training at the target level started", "does not prove training finished",
+				"theme availability", "unlock state", "final theme state",
+				"single random selection", "not a sequential retry", "failure fallback",
+				"device-verified",
+			} {
+				if !strings.Contains(joined, fragment) {
+					t.Fatalf("preview unverified conditions lack %q: %v", fragment, preview.Unverified)
+				}
 			}
 			if _, err := os.Stat(dir); !os.IsNotExist(err) {
 				t.Fatalf("dry-run created the data directory: %v", err)
@@ -699,6 +707,7 @@ func filteredCLIEnv() []string {
 		case strings.HasPrefix(entry, "RHODECK_CLI_PROCESS="),
 			strings.HasPrefix(entry, "RHODECK_CLI_WORKER_MODE="),
 			strings.HasPrefix(entry, "RHODECK_CLI_INIT_RELEASE="),
+			strings.HasPrefix(entry, "RHODECK_CLI_WORKER_PID="),
 			strings.HasPrefix(entry, "RHODECK_CLI_TRACE="),
 			strings.HasPrefix(entry, "RHODECK_CLI_TASK_TRACE="):
 			continue
