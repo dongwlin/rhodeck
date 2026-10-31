@@ -89,7 +89,7 @@ func checkControlKeys(d *json.Decoder) error {
 // the selected worker and installation; dry-run does not load that installation.
 func ValidatePlan(p Plan) error {
 	bad := func(s string) error { return fmt.Errorf("%w: %s", ErrInvalidPlan, s) }
-	if p.SchemaVersion != SchemaVersion {
+	if p.SchemaVersion != SchemaVersion && p.SchemaVersion != AdaptedSchemaVersion {
 		return bad("unsupported schema version")
 	}
 	if !validText(p.HostRunID, 256, true) {
@@ -113,11 +113,21 @@ func ValidatePlan(p Plan) error {
 		return bad("invalid task count")
 	}
 	seen := make(map[string]bool, len(p.Tasks))
+	adapted := false
 	for _, t := range p.Tasks {
 		if !validText(t.ID, 128, false) || seen[t.ID] {
 			return bad("invalid or duplicate task ID")
 		}
 		seen[t.ID] = true
+		if t.Adapter != nil {
+			adapted = true
+			if p.SchemaVersion != AdaptedSchemaVersion || !validAdapterRef(*t.Adapter) {
+				return bad("invalid adapter or plan version")
+			}
+			if len(t.Params) > MaxAdapterParamsBytes {
+				return bad("adapter params exceed byte limit")
+			}
+		}
 		if !validText(t.Type, strMax, false) || !validObject(t.Params, jsonMax) {
 			return bad("invalid task input")
 		}
@@ -127,6 +137,9 @@ func ValidatePlan(p Plan) error {
 		if err := checkFrame(protocol.AppendTask, protocol.TaskRequest{Type: t.Type, Params: t.Params}); err != nil {
 			return err
 		}
+	}
+	if p.SchemaVersion == AdaptedSchemaVersion && !adapted {
+		return bad("adapted plan requires an explicit adapter")
 	}
 	raw, err := json.Marshal(p)
 	if err != nil || len(raw) > MaxPlanBytes {
@@ -250,6 +263,10 @@ func clonePlan(p Plan) Plan {
 	p.Tasks = append([]Task(nil), p.Tasks...)
 	for j := range p.Tasks {
 		p.Tasks[j].Params = bytes.Clone(p.Tasks[j].Params)
+		if p.Tasks[j].Adapter != nil {
+			ref := *p.Tasks[j].Adapter
+			p.Tasks[j].Adapter = &ref
+		}
 	}
 	return p
 }

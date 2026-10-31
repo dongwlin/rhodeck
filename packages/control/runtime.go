@@ -46,6 +46,7 @@ func New(cfg Config) (*Runtime, error) {
 	}
 	cfg.Worker.Args = append([]string(nil), cfg.Worker.Args...)
 	cfg.Worker.Env = append([]string(nil), cfg.Worker.Env...)
+	cfg.Adapters = append([]TaskAdapter(nil), cfg.Adapters...)
 	s, err := openStore(cfg.DataDir)
 	if err != nil {
 		return nil, err
@@ -63,10 +64,12 @@ func (rt *Runtime) Run(ctx context.Context, plan Plan) (*Run, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := ValidatePlan(plan); err != nil {
+	sourcePlan := clonePlan(plan)
+	prepared, err := PreparePlan(plan, rt.config.Adapters...)
+	if err != nil {
 		return nil, err
 	}
-	plan = clonePlan(plan)
+	plan = prepared.Plan
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if rt.closed {
@@ -77,16 +80,16 @@ func (rt *Runtime) Run(ctx context.Context, plan Plan) (*Run, error) {
 	}
 	commands, cancel := context.WithCancel(context.Background())
 	r := &Run{
-		runtime: rt, plan: plan, events: make(chan Event, runEventMessages), done: make(chan struct{}),
+		runtime: rt, plan: plan, sourcePlan: sourcePlan, events: make(chan Event, runEventMessages), done: make(chan struct{}),
 		changed: make(chan struct{}, 1), stop: make(chan struct{}), stopSettled: make(chan struct{}), commands: commands, cancelCommands: cancel,
-		taskIndex: make(map[int32]int),
-		result: Result{SchemaVersion: SchemaVersion, RunID: newRunID(), HostRunID: plan.HostRunID,
-			State: Admitted, Cleanup: "pending", StartedAt: time.Now().UTC()},
+		taskIndex: make(map[int32]int), reducers: prepared.reducers,
+		result: Result{SchemaVersion: plan.SchemaVersion, RunID: newRunID(), HostRunID: plan.HostRunID,
+			State: Admitted, Cleanup: "pending", StartedAt: time.Now().UTC(), Tasks: prepared.Tasks},
 	}
-	for _, t := range plan.Tasks {
-		r.result.Tasks = append(r.result.Tasks, TaskResult{ID: t.ID, State: Admitted})
+	for i := range r.result.Tasks {
+		r.result.Tasks[i].State = Admitted
 	}
-	if err := rt.store.save(Record{SchemaVersion: SchemaVersion, Plan: plan, Result: r.result}); err != nil {
+	if err := rt.store.save(Record{SchemaVersion: sourcePlan.SchemaVersion, Plan: sourcePlan, Result: r.result}); err != nil {
 		cancel()
 		return nil, err
 	}
@@ -143,28 +146,35 @@ func (rt *Runtime) Close(ctx context.Context) error {
 // Events has exactly one consumer. Done confirms worker cleanup and persistence;
 // buffered events remain readable afterward. Snapshot returns detached copies.
 type Run struct {
-	mu             sync.Mutex
-	runtime        *Runtime
-	plan           Plan
-	result         Result
-	events         chan Event
-	done           chan struct{}
-	changed        chan struct{}
-	stop           chan struct{}
-	stopSettled    chan struct{}
-	stopOnce       sync.Once
-	stopDeadline   time.Time
-	stopReason     string
-	commands       context.Context
-	cancelCommands context.CancelFunc
-	taskIndex      map[int32]int
-	sequence       uint64
-	eventSizes     []int
-	eventBytes     int
-	fatal          string
-	proof          State
-	stopObserved   bool
-	startIssued    bool
+	mu              sync.Mutex
+	persistMu       sync.Mutex
+	runtime         *Runtime
+	plan            Plan
+	sourcePlan      Plan // Preserve explicit input separately from compiled Core params.
+	result          Result
+	events          chan Event
+	done            chan struct{}
+	changed         chan struct{}
+	stop            chan struct{}
+	stopSettled     chan struct{}
+	stopOnce        sync.Once
+	stopDeadline    time.Time
+	stopReason      string
+	commands        context.Context
+	cancelCommands  context.CancelFunc
+	taskIndex       map[int32]int
+	reducers        map[int]TaskReducer
+	sequence        uint64
+	eventSizes      []int
+	eventTyped      []bool
+	eventBytes      int
+	typedEventBytes int
+	typedEventCount int
+	fatal           string
+	proof           State
+	proofCode       string
+	stopObserved    bool
+	startIssued     bool
 }
 
 func (r *Run) Events() <-chan Event  { return r.events }
@@ -172,6 +182,9 @@ func (r *Run) Done() <-chan struct{} { return r.done }
 
 func cloneResult(in Result) Result {
 	in.Tasks = append([]TaskResult(nil), in.Tasks...)
+	for i := range in.Tasks {
+		in.Tasks[i].Typed = cloneTypedResult(in.Tasks[i].Typed)
+	}
 	if in.RuntimeInfo != nil {
 		v := *in.RuntimeInfo
 		v.Resources = append([]protocol.Resource(nil), v.Resources...)
@@ -265,20 +278,31 @@ func (r *Run) emitLocked(e Event) {
 	// this size ledger use the mutex; receiving never participates in cleanup.
 	for len(r.eventSizes) > len(r.events) {
 		r.eventBytes -= r.eventSizes[0]
+		if r.eventTyped[0] {
+			r.typedEventBytes -= r.eventSizes[0]
+			r.typedEventCount--
+		}
 		r.eventSizes = r.eventSizes[1:]
+		r.eventTyped = r.eventTyped[1:]
 	}
 	r.sequence++
-	e.SchemaVersion, e.RunID, e.HostRunID = SchemaVersion, r.result.RunID, r.result.HostRunID
+	e.SchemaVersion, e.RunID, e.HostRunID = r.result.SchemaVersion, r.result.RunID, r.result.HostRunID
 	e.Sequence, e.Time = r.sequence, time.Now().UTC()
+	e.Details = bytes.Clone(e.Details)
+	e.Typed = cloneTypedResult(e.Typed)
 	b, err := json.Marshal(e)
 	// Reserve space for the terminal observation even when a consumer stops.
 	full := len(r.events) >= cap(r.events)-1 || len(b)+4096 > runEventBytes-r.eventBytes
 	if e.Type == "terminal" {
 		full = len(r.events) == cap(r.events) || len(b) > runEventBytes-r.eventBytes
 	}
-	if err != nil || full {
+	typedFull := e.Type == "typed" && (len(b) > MaxTypedEventBytes || r.typedEventCount >= MaxTypedEventMessages || len(b) > MaxTypedEventRetainedBytes-r.typedEventBytes)
+	if err != nil || full || typedFull {
 		if r.fatal == "" {
 			r.fatal = "event_overflow"
+			if typedFull {
+				r.fatal = "typed_event_overflow"
+			}
 		}
 		r.cancelCommands()
 		r.notify()
@@ -286,7 +310,12 @@ func (r *Run) emitLocked(e Event) {
 	}
 	r.events <- e
 	r.eventSizes = append(r.eventSizes, len(b))
+	r.eventTyped = append(r.eventTyped, e.Type == "typed")
 	r.eventBytes += len(b)
+	if e.Type == "typed" {
+		r.typedEventBytes += len(b)
+		r.typedEventCount++
+	}
 }
 
 func (r *Run) state(state State) {
@@ -297,8 +326,12 @@ func (r *Run) state(state State) {
 }
 
 func (r *Run) persist() error {
+	// Serialize the snapshot and save together: an earlier driver snapshot
+	// must never replace a newer fact already saved by the callback monitor.
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
 	r.mu.Lock()
-	record := Record{SchemaVersion: SchemaVersion, Plan: r.plan, Result: cloneResult(r.result)}
+	record := Record{SchemaVersion: r.sourcePlan.SchemaVersion, Plan: r.sourcePlan, Result: cloneResult(r.result)}
 	r.mu.Unlock()
 	return r.runtime.store.save(record)
 }
@@ -334,7 +367,7 @@ func (r *Run) execute() {
 		r.cancelCommands()
 		r.mu.Lock()
 		if r.proof != "" {
-			outcome, code = r.proof, ""
+			outcome, code = r.proof, r.proofCode
 		}
 		if r.fatal != "" {
 			if r.proof == "" {
@@ -517,6 +550,10 @@ func (r *Run) execute() {
 			outcome, code = Failed, "task_failed"
 			break
 		}
+		if task.Typed != nil && task.Typed.State == Failed {
+			outcome, code = Failed, "typed_failed"
+			break
+		}
 	}
 	r.mu.Unlock()
 }
@@ -673,6 +710,10 @@ func (r *Run) observe(m protocol.Message) {
 		e.Details = bytes.Clone(callback.JSON)
 	}
 	r.mu.Lock()
+	if !r.result.FinishedAt.IsZero() || (r.plan.SchemaVersion == AdaptedSchemaVersion && r.proof != "") {
+		r.mu.Unlock()
+		return
+	}
 	if id != nil {
 		e.CoreTaskID = *id
 		if index, ok := r.taskIndex[*id]; ok {
@@ -680,6 +721,11 @@ func (r *Run) observe(m protocol.Message) {
 		}
 	}
 	r.emitLocked(e)
+	r.mu.Unlock()
+	if !r.observeTyped(callback, id, parseErr) {
+		return
+	}
+	r.mu.Lock()
 	terminalEvent := callback.MessageID == 3 || callback.MessageID == 10000 || callback.MessageID == 10002 || callback.MessageID == 10004
 	if parseErr != nil && terminalEvent {
 		r.mu.Unlock()
@@ -699,6 +745,7 @@ func (r *Run) observe(m protocol.Message) {
 		}
 		seen := make(map[int32]bool)
 		failed := false
+		typedFailed, typedIncomplete := false, false
 		for _, taskID := range finished {
 			i, ok := r.taskIndex[taskID]
 			if !ok || seen[taskID] {
@@ -711,11 +758,20 @@ func (r *Run) observe(m protocol.Message) {
 				valid = false
 			}
 			failed = failed || s == Failed
+			if typed := r.result.Tasks[i].Typed; typed != nil {
+				typedFailed = typedFailed || typed.State == Failed
+				typedIncomplete = typedIncomplete || typed.State != Succeeded
+			}
 		}
 		if valid && r.fatal == "" {
 			r.proof = Succeeded
 			if failed {
 				r.proof = Failed
+			}
+			if typedFailed {
+				r.proof, r.proofCode = Failed, "typed_failed"
+			} else if !failed && typedIncomplete {
+				r.proof, r.proofCode = Unknown, "typed_incomplete"
 			}
 		}
 		r.mu.Unlock()
@@ -781,4 +837,106 @@ func (r *Run) observe(m protocol.Message) {
 		}
 	}
 	r.notify()
+}
+
+// observeTyped runs on the sole worker-event monitor. Reducers receive detached
+// input outside the result lock; only validated, bounded, immutable facts enter
+// the snapshot, and every change is persisted before it is published.
+func (r *Run) observeTyped(callback protocol.Callback, id *int32, parseErr error) bool {
+	r.mu.Lock()
+	if len(r.reducers) == 0 {
+		r.mu.Unlock()
+		return true
+	}
+	if r.fatal != "" || r.proof != "" || !r.result.FinishedAt.IsZero() {
+		r.mu.Unlock()
+		return false
+	}
+	i, known := 0, false
+	if id != nil {
+		i, known = r.taskIndex[*id]
+	}
+	reducer := r.reducers[i]
+	if !known || reducer == nil {
+		// Callbacks belonging to a known raw task stay on the raw path. For
+		// unassociated subtask events, a matching typed chain cannot be guessed.
+		relevant := false
+		if !known && callback.MessageID >= 20000 && callback.MessageID <= 20004 {
+			if parseErr != nil {
+				// An ambiguous correlation object cannot prove that the event
+				// belongs to an unrelated chain. Do not select a duplicate's
+				// last value through a permissive second decode.
+				relevant = true
+			} else {
+				var fields struct {
+					TaskChain string `json:"taskchain"`
+				}
+				_ = json.Unmarshal(callback.JSON, &fields)
+				for index := range r.reducers {
+					if fields.TaskChain == "" || fields.TaskChain == r.plan.Tasks[index].Type {
+						relevant = true
+						break
+					}
+				}
+			}
+		}
+		r.mu.Unlock()
+		if relevant {
+			r.fail("typed_invalid_event")
+			return false
+		}
+		return true
+	}
+	if terminal(r.result.Tasks[i].State) {
+		r.mu.Unlock()
+		return true
+	}
+	if parseErr != nil || !r.startIssued {
+		r.mu.Unlock()
+		r.fail("typed_invalid_event")
+		return false
+	}
+	r.mu.Unlock()
+	update, err := reducer.Observe(Observation{MessageID: callback.MessageID, CoreSequence: callback.CoreSequence, JSON: bytes.Clone(callback.JSON)})
+	if err != nil {
+		r.fail("typed_invalid_event")
+		return false
+	}
+	r.mu.Lock()
+	if r.fatal != "" || r.proof != "" || !r.result.FinishedAt.IsZero() || terminal(r.result.Tasks[i].State) {
+		r.mu.Unlock()
+		return false
+	}
+	candidate, changed, err := applyTypedUpdate(r.result.Tasks[i].Typed, update)
+	if err == nil && changed {
+		tasks := append([]TaskResult(nil), r.result.Tasks...)
+		tasks[i].Typed = candidate
+		err = validateTypedResults(tasks)
+	}
+	if err != nil {
+		r.mu.Unlock()
+		code := "typed_invalid_event"
+		if errors.Is(err, ErrTypedBudget) {
+			code = "typed_result_overflow"
+		} else if errors.Is(err, ErrTypedConflict) {
+			code = "typed_conflict"
+		}
+		r.fail(code)
+		return false
+	}
+	if !changed {
+		r.mu.Unlock()
+		return true
+	}
+	r.result.Tasks[i].Typed = candidate
+	event := Event{Type: "typed", TaskID: r.result.Tasks[i].ID, CoreTaskID: r.result.Tasks[i].CoreTaskID,
+		MessageID: callback.MessageID, CoreSequence: callback.CoreSequence, Typed: cloneTypedResult(candidate)}
+	r.mu.Unlock()
+	if err := r.persist(); err != nil {
+		r.fail("record_write_failed")
+		return false
+	}
+	r.emit(event)
+	r.notify()
+	return true
 }

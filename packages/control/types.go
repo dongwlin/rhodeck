@@ -11,7 +11,14 @@ import (
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
 
+// SchemaVersion is the unchanged generic plan and machine envelope version.
 const SchemaVersion = 1
+
+// AdaptedSchemaVersion identifies explicit adapter plans and their containers.
+const AdaptedSchemaVersion = 2
+
+// TypedSchemaVersion versions the nested typed result independently.
+const TypedSchemaVersion = 1
 
 const (
 	MaxPlanBytes = 16 << 20
@@ -41,9 +48,10 @@ const (
 
 // Task.ID is caller-owned and unique within a plan; it is never a Core task ID.
 type Task struct {
-	ID     string          `json:"id"`
-	Type   string          `json:"type"`
-	Params json.RawMessage `json:"params"`
+	ID      string          `json:"id"`
+	Type    string          `json:"type"`
+	Params  json.RawMessage `json:"params"`
+	Adapter *AdapterRef     `json:"adapter,omitempty"`
 }
 
 // Plan is a complete explicit installation, connection and ordered task batch.
@@ -61,12 +69,16 @@ type Config struct {
 	Worker           worker.Config
 	StopTimeout      time.Duration // Zero selects five seconds; negative is rejected.
 	IncludeRawEvents bool          // Explicit local diagnostic opt-in; may contain private data.
+	Adapters         []TaskAdapter // Explicit, runtime-local adapters; none are selected by task name.
 }
 
+// TaskResult.State is the native task-chain fact. Typed carries the independent
+// business target facts used when deciding an adapted run's overall result.
 type TaskResult struct {
-	ID         string `json:"id"`
-	CoreTaskID int32  `json:"core_task_id,omitempty"`
-	State      State  `json:"state"`
+	ID         string       `json:"id"`
+	CoreTaskID int32        `json:"core_task_id,omitempty"`
+	State      State        `json:"state"`
+	Typed      *TypedResult `json:"typed,omitempty"`
 }
 
 // Result separates observed task facts from cleanup. Succeeded with a failed
@@ -101,6 +113,7 @@ type Event struct {
 	CoreSequence  uint64          `json:"core_sequence,omitempty"`
 	Details       json.RawMessage `json:"details,omitempty"`
 	Code          string          `json:"code,omitempty"`
+	Typed         *TypedResult    `json:"typed,omitempty"`
 }
 
 // Record is private local state. Plans may contain credentials or device data;
