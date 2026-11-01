@@ -19,40 +19,55 @@ const coreVersionPolicy = "rolling; use the latest caller-provided Core and reso
 // Core. Discovery takes no plan and never loads native code.
 const installationFacts = "not inspected; capabilities performs no installation discovery or native loading; run doctor with an explicit plan to inspect an installation"
 
-// deviceAcceptance is the current authorized acceptance state of both adapters.
+// deviceAcceptance is the current authorized acceptance state of the bundled
+// adapters.
 const deviceAcceptance = "none"
 
 // cliAdapterSpec pairs one locally registered adapter with the Core type it
 // accepts and the facts strict preparation cannot verify locally. Adapter
 // identity in capability output comes from Descriptor, so name and version are
-// declared once by the control package.
+// declared once by the control package. One adapter's inputs can select
+// several objective policies: objectivePolicies lists every policy its inputs
+// may select in the fixed all, any, none order, and policySelection names the
+// input that selects each one. resultInterpretation names the highest
+// capability those inputs reach; input-only branches never upgrade it.
 type cliAdapterSpec struct {
 	coreType             string
 	input                string
-	objectivePolicy      control.ObjectivePolicy
+	objectivePolicies    []control.ObjectivePolicy
+	policySelection      string
 	resultInterpretation string
-	unverified           []string
-	newAdapter           func() control.TaskAdapter
+	// inputOnlyNote states which inputs select no policy and interpret no
+	// results. It becomes part of the acceptance statement; adapters whose
+	// every input selects a policy leave it empty.
+	inputOnlyNote string
+	unverified    []string
+	newAdapter    func() control.TaskAdapter
 }
 
 // adapterCapability describes one registered adapter in machine output. The
 // name and version are copied from Descriptor; the remaining fields document
-// what the runner accepts and which evidence is still missing.
+// what the runner accepts, which objective policies its inputs can select and
+// which evidence is still missing. There is deliberately no single static
+// objective_policy field: dry-run reports the policy each prepared task
+// actually selected.
 type adapterCapability struct {
-	Name                 string                  `json:"name"`
-	Version              int                     `json:"version"`
-	CoreType             string                  `json:"core_type"`
-	Input                string                  `json:"input"`
-	ObjectivePolicy      control.ObjectivePolicy `json:"objective_policy"`
-	ResultInterpretation string                  `json:"result_interpretation"`
-	Acceptance           string                  `json:"acceptance"`
+	Name                 string                    `json:"name"`
+	Version              int                       `json:"version"`
+	CoreType             string                    `json:"core_type"`
+	Input                string                    `json:"input"`
+	ObjectivePolicies    []control.ObjectivePolicy `json:"objective_policies"`
+	PolicySelection      string                    `json:"policy_selection"`
+	ResultInterpretation string                    `json:"result_interpretation"`
+	Acceptance           string                    `json:"acceptance"`
 }
 
 func cliAdapterSpecs() []cliAdapterSpec {
 	return []cliAdapterSpec{
 		{
 			coreType:             "OperProgress",
-			objectivePolicy:      control.ObjectiveAll,
+			objectivePolicies:    []control.ObjectivePolicy{control.ObjectiveAll},
+			policySelection:      "all inputs use policy all",
 			resultInterpretation: "target_results",
 			input:                "strict plans: 1-128 entries with role (Pioneer, Warrior, Tank, Sniper, Caster, Medic, Support, Special), name (valid UTF-8, 1-256 bytes, no NUL, not all whitespace) and exactly one of elite 1-2, skill_level 2-7 or skill_mastery (three 0-3 integers, exactly one nonzero slot); targets op-0001..op-0128",
 			unverified: []string{
@@ -64,7 +79,8 @@ func cliAdapterSpecs() []cliAdapterSpec {
 		},
 		{
 			coreType:             "SwitchTheme",
-			objectivePolicy:      control.ObjectiveAll,
+			objectivePolicies:    []control.ObjectivePolicy{control.ObjectiveAll},
+			policySelection:      "all inputs use policy all",
 			resultInterpretation: "target_results",
 			input:                "strict themes: 1-32 distinct names (valid UTF-8, 1-256 bytes, no NUL, no leading or trailing whitespace); sole target theme-selection; Core selects one candidate at random once, not a retry or fallback sequence",
 			unverified: []string{
@@ -73,6 +89,34 @@ func cliAdapterSpecs() []cliAdapterSpec {
 				"switch_theme: multiple candidates are a single random selection, not a sequential retry, progressive-switch list or failure fallback; this is not device-verified",
 			},
 			newAdapter: control.NewSwitchThemeAdapter,
+		},
+		{
+			coreType:             "Copilot",
+			objectivePolicies:    []control.ObjectivePolicy{control.ObjectiveAll, control.ObjectiveNone},
+			policySelection:      "copilot_list inputs use policy all and interpret per-entry stage results, while single-file filename and loop_times inputs use policy none and interpret no results",
+			resultInterpretation: "stage_results",
+			input:                "strict params: exactly one of filename (nonempty path string) or copilot_list (1-128 objects, each a required nonempty filename plus an optional unique signed 32-bit id, optional nav_name_override and boolean is_raid); optional formation, formation_index 0-4, add_trust, ignore_requirements, use_sanity_potion, support_unit_usage 0-3 (usage 2 requires support_unit_name) and loop_times 1-2147483647 (copilot_list allows omission or 1); operbox_data_path and user_additional require formation=true; referenced files are never opened and single-file and loop inputs are input-only (none)",
+			inputOnlyNote:        "single-file and loop inputs interpret no results (none); a completed single-file chain does not prove a clear or a safe device handoff",
+			unverified: []string{
+				"copilot: file existence and contents, stage support, navigation and recognition against the installed resources, and formation or operbox state are never inspected during preparation",
+				"copilot: per-entry clear and failure facts have no authorized device acceptance",
+				"copilot: load success, append acceptance and chain completion do not establish stage facts; a completed single-file or loop chain does not prove a clear or a safe device handoff",
+			},
+			newAdapter: control.NewCopilotAdapter,
+		},
+		{
+			coreType:             "Roguelike",
+			objectivePolicies:    []control.ObjectivePolicy{control.ObjectiveAll, control.ObjectiveAny, control.ObjectiveNone},
+			policySelection:      "the theme and mode with starts_count and the rotation and early-stop switches select the policy: mode 0 uses all for one declared run and any for several runs (starts_count 1-128 with no early-stop switch and no reachable investment stop), mode 1 uses all only when an investment limit can be reached, mode 6 uses all only with monthly_squad_auto_iterate=true, mode 7 uses all only with deep_exploration_auto_iterate=true, modes 20001 and 30003 always use all, and every other configuration uses none",
+			resultInterpretation: "mode_objective",
+			input:                "strict params: an explicit theme (Phantom, Mizuki, Sami, Sarkaz, JieGarden or BlackFlow) and mode validated against the frozen per-theme matrix (0, 1, 4, 6 and 7 for every theme except BlackFlow; Sami adds 5, Sarkaz adds 10001, JieGarden adds 20001 and BlackFlow accepts only 0, 1, 30001 and 30003), common squad, investment and early-stop options and theme- or mode-scoped fields such as monthly_squad_auto_iterate, deep_exploration_auto_iterate, find_playTime_target and the blackflow_* set; unknown or misplaced fields and invalid combinations are rejected",
+			inputOnlyNote:        "modes 6 and 7 with their rotation switch off, modes without a reliable terminal fact and the BlackFlow strategy profiles interpret no results (none)",
+			unverified: []string{
+				"roguelike: theme availability, operator and squad names, seeds, foldartal and paradigm names and reward identifiers against the installed resources, and device readiness are never inspected during preparation",
+				"roguelike: run settlement, investment, rotation, target-found and start-run facts have no authorized device acceptance",
+				"roguelike: missing settlement evidence stays unobserved even after chain completion and is never inferred from finished tasks",
+			},
+			newAdapter: control.NewRoguelikeAdapter,
 		},
 	}
 }
@@ -100,17 +144,25 @@ func cliAdapterCapabilities() []adapterCapability {
 	return out
 }
 
+// cliAdapterCapability builds one capability row. result_interpretation names
+// the highest capability the adapter's inputs can reach; a purely input-only
+// adapter reports none, and partially input-only adapters describe those
+// branches as none in policy_selection, input and acceptance instead.
 func cliAdapterCapability(spec cliAdapterSpec) adapterCapability {
 	ref := spec.newAdapter().Descriptor()
-	acceptance := "local preparation and result interpretation only; authorized device acceptance: " + deviceAcceptance
 	interpretation := spec.resultInterpretation
-	if spec.objectivePolicy == control.ObjectiveNone {
+	acceptance := "local preparation and result interpretation only"
+	switch {
+	case len(spec.objectivePolicies) == 1 && spec.objectivePolicies[0] == control.ObjectiveNone:
 		interpretation = "none"
-		acceptance = "local preparation only; result interpretation: none; authorized device acceptance: " + deviceAcceptance
+		acceptance = "local preparation only; result interpretation: none"
+	case spec.inputOnlyNote != "":
+		acceptance += "; " + spec.inputOnlyNote
 	}
 	return adapterCapability{
 		Name: ref.Name, Version: ref.Version, CoreType: spec.coreType, Input: spec.input,
-		ObjectivePolicy: spec.objectivePolicy, ResultInterpretation: interpretation, Acceptance: acceptance,
+		ObjectivePolicies: spec.objectivePolicies, PolicySelection: spec.policySelection,
+		ResultInterpretation: interpretation, Acceptance: acceptance + "; authorized device acceptance: " + deviceAcceptance,
 	}
 }
 

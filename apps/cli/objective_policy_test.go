@@ -19,10 +19,12 @@ func (inputOnlyCapabilityAdapter) Prepare(task control.Task) (control.PreparedTa
 
 func TestInputOnlyCapabilityMakesNoResultInterpretationClaim(t *testing.T) {
 	got := cliAdapterCapability(cliAdapterSpec{
-		coreType: "FutureTask", objectivePolicy: control.ObjectiveNone,
-		newAdapter: func() control.TaskAdapter { return inputOnlyCapabilityAdapter{} },
+		coreType:          "FutureTask",
+		objectivePolicies: []control.ObjectivePolicy{control.ObjectiveNone},
+		newAdapter:        func() control.TaskAdapter { return inputOnlyCapabilityAdapter{} },
 	})
-	if got.ObjectivePolicy != control.ObjectiveNone || got.ResultInterpretation != "none" ||
+	if len(got.ObjectivePolicies) != 1 || got.ObjectivePolicies[0] != control.ObjectiveNone ||
+		got.ResultInterpretation != "none" ||
 		!strings.Contains(got.Acceptance, "local preparation only") ||
 		!strings.Contains(got.Acceptance, "device acceptance: none") ||
 		strings.Contains(got.Acceptance, "preparation and result interpretation") {

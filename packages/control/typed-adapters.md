@@ -12,13 +12,13 @@ launch workers, load native code or connect devices. Each adapter must implement
 deterministic preparation without side effects, reject incompatible task types,
 and create a fresh reducer for each task with interpreted targets. Input-only
 adapters return no reducer. Adapters may be prepared concurrently.
-The package bundles three strict adapters: `NewOperProgressAdapter`
+The package bundles four strict adapters: `NewOperProgressAdapter`
 (`oper_progress`, version 1), `NewSwitchThemeAdapter` (`switch_theme`,
-version 1) and `NewCopilotAdapter` (`copilot`, version 1). The
-[standalone CLI](../../apps/cli/README.md) currently registers OperProgress and SwitchTheme
-explicitly for `run` and `dry-run`; a task still selects one only through
-`Task.Adapter`. Copilot is available to callers that register it with control;
-the CLI does not register it yet. These adapters have no authorized device acceptance. The CLI
+version 1), `NewCopilotAdapter` (`copilot`, version 1) and
+`NewRoguelikeAdapter` (`roguelike`, version 1). The
+[standalone CLI](../../apps/cli/README.md) registers all four explicitly for
+`run` and `dry-run`; a task still selects one only through `Task.Adapter`.
+These adapters have no authorized device acceptance. The CLI
 capability report keeps the reviewed MAA source revision, the rolling Core
 version policy, the uninspected installation and the missing device acceptance
 separate. Actual versions and digests come from doctor/run/record; the host
@@ -143,9 +143,59 @@ reviewed at upstream revision `9b75f9f7b103079458414c6e20216c8c531d6987`;
 it does not pin or guarantee compatibility with a Core version. Local tests
 cover preparation, interpretation, lifecycle faults and durable recovery.
 Actual installation callbacks and device behavior remain unverified. Result
-integration can describe lists as `stage_results` with policy `all`, and
-single-file/loop inputs as `none`; the CLI capability report has not added
-Copilot yet.
+integration describes lists as `stage_results` with policy `all` and
+single-file/loop inputs as `none`; the CLI capability report states the same
+selection through `objective_policies` and `policy_selection`, and its dry-run
+shows the policy each task actually selected.
+
+## Roguelike input and mode objectives
+
+Select `adapter: {"name":"roguelike","version":1}` with Core type `Roguelike`.
+The strict input requires an explicit `theme` (`Phantom`, `Mizuki`, `Sami`,
+`Sarkaz`, `JieGarden` or `BlackFlow`) and `mode` from the frozen per-theme
+matrix: 0, 1, 4, 6 and 7 for every theme except BlackFlow, plus 5 for Sami,
+10001 for Sarkaz and 20001 for JieGarden; BlackFlow accepts only 0, 1, 30001
+and 30003. Modes 2 and 3 and every other theme/mode combination are rejected.
+Common squad, investment and early-stop options and theme- or mode-scoped
+fields (such as `monthly_squad_auto_iterate`, `deep_exploration_auto_iterate`,
+`find_playTime_target` and the `blackflow_*` set) are validated strictly:
+unknown fields, explicit nulls, duplicate keys at any depth, misplaced
+theme/mode fields and invalid combinations — including `only_start_with_elite_two`
+outside mode 4, the mode 30003 start-run requirements and values Core would
+silently override — are rejected with `ErrInvalidPlan`. Compilation keeps the
+submitted values verbatim and injects no Core defaults.
+
+The objective policy follows the compiled configuration instead of one static
+value:
+
+- Mode 0 declares one target per run, `roguelike:run:1..N`, with policy `any`
+  for several runs and `all` for a single run — only for a `starts_count` of
+  1-128 with no `stop_at_final_boss`/`stop_at_max_level` switch and no
+  reachable investment stop, and only outside the BlackFlow strategy profile.
+- Mode 1 declares `roguelike:investment` with policy `all` only when the
+  investment limit can be reached at all.
+- Mode 6 declares `roguelike:monthly_squad` and mode 7
+  `roguelike:deep_exploration` with policy `all` only when
+  `monthly_squad_auto_iterate` or `deep_exploration_auto_iterate` is true;
+  with the switch omitted or false Core never emits the rotation callback, so
+  those configurations stay input-only.
+- Modes 20001 and 30003 declare `roguelike:jie_garden_target` and
+  `roguelike:start_run` with policy `all`.
+- Every other configuration — modes 4, 5, 10001 and 30001, the BlackFlow
+  strategy profiles, and any configuration whose chain can end before its
+  declared runs settle — uses `none`: input is validated and compiled, and no
+  business objective is claimed.
+
+Facts come only from callbacks of the accepted Core task with
+`taskchain=Roguelike`: run settlements (`GamePass`, `MissionFailedFlag2`) are
+counted per declared run in arrival order, and the extra-info facts
+`RoguelikeInvestmentReachLimit`/`RoguelikeInvestmentReachFull`,
+`MonthlySquadCompleted`, `DeepExplorationCompleted`,
+`RoguelikeJieGardenTargetFound` and the BlackFlow start-run status establish
+their single objective exactly. Chain completion, stops and unknown statuses
+never create facts; missing evidence stays unobserved and is never inferred
+from `AllTasksCompleted`. All roguelike facts have no authorized device
+acceptance, and the CLI dry-run shows the policy each task actually selected.
 
 ## Preparation and policies
 
@@ -164,7 +214,10 @@ return `PreparedTask{Params: compiled, Policy: ObjectiveNone}`.
 Input-only tasks carry `objective_policy: "none"` and omit `typed`; they publish
 no typed events. Their run outcome follows native chain facts and makes no
 business-objective claim. Raw task results omit both fields. OperProgress and
-SwitchTheme use `all`. Policy selection belongs to the adapter; it is
+SwitchTheme use `all`. Copilot lists use `all` and its single-file and loop
+inputs `none`. Roguelike selects `all`, `any` or `none` from the theme, mode,
+run count and rotation switches (see the Roguelike section). Policy selection
+belongs to the adapter; it is
 not an additional caller-controlled plan field.
 
 `PreparedPlan.Plan` contains the compiled parameters.

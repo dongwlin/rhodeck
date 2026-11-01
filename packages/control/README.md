@@ -32,10 +32,11 @@ preconditions remain unverified until the selected installation is used.
 Explicit [typed adapters](typed-adapters.md) extend the same schema with an
 optional selection and a runtime-local registry. `PreparePlan` provides a pure compiled preview; task
 names alone never enable an adapter. The package bundles the strict `oper_progress`
-(`NewOperProgressAdapter`), `switch_theme` (`NewSwitchThemeAdapter`) and `copilot`
-(`NewCopilotAdapter`) adapters, which callers must register explicitly. The
-standalone CLI currently registers OperProgress and SwitchTheme for `run` and
-`dry-run`; Copilot is available through the control registry. Adapter inputs and
+(`NewOperProgressAdapter`), `switch_theme` (`NewSwitchThemeAdapter`), `copilot`
+(`NewCopilotAdapter`) and `roguelike` (`NewRoguelikeAdapter`) adapters, which
+callers must register explicitly. The
+standalone CLI registers all four for `run` and
+`dry-run`; a task still selects one only through `Task.Adapter`. Adapter inputs and
 results are locally implemented and
 tested without authorized device acceptance, so capability output does not claim
 they work on a device.
@@ -60,7 +61,8 @@ facts and remaining incomplete otherwise. An input-only adapter uses `none`,
 has no typed result or reducer, and follows chain facts without claiming a
 business objective. Raw results omit the policy. OperProgress and SwitchTheme
 use `all`; Copilot lists use `all`, while its single-file and loop inputs use
-`none`. A matching completed batch also requires each
+`none`; Roguelike selects `all`, `any` or `none` from the theme, mode and
+switches. A matching completed batch also requires each
 interpreted objective to succeed. A typed failure makes the run failed; incomplete
 evidence makes it unknown. A fault, lost event or unconfirmed stop before a
 business conclusion
