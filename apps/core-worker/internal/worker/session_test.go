@@ -1,4 +1,4 @@
-package main
+package worker
 
 import (
 	"context"
@@ -302,7 +302,7 @@ func harness(t *testing.T, factory engineFactory) *sessionHarness {
 	fromWorker, output := io.Pipe()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, input, output, factory, 30*time.Millisecond); output.Close() }()
+	go func() { done <- serve(ctx, input, output, factory, 30*time.Millisecond, "dev"); output.Close() }()
 	h := &sessionHarness{t: t, in: toWorker, out: fromWorker, reader: protocol.NewReader(fromWorker), done: done}
 	t.Cleanup(func() { cancel(); toWorker.Close(); fromWorker.Close() })
 	if m := h.read(); m.Type != protocol.Hello {

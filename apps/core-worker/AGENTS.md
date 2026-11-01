@@ -2,7 +2,7 @@
 
 ## 进程与适配边界
 
-- 保持 `main` 负责参数、stdout 隔离与信号，`session` 负责协议与命令调度，`backend` 通过 `engine` / `operation` 接口适配 maa。
+- `main.go` 只保留版本注入（`-X main.version`）与入口委托；实现位于 `internal/worker`，其中进程入口负责参数、stdout 隔离与信号，`session` 负责协议与命令调度，`backend` 通过 `engine` / `operation` 接口适配 maa。
 - 首帧 hello 不加载 MaaCore；initialize 才创建 runtime/instance。到达 engine factory 的初始化尝试失败即结束会话，恢复使用新进程；不要改成同会话反复初始化。
 - 初始化使用显式绝对路径，资源根顺序保留。安装快照由调用方保持不可变；库摘要和资源版本文件摘要不能代表整个资源树或设备所有权。
 - stdout 专用于协议。加载 MaaCore 前保留专用协议句柄并把 Go/原生 stdout 重定向到 stderr；平台实现还须阻止 ADB 等子进程继承协议句柄，不能只替换 `os.Stdout`。

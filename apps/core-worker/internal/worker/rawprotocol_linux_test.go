@@ -8,7 +8,7 @@
 // control fields, wrong protocol versions, repeated request IDs, oversized
 // frames and an abrupt parent EOF — terminate the session loudly and reap the
 // process. Nothing touches a device.
-package main
+package worker
 
 import (
 	"bytes"

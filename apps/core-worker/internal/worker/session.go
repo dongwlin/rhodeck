@@ -1,4 +1,4 @@
-package main
+package worker
 
 import (
 	"context"
@@ -17,9 +17,6 @@ import (
 
 const shutdownGrace = 5 * time.Second
 
-// Set with -ldflags '-X main.version=...'. Local builds identify themselves.
-var version = "dev"
-
 type session struct {
 	ctx      context.Context
 	fail     context.CancelCauseFunc
@@ -36,7 +33,7 @@ type session struct {
 
 // serve bounds graceful cleanup even when a native call never returns. main
 // exits after it returns; a supervisor imposes its own independent deadline.
-func serve(ctx context.Context, input io.ReadCloser, output io.Writer, factory engineFactory, grace time.Duration) error {
+func serve(ctx context.Context, input io.ReadCloser, output io.Writer, factory engineFactory, grace time.Duration, version string) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	defer input.Close()

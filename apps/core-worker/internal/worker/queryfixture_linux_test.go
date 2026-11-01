@@ -10,7 +10,7 @@
 // fixture, which exports no experiment symbols, and proves the stable
 // unsupported rejection matches the reported capability snapshot. Nothing
 // touches a device: no connect, no screencap, no task start.
-package main
+package worker
 
 import (
 	"context"

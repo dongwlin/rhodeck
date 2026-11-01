@@ -9,7 +9,7 @@
 // session, wire and client — and every failure path asserts stable codes and
 // a reaped process. Nothing touches a device: the fixture never connects,
 // never screencaps a real screen and never starts a task.
-package main
+package worker
 
 import (
 	"bytes"

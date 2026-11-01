@@ -410,7 +410,7 @@ func TestUnresolvableTestReferenceFails(t *testing.T) {
 // the engine method away) breaks the verified mapping.
 func TestRemovedWorkerBranchFails(t *testing.T) {
 	root := mutatedRepo(t, map[string][2]string{
-		"apps/core-worker/backend.go": {"func (e *nativeEngine) AppendTask(req protocol.TaskRequest) (int32, error) {",
+		"apps/core-worker/internal/worker/backend.go": {"func (e *nativeEngine) AppendTask(req protocol.TaskRequest) (int32, error) {",
 			"func (e *nativeEngine) AppendTaskX(req protocol.TaskRequest) (int32, error) {"},
 	})
 	report := scanAndCheck(t, root, ModeDrift)

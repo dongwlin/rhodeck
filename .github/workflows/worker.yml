@@ -73,10 +73,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential
       - name: Build and vet
         run: |
-          go build ./apps/core-worker ./apps/cli/... ./packages/control/... ./tools/api-coverage
-          go vet ./apps/core-worker ./apps/cli/... ./packages/control/... ./tools/api-coverage
+          go build ./apps/core-worker/... ./apps/cli/... ./packages/control/... ./tools/api-coverage
+          go vet ./apps/core-worker/... ./apps/cli/... ./packages/control/... ./tools/api-coverage
       - name: Unit and process tests with native fixtures (real Core excluded)
-        run: go test ./apps/core-worker ./apps/cli/... ./packages/control/... -skip TestRealCore -count=1 -timeout=3m
+        run: go test ./apps/core-worker/... ./apps/cli/... ./packages/control/... -skip TestRealCore -count=1 -timeout=3m
       - name: API coverage drift gate
         if: runner.os == 'Linux'
         run: |
@@ -100,7 +100,7 @@ jobs:
       - name: Install C toolchain for native fixtures
         run: sudo apt-get update && sudo apt-get install -y build-essential
       - name: Unit and process tests with race detector
-        run: go test -race ./apps/core-worker ./apps/cli/... ./packages/control/... -skip TestRealCore -count=1 -timeout=8m
+        run: go test -race ./apps/core-worker/... ./apps/cli/... ./packages/control/... -skip TestRealCore -count=1 -timeout=8m
 
   cross-build:
     name: cross-compile (${{ matrix.goos }}/${{ matrix.goarch }}, no execution)
@@ -123,6 +123,6 @@ jobs:
           cache: true
       - name: Compile worker, control, CLI and tests
         run: |
-          go build ./apps/core-worker ./apps/cli/... ./packages/control/...
+          go build ./apps/core-worker/... ./apps/cli/... ./packages/control/...
           mkdir -p "$RUNNER_TEMP/worker-tests"
-          go test -c -o "$RUNNER_TEMP/worker-tests/" ./apps/core-worker ./apps/cli/... ./packages/control/...
+          go test -c -o "$RUNNER_TEMP/worker-tests/" ./apps/core-worker/... ./apps/cli/... ./packages/control/...

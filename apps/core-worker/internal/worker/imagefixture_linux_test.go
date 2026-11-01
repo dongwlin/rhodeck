@@ -8,7 +8,7 @@
 // single-frame limit and reach the binding default maxima (PNG 32 MiB, BGR
 // 64 MiB) without touching any device: the fixture never screenscaps, never
 // connects, and never starts a task.
-package main
+package worker
 
 import (
 	"bytes"
