@@ -8,6 +8,9 @@ package native
 import (
 	"testing"
 	"unsafe"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // cStringArg 解码调用方构造的 NUL 终止 C 字符串参数,供断言比对
@@ -73,37 +76,27 @@ func TestAPITableInitCallForwarding(t *testing.T) {
 		extrasCalls = append(extrasCalls, call{first: cStringArg(name), second: cStringArg(extras)})
 	}
 
-	if got := table.GetVersion(); got != &versionBytes[0] {
-		t.Errorf("GetVersion returned %p, want the borrowed pointer passed through as-is", got)
-	}
-	if !versionCalled {
-		t.Error("GetVersion did not forward to the AsstGetVersion field")
-	}
-	if got := table.GetNullSize(); got != ^uint64(0) || !nullSizeCalled {
-		t.Errorf("GetNullSize = %#x (called=%v), want the return value forwarded as-is", got, nullSizeCalled)
-	}
-	if ret := table.SetUserDir(cStringPtrForTest("/home/user/.maa")); ret != 1 {
-		t.Errorf("SetUserDir returned %d, want 1", ret)
-	}
-	if len(userDirCalls) != 1 || userDirCalls[0] != "/home/user/.maa" {
-		t.Errorf("SetUserDir received arguments = %v, want [/home/user/.maa]", userDirCalls)
-	}
-	if ret := table.SetStaticOption(1, cStringPtrForTest("cpu_ocr")); ret != 0 {
-		t.Errorf("SetStaticOption returned %d, want 0 (failure code returned as-is)", ret)
-	}
-	if len(staticCalls) != 1 || staticCalls[0].key != 1 || staticCalls[0].first != "cpu_ocr" {
-		t.Errorf("SetStaticOption received arguments = %+v, want [{key:1 first:cpu_ocr}]", staticCalls)
-	}
-	if ret := table.LoadResource(cStringPtrForTest("/opt/maa/resource")); ret != 1 {
-		t.Errorf("LoadResource returned %d, want 1", ret)
-	}
-	if len(resourceCalls) != 1 || resourceCalls[0] != "/opt/maa/resource" {
-		t.Errorf("LoadResource received arguments = %v, want [/opt/maa/resource]", resourceCalls)
-	}
+	versionGot := table.GetVersion()
+	assert.Same(t, &versionBytes[0], versionGot, "GetVersion returned %p, want the borrowed pointer passed through as-is", versionGot)
+	assert.True(t, versionCalled, "GetVersion did not forward to the AsstGetVersion field")
+	nullSizeGot := table.GetNullSize()
+	assert.True(t, nullSizeGot == ^uint64(0) && nullSizeCalled,
+		"GetNullSize = %#x (called=%v), want the return value forwarded as-is", nullSizeGot, nullSizeCalled)
+	ret := table.SetUserDir(cStringPtrForTest("/home/user/.maa"))
+	assert.Equal(t, uint8(1), ret, "SetUserDir returned %d, want 1", ret)
+	assert.True(t, len(userDirCalls) == 1 && userDirCalls[0] == "/home/user/.maa",
+		"SetUserDir received arguments = %v, want [/home/user/.maa]", userDirCalls)
+	ret = table.SetStaticOption(1, cStringPtrForTest("cpu_ocr"))
+	assert.Equal(t, uint8(0), ret, "SetStaticOption returned %d, want 0 (failure code returned as-is)", ret)
+	assert.True(t, len(staticCalls) == 1 && staticCalls[0].key == 1 && staticCalls[0].first == "cpu_ocr",
+		"SetStaticOption received arguments = %+v, want [{key:1 first:cpu_ocr}]", staticCalls)
+	ret = table.LoadResource(cStringPtrForTest("/opt/maa/resource"))
+	assert.Equal(t, uint8(1), ret, "LoadResource returned %d, want 1", ret)
+	assert.True(t, len(resourceCalls) == 1 && resourceCalls[0] == "/opt/maa/resource",
+		"LoadResource received arguments = %v, want [/opt/maa/resource]", resourceCalls)
 	table.SetConnectionExtras(cStringPtrForTest("sink"), cStringPtrForTest(`{"a":1}`))
-	if len(extrasCalls) != 1 || extrasCalls[0].first != "sink" || extrasCalls[0].second != `{"a":1}` {
-		t.Errorf("SetConnectionExtras received arguments = %+v, want [{first:sink second:{\"a\":1}}]", extrasCalls)
-	}
+	assert.True(t, len(extrasCalls) == 1 && extrasCalls[0].first == "sink" && extrasCalls[0].second == `{"a":1}`,
+		"SetConnectionExtras received arguments = %+v, want [{first:sink second:{\"a\":1}}]", extrasCalls)
 }
 
 // cStringPtrForTest 在测试内构造 NUL 终止的 C 字符串指针,模拟公开
@@ -151,38 +144,25 @@ func TestAPITableOptionalCallForwarding(t *testing.T) {
 		return &returnedName[0]
 	}
 
-	if got := table.GetImageBgr(0x31, unsafe.Pointer(&returnedBgr[0]), 12); got != 12 {
-		t.Errorf("GetImageBgr returned %d, want 12", got)
-	}
-	if bgrHandle != 0x31 || bgrBuff != unsafe.Pointer(&returnedBgr[0]) || bgrSize != 12 {
-		t.Errorf("GetImageBgr received arguments = %#x %p %d, want 0x31 same pointer 12", bgrHandle, bgrBuff, bgrSize)
-	}
+	bgrGot := table.GetImageBgr(0x31, unsafe.Pointer(&returnedBgr[0]), 12)
+	assert.Equal(t, uint64(12), bgrGot, "GetImageBgr returned %d, want 12", bgrGot)
+	assert.True(t, bgrHandle == 0x31 && bgrBuff == unsafe.Pointer(&returnedBgr[0]) && bgrSize == 12,
+		"GetImageBgr received arguments = %#x %p %d, want 0x31 same pointer 12", bgrHandle, bgrBuff, bgrSize)
 
-	if got := table.AsyncAttachWindow(0x32, 0x51, 1<<2, 1<<1, 1, 0); got != 77 {
-		t.Errorf("AsyncAttachWindow returned %d, want 77", got)
-	}
+	attachGot := table.AsyncAttachWindow(0x32, 0x51, 1<<2, 1<<1, 1, 0)
+	assert.Equal(t, int32(77), attachGot, "AsyncAttachWindow returned %d, want 77", attachGot)
 	wantAttach := []uintptr{0x32, 0x51, 1 << 2, 1 << 1, 1, 0}
-	if len(attachCalls) != len(wantAttach) {
-		t.Fatalf("AsyncAttachWindow received %d components, want %d", len(attachCalls), len(wantAttach))
-	}
+	require.Len(t, attachCalls, len(wantAttach), "AsyncAttachWindow received %d components, want %d", len(attachCalls), len(wantAttach))
 	for i := range wantAttach {
-		if attachCalls[i] != wantAttach[i] {
-			t.Errorf("AsyncAttachWindow component #%d = %#x, want %#x (six-parameter slots forwarded verbatim)", i, attachCalls[i], wantAttach[i])
-		}
+		assert.Equal(t, wantAttach[i], attachCalls[i], "AsyncAttachWindow component #%d = %#x, want %#x (six-parameter slots forwarded verbatim)", i, attachCalls[i], wantAttach[i])
 	}
 
-	if got := table.GetMapLevelKey(cStringPtrForTest("abifx-hit")); got.StageID != nil {
-		t.Errorf("GetMapLevelKey returned %+v, want the zero struct passed through as-is", got)
-	}
-	if levelKeyGot != "abifx-hit" {
-		t.Errorf("GetMapLevelKey received key = %q, want abifx-hit", levelKeyGot)
-	}
+	levelKeyResult := table.GetMapLevelKey(cStringPtrForTest("abifx-hit"))
+	assert.Nil(t, levelKeyResult.StageID, "GetMapLevelKey returned %+v, want the zero struct passed through as-is", levelKeyResult)
+	assert.Equal(t, "abifx-hit", levelKeyGot, "GetMapLevelKey received key = %q, want abifx-hit", levelKeyGot)
 
-	if got := table.GetItemName(cStringPtrForTest("abifx-item")); got != &returnedName[0] {
-		t.Errorf("GetItemName returned %p, want the borrowed pointer passed through as-is", got)
-	}
-	if itemNameGot != "abifx-item" {
-		t.Errorf("GetItemName received id = %q, want abifx-item", itemNameGot)
-	}
+	itemNameResult := table.GetItemName(cStringPtrForTest("abifx-item"))
+	assert.Same(t, &returnedName[0], itemNameResult, "GetItemName returned %p, want the borrowed pointer passed through as-is", itemNameResult)
+	assert.Equal(t, "abifx-item", itemNameGot, "GetItemName received id = %q, want abifx-item", itemNameGot)
 	_ = returnedBgr
 }

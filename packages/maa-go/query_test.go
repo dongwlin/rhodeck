@@ -7,10 +7,11 @@ package maa
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeRuntimeQuerier 是 runtimeQuerier 的受控 fake:记录原始输入,
@@ -83,12 +84,9 @@ func TestMapLevelKeyQuery(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, false, false), q)
 		out, err := rt.MapLevelKey("6-16")
-		if out != (MapLevelKey{}) || !errors.Is(err, native.ErrUnsupported) {
-			t.Fatalf("missing capability = (%+v, %v), want zero value and ErrUnsupported", out, err)
-		}
-		if len(q.levelCalls) != 0 {
-			t.Errorf("mapLevelKey called %d times with a missing capability, want 0", len(q.levelCalls))
-		}
+		require.Equal(t, MapLevelKey{}, out, "missing capability = %+v, want the zero value", out)
+		require.ErrorIs(t, err, native.ErrUnsupported, "missing capability error = %v, want ErrUnsupported", err)
+		assert.Empty(t, q.levelCalls, "mapLevelKey called %d times with a missing capability, want 0", len(q.levelCalls))
 	})
 
 	t.Run("hit converts four fields and passes input through", func(t *testing.T) {
@@ -100,17 +98,12 @@ func TestMapLevelKeyQuery(t *testing.T) {
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, true, false), q)
 
 		out, err := rt.MapLevelKey("HV-3")
-		if err != nil {
-			t.Fatalf("MapLevelKey = %v, want nil", err)
-		}
+		require.NoError(t, err, "MapLevelKey = %v, want nil", err)
 		want := MapLevelKey{StageID: "act1side_stg_3", Code: "HV-3",
 			LevelID: "level_act1side_stage3", Name: "Undertide Land-3"}
-		if out != want {
-			t.Fatalf("MapLevelKey = %+v, want %+v (four fields in C member order)", out, want)
-		}
-		if len(q.levelCalls) != 1 || q.levelCalls[0] != "HV-3" {
-			t.Fatalf("received key = %v, want it passed through unchanged", q.levelCalls)
-		}
+		require.Equal(t, want, out, "MapLevelKey = %+v, want %+v (four fields in C member order)", out, want)
+		require.Len(t, q.levelCalls, 1, "received key = %v, want it passed through unchanged", q.levelCalls)
+		require.Equal(t, "HV-3", q.levelCalls[0], "received key = %v, want it passed through unchanged", q.levelCalls)
 	})
 
 	t.Run("all-NULL struct converts to the zero value meaning not found", func(t *testing.T) {
@@ -118,12 +111,8 @@ func TestMapLevelKeyQuery(t *testing.T) {
 		q.nilLevelAll = true
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, true, false), q)
 		out, err := rt.MapLevelKey("missing")
-		if err != nil {
-			t.Fatalf("error on not-found = %v, want nil (the zero value means not found)", err)
-		}
-		if out != (MapLevelKey{}) {
-			t.Fatalf("not found = %+v, want a zero-value MapLevelKey", out)
-		}
+		require.NoError(t, err, "error on not-found = %v, want nil (the zero value means not found)", err)
+		require.Equal(t, MapLevelKey{}, out, "not found = %+v, want a zero-value MapLevelKey", out)
 	})
 
 	t.Run("no NUL within bounds is a protocol violation", func(t *testing.T) {
@@ -140,25 +129,22 @@ func TestMapLevelKeyQuery(t *testing.T) {
 		q.levelNames = []*byte{q.cBytes("ok")}
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, true, false), q)
 		out, err := rt.MapLevelKey("k")
-		if out != (MapLevelKey{}) || !errors.Is(err, native.ErrProtocol) {
-			t.Fatalf("no NUL within bounds = (%+v, %v), want zero value and ErrProtocol", out, err)
-		}
+		require.Equal(t, MapLevelKey{}, out, "no NUL within bounds = %+v, want the zero value", out)
+		require.ErrorIs(t, err, native.ErrProtocol, "no NUL within bounds error = %v, want ErrProtocol", err)
 	})
 
 	t.Run("embedded NUL input rejected by pure Go validation", func(t *testing.T) {
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, true, false), newFakeRuntimeQuerier())
-		if _, err := rt.MapLevelKey("a\x00b"); !errors.Is(err, native.ErrInvalidInput) {
-			t.Fatalf("embedded NUL = %v, want ErrInvalidInput", err)
-		}
+		_, err := rt.MapLevelKey("a\x00b")
+		require.ErrorIs(t, err, native.ErrInvalidInput, "embedded NUL = %v, want ErrInvalidInput", err)
 	})
 
 	t.Run("terminated lifecycle rejects", func(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, true, false), q)
 		rt.gate.terminate(nil)
-		if _, err := rt.MapLevelKey("k"); !errors.Is(err, native.ErrRuntimeTerminated) {
-			t.Fatalf("after termination = %v, want ErrRuntimeTerminated", err)
-		}
+		_, err := rt.MapLevelKey("k")
+		require.ErrorIs(t, err, native.ErrRuntimeTerminated, "after termination = %v, want ErrRuntimeTerminated", err)
 	})
 }
 
@@ -167,12 +153,9 @@ func TestItemNameQuery(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, false, false), q)
 		name, err := rt.ItemName("0111")
-		if name != "" || !errors.Is(err, native.ErrUnsupported) {
-			t.Fatalf("missing capability = (%q, %v), want empty string and ErrUnsupported", name, err)
-		}
-		if len(q.itemCalls) != 0 {
-			t.Errorf("itemName called %d times with a missing capability, want 0", len(q.itemCalls))
-		}
+		require.Empty(t, name, "missing capability = (%q, %v), want an empty string", name, err)
+		require.ErrorIs(t, err, native.ErrUnsupported, "missing capability error = %v, want ErrUnsupported", err)
+		assert.Empty(t, q.itemCalls, "itemName called %d times with a missing capability, want 0", len(q.itemCalls))
 	})
 
 	t.Run("borrowed copy for empty and known IDs", func(t *testing.T) {
@@ -182,16 +165,14 @@ func TestItemNameQuery(t *testing.T) {
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, false, true), q)
 
 		unknownName, err := rt.ItemName("")
-		if err != nil || unknownName != "Unknown" {
-			t.Fatalf("empty ID = (%q, %v), want Unknown and nil (an empty ID is a valid query)", unknownName, err)
-		}
+		require.NoError(t, err, "empty ID = (%q, %v), want nil (an empty ID is a valid query)", unknownName, err)
+		require.Equal(t, "Unknown", unknownName, "empty ID = (%q, %v), want Unknown", unknownName, err)
 		name, err := rt.ItemName("4003")
-		if err != nil || name != "Recruitment Permit" {
-			t.Fatalf("known ID = (%q, %v), want Recruitment Permit and nil", name, err)
-		}
-		if len(q.itemCalls) != 2 || q.itemCalls[0] != "" || q.itemCalls[1] != "4003" {
-			t.Fatalf("received id sequence = %v, want it passed through unchanged", q.itemCalls)
-		}
+		require.NoError(t, err, "known ID = (%q, %v), want nil", name, err)
+		require.Equal(t, "Recruitment Permit", name, "known ID = (%q, %v), want Recruitment Permit", name, err)
+		require.Len(t, q.itemCalls, 2, "received id sequence = %v, want it passed through unchanged", q.itemCalls)
+		require.Empty(t, q.itemCalls[0], "received id sequence = %v, want it passed through unchanged", q.itemCalls)
+		require.Equal(t, "4003", q.itemCalls[1], "received id sequence = %v, want it passed through unchanged", q.itemCalls)
 		_ = unknown
 	})
 
@@ -199,26 +180,23 @@ func TestItemNameQuery(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		q.itemReturns = []*byte{q.cBytes("\xff\xfe")}
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, false, true), q)
-		if _, err := rt.ItemName("x"); !errors.Is(err, native.ErrProtocol) {
-			t.Fatalf("invalid UTF-8 = %v, want ErrProtocol", err)
-		}
+		_, err := rt.ItemName("x")
+		require.ErrorIs(t, err, native.ErrProtocol, "invalid UTF-8 = %v, want ErrProtocol", err)
 	})
 
 	t.Run("nil return is a protocol violation", func(t *testing.T) {
 		q := newFakeRuntimeQuerier()
 		q.nilItemRet = true
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, false, true), q)
-		if _, err := rt.ItemName("x"); !errors.Is(err, native.ErrProtocol) {
-			t.Fatalf("nil return = %v, want ErrProtocol (the C contract is never NULL)", err)
-		}
+		_, err := rt.ItemName("x")
+		require.ErrorIs(t, err, native.ErrProtocol, "nil return = %v, want ErrProtocol (the C contract is never NULL)", err)
 	})
 
 	t.Run("rejects after termination with a distinguishable error", func(t *testing.T) {
 		rt := newQueryRuntime(t, native.CapabilitiesForTest(false, false, false, false, true), newFakeRuntimeQuerier())
 		rt.gate.terminate(errors.New("boom"))
 		_, err := rt.ItemName("x")
-		if !errors.Is(err, native.ErrRuntimeTerminated) || !strings.Contains(err.Error(), "boom") {
-			t.Fatalf("after termination = %v, want ErrRuntimeTerminated carrying the first cause", err)
-		}
+		require.ErrorIs(t, err, native.ErrRuntimeTerminated, "after termination = %v, want ErrRuntimeTerminated", err)
+		require.Contains(t, err.Error(), "boom", "after termination = %v, want ErrRuntimeTerminated carrying the first cause", err)
 	})
 }

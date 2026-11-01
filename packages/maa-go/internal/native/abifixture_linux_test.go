@@ -23,6 +23,8 @@ import (
 	"github.com/ebitengine/purego"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/ffitest"
+
+	"github.com/stretchr/testify/require"
 )
 
 // 子进程模式、资源传递环境变量、路径与 stdout 成功标记。
@@ -123,12 +125,9 @@ func buildABIFixture(t *testing.T) string {
 	}
 
 	src, err := filepath.Abs(abiFixtureSrcRel)
-	if err != nil {
-		t.Fatalf("failed to locate the abi fixture source %s: %v", abiFixtureSrcRel, err)
-	}
-	if _, err := os.Stat(src); err != nil {
-		t.Fatalf("abi fixture source %s is not accessible (repository baseline broken, not an environment limitation): %v", src, err)
-	}
+	require.NoError(t, err, "failed to locate the abi fixture source %s: %v", abiFixtureSrcRel, err)
+	_, statErr := os.Stat(src)
+	require.NoError(t, statErr, "abi fixture source %s is not accessible (repository baseline broken, not an environment limitation): %v", src, statErr)
 
 	outPath := filepath.Join(t.TempDir(), abiFixtureSOName)
 	args := []string{"-shared", "-fPIC", "-o", outPath, src}
@@ -141,9 +140,7 @@ func buildABIFixture(t *testing.T) string {
 
 	cmd := exec.Command(compiler, args...)
 	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to compile the abi fixture (command line %s): %v\n%s", commandLine, err, output)
-	}
+	require.NoError(t, err, "failed to compile the abi fixture (command line %s): %v\n%s", commandLine, err, output)
 	return outPath
 }
 
@@ -810,17 +807,11 @@ func TestABIFixtureNumeric(t *testing.T) {
 		Timeout:  abiFixtureChildTimeout,
 		ExtraEnv: map[string]string{abiFixtureSOEnv: soPath},
 	})
-	if out.Err != nil {
-		t.Fatalf("the numeric child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
-	}
+	require.NoError(t, out.Err, "the numeric child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	line, ok := markerLine(out.Stdout, numericOKMarker)
-	if !ok {
-		t.Fatalf("the numeric child exited 0 but stdout is missing the %s marker line:\n%s", numericOKMarker, out.Diagnostics())
-	}
+	require.True(t, ok, "the numeric child exited 0 but stdout is missing the %s marker line:\n%s", numericOKMarker, out.Diagnostics())
 	fields, err := parseABIMarkerFields(line, numericOKMarker)
-	if err != nil {
-		t.Fatalf("failed to parse the numeric marker line %q: %v\n%s", line, err, out.Diagnostics())
-	}
+	require.NoError(t, err, "failed to parse the numeric marker line %q: %v\n%s", line, err, out.Diagnostics())
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "nullsize", strconv.FormatUint(math.MaxUint64, 10), diag)
 	abiCheckField(t, fields, "running0", "0", diag)
@@ -844,17 +835,11 @@ func TestABIFixtureParams(t *testing.T) {
 		Timeout:  abiFixtureChildTimeout,
 		ExtraEnv: map[string]string{abiFixtureSOEnv: soPath},
 	})
-	if out.Err != nil {
-		t.Fatalf("the params child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
-	}
+	require.NoError(t, out.Err, "the params child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	line, ok := markerLine(out.Stdout, paramsOKMarker)
-	if !ok {
-		t.Fatalf("the params child exited 0 but stdout is missing the %s marker line:\n%s", paramsOKMarker, out.Diagnostics())
-	}
+	require.True(t, ok, "the params child exited 0 but stdout is missing the %s marker line:\n%s", paramsOKMarker, out.Diagnostics())
 	fields, err := parseABIMarkerFields(line, paramsOKMarker)
-	if err != nil {
-		t.Fatalf("failed to parse the params marker line %q: %v\n%s", line, err, out.Diagnostics())
-	}
+	require.NoError(t, err, "failed to parse the params marker line %q: %v\n%s", line, err, out.Diagnostics())
 
 	// 与子进程独立重算全部折叠期望值(纵深防御)。
 	const (
@@ -894,17 +879,11 @@ func TestABIFixtureVoidStrings(t *testing.T) {
 		Timeout:  abiFixtureChildTimeout,
 		ExtraEnv: map[string]string{abiFixtureSOEnv: soPath},
 	})
-	if out.Err != nil {
-		t.Fatalf("the void-strings child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
-	}
+	require.NoError(t, out.Err, "the void-strings child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	line, ok := markerLine(out.Stdout, voidStringsOKMarker)
-	if !ok {
-		t.Fatalf("the void-strings child exited 0 but stdout is missing the %s marker line:\n%s", voidStringsOKMarker, out.Diagnostics())
-	}
+	require.True(t, ok, "the void-strings child exited 0 but stdout is missing the %s marker line:\n%s", voidStringsOKMarker, out.Diagnostics())
 	fields, err := parseABIMarkerFields(line, voidStringsOKMarker)
-	if err != nil {
-		t.Fatalf("failed to parse the void-strings marker line %q: %v\n%s", line, err, out.Diagnostics())
-	}
+	require.NoError(t, err, "failed to parse the void-strings marker line %q: %v\n%s", line, err, out.Diagnostics())
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "copy", fmt.Sprintf(abiFixtureVersionFormat, 1), diag)
 	abiCheckField(t, fields, "rewrite", fmt.Sprintf(abiFixtureVersionFormat, 2), diag)
@@ -924,17 +903,11 @@ func TestABIFixtureQueries(t *testing.T) {
 		Timeout:  abiFixtureChildTimeout,
 		ExtraEnv: map[string]string{abiFixtureSOEnv: soPath},
 	})
-	if out.Err != nil {
-		t.Fatalf("the queries child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
-	}
+	require.NoError(t, out.Err, "the queries child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	line, ok := markerLine(out.Stdout, queriesOKMarker)
-	if !ok {
-		t.Fatalf("the queries child exited 0 but stdout is missing the %s marker line:\n%s", queriesOKMarker, out.Diagnostics())
-	}
+	require.True(t, ok, "the queries child exited 0 but stdout is missing the %s marker line:\n%s", queriesOKMarker, out.Diagnostics())
 	fields, err := parseABIMarkerFields(line, queriesOKMarker)
-	if err != nil {
-		t.Fatalf("failed to parse the queries marker line %q: %v\n%s", line, err, out.Diagnostics())
-	}
+	require.NoError(t, err, "failed to parse the queries marker line %q: %v\n%s", line, err, out.Diagnostics())
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "stage1", "abifx-stage#1", diag)
 	abiCheckField(t, fields, "stage2", "abifx-stage#2", diag)
@@ -957,17 +930,11 @@ func TestABIFixtureBuffers(t *testing.T) {
 		Timeout:  abiFixtureChildTimeout,
 		ExtraEnv: map[string]string{abiFixtureSOEnv: soPath},
 	})
-	if out.Err != nil {
-		t.Fatalf("the buffers child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
-	}
+	require.NoError(t, out.Err, "the buffers child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	line, ok := markerLine(out.Stdout, buffersOKMarker)
-	if !ok {
-		t.Fatalf("the buffers child exited 0 but stdout is missing the %s marker line:\n%s", buffersOKMarker, out.Diagnostics())
-	}
+	require.True(t, ok, "the buffers child exited 0 but stdout is missing the %s marker line:\n%s", buffersOKMarker, out.Diagnostics())
 	fields, err := parseABIMarkerFields(line, buffersOKMarker)
-	if err != nil {
-		t.Fatalf("failed to parse the buffers marker line %q: %v\n%s", line, err, out.Diagnostics())
-	}
+	require.NoError(t, err, "failed to parse the buffers marker line %q: %v\n%s", line, err, out.Diagnostics())
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "nullsize", strconv.FormatUint(math.MaxUint64, 10), diag)
 	abiCheckField(t, fields, "image", "16", diag)
@@ -1002,10 +969,6 @@ func parseABIMarkerFields(line, marker string) (map[string]string, error) {
 func abiCheckField(t *testing.T, fields map[string]string, key, want, diagnostics string) {
 	t.Helper()
 	got, ok := fields[key]
-	if !ok {
-		t.Fatalf("the abi fixture marker line is missing field %s:\n%s", key, diagnostics)
-	}
-	if got != want {
-		t.Fatalf("abi fixture marker line field %s = %q, want %q:\n%s", key, got, want, diagnostics)
-	}
+	require.True(t, ok, "the abi fixture marker line is missing field %s:\n%s", key, diagnostics)
+	require.Equal(t, want, got, "abi fixture marker line field %s = %q, want %q:\n%s", key, got, want, diagnostics)
 }

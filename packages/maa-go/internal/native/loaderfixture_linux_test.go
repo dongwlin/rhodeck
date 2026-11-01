@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/ffitest"
+
+	"github.com/stretchr/testify/require"
 )
 
 // 子进程模式、资源传递环境变量与 stdout 成功标记。
@@ -114,12 +116,9 @@ func buildLoaderFixture(t *testing.T, missing bool) string {
 	}
 
 	src, err := filepath.Abs(loaderFixtureSrcRel)
-	if err != nil {
-		t.Fatalf("failed to locate fixture source %s: %v", loaderFixtureSrcRel, err)
-	}
-	if _, err := os.Stat(src); err != nil {
-		t.Fatalf("fixture source %s is not accessible (repository baseline broken, not an environment limitation): %v", src, err)
-	}
+	require.NoError(t, err, "failed to locate fixture source %s: %v", loaderFixtureSrcRel, err)
+	_, statErr := os.Stat(src)
+	require.NoError(t, statErr, "fixture source %s is not accessible (repository baseline broken, not an environment limitation): %v", src, statErr)
 
 	outPath := filepath.Join(t.TempDir(), loaderFixtureSOName)
 	args := []string{"-shared", "-fPIC"}
@@ -142,9 +141,7 @@ func buildLoaderFixture(t *testing.T, missing bool) string {
 
 	cmd := exec.Command(compiler, args...)
 	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to compile the loader fixture (command line %s): %v\n%s", commandLine, err, output)
-	}
+	require.NoError(t, err, "failed to compile the loader fixture (command line %s): %v\n%s", commandLine, err, output)
 	return outPath
 }
 
@@ -313,32 +310,22 @@ func TestLoaderFixtureCompleteLoadsInFreshSubprocess(t *testing.T) {
 		Timeout:  loaderFixtureChildTimeout,
 		ExtraEnv: map[string]string{loaderFixtureSOEnv: soPath},
 	})
-	if out.Err != nil {
-		t.Fatalf("the complete child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
-	}
+	require.NoError(t, out.Err, "the complete child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	line, ok := markerLine(out.Stdout, completeOKMarker)
-	if !ok {
-		t.Fatalf("the complete child exited 0 but stdout is missing the %s marker line:\n%s", completeOKMarker, out.Diagnostics())
-	}
+	require.True(t, ok, "the complete child exited 0 but stdout is missing the %s marker line:\n%s", completeOKMarker, out.Diagnostics())
 
 	gotSymbols, err := parseMarkerSymbolsCount(line)
-	if err != nil {
-		t.Fatalf("failed to parse the complete marker line %q: %v\n%s", line, err, out.Diagnostics())
-	}
+	require.NoError(t, err, "failed to parse the complete marker line %q: %v\n%s", line, err, out.Diagnostics())
 	wantSymbols := countApplicableSpecs()
-	if gotSymbols != wantSymbols {
-		t.Fatalf("complete marker line symbols = %d, want %d (the marker line disagrees with the freshly computed symbol list count; guards against marker distortion):\n%s",
-			gotSymbols, wantSymbols, out.Diagnostics())
-	}
+	require.Equal(t, wantSymbols, gotSymbols,
+		"complete marker line symbols = %d, want %d (the marker line disagrees with the freshly computed symbol list count; guards against marker distortion):\n%s",
+		gotSymbols, wantSymbols, out.Diagnostics())
 
 	create, imageBgr, attach, mapLevelKey, itemName, err := parseMarkerCaps(line)
-	if err != nil {
-		t.Fatalf("failed to parse caps of the complete marker line %q: %v\n%s", line, err, out.Diagnostics())
-	}
-	if create != 1 || imageBgr != 1 || attach != 0 || mapLevelKey != 1 || itemName != 1 {
-		t.Fatalf("complete marker line caps = create=%d,imageBgr=%d,attach=%d,mapLevelKey=%d,itemName=%d, want 1,1,0,1,1:\n%s",
-			create, imageBgr, attach, mapLevelKey, itemName, out.Diagnostics())
-	}
+	require.NoError(t, err, "failed to parse caps of the complete marker line %q: %v\n%s", line, err, out.Diagnostics())
+	require.True(t, create == 1 && imageBgr == 1 && attach == 0 && mapLevelKey == 1 && itemName == 1,
+		"complete marker line caps = create=%d,imageBgr=%d,attach=%d,mapLevelKey=%d,itemName=%d, want 1,1,0,1,1:\n%s",
+		create, imageBgr, attach, mapLevelKey, itemName, out.Diagnostics())
 
 	t.Logf("the complete child's load verification passed (separate marker, not counted in ABI call pass statistics):%s", line)
 }
@@ -356,19 +343,14 @@ func TestLoaderFixtureMissingRequiredSymbolsReportedTogether(t *testing.T) {
 		Timeout:  loaderFixtureChildTimeout,
 		ExtraEnv: map[string]string{loaderFixtureSOEnv: soPath},
 	})
-	if out.Err != nil {
-		t.Fatalf("the missing child failed (its internal assertions did not all pass):\n%s", out.Diagnostics())
-	}
+	require.NoError(t, out.Err, "the missing child failed (its internal assertions did not all pass):\n%s", out.Diagnostics())
 	line, ok := markerLine(out.Stdout, missingOKMarker)
-	if !ok {
-		t.Fatalf("the missing child exited 0 but stdout is missing the %s marker line:\n%s", missingOKMarker, out.Diagnostics())
-	}
+	require.True(t, ok, "the missing child exited 0 but stdout is missing the %s marker line:\n%s", missingOKMarker, out.Diagnostics())
 
 	got := parseMarkerSymbolsList(line)
-	if strings.Join(got, ",") != strings.Join(expectedMissingFixtureSymbols, ",") {
-		t.Fatalf("missing marker line symbols = [%s], want [%s]:\n%s",
-			strings.Join(got, ","), strings.Join(expectedMissingFixtureSymbols, ","), out.Diagnostics())
-	}
+	require.Equal(t, strings.Join(expectedMissingFixtureSymbols, ","), strings.Join(got, ","),
+		"missing marker line symbols = [%s], want [%s]:\n%s",
+		strings.Join(got, ","), strings.Join(expectedMissingFixtureSymbols, ","), out.Diagnostics())
 	t.Logf("the missing child's aggregate report verification passed (3 items collected in one call, order matches the symbol list):%s", line)
 }
 

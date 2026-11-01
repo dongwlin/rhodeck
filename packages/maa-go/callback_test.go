@@ -5,12 +5,13 @@
 package maa
 
 import (
-	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
 )
@@ -55,26 +56,18 @@ func TestCallbackDeliverHappyPath(t *testing.T) {
 	target.deliver(msg, callbackCBytes(payload))
 
 	ev := mustReadEvent(t, d.events())
-	if ev.MessageID != MessageID(msg) {
-		t.Fatalf("event MessageID = %d, want %d", ev.MessageID, msg)
-	}
-	if string(ev.JSON) != payload {
-		t.Fatalf("event raw JSON = %s, want byte-for-byte equal %s", ev.JSON, payload)
-	}
-	if ev.Sequence != 1 {
-		t.Fatalf("event sequence = %d, want 1", ev.Sequence)
-	}
+	require.Equal(t, MessageID(msg), ev.MessageID, "event MessageID = %d, want %d", ev.MessageID, msg)
+	require.Equal(t, payload, string(ev.JSON), "event raw JSON = %s, want byte-for-byte equal %s", ev.JSON, payload)
+	require.Equal(t, uint64(1), ev.Sequence, "event sequence = %d, want 1", ev.Sequence)
 	select {
 	case <-s.faultNotify():
-		t.Fatalf("normal delivery must not trigger a fault, got first fault %v", s.currentFault())
+		require.Fail(t, fmt.Sprintf("normal delivery must not trigger a fault, got first fault %v", s.currentFault()))
 	default:
 	}
-	if lost := s.currentLostEvents(); lost != 0 {
-		t.Errorf("lost events count = %d, want 0", lost)
-	}
-	if n := inFlightCallbacks(s); n != 0 {
-		t.Errorf("in-flight callbacks = %d, want 0 (lease released before deliver returns)", n)
-	}
+	lost := s.currentLostEvents()
+	assert.Equal(t, uint64(0), lost, "lost events count = %d, want 0", lost)
+	n := inFlightCallbacks(s)
+	assert.Equal(t, uint64(0), n, "in-flight callbacks = %d, want 0 (lease released before deliver returns)", n)
 }
 
 // TestCallbackDeliverGateClosedSkipsNativeDetails 钉住验收红线
@@ -105,31 +98,26 @@ func TestCallbackDeliverGateClosedSkipsNativeDetails(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(hangGuard):
-			t.Fatal("deliver without a lease did not return within the hang guard limit")
+			require.Fail(t, "deliver without a lease did not return within the hang guard limit")
 		}
 
 		select {
 		case <-s.faultNotify():
-			t.Fatalf("the path without a lease must not record a fault (nil probe was read), got first fault %v", s.currentFault())
+			require.Fail(t, fmt.Sprintf("the path without a lease must not record a fault (nil probe was read), got first fault %v", s.currentFault()))
 		default:
 		}
-		if s.currentFault() != nil {
-			t.Errorf("first fault = %v, want nil", s.currentFault())
-		}
-		if lost := s.currentLostEvents(); lost != 0 {
-			t.Errorf("lost events count = %d, want 0 (message was not admitted, not counted as lost)", lost)
-		}
-		if n := inFlightCallbacks(s); n != 0 {
-			t.Errorf("in-flight callbacks = %d, want 0", n)
-		}
+		fault := s.currentFault()
+		assert.NoError(t, fault, "first fault = %v, want nil", fault)
+		lost := s.currentLostEvents()
+		assert.Equal(t, uint64(0), lost, "lost events count = %d, want 0 (message was not admitted, not counted as lost)", lost)
+		n := inFlightCallbacks(s)
+		assert.Equal(t, uint64(0), n, "in-flight callbacks = %d, want 0", n)
 		// 无事件入队:排空后公开通道关闭且为空。
 		closeAndDrain(t, d)
-		if n := len(d.events()); n != 0 {
-			t.Errorf("events left in the public buffer = %d, want 0", n)
-		}
-		if _, ok := <-d.events(); ok {
-			t.Fatal("the path without a lease must not produce events")
-		}
+		count := len(d.events())
+		assert.Equal(t, 0, count, "events left in the public buffer = %d, want 0", count)
+		_, ok := <-d.events()
+		require.False(t, ok, "the path without a lease must not produce events")
 	})
 
 	t.Run("nil details records ErrProtocol when the gate is open (probe control)", func(t *testing.T) {
@@ -138,21 +126,12 @@ func TestCallbackDeliverGateClosedSkipsNativeDetails(t *testing.T) {
 
 		target.deliver(49, nil)
 		fault := s.currentFault()
-		if fault == nil {
-			t.Fatal("nil details with the gate open must record an ErrProtocol fault, otherwise the probe is ineffective")
-		}
-		if !errors.Is(fault, native.ErrProtocol) {
-			t.Errorf("errors.Is(first fault, native.ErrProtocol) = false; first fault = %v", fault)
-		}
-		if errors.Is(fault, native.ErrEventOverflow) {
-			t.Errorf("the nil details fault must not be mislabeled as ErrEventOverflow: %v", fault)
-		}
-		if !strings.Contains(fault.Error(), fmt.Sprintf("message id %d", 49)) {
-			t.Errorf("fault text should carry the msg:\n%s", fault.Error())
-		}
-		if lost := s.currentLostEvents(); lost != 1 {
-			t.Errorf("lost events count = %d, want 1 (the null-pointer message could not be delivered)", lost)
-		}
+		require.Error(t, fault, "nil details with the gate open must record an ErrProtocol fault, otherwise the probe is ineffective")
+		assert.ErrorIs(t, fault, native.ErrProtocol, "errors.Is(first fault, native.ErrProtocol) = false; first fault = %v", fault)
+		assert.NotErrorIs(t, fault, native.ErrEventOverflow, "the nil details fault must not be mislabeled as ErrEventOverflow: %v", fault)
+		assert.Contains(t, fault.Error(), fmt.Sprintf("message id %d", 49), "fault text should carry the msg:\n%s", fault.Error())
+		lost := s.currentLostEvents()
+		assert.Equal(t, uint64(1), lost, "lost events count = %d, want 1 (the null-pointer message could not be delivered)", lost)
 	})
 }
 
@@ -170,9 +149,7 @@ func TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain(t *testing.T) {
 	const msg = int32(47)
 	payload := `{"what":"InFlight","async_call_id":9,"details":{"ret":true}}`
 	token, err := native.RegisterCallbackTarget(target.deliver)
-	if err != nil {
-		t.Fatalf("registering target.deliver through the production entry point must not fail: %v", err)
-	}
+	require.NoError(t, err, "registering target.deliver through the production entry point must not fail: %v", err)
 	var unregistered sync.Once
 	doUnregister := func() { unregistered.Do(func() { native.UnregisterCallbackTarget(token) }) }
 	// 失败路径兜底:正常序列在退空后才显式注销;Once 保证不双重移除。
@@ -204,7 +181,7 @@ func TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain(t *testing.T) {
 	}
 	if !admitted {
 		target.disp.mu.Unlock()
-		t.Fatal("deliver did not acquire the callback lease within the hang guard limit (in-flight count never reached 1)")
+		require.Fail(t, "deliver did not acquire the callback lease within the hang guard limit (in-flight count never reached 1)")
 	}
 
 	// 关门:已准入的这条不受影响;随后退空等待必须被它挡住。
@@ -221,7 +198,7 @@ func TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain(t *testing.T) {
 	select {
 	case <-drained:
 		target.disp.mu.Unlock()
-		t.Fatal("waitCallbacksDrained returned early while an admitted callback had not finished: the close wait undercounts in-flight callbacks")
+		require.Fail(t, "waitCallbacksDrained returned early while an admitted callback had not finished: the close wait undercounts in-flight callbacks")
 	default:
 	}
 
@@ -230,7 +207,7 @@ func TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain(t *testing.T) {
 	select {
 	case <-drained:
 	case <-time.After(hangGuard):
-		t.Fatal("waitCallbacksDrained did not converge within the hang guard limit after release")
+		require.Fail(t, "waitCallbacksDrained did not converge within the hang guard limit after release")
 	}
 
 	//  第 4 步顺序钉死:准入已关闭且全部已准入 callback 退出之后,
@@ -238,23 +215,17 @@ func TestCallbackDeliverTokenRemovedAfterGateCloseAndDrain(t *testing.T) {
 	doUnregister()
 
 	ev := mustReadEvent(t, d.events())
-	if ev.MessageID != MessageID(msg) {
-		t.Fatalf("event MessageID = %d, want %d", ev.MessageID, msg)
-	}
-	if string(ev.JSON) != payload {
-		t.Fatalf("event raw JSON = %s, want %s", ev.JSON, payload)
-	}
+	require.Equal(t, MessageID(msg), ev.MessageID, "event MessageID = %d, want %d", ev.MessageID, msg)
+	require.Equal(t, payload, string(ev.JSON), "event raw JSON = %s, want %s", ev.JSON, payload)
 	select {
 	case <-s.faultNotify():
-		t.Fatalf("normal admission and draining must not trigger a fault, got first fault %v", s.currentFault())
+		require.Fail(t, fmt.Sprintf("normal admission and draining must not trigger a fault, got first fault %v", s.currentFault()))
 	default:
 	}
-	if lost := s.currentLostEvents(); lost != 0 {
-		t.Errorf("lost events count = %d, want 0", lost)
-	}
-	if n := inFlightCallbacks(s); n != 0 {
-		t.Errorf("in-flight callbacks = %d, want 0", n)
-	}
+	lost := s.currentLostEvents()
+	assert.Equal(t, uint64(0), lost, "lost events count = %d, want 0", lost)
+	n := inFlightCallbacks(s)
+	assert.Equal(t, uint64(0), n, "in-flight callbacks = %d, want 0", n)
 	closeAndDrain(t, d)
 }
 
@@ -281,27 +252,21 @@ func TestCallbackDeliverClosingIgnoresRawGate(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(hangGuard):
-		t.Fatal("deliver during closing did not return within the hang guard limit: the callback apparently acquired the raw serial gate")
+		require.Fail(t, "deliver during closing did not return within the hang guard limit: the callback apparently acquired the raw serial gate")
 	}
 
 	ev := mustReadEvent(t, d.events())
-	if ev.MessageID != MessageID(msg) {
-		t.Fatalf("event MessageID = %d, want %d", ev.MessageID, msg)
-	}
-	if string(ev.JSON) != payload {
-		t.Fatalf("event raw JSON = %s, want %s", ev.JSON, payload)
-	}
+	require.Equal(t, MessageID(msg), ev.MessageID, "event MessageID = %d, want %d", ev.MessageID, msg)
+	require.Equal(t, payload, string(ev.JSON), "event raw JSON = %s, want %s", ev.JSON, payload)
 	select {
 	case <-s.faultNotify():
-		t.Fatalf("enqueueing necessary messages during closing must not trigger a fault, got first fault %v", s.currentFault())
+		require.Fail(t, fmt.Sprintf("enqueueing necessary messages during closing must not trigger a fault, got first fault %v", s.currentFault()))
 	default:
 	}
-	if lost := s.currentLostEvents(); lost != 0 {
-		t.Errorf("lost events count = %d, want 0", lost)
-	}
-	if n := inFlightCallbacks(s); n != 0 {
-		t.Errorf("in-flight callbacks = %d, want 0", n)
-	}
+	lost := s.currentLostEvents()
+	assert.Equal(t, uint64(0), lost, "lost events count = %d, want 0", lost)
+	n := inFlightCallbacks(s)
+	assert.Equal(t, uint64(0), n, "in-flight callbacks = %d, want 0", n)
 }
 
 // TestCallbackDeliverPanicBecomesStickyFault 验证「回调 Go
@@ -321,34 +286,22 @@ func TestCallbackDeliverPanicBecomesStickyFault(t *testing.T) {
 	target.deliver(msg, callbackCBytes(`{"k":1}`))
 
 	first := s.currentFault()
-	if first == nil {
-		t.Fatal("a panic inside deliver must become an instance fault, silent continuation is not allowed")
-	}
-	if !errors.Is(first, native.ErrProtocol) {
-		t.Errorf("errors.Is(first fault, native.ErrProtocol) = false; first fault = %v", first)
-	}
-	if errors.Is(first, native.ErrEventOverflow) {
-		t.Errorf("the panic fault must not be mislabeled as ErrEventOverflow: %v", first)
-	}
-	if got := s.currentPhase(); got != phaseFaulted {
-		t.Fatalf("phase after panic = %d, want faulted", got)
-	}
-	if n := inFlightCallbacks(s); n != 0 {
-		t.Fatalf("in-flight callbacks after panic = %d, want 0 (LIFO: lease is released before the fault is recorded)", n)
-	}
-	if !strings.Contains(first.Error(), fmt.Sprintf("message id %d", msg)) {
-		t.Errorf("fault text should carry the msg:\n%s", first.Error())
-	}
-	if snap := s.faultDiagnostics(); snap.rawPrefix != nil {
-		t.Errorf("the panic fault is recorded via recordFault and must not carry a raw prefix, got %q", snap.rawPrefix)
-	}
+	require.Error(t, first, "a panic inside deliver must become an instance fault, silent continuation is not allowed")
+	assert.ErrorIs(t, first, native.ErrProtocol, "errors.Is(first fault, native.ErrProtocol) = false; first fault = %v", first)
+	assert.NotErrorIs(t, first, native.ErrEventOverflow, "the panic fault must not be mislabeled as ErrEventOverflow: %v", first)
+	got := s.currentPhase()
+	require.Equal(t, phaseFaulted, got, "phase after panic = %d, want faulted", got)
+	n := inFlightCallbacks(s)
+	require.Equal(t, uint64(0), n, "in-flight callbacks after panic = %d, want 0 (LIFO: lease is released before the fault is recorded)", n)
+	assert.Contains(t, first.Error(), fmt.Sprintf("message id %d", msg), "fault text should carry the msg:\n%s", first.Error())
+	snap := s.faultDiagnostics()
+	assert.Nil(t, snap.rawPrefix, "the panic fault is recorded via recordFault and must not carry a raw prefix, got %q", snap.rawPrefix)
 
 	// 门与阶段无关:gate 仍开,admitCallback 照常成功;panic 后的
 	// recordFault 已 sticky——首因保持原值不变。
 	target.deliver(msg, callbackCBytes(`{"k":2}`))
-	if s.currentFault() != first {
-		t.Fatalf("the first fault was overwritten after a repeated panic: %v, want it kept as %v", s.currentFault(), first)
-	}
+	currentFault := s.currentFault()
+	require.True(t, currentFault == first, "the first fault was overwritten after a repeated panic: %v, want it kept as %v", currentFault, first)
 }
 
 // TestCallbackDeliverSingleMessageOverflow 钉住单条容量契约:
@@ -365,21 +318,17 @@ func TestCallbackDeliverSingleMessageOverflow(t *testing.T) {
 		target.deliver(52, callbackCBytes("123456789"))
 
 		assertOverflowClass(t, s.currentFault())
-		if lost := s.currentLostEvents(); lost != 1 {
-			t.Errorf("lost events count = %d, want 1", lost)
-		}
-		if n := inFlightCallbacks(s); n != 0 {
-			t.Errorf("in-flight callbacks = %d, want 0", n)
-		}
+		lost := s.currentLostEvents()
+		assert.Equal(t, uint64(1), lost, "lost events count = %d, want 1", lost)
+		n := inFlightCallbacks(s)
+		assert.Equal(t, uint64(0), n, "in-flight callbacks = %d, want 0", n)
 		// 无事件入队:排空后公开通道关闭且为空(本子用例在用例体内
 		// 排空以断言空通道,不再 defer 重复关闭)。
 		closeAndDrain(t, d)
-		if n := len(d.events()); n != 0 {
-			t.Errorf("events left in the public buffer = %d, want 0 (truncated JSON must not be delivered)", n)
-		}
-		if _, ok := <-d.events(); ok {
-			t.Fatal("an oversized message must not produce events")
-		}
+		count := len(d.events())
+		assert.Equal(t, 0, count, "events left in the public buffer = %d, want 0 (truncated JSON must not be delivered)", count)
+		_, ok := <-d.events()
+		require.False(t, ok, "an oversized message must not produce events")
 	})
 
 	t.Run("NUL exactly after CallbackBytes bytes is legal", func(t *testing.T) {
@@ -394,20 +343,15 @@ func TestCallbackDeliverSingleMessageOverflow(t *testing.T) {
 		target.deliver(53, callbackCBytes(payload))
 
 		ev := mustReadEvent(t, d.events())
-		if string(ev.JSON) != payload {
-			t.Fatalf("event raw JSON = %q, want exactly %d bytes %q (NUL not part of the payload)", ev.JSON, len(payload), payload)
-		}
-		if ev.MessageID != MessageID(53) {
-			t.Errorf("event MessageID = %d, want 53", ev.MessageID)
-		}
+		require.Equal(t, payload, string(ev.JSON), "event raw JSON = %q, want exactly %d bytes %q (NUL not part of the payload)", ev.JSON, len(payload), payload)
+		assert.Equal(t, MessageID(53), ev.MessageID, "event MessageID = %d, want 53", ev.MessageID)
 		select {
 		case <-s.faultNotify():
-			t.Fatalf("a boundary-legal message must not trigger a fault, got first fault %v", s.currentFault())
+			require.Fail(t, fmt.Sprintf("a boundary-legal message must not trigger a fault, got first fault %v", s.currentFault()))
 		default:
 		}
-		if lost := s.currentLostEvents(); lost != 0 {
-			t.Errorf("lost events count = %d, want 0", lost)
-		}
+		lost := s.currentLostEvents()
+		assert.Equal(t, uint64(0), lost, "lost events count = %d, want 0", lost)
 	})
 }
 
@@ -450,7 +394,7 @@ func TestCallbackDeliverAdmitOverflowContract(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("message #1 did not get retained in the public buffer and release the internal budget within the hang guard limit")
+			require.Fail(t, "message #1 did not get retained in the public buffer and release the internal budget within the hang guard limit")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -463,21 +407,17 @@ func TestCallbackDeliverAdmitOverflowContract(t *testing.T) {
 	select {
 	case <-entered:
 	case <-time.After(hangGuard):
-		t.Fatal("message #2 did not enter the settle notification within the hang guard limit: the dispatcher apparently is not running or did not pick it up")
+		require.Fail(t, "message #2 did not enter the settle notification within the hang guard limit: the dispatcher apparently is not running or did not pick it up")
 	}
 
 	// 第 3 条:admit 溢出——deliver 除 admit 内部上报外不额外计丢失、
 	// 不预留任何额度。
 	target.deliver(501, callbackCBytes(`{"p3":1}`))
-	if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
-		t.Fatalf("first fault = %v, want errors.Is native.ErrEventOverflow", s.currentFault())
-	}
-	if errors.Is(s.currentFault(), native.ErrProtocol) {
-		t.Errorf("the admit overflow must not be mislabeled as ErrProtocol: %v", s.currentFault())
-	}
-	if lost := s.currentLostEvents(); lost != 1 {
-		t.Fatalf("lost events count after the admit overflow = %d, want 1 (only admit reports per the overflow contract)", lost)
-	}
+	fault := s.currentFault()
+	require.ErrorIs(t, fault, native.ErrEventOverflow, "first fault = %v, want errors.Is native.ErrEventOverflow", fault)
+	assert.NotErrorIs(t, fault, native.ErrProtocol, "the admit overflow must not be mislabeled as ErrProtocol: %v", fault)
+	lost := s.currentLostEvents()
+	require.Equal(t, uint64(1), lost, "lost events count after the admit overflow = %d, want 1 (only admit reports per the overflow contract)", lost)
 
 	// 放行结算:被阻塞条目先结算后投递,公开缓冲已满 → 按公开溢出契
 	// 约再计 1 条丢失;首因 sticky 保持 admit 溢出。
@@ -488,25 +428,20 @@ func TestCallbackDeliverAdmitOverflowContract(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the public overflow was not counted as lost within the hang guard limit, current lost events count = %d", s.currentLostEvents())
+			require.Fail(t, fmt.Sprintf("the public overflow was not counted as lost within the hang guard limit, current lost events count = %d", s.currentLostEvents()))
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
-		t.Errorf("first fault after release = %v, want errors.Is native.ErrEventOverflow (sticky)", s.currentFault())
-	}
+	stickyFault := s.currentFault()
+	assert.ErrorIs(t, stickyFault, native.ErrEventOverflow, "first fault after release = %v, want errors.Is native.ErrEventOverflow (sticky)", stickyFault)
 
 	// 公开缓冲仍只有滞留的第 1 条:溢出的两条都没有成为事件。
-	if n := len(d.events()); n != 1 {
-		t.Fatalf("events left in the public buffer = %d, want 1 (only the pre-retained first one)", n)
-	}
+	count := len(d.events())
+	require.Equal(t, 1, count, "events left in the public buffer = %d, want 1 (only the pre-retained first one)", count)
 	ev := mustReadEvent(t, d.events())
-	if ev.MessageID != MessageID(p0Msg) || string(ev.JSON) != `{"p0":1}` {
-		t.Fatalf("retained event = (MessageID %d, %s), want (500, {\"p0\":1})", ev.MessageID, ev.JSON)
-	}
-	if n := inFlightCallbacks(s); n != 0 {
-		t.Errorf("in-flight callbacks = %d, want 0", n)
-	}
+	require.True(t, ev.MessageID == MessageID(p0Msg) && string(ev.JSON) == `{"p0":1}`, "retained event = (MessageID %d, %s), want (500, {\"p0\":1})", ev.MessageID, ev.JSON)
+	n := inFlightCallbacks(s)
+	assert.Equal(t, uint64(0), n, "in-flight callbacks = %d, want 0", n)
 }
 
 // TestCallbackDeliverEmptyDetails 钉住空 details(下标 0 即 NUL)的所
@@ -521,29 +456,17 @@ func TestCallbackDeliverEmptyDetails(t *testing.T) {
 	target.deliver(54, callbackCBytes(""))
 
 	ev := mustReadEvent(t, d.events())
-	if ev.MessageID != MessageID(54) {
-		t.Fatalf("event MessageID = %d, want 54", ev.MessageID)
-	}
-	if len(ev.JSON) != 0 {
-		t.Fatalf("Event JSON length for empty details = %d, want 0", len(ev.JSON))
-	}
+	require.Equal(t, MessageID(54), ev.MessageID, "event MessageID = %d, want 54", ev.MessageID)
+	require.Len(t, ev.JSON, 0, "Event JSON length for empty details = %d, want 0", len(ev.JSON))
 	fault := s.currentFault()
-	if fault == nil {
-		t.Fatal("empty raw data must be reported by the dispatcher as an invalid-JSON protocol fault")
-	}
-	if !errors.Is(fault, native.ErrProtocol) {
-		t.Errorf("errors.Is(first fault, native.ErrProtocol) = false; first fault = %v", fault)
-	}
-	if !strings.Contains(fault.Error(), "not valid UTF-8/JSON") {
-		t.Errorf("the protocol fault should come from the dispatcher's content check, not the callback admission layer:\n%s", fault.Error())
-	}
+	require.Error(t, fault, "empty raw data must be reported by the dispatcher as an invalid-JSON protocol fault")
+	assert.ErrorIs(t, fault, native.ErrProtocol, "errors.Is(first fault, native.ErrProtocol) = false; first fault = %v", fault)
+	assert.Contains(t, fault.Error(), "not valid UTF-8/JSON", "the protocol fault should come from the dispatcher's content check, not the callback admission layer:\n%s", fault.Error())
 	// 原文(空)仍按公开预算交付:不丢失。
-	if lost := s.currentLostEvents(); lost != 0 {
-		t.Errorf("lost events count = %d, want 0 (the empty raw data was fully delivered)", lost)
-	}
-	if n := inFlightCallbacks(s); n != 0 {
-		t.Errorf("in-flight callbacks = %d, want 0", n)
-	}
+	lost := s.currentLostEvents()
+	assert.Equal(t, uint64(0), lost, "lost events count = %d, want 0 (the empty raw data was fully delivered)", lost)
+	n := inFlightCallbacks(s)
+	assert.Equal(t, uint64(0), n, "in-flight callbacks = %d, want 0", n)
 }
 
 // TestCallbackTargetNilArgumentsPanic 钉住构造契约(对照 newEventDispatcher
@@ -596,37 +519,28 @@ func TestCallbackDeliverConcurrentAdmission(t *testing.T) {
 	}
 	wg.Wait()
 
-	if n := inFlightCallbacks(s); n != 0 {
-		t.Fatalf("in-flight callbacks after concurrent delivery = %d, want 0", n)
-	}
+	n := inFlightCallbacks(s)
+	require.Equal(t, uint64(0), n, "in-flight callbacks after concurrent delivery = %d, want 0", n)
 	// 预算按 1024 条给足:全部滞留公开缓冲,关门排空不丢失。
 	closeAndDrain(t, d)
 
-	if n := len(d.events()); n != workers*perWorker {
-		t.Fatalf("events left in the public buffer = %d, want %d (each enqueued exactly once)", n, workers*perWorker)
-	}
+	count := len(d.events())
+	require.Equal(t, workers*perWorker, count, "events left in the public buffer = %d, want %d (each enqueued exactly once)", count, workers*perWorker)
 	prevSeq := uint64(0)
 	for i := 0; i < workers*perWorker; i++ {
 		ev := mustReadEvent(t, d.events())
-		if ev.Sequence != prevSeq+1 {
-			t.Fatalf("event %d sequence = %d, want %d (single dispatcher assigns serially, FIFO strictly monotonic)",
-				i+1, ev.Sequence, prevSeq+1)
-		}
+		require.Equal(t, prevSeq+1, ev.Sequence, "event %d sequence = %d, want %d (single dispatcher assigns serially, FIFO strictly monotonic)",
+			i+1, ev.Sequence, prevSeq+1)
 		prevSeq = ev.Sequence
-		if !want[string(ev.JSON)] {
-			t.Fatalf("unexpected raw JSON for event %d: %s", i+1, ev.JSON)
-		}
+		require.True(t, want[string(ev.JSON)], "unexpected raw JSON for event %d: %s", i+1, ev.JSON)
 		delete(want, string(ev.JSON))
 	}
-	if len(want) != 0 {
-		t.Fatalf("missing %d event payloads (concurrent copying lost data)", len(want))
-	}
+	require.Empty(t, want, "missing %d event payloads (concurrent copying lost data)", len(want))
 	select {
 	case <-s.faultNotify():
-		t.Fatalf("concurrent admission under ample budgets must not produce a fault, got first fault %v", s.currentFault())
+		require.Fail(t, fmt.Sprintf("concurrent admission under ample budgets must not produce a fault, got first fault %v", s.currentFault()))
 	default:
 	}
-	if lost := s.currentLostEvents(); lost != 0 {
-		t.Errorf("lost events count = %d, want 0", lost)
-	}
+	lost := s.currentLostEvents()
+	assert.Equal(t, uint64(0), lost, "lost events count = %d, want 0", lost)
 }

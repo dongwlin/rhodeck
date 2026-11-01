@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
 )
 
@@ -94,11 +96,11 @@ func TestRealCoreNoDeviceChain(t *testing.T) {
 		noDeviceUserDirEnv:  userDir,
 	})
 	if out.err != nil {
-		t.Fatalf("chain child failed (non-zero exit/signal/timeout are all treated as failure, no retry):\n%s",
+		require.NoError(t, out.err, "chain child failed (non-zero exit/signal/timeout are all treated as failure, no retry):\n%s",
 			childDiagnostics(noDeviceModeChain, out))
 	}
 	if err := verifyCoreNoDeviceChildMetadata(out.stdout); err != nil {
-		t.Fatalf("chain child stdout metadata re-verification failed (independent of the assertions inside the child):\n%v\n%s",
+		require.NoError(t, err, "chain child stdout metadata re-verification failed (independent of the assertions inside the child):\n%v\n%s",
 			err, childDiagnostics(noDeviceModeChain, out))
 	}
 	t.Logf("chain child internal assertions all passed:\n%s", out.stdout)
@@ -122,19 +124,19 @@ func TestRealCoreNoDeviceExecutorTimeoutKillReportedAsFailure(t *testing.T) {
 	}
 	out := runCoreNoDeviceChild(t, noDeviceHangChildTimeout, noDeviceModeHang, nil)
 	if out.err == nil {
-		t.Fatalf("hang child must be reported as failed after the %s timeout, actual exit code 0:\n%s",
+		require.Error(t, out.err, "hang child must be reported as failed after the %s timeout, actual exit code 0:\n%s",
 			noDeviceHangChildTimeout, childDiagnostics(noDeviceModeHang, out))
 	}
 	if !out.timedOut {
-		t.Fatalf("the failure must be identifiable as timeout termination (timedOut=false, err=%v):\n%s",
+		require.True(t, out.timedOut, "the failure must be identifiable as timeout termination (timedOut=false, err=%v):\n%s",
 			out.err, childDiagnostics(noDeviceModeHang, out))
 	}
 	if !out.signaled {
-		t.Fatalf("timeout termination must kill the child via a signal (signaled=false, err=%v):\n%s",
+		require.True(t, out.signaled, "timeout termination must kill the child via a signal (signaled=false, err=%v):\n%s",
 			out.err, childDiagnostics(noDeviceModeHang, out))
 	}
 	if !strings.Contains(out.stdout, noDeviceHangMarker) {
-		t.Fatalf("timeout diagnostics must preserve the output the child already produced:\n%s", childDiagnostics(noDeviceModeHang, out))
+		require.Contains(t, out.stdout, noDeviceHangMarker, "timeout diagnostics must preserve the output the child already produced:\n%s", childDiagnostics(noDeviceModeHang, out))
 	}
 	t.Logf("hang child was SIGKILLed on the %s timeout as expected; the executor reported failure and preserved diagnostics:\n%s",
 		noDeviceHangChildTimeout, childDiagnostics(noDeviceModeHang, out))
@@ -153,7 +155,7 @@ func TestRealCoreNoDeviceMissingNativeDepsReportedAsFailure(t *testing.T) {
 	libPath, resourceRoot := requireUnpackedResources(t)
 	deps, err := bundledCoreDependencies(libPath)
 	if err != nil {
-		t.Fatalf("inspect installed ELF dependencies: %v", err)
+		require.NoError(t, err, "inspect installed ELF dependencies: %v", err)
 	}
 	if len(deps) == 0 {
 		t.Skip("missing-dependency check UNVERIFIED: no colocated imported libraries can be isolated; SKIP is not a pass")
@@ -164,7 +166,7 @@ func TestRealCoreNoDeviceMissingNativeDepsReportedAsFailure(t *testing.T) {
 	isolated := t.TempDir()
 	isolatedLib := filepath.Join(isolated, coreSOName)
 	if err := copyFile(libPath, isolatedLib); err != nil {
-		t.Fatalf("failed to copy libMaaCore.so into the isolated directory: %v", err)
+		require.NoError(t, err, "failed to copy libMaaCore.so into the isolated directory: %v", err)
 	}
 
 	out := runCoreNoDeviceChild(t, noDeviceDepsChildTimeout, noDeviceModeMissingDeps, map[string]string{
@@ -173,14 +175,14 @@ func TestRealCoreNoDeviceMissingNativeDepsReportedAsFailure(t *testing.T) {
 		noDeviceUserDirEnv:  t.TempDir(),
 	})
 	if out.err != nil {
-		t.Fatalf("missing-deps child failed (its internal assertions did not all pass):\n%s",
+		require.NoError(t, out.err, "missing-deps child failed (its internal assertions did not all pass):\n%s",
 			childDiagnostics(noDeviceModeMissingDeps, out))
 	}
 	if strings.Contains(out.stdout, noDeviceDepsUnverifiedMarker) {
 		t.Skip("missing-dependency check UNVERIFIED: the system resolved every dependency after isolation; SKIP is not a pass")
 	}
 	if !strings.Contains(out.stdout, noDeviceDepsMarker) {
-		t.Fatalf("missing-deps child exited with exit code 0, but stdout lacks the success marker:\n%s",
+		require.Contains(t, out.stdout, noDeviceDepsMarker, "missing-deps child exited with exit code 0, but stdout lacks the success marker:\n%s",
 			childDiagnostics(noDeviceModeMissingDeps, out))
 	}
 	t.Logf("missing-deps child internal assertions all passed:\n%s", out.stdout)
@@ -227,7 +229,7 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 		{noDeviceLibPathEnv, libPath}, {noDeviceResourceEnv, resourceRoot}, {noDeviceUserDirEnv, userDir},
 	} {
 		if !filepath.IsAbs(e.value) {
-			t.Fatalf("%s = %q is not an absolute path", e.name, e.value)
+			require.True(t, filepath.IsAbs(e.value), "%s = %q is not an absolute path", e.name, e.value)
 		}
 	}
 
@@ -239,13 +241,13 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 		ResourceRoots: []string{resourceRoot},
 	})
 	if err != nil {
-		t.Fatalf("Open(%s) failed: %v", libPath, err)
+		require.NoError(t, err, "Open(%s) failed: %v", libPath, err)
 	}
 	if err := verifyCoreVersion(rt.Version(), os.Getenv(expectedVersionEnv)); err != nil {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 	if got := rt.NullSize(); got != math.MaxUint64 {
-		t.Fatalf("NullSize() = %#x, want %#x (ABI sentinel)", got, uint64(math.MaxUint64))
+		require.Equal(t, uint64(math.MaxUint64), got, "NullSize() = %#x, want %#x (ABI sentinel)", got, uint64(math.MaxUint64))
 	}
 	if entries, err := os.ReadDir(userDir); err == nil {
 		names := make([]string, 0, len(entries))
@@ -262,7 +264,7 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 	// 2. NewInstance:CreateEx(进程唯一 callback trampoline + token)。
 	inst, err := rt.NewInstance(InstanceConfig{})
 	if err != nil || inst == nil {
-		t.Fatalf("NewInstance failed: err=%v, inst=%v", err, inst)
+		require.True(t, err == nil && inst != nil, "NewInstance failed: err=%v, inst=%v", err, inst)
 	}
 	t.Logf("NewInstance ok: CreateEx returned a valid handle and published a ready instance")
 
@@ -270,38 +272,38 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 	//    结果由真实 AsyncCallInfo 按 async_call_id 关联结算为原生失败。
 	op, err := inst.Screencap()
 	if err != nil || op == nil {
-		t.Fatalf("Screencap submit failed: err=%v, op=%v", err, op)
+		require.True(t, err == nil && op != nil, "Screencap submit failed: err=%v, op=%v", err, op)
 	}
 	if op.ID() == 0 {
-		t.Fatalf("Screencap submission returned ID 0")
+		require.True(t, op.ID() != 0, "Screencap submission returned ID 0")
 	}
 	waitCtx, cancel := context.WithTimeout(context.Background(), noDeviceScreencapWaitTimeout)
 	res, waitErr := op.Wait(waitCtx)
 	cancel()
 	if waitErr == nil {
-		t.Fatalf("unconnected Screencap reported success %+v: submission success must not be interpreted as a successful screenshot", res)
+		require.Error(t, waitErr, "unconnected Screencap reported success %+v: submission success must not be interpreted as a successful screenshot", res)
 	}
 	if !errors.Is(waitErr, ErrNativeRejected) {
-		t.Fatalf("unconnected Screencap Wait error = %v, want errors.Is ErrNativeRejected", waitErr)
+		require.ErrorIs(t, waitErr, ErrNativeRejected, "unconnected Screencap Wait error = %v, want errors.Is ErrNativeRejected", waitErr)
 	}
 	if res.OK {
-		t.Fatalf("AsyncResult.OK = true, unconnected screencap must fail")
+		require.False(t, res.OK, "AsyncResult.OK = true, unconnected screencap must fail")
 	}
 	if res.What != asyncWhatScreencap {
-		t.Fatalf("AsyncResult.What = %q, want %q (expected callback discriminator)", res.What, asyncWhatScreencap)
+		require.Equal(t, asyncWhatScreencap, res.What, "AsyncResult.What = %q, want %q (expected callback discriminator)", res.What, asyncWhatScreencap)
 	}
 	if res.ID != op.ID() {
-		t.Fatalf("AsyncResult.ID = %d, want the submitted ID %d (async_call_id correlation broken)", res.ID, op.ID())
+		require.Equal(t, op.ID(), res.ID, "AsyncResult.ID = %d, want the submitted ID %d (async_call_id correlation broken)", res.ID, op.ID())
 	}
 	var det struct {
 		Ret  *bool  `json:"ret"`
 		Cost *int64 `json:"cost"`
 	}
 	if err := json.Unmarshal(res.Details, &det); err != nil {
-		t.Fatalf("failed to decode AsyncResult.Details: %v (raw: %s)", err, res.Details)
+		require.NoError(t, err, "failed to decode AsyncResult.Details: %v (raw: %s)", err, res.Details)
 	}
 	if det.Ret == nil || *det.Ret {
-		t.Fatalf("details.ret = %s, want false", res.Details)
+		require.True(t, det.Ret != nil && !*det.Ret, "details.ret = %s, want false", res.Details)
 	}
 	cost := int64(-1)
 	if det.Cost != nil {
@@ -314,28 +316,29 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 	//    游戏操作;Connected()==false 佐证全程无连接。
 	id1, err := inst.AppendTask(noDeviceTaskType, json.RawMessage(`{"enable":true}`))
 	if err != nil || id1 == 0 {
-		t.Fatalf("AppendTask#1 = (%d, %v), want (non-zero, nil)", id1, err)
+		require.True(t, err == nil && id1 != 0, "AppendTask#1 = (%d, %v), want (non-zero, nil)", id1, err)
 	}
 	id2, err := inst.AppendTask(noDeviceTaskType, json.RawMessage(`{"enable":true}`))
 	if err != nil || id2 == 0 {
-		t.Fatalf("AppendTask#2 = (%d, %v), want (non-zero, nil)", id2, err)
+		require.True(t, err == nil && id2 != 0, "AppendTask#2 = (%d, %v), want (non-zero, nil)", id2, err)
 	}
 	if id2 == id1 {
-		t.Fatalf("the two AppendTask calls returned the same TaskID %d", id1)
+		require.NotEqual(t, id1, id2, "the two AppendTask calls returned the same TaskID %d", id1)
 	}
 	connected, err := inst.Connected()
 	if err != nil {
-		t.Fatalf("Connected() error: %v", err)
+		require.NoError(t, err, "Connected() error: %v", err)
 	}
 	if connected {
-		t.Fatalf("Connected() = true, must not report connected when Connect was never called")
+		require.False(t, connected, "Connected() = true, must not report connected when Connect was never called")
 	}
 	tasks, err := inst.Tasks()
 	if err != nil {
-		t.Fatalf("Tasks() error: %v", err)
+		require.NoError(t, err, "Tasks() error: %v", err)
 	}
 	if len(tasks) != 2 || !slices.Contains(tasks, id1) || !slices.Contains(tasks, id2) {
-		t.Fatalf("Tasks() = %v, want a 2-element list containing exactly the enqueued {%d, %d} (order decided by Core, order not checked)",
+		require.True(t, len(tasks) == 2 && slices.Contains(tasks, id1) && slices.Contains(tasks, id2),
+			"Tasks() = %v, want a 2-element list containing exactly the enqueued {%d, %d} (order decided by Core, order not checked)",
 			tasks, id1, id2)
 	}
 	t.Logf("appended but not executed: tasks=%v (Award×2, no Start/Connect), Connected=false", tasks)
@@ -344,26 +347,27 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 	//    Destroy(C void);Destroyed 在 Destroy 调用线程同步触发,经
 	//    仍开放的准入门入队,由关闭流程排空后投递公开缓冲。
 	if err := inst.Close(); err != nil {
-		t.Fatalf("Instance.Close = %v, want nil (normal close of a never-started instance)", err)
+		require.NoError(t, err, "Instance.Close = %v, want nil (normal close of a never-started instance)", err)
 	}
 
 	// 5a. Destroyed 的诊断顺序:排空后的公开缓冲恰为 [AsyncCallInfo,
 	//     Destroyed],本地序号单调递增;公开 Events 通道已随关闭关闭。
 	evs := readDrainedEvents(t, inst)
 	if len(evs) != 2 {
-		t.Fatalf("public event buffer after Close = %d events (%s), want exactly the two [AsyncCallInfo, Destroyed]",
+		require.Len(t, evs, 2, "public event buffer after Close = %d events (%s), want exactly the two [AsyncCallInfo, Destroyed]",
 			len(evs), renderEvents(evs))
 	}
 	if evs[0].MessageID != asyncCallInfoMessageID {
-		t.Fatalf("public event[0] messageID = %d, want AsyncCallInfo(%d): %s",
+		require.Equal(t, asyncCallInfoMessageID, evs[0].MessageID, "public event[0] messageID = %d, want AsyncCallInfo(%d): %s",
 			evs[0].MessageID, asyncCallInfoMessageID, renderEvents(evs))
 	}
 	if evs[1].MessageID != noDeviceDestroyedMessageID {
-		t.Fatalf("public event[1] messageID = %d, want Destroyed(%d): %s",
+		require.Equal(t, noDeviceDestroyedMessageID, evs[1].MessageID, "public event[1] messageID = %d, want Destroyed(%d): %s",
 			evs[1].MessageID, noDeviceDestroyedMessageID, renderEvents(evs))
 	}
 	if evs[0].Sequence != 1 || evs[1].Sequence != 2 || evs[0].Sequence >= evs[1].Sequence {
-		t.Fatalf("public event local sequences = (%d, %d), want (1, 2) monotonically increasing", evs[0].Sequence, evs[1].Sequence)
+		require.True(t, evs[0].Sequence == 1 && evs[1].Sequence == 2 && evs[0].Sequence < evs[1].Sequence,
+			"public event local sequences = (%d, %d), want (1, 2) monotonically increasing", evs[0].Sequence, evs[1].Sequence)
 	}
 	t.Logf("Destroyed diagnostic order confirmed: AsyncCallInfo(seq=%d, json=%s) -> Destroyed(seq=%d, json=%s), channel closed afterwards",
 		evs[0].Sequence, evs[0].JSON, evs[1].Sequence, evs[1].JSON)
@@ -371,7 +375,7 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 	// 5b. Destroy 返回后 callback 契约:关门、退空、移除 token 之后,
 	//     真实注册表不再把迟到的原生回调路由到本实例。
 	if native.LookupCallbackDelivery(inst.inst.token) != nil {
-		t.Fatalf("callback token %d still resolves to a delivery function after Close, the late-callback contract is broken", inst.inst.token)
+		require.Nil(t, native.LookupCallbackDelivery(inst.inst.token), "callback token %d still resolves to a delivery function after Close, the late-callback contract is broken", inst.inst.token)
 	}
 
 	// 5c. 实例关闭后 Operation 仍可等待,取得同一保存终态的独立副本。
@@ -379,19 +383,20 @@ func runCoreNoDeviceChainChild(t *testing.T) {
 	res2, replayErr := op.Wait(replayCtx)
 	cancel()
 	if !errors.Is(replayErr, ErrNativeRejected) {
-		t.Fatalf("repeated Wait after close error = %v, want errors.Is ErrNativeRejected", replayErr)
+		require.ErrorIs(t, replayErr, ErrNativeRejected, "repeated Wait after close error = %v, want errors.Is ErrNativeRejected", replayErr)
 	}
 	if res2.ID != res.ID || res2.What != res.What || res2.OK != res.OK || !bytes.Equal(res2.Details, res.Details) {
-		t.Fatalf("repeated Wait after close drifted: first=%+v replay=%+v", res, res2)
+		require.True(t, res2.ID == res.ID && res2.What == res.What && res2.OK == res.OK && bytes.Equal(res2.Details, res.Details),
+			"repeated Wait after close drifted: first=%+v replay=%+v", res, res2)
 	}
 
 	// 6. Runtime.Close:实例已终止使用,重复 Close 直接返回已存储结果
 	//    (nil,不再进入 native);此后 NewInstance 一律被拒。
 	if err := rt.Close(); err != nil {
-		t.Fatalf("Runtime.Close = %v, want nil", err)
+		require.NoError(t, err, "Runtime.Close = %v, want nil", err)
 	}
 	if _, err := rt.NewInstance(InstanceConfig{}); !errors.Is(err, ErrRuntimeTerminated) {
-		t.Fatalf("NewInstance error after Runtime termination = %v, want errors.Is ErrRuntimeTerminated", err)
+		require.ErrorIs(t, err, ErrRuntimeTerminated, "NewInstance error after Runtime termination = %v, want errors.Is ErrRuntimeTerminated", err)
 	}
 
 	// 7. 全部断言通过后才打印 OK 标记(父进程复验其字段)。
@@ -411,7 +416,7 @@ func runCoreNoDeviceMissingDepsChild(t *testing.T) {
 		{noDeviceLibPathEnv, libPath}, {noDeviceResourceEnv, resourceRoot}, {noDeviceUserDirEnv, userDir},
 	} {
 		if !filepath.IsAbs(e.value) {
-			t.Fatalf("%s = %q is not an absolute path", e.name, e.value)
+			require.True(t, filepath.IsAbs(e.value), "%s = %q is not an absolute path", e.name, e.value)
 		}
 	}
 
@@ -423,30 +428,30 @@ func runCoreNoDeviceMissingDepsChild(t *testing.T) {
 	rt, err := Open(cfg)
 	if rt != nil && err == nil {
 		if err := rt.Close(); err != nil {
-			t.Fatalf("close after system resolved dependencies: %v", err)
+			require.NoError(t, err, "close after system resolved dependencies: %v", err)
 		}
 		fmt.Println(noDeviceDepsUnverifiedMarker + " all_dependencies_resolved=true")
 		return
 	}
 	if rt != nil || err == nil {
-		t.Fatalf("Open on the isolated directory (missing bundled deps) = (%v, %v), want (nil, error)", rt, err)
+		require.True(t, rt == nil && err != nil, "Open on the isolated directory (missing bundled deps) = (%v, %v), want (nil, error)", rt, err)
 	}
 	var lle *LibraryLoadError
 	if !errors.As(err, &lle) {
-		t.Fatalf("errors.As did not match *LibraryLoadError, got %T: %v", err, err)
+		require.ErrorAs(t, err, &lle, "errors.As did not match *LibraryLoadError, got %T: %v", err, err)
 	}
 	if lle.Path != libPath {
-		t.Fatalf("LibraryLoadError.Path = %q, want %q", lle.Path, libPath)
+		require.Equal(t, libPath, lle.Path, "LibraryLoadError.Path = %q, want %q", lle.Path, libPath)
 	}
 	if errors.Is(err, ErrRuntimeTerminated) {
-		t.Fatalf("original error must not be wrapped into ErrRuntimeTerminated: %v", err)
+		require.NotErrorIs(t, err, ErrRuntimeTerminated, "original error must not be wrapped into ErrRuntimeTerminated: %v", err)
 	}
 	rt2, err2 := Open(cfg)
 	if rt2 != nil {
-		t.Fatalf("second Open must not return a Runtime: %v", rt2)
+		require.Nil(t, rt2, "second Open must not return a Runtime: %v", rt2)
 	}
 	if !errors.Is(err2, ErrRuntimeTerminated) {
-		t.Fatalf("second Open error = %v, want errors.Is ErrRuntimeTerminated", err2)
+		require.ErrorIs(t, err2, ErrRuntimeTerminated, "second Open error = %v, want errors.Is ErrRuntimeTerminated", err2)
 	}
 	t.Logf("missing native deps visibly failed: %v; second Open: errors.Is(ErrRuntimeTerminated)=true", err)
 	fmt.Printf("%s errors_as_library_load_error=true second_open_runtime_terminated=true\n", noDeviceDepsMarker)
@@ -462,7 +467,7 @@ func runCoreNoDeviceChild(t *testing.T, timeout time.Duration, mode string, extr
 	t.Helper()
 	exe, err := filepath.Abs(os.Args[0])
 	if err != nil {
-		t.Fatalf("failed to locate the test binary %q: %v", os.Args[0], err)
+		require.NoError(t, err, "failed to locate the test binary %q: %v", os.Args[0], err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -524,8 +529,8 @@ func readDrainedEvents(t *testing.T, inst *Instance) []Event {
 			}
 			evs = append(evs, ev)
 		case <-time.After(noDeviceDrainGuardTimeout):
-			t.Fatalf("public Events channel still not closed within %s after Close returned (%d events read), the close contract is broken",
-				noDeviceDrainGuardTimeout, len(evs))
+			require.Fail(t, fmt.Sprintf("public Events channel still not closed within %s after Close returned (%d events read), the close contract is broken",
+				noDeviceDrainGuardTimeout, len(evs)))
 		}
 	}
 }

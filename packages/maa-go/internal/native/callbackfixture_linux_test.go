@@ -24,6 +24,8 @@ import (
 	"github.com/ebitengine/purego"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/ffitest"
+
+	"github.com/stretchr/testify/require"
 )
 
 // 子进程模式、资源传递环境变量、路径与 stdout 成功标记。
@@ -124,12 +126,9 @@ func buildCallbackFixture(t *testing.T) string {
 	}
 
 	src, err := filepath.Abs(callbackFixtureSrcRel)
-	if err != nil {
-		t.Fatalf("failed to locate the callback fixture source %s: %v", callbackFixtureSrcRel, err)
-	}
-	if _, err := os.Stat(src); err != nil {
-		t.Fatalf("callback fixture source %s is not accessible (repository baseline broken, not an environment limitation): %v", src, err)
-	}
+	require.NoError(t, err, "failed to locate the callback fixture source %s: %v", callbackFixtureSrcRel, err)
+	_, statErr := os.Stat(src)
+	require.NoError(t, statErr, "callback fixture source %s is not accessible (repository baseline broken, not an environment limitation): %v", src, statErr)
 
 	outPath := filepath.Join(t.TempDir(), callbackFixtureSOName)
 	args := []string{"-shared", "-fPIC", "-pthread", "-o", outPath, src}
@@ -142,9 +141,7 @@ func buildCallbackFixture(t *testing.T) string {
 
 	cmd := exec.Command(compiler, args...)
 	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to compile the callback fixture (command line %s): %v\n%s", commandLine, err, output)
-	}
+	require.NoError(t, err, "failed to compile the callback fixture (command line %s): %v\n%s", commandLine, err, output)
 	return outPath
 }
 
@@ -502,17 +499,11 @@ func TestCallbackFixtureNativeThreadRoundtrip(t *testing.T) {
 		Timeout:  abiFixtureChildTimeout,
 		ExtraEnv: map[string]string{callbackFixtureSOEnv: soPath},
 	})
-	if out.Err != nil {
-		t.Fatalf("the roundtrip child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
-	}
+	require.NoError(t, out.Err, "the roundtrip child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	line, ok := markerLine(out.Stdout, roundtripOKMarker)
-	if !ok {
-		t.Fatalf("the roundtrip child exited 0 but stdout is missing the %s marker line:\n%s", roundtripOKMarker, out.Diagnostics())
-	}
+	require.True(t, ok, "the roundtrip child exited 0 but stdout is missing the %s marker line:\n%s", roundtripOKMarker, out.Diagnostics())
 	fields, err := parseABIMarkerFields(line, roundtripOKMarker)
-	if err != nil {
-		t.Fatalf("failed to parse the roundtrip marker line %q: %v\n%s", line, err, out.Diagnostics())
-	}
+	require.NoError(t, err, "failed to parse the roundtrip marker line %q: %v\n%s", line, err, out.Diagnostics())
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "threads", "3", diag)
 	abiCheckField(t, fields, "msgs",
@@ -539,17 +530,11 @@ func TestCallbackFixtureSnapshotBeforeNativeRewrite(t *testing.T) {
 		Timeout:  abiFixtureChildTimeout,
 		ExtraEnv: map[string]string{callbackFixtureSOEnv: soPath},
 	})
-	if out.Err != nil {
-		t.Fatalf("the snapshot child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
-	}
+	require.NoError(t, out.Err, "the snapshot child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	line, ok := markerLine(out.Stdout, snapshotOKMarker)
-	if !ok {
-		t.Fatalf("the snapshot child exited 0 but stdout is missing the %s marker line:\n%s", snapshotOKMarker, out.Diagnostics())
-	}
+	require.True(t, ok, "the snapshot child exited 0 but stdout is missing the %s marker line:\n%s", snapshotOKMarker, out.Diagnostics())
 	fields, err := parseABIMarkerFields(line, snapshotOKMarker)
-	if err != nil {
-		t.Fatalf("failed to parse the snapshot marker line %q: %v\n%s", line, err, out.Diagnostics())
-	}
+	require.NoError(t, err, "failed to parse the snapshot marker line %q: %v\n%s", line, err, out.Diagnostics())
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "bytes", strconv.Itoa(len(callbackSnapshotPayload)), diag)
 	abiCheckField(t, fields, "msg", strconv.FormatInt(int64(cbFixtureSnapshotMsg), 10), diag)
@@ -574,17 +559,11 @@ func TestCallbackFixturePanicContainedAtBoundary(t *testing.T) {
 		Timeout:  abiFixtureChildTimeout,
 		ExtraEnv: map[string]string{callbackFixtureSOEnv: soPath},
 	})
-	if out.Err != nil {
-		t.Fatalf("the panic child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
-	}
+	require.NoError(t, out.Err, "the panic child failed (non-zero exit/signal/timeout are all treated as failure):\n%s", out.Diagnostics())
 	line, ok := markerLine(out.Stdout, panicFaultOKMarker)
-	if !ok {
-		t.Fatalf("the panic child exited 0 but stdout is missing the %s marker line:\n%s", panicFaultOKMarker, out.Diagnostics())
-	}
+	require.True(t, ok, "the panic child exited 0 but stdout is missing the %s marker line:\n%s", panicFaultOKMarker, out.Diagnostics())
 	fields, err := parseABIMarkerFields(line, panicFaultOKMarker)
-	if err != nil {
-		t.Fatalf("failed to parse the panic marker line %q: %v\n%s", line, err, out.Diagnostics())
-	}
+	require.NoError(t, err, "failed to parse the panic marker line %q: %v\n%s", line, err, out.Diagnostics())
 	diag := out.Diagnostics()
 	abiCheckField(t, fields, "msg", strconv.FormatInt(int64(cbFixturePanicMsg), 10), diag)
 	abiCheckField(t, fields, "token", strconv.FormatUint(uint64(cbFixturePanicToken), 10), diag)

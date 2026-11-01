@@ -6,6 +6,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // stubCause 模拟错误链最深处的自定义底层原因
@@ -40,16 +43,12 @@ func allSentinels() []struct {
 
 func TestSentinelErrorsAreDistinct(t *testing.T) {
 	sentinels := allSentinels()
-	if len(sentinels) != 11 {
-		t.Fatalf("sentinel count = %d, want 11", len(sentinels))
-	}
+	require.Len(t, sentinels, 11, "sentinel count = %d, want 11", len(sentinels))
 	for i, a := range sentinels {
-		if a.err == nil {
-			t.Fatalf("%s is nil", a.name)
-		}
+		require.Error(t, a.err, "%s is nil", a.name)
 		for j, b := range sentinels {
-			if i != j && a.err == b.err {
-				t.Errorf("%s and %s are the same error value", a.name, b.name)
+			if i != j {
+				assert.False(t, a.err == b.err, "%s and %s are the same error value", a.name, b.name)
 			}
 		}
 	}
@@ -59,15 +58,13 @@ func TestSentinelErrorsMatchThroughWrappedChain(t *testing.T) {
 	sentinels := allSentinels()
 	for _, s := range sentinels {
 		wrapped := fmt.Errorf("open runtime: %w", fmt.Errorf("inner step: %w", s.err))
-		if !errors.Is(wrapped, s.err) {
-			t.Errorf("errors.Is(wrapped, %s) = false, want true", s.name)
-		}
+		assert.ErrorIs(t, wrapped, s.err, "errors.Is(wrapped, %s) = false, want true", s.name)
 	}
 	// 任意两个哨兵互不匹配。
 	for i, a := range sentinels {
 		for j, b := range sentinels {
-			if i != j && errors.Is(a.err, b.err) {
-				t.Errorf("errors.Is(%s, %s) = true, want false", a.name, b.name)
+			if i != j {
+				assert.NotErrorIs(t, a.err, b.err, "errors.Is(%s, %s) = true, want false", a.name, b.name)
 			}
 		}
 	}
@@ -85,24 +82,14 @@ func TestLibraryLoadError(t *testing.T) {
 	wrapped := fmt.Errorf("open runtime: %w", err)
 
 	var lle *LibraryLoadError
-	if !errors.As(wrapped, &lle) {
-		t.Fatal("errors.As failed to find *LibraryLoadError")
-	}
-	if lle.LibraryName != "MaaCore" || lle.Path != "/opt/maa/bin/libMaaCore.so" ||
-		lle.GOOS != "linux" || lle.GOARCH != "amd64" {
-		t.Errorf("diagnostic fields mismatch: %+v", lle)
-	}
-	if !errors.Is(wrapped, cause) {
-		t.Error("errors.Is failed to reach underlying loader cause")
-	}
+	require.ErrorAs(t, wrapped, &lle, "errors.As failed to find *LibraryLoadError")
+	assert.True(t, lle.LibraryName == "MaaCore" && lle.Path == "/opt/maa/bin/libMaaCore.so" &&
+		lle.GOOS == "linux" && lle.GOARCH == "amd64", "diagnostic fields mismatch: %+v", lle)
+	assert.ErrorIs(t, wrapped, cause, "errors.Is failed to reach underlying loader cause")
 	var got *stubCause
-	if !errors.As(wrapped, &got) || got != cause {
-		t.Error("errors.As failed to reach underlying cause value")
-	}
+	assert.True(t, errors.As(wrapped, &got) && got == cause, "errors.As failed to reach underlying cause value")
 	for _, want := range []string{"MaaCore", "/opt/maa/bin/libMaaCore.so", "linux", "amd64"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("Error() = %q, want it to contain %q", err.Error(), want)
-		}
+		assert.Contains(t, err.Error(), want, "Error() = %q, want it to contain %q", err.Error(), want)
 	}
 }
 
@@ -117,20 +104,12 @@ func TestSymbolLookupError(t *testing.T) {
 	wrapped := fmt.Errorf("load transaction: %w", err)
 
 	var sle *SymbolLookupError
-	if !errors.As(wrapped, &sle) {
-		t.Fatal("errors.As failed to find *SymbolLookupError")
-	}
-	if sle.Symbol != "AsstCreateEx" || sle.LibraryPath != "/opt/maa/bin/libMaaCore.so" ||
-		sle.Profile != "linux-amd64-maacore-locked" {
-		t.Errorf("diagnostic fields mismatch: %+v", sle)
-	}
-	if !errors.Is(wrapped, cause) {
-		t.Error("errors.Is failed to reach underlying lookup cause")
-	}
+	require.ErrorAs(t, wrapped, &sle, "errors.As failed to find *SymbolLookupError")
+	assert.True(t, sle.Symbol == "AsstCreateEx" && sle.LibraryPath == "/opt/maa/bin/libMaaCore.so" &&
+		sle.Profile == "linux-amd64-maacore-locked", "diagnostic fields mismatch: %+v", sle)
+	assert.ErrorIs(t, wrapped, cause, "errors.Is failed to reach underlying lookup cause")
 	for _, want := range []string{"AsstCreateEx", "/opt/maa/bin/libMaaCore.so", "linux-amd64-maacore-locked"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("Error() = %q, want it to contain %q", err.Error(), want)
-		}
+		assert.Contains(t, err.Error(), want, "Error() = %q, want it to contain %q", err.Error(), want)
 	}
 }
 
@@ -146,29 +125,17 @@ func TestFunctionRegistrationError(t *testing.T) {
 	wrapped := fmt.Errorf("load transaction: %w", err)
 
 	var fre *FunctionRegistrationError
-	if !errors.As(wrapped, &fre) {
-		t.Fatal("errors.As failed to find *FunctionRegistrationError")
-	}
-	if fre.Symbol != "AsstSetTaskParam" ||
-		fre.Signature != "func(callback uintptr, customArg uintptr) uintptr" {
-		t.Errorf("diagnostic fields mismatch: %+v", fre)
-	}
-	if !errors.Is(wrapped, panicErr) {
-		t.Error("errors.Is failed to reach the retained panic error")
-	}
+	require.ErrorAs(t, wrapped, &fre, "errors.As failed to find *FunctionRegistrationError")
+	assert.True(t, fre.Symbol == "AsstSetTaskParam" &&
+		fre.Signature == "func(callback uintptr, customArg uintptr) uintptr", "diagnostic fields mismatch: %+v", fre)
+	assert.ErrorIs(t, wrapped, panicErr, "errors.Is failed to reach the retained panic error")
 	var cause *stubCause
-	if !errors.As(wrapped, &cause) || cause != panicErr {
-		t.Error("errors.As failed to reach the retained panic error value")
-	}
+	assert.True(t, errors.As(wrapped, &cause) && cause == panicErr, "errors.As failed to reach the retained panic error value")
 	// 注册错误不得伪装成缺符号错误。
 	var sle *SymbolLookupError
-	if errors.As(wrapped, &sle) {
-		t.Error("FunctionRegistrationError must not be identifiable as *SymbolLookupError")
-	}
+	assert.NotErrorAs(t, wrapped, &sle, "FunctionRegistrationError must not be identifiable as *SymbolLookupError")
 	for _, want := range []string{"AsstSetTaskParam", "func(callback uintptr, customArg uintptr) uintptr"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("Error() = %q, want it to contain %q", err.Error(), want)
-		}
+		assert.Contains(t, err.Error(), want, "Error() = %q, want it to contain %q", err.Error(), want)
 	}
 }
 
@@ -193,9 +160,7 @@ func TestAggregateErrorTraversal(t *testing.T) {
 	// errors.As 提取聚合本体后,逐项 range 遍历,
 	// 分别拿到两个符号名——全程不解析错误字符串。
 	var got AggregateError
-	if !errors.As(err, &got) {
-		t.Fatal("errors.As failed to find AggregateError")
-	}
+	require.ErrorAs(t, err, &got, "errors.As failed to find AggregateError")
 	symbols := map[string]bool{}
 	for _, member := range got {
 		var sle *SymbolLookupError
@@ -203,16 +168,12 @@ func TestAggregateErrorTraversal(t *testing.T) {
 			symbols[sle.Symbol] = true
 		}
 	}
-	if !symbols["AsstCreateEx"] || !symbols["AsstAppendTask"] {
-		t.Errorf("range traversal missed symbols, got %v", symbols)
-	}
+	assert.True(t, symbols["AsstCreateEx"] && symbols["AsstAppendTask"], "range traversal missed symbols, got %v", symbols)
 
 	// 经 Unwrap 取出成员切片(errors.Is/errors.As 内部同规则),
 	// 逐项 errors.As 也能分别提取每个 SymbolLookupError。
 	members, ok := errors.Unwrap(err).(interface{ Unwrap() []error })
-	if !ok {
-		t.Fatal("wrapped error does not expose Unwrap() []error")
-	}
+	require.True(t, ok, "wrapped error does not expose Unwrap() []error")
 	extracted := map[string]bool{}
 	for _, member := range members.Unwrap() {
 		var sle *SymbolLookupError
@@ -220,33 +181,24 @@ func TestAggregateErrorTraversal(t *testing.T) {
 			extracted[sle.Symbol] = true
 		}
 	}
-	if len(extracted) != 2 || !extracted["AsstCreateEx"] || !extracted["AsstAppendTask"] {
-		t.Errorf("Unwrap traversal extracted %v, want both symbols", extracted)
-	}
+	assert.True(t, len(extracted) == 2 && extracted["AsstCreateEx"] && extracted["AsstAppendTask"], "Unwrap traversal extracted %v, want both symbols", extracted)
 
 	// errors.Is 穿透聚合,匹配其中一个成员包装的底层原因。
-	if !errors.Is(err, causeB) {
-		t.Error("errors.Is failed to reach cause wrapped inside aggregate member")
-	}
+	assert.ErrorIs(t, err, causeB, "errors.Is failed to reach cause wrapped inside aggregate member")
 
 	// 多项文本逐项编号且包含各项内容。
 	text := agg.Error()
 	for i, want := range []string{"[1]", "[2]", "AsstCreateEx", "AsstAppendTask"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("AggregateError.Error() = %q, want it to contain %q (item %d)", text, want, i)
-		}
+		assert.Contains(t, text, want, "AggregateError.Error() = %q, want it to contain %q (item %d)", text, want, i)
 	}
 }
 
 func TestAggregateErrorEmpty(t *testing.T) {
 	var agg AggregateError
-	if got := agg.Error(); strings.TrimSpace(got) == "" {
-		t.Errorf("empty AggregateError.Error() = %q, want a non-empty placeholder", got)
-	}
+	got := agg.Error()
+	assert.True(t, strings.TrimSpace(got) != "", "empty AggregateError.Error() = %q, want a non-empty placeholder", got)
 	// 空聚合对任意目标都不匹配,且不会 panic。
-	if errors.Is(agg, ErrClosed) {
-		t.Error("empty aggregate must not match any sentinel")
-	}
+	assert.NotErrorIs(t, agg, ErrClosed, "empty aggregate must not match any sentinel")
 }
 
 func TestIDTypesAreDistinctInt32(t *testing.T) {
@@ -254,12 +206,8 @@ func TestIDTypesAreDistinctInt32(t *testing.T) {
 	asyncType := reflect.TypeOf(AsyncID(0))
 	msgType := reflect.TypeOf(MessageID(0))
 
-	if taskType == asyncType || taskType == msgType || asyncType == msgType {
-		t.Fatal("TaskID, AsyncID and MessageID must be distinct named types")
-	}
+	require.True(t, taskType != asyncType && taskType != msgType && asyncType != msgType, "TaskID, AsyncID and MessageID must be distinct named types")
 	for _, tt := range []reflect.Type{taskType, asyncType, msgType} {
-		if tt.Kind() != reflect.Int32 {
-			t.Errorf("%s kind = %v, want int32", tt, tt.Kind())
-		}
+		assert.Equal(t, reflect.Int32, tt.Kind(), "%s kind = %v, want int32", tt, tt.Kind())
 	}
 }

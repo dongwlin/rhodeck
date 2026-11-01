@@ -12,6 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // expectedAPIFields 是手写内联的独立期望表:字段名、完整签名、
@@ -97,14 +100,10 @@ var staticFiles = []string{"api.go", "symbols.go", "callback_types.go"}
 func parsePackageFile(t *testing.T, name string) *ast.File {
 	t.Helper()
 	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("os.Getwd failed, cannot locate %s: %v", name, err)
-	}
+	require.NoError(t, err, "os.Getwd failed, cannot locate %s", name)
 	path := filepath.Join(dir, name)
 	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)
-	if err != nil {
-		t.Fatalf("failed to parse %s: %v", path, err)
-	}
+	require.NoError(t, err, "failed to parse %s", path)
 	return file
 }
 
@@ -170,16 +169,16 @@ func canonicalTypeExpr(t *testing.T, expr ast.Expr) string {
 		case "mapLevelKey":
 			return e.Name
 		}
-		t.Fatalf("type identifier %q is not in the whitelist (only uint8/int32/uint64/uintptr/byte, mapLevelKey, or unsafe.Pointer allowed)", e.Name)
+		require.FailNow(t, "type identifier %q is not in the whitelist (only uint8/int32/uint64/uintptr/byte, mapLevelKey, or unsafe.Pointer allowed)", e.Name)
 	case *ast.StarExpr:
 		return "*" + canonicalTypeExpr(t, e.X)
 	case *ast.SelectorExpr:
 		if x, ok := e.X.(*ast.Ident); ok && x.Name == "unsafe" && e.Sel.Name == "Pointer" {
 			return "unsafe.Pointer"
 		}
-		t.Fatalf("selector expression is not in the whitelist (only unsafe.Pointer allowed, and the unsafe import must not be renamed)")
+		require.FailNow(t, "selector expression is not in the whitelist (only unsafe.Pointer allowed, and the unsafe import must not be renamed)")
 	}
-	t.Fatalf("type expression %T is not allowed", expr)
+	require.FailNow(t, "type expression %T is not allowed", expr)
 	return ""
 }
 
@@ -197,7 +196,7 @@ func canonicalFuncType(t *testing.T, ft *ast.FuncType) string {
 				for _, n := range field.Names {
 					names = append(names, n.Name)
 				}
-				t.Fatalf("each parameter must have exactly one name (anonymous and multi-name parameters are forbidden), got %d: [%s]",
+				require.FailNow(t, "each parameter must have exactly one name (anonymous and multi-name parameters are forbidden), got %d: [%s]",
 					len(field.Names), strings.Join(names, ", "))
 			}
 			parts = append(parts, field.Names[0].Name+" "+canonicalTypeExpr(t, field.Type))
@@ -210,7 +209,7 @@ func canonicalFuncType(t *testing.T, ft *ast.FuncType) string {
 	case len(ft.Results.List) == 1 && len(ft.Results.List[0].Names) == 0:
 		sig += " " + canonicalTypeExpr(t, ft.Results.List[0].Type)
 	default:
-		t.Fatalf("there must be exactly one unnamed result (named and multiple results are forbidden), got %d result fields", len(ft.Results.List))
+		require.FailNow(t, "there must be exactly one unnamed result (named and multiple results are forbidden), got %d result fields", len(ft.Results.List))
 	}
 	return sig
 }
@@ -222,20 +221,12 @@ func canonicalizeSigText(t *testing.T, sig string) string {
 	t.Helper()
 	src := "package p\n\ntype _ = " + sig + "\n"
 	file, err := parser.ParseFile(token.NewFileSet(), "expected.go", src, 0)
-	if err != nil {
-		t.Fatalf("failed to parse the expected signature %q: %v", sig, err)
-	}
-	if len(file.Decls) != 1 {
-		t.Fatalf("the expected signature %q must parse into exactly one declaration", sig)
-	}
+	require.NoError(t, err, "failed to parse the expected signature %q", sig)
+	require.Len(t, file.Decls, 1, "the expected signature %q must parse into exactly one declaration", sig)
 	ts, ok := file.Decls[0].(*ast.GenDecl).Specs[0].(*ast.TypeSpec)
-	if !ok {
-		t.Fatalf("the expected signature %q did not parse into a type declaration", sig)
-	}
+	require.True(t, ok, "the expected signature %q did not parse into a type declaration", sig)
 	ft, ok := ts.Type.(*ast.FuncType)
-	if !ok {
-		t.Fatalf("the expected signature %q is not a function type", sig)
-	}
+	require.True(t, ok, "the expected signature %q is not a function type", sig)
 	return canonicalFuncType(t, ft)
 }
 
@@ -247,9 +238,8 @@ func TestStaticFilesHaveNoBuildConstraints(t *testing.T) {
 			file := parsePackageFile(t, name)
 			for _, group := range file.Comments {
 				for _, c := range group.List {
-					if strings.HasPrefix(c.Text, "//go:build") || strings.HasPrefix(c.Text, "// +build") {
-						t.Errorf("%s contains a build-constraint comment %q; the design requires the three files to carry no platform conditions", name, c.Text)
-					}
+					isBuildConstraint := strings.HasPrefix(c.Text, "//go:build") || strings.HasPrefix(c.Text, "// +build")
+					assert.False(t, isBuildConstraint, "%s contains a build-constraint comment %q; the design requires the three files to carry no platform conditions", name, c.Text)
 				}
 			}
 		})
@@ -280,13 +270,13 @@ func TestStaticTopLevelDeclsWhitelist(t *testing.T) {
 			for i := 0; i < len(got) || i < len(tc.want); i++ {
 				switch {
 				case i >= len(got):
-					t.Errorf("%s is missing whitelisted top-level declaration #%d %q (actual full list %v)", tc.file, i, tc.want[i], got)
+					assert.Fail(t, "%s is missing whitelisted top-level declaration #%d %q (actual full list %v)", tc.file, i, tc.want[i], got)
 					return
 				case i >= len(tc.want):
-					t.Errorf("%s has a top-level declaration outside the whitelist %q (actual full list %v)", tc.file, got[i], got)
+					assert.Fail(t, "%s has a top-level declaration outside the whitelist %q (actual full list %v)", tc.file, got[i], got)
 					return
 				case got[i] != tc.want[i]:
-					t.Errorf("%s top-level declaration #%d = %q, want %q (got full list %v, want full list %v)",
+					assert.Fail(t, "%s top-level declaration #%d = %q, want %q (got full list %v, want full list %v)",
 						tc.file, i, got[i], tc.want[i], got, tc.want)
 					return
 				}
@@ -295,15 +285,12 @@ func TestStaticTopLevelDeclsWhitelist(t *testing.T) {
 	}
 	t.Run("api.go imports unsafe without alias", func(t *testing.T) {
 		file := parsePackageFile(t, "api.go")
-		if len(file.Imports) != 1 {
-			t.Fatalf("api.go import count = %d, want 1 (unsafe)", len(file.Imports))
-		}
+		require.Len(t, file.Imports, 1, "api.go import count = %d, want 1 (unsafe)", len(file.Imports))
 		imp := file.Imports[0]
-		if path := strings.Trim(imp.Path.Value, `"`); path != "unsafe" {
-			t.Errorf("api.go's sole import path = %q, want %q", path, "unsafe")
-		}
+		path := strings.Trim(imp.Path.Value, `"`)
+		assert.Equal(t, "unsafe", path, "api.go's sole import path = %q, want %q", path, "unsafe")
 		if imp.Name != nil {
-			t.Errorf("api.go's unsafe import must not be aliased/renamed, got %q", imp.Name.Name)
+			assert.Nil(t, imp.Name, "api.go's unsafe import must not be aliased/renamed, got %q", imp.Name.Name)
 		}
 	})
 }
@@ -326,35 +313,21 @@ func TestAPIFieldSignatures(t *testing.T) {
 			}
 		}
 	}
-	if spec == nil {
-		t.Fatal("type api not found in api.go")
-	}
+	require.NotNil(t, spec, "type api not found in api.go")
 	st, ok := spec.Type.(*ast.StructType)
-	if !ok {
-		t.Fatalf("type api must be a struct, got %T", spec.Type)
-	}
+	require.True(t, ok, "type api must be a struct, got %T", spec.Type)
 	fields := st.Fields.List
-	if len(fields) != len(expectedAPIFields) {
-		t.Fatalf("api field count = %d, want %d", len(fields), len(expectedAPIFields))
-	}
+	require.Len(t, fields, len(expectedAPIFields), "api field count = %d, want %d", len(fields), len(expectedAPIFields))
 	for i, field := range fields {
 		want := expectedAPIFields[i]
-		if len(field.Names) != 1 {
-			t.Fatalf("field #%d must have exactly one name (embedded fields are forbidden), got %d", i, len(field.Names))
-		}
+		require.Len(t, field.Names, 1, "field #%d must have exactly one name (embedded fields are forbidden), got %d", i, len(field.Names))
 		gotName := field.Names[0].Name
-		if gotName != want.field {
-			t.Errorf("field #%d name = %q, want %q (field order must match the expectation table)", i, gotName, want.field)
-		}
+		assert.Equal(t, want.field, gotName, "field #%d name = %q, want %q (field order must match the expectation table)", i, gotName, want.field)
 		ft, ok := field.Type.(*ast.FuncType)
-		if !ok {
-			t.Fatalf("the type of field %s must be a func type, got %T", gotName, field.Type)
-		}
+		require.True(t, ok, "the type of field %s must be a func type, got %T", gotName, field.Type)
 		gotSig := canonicalFuncType(t, ft)
 		wantSig := canonicalizeSigText(t, want.sig)
-		if gotSig != wantSig {
-			t.Errorf("field %s signature = %q, want %q", gotName, gotSig, wantSig)
-		}
+		assert.Equal(t, wantSig, gotSig, "field %s signature = %q, want %q", gotName, gotSig, wantSig)
 	}
 }
 
@@ -376,124 +349,82 @@ func TestSymbolSpecsForm(t *testing.T) {
 			}
 		}
 	}
-	if fn == nil {
-		t.Fatal("func symbolSpecs not found in symbols.go")
+	require.NotNil(t, fn, "func symbolSpecs not found in symbols.go")
+	assert.Equal(t, 1, funcDecls, "symbols.go FuncDecl count = %d, want 1 (helpers are forbidden)", funcDecls)
+	require.Nil(t, fn.Recv, "symbolSpecs must not have a receiver")
+	gotParams := 0
+	if fn.Type.Params != nil {
+		gotParams = len(fn.Type.Params.List)
 	}
-	if funcDecls != 1 {
-		t.Errorf("symbols.go FuncDecl count = %d, want 1 (helpers are forbidden)", funcDecls)
-	}
-	if fn.Recv != nil {
-		t.Fatal("symbolSpecs must not have a receiver")
-	}
-	if fn.Type.Params == nil || len(fn.Type.Params.List) != 1 {
-		t.Fatalf("symbolSpecs must have exactly one parameter, got %d parameter fields", len(fn.Type.Params.List))
-	}
+	require.Equal(t, 1, gotParams, "symbolSpecs must have exactly one parameter, got %d parameter fields", gotParams)
 	param := fn.Type.Params.List[0]
-	if len(param.Names) != 1 || param.Names[0].Name != "table" {
-		t.Fatalf("the symbolSpecs parameter must be named table, got %d names", len(param.Names))
-	}
+	require.Len(t, param.Names, 1, "the symbolSpecs parameter must be named table, got %d names", len(param.Names))
+	require.Equal(t, "table", param.Names[0].Name, "the symbolSpecs parameter must be named table, got %d names", len(param.Names))
 	star, ok := param.Type.(*ast.StarExpr)
-	if !ok || !isIdent(star.X, "api") {
-		t.Fatalf("the symbolSpecs parameter type must be *api, got %T", param.Type)
+	require.True(t, ok, "the symbolSpecs parameter type must be *api, got %T", param.Type)
+	require.True(t, isIdent(star.X, "api"), "the symbolSpecs parameter type must be *api, got %T", param.Type)
+	gotStmts := 0
+	if fn.Body != nil {
+		gotStmts = len(fn.Body.List)
 	}
-	if fn.Body == nil || len(fn.Body.List) != 1 {
-		t.Fatalf("the symbolSpecs body must contain exactly one statement, got %d", len(fn.Body.List))
-	}
+	require.Equal(t, 1, gotStmts, "the symbolSpecs body must contain exactly one statement, got %d", gotStmts)
 	ret, ok := fn.Body.List[0].(*ast.ReturnStmt)
-	if !ok {
-		t.Fatalf("the sole statement of the symbolSpecs body must be a return, got %T", fn.Body.List[0])
-	}
-	if len(ret.Results) != 1 {
-		t.Fatalf("the return must have exactly one result expression, got %d", len(ret.Results))
-	}
+	require.True(t, ok, "the sole statement of the symbolSpecs body must be a return, got %T", fn.Body.List[0])
+	require.Len(t, ret.Results, 1, "the return must have exactly one result expression, got %d", len(ret.Results))
 	comp, ok := ret.Results[0].(*ast.CompositeLit)
-	if !ok {
-		t.Fatalf("the return result must be a composite literal, got %T", ret.Results[0])
-	}
+	require.True(t, ok, "the return result must be a composite literal, got %T", ret.Results[0])
 	arr, ok := comp.Type.(*ast.ArrayType)
-	if !ok || arr.Len != nil || !isIdent(arr.Elt, "symbolSpec") {
-		t.Fatalf("the returned composite literal's type must be []symbolSpec, got %T", comp.Type)
-	}
-	if len(comp.Elts) != len(expectedAPIFields) {
-		t.Fatalf("symbolSpecs entry count = %d, want %d", len(comp.Elts), len(expectedAPIFields))
-	}
+	require.True(t, ok, "the returned composite literal's type must be []symbolSpec, got %T", comp.Type)
+	require.Nil(t, arr.Len, "the returned composite literal's type must be []symbolSpec, got %T", comp.Type)
+	require.True(t, isIdent(arr.Elt, "symbolSpec"), "the returned composite literal's type must be []symbolSpec, got %T", comp.Type)
+	require.Len(t, comp.Elts, len(expectedAPIFields), "symbolSpecs entry count = %d, want %d", len(comp.Elts), len(expectedAPIFields))
 	specKeys := [4]string{"Name", "Target", "Policy", "Platform"}
 	for i, elt := range comp.Elts {
 		entry, ok := elt.(*ast.CompositeLit)
-		if !ok {
-			t.Fatalf("entry #%d must be a composite literal, got %T", i, elt)
-		}
-		if entry.Type != nil {
-			t.Errorf("entry #%d's type must be omitted (supplied by the outer []symbolSpec), got %T", i, entry.Type)
-		}
-		if len(entry.Elts) != len(specKeys) {
-			t.Fatalf("entry #%d must have exactly %d KeyValueExprs, got %d", i, len(specKeys), len(entry.Elts))
-		}
+		require.True(t, ok, "entry #%d must be a composite literal, got %T", i, elt)
+		assert.Nil(t, entry.Type, "entry #%d's type must be omitted (supplied by the outer []symbolSpec), got %T", i, entry.Type)
+		require.Len(t, entry.Elts, len(specKeys), "entry #%d must have exactly %d KeyValueExprs, got %d", i, len(specKeys), len(entry.Elts))
 		want := expectedAPIFields[i]
 		symbol := "Asst" + want.field
 		for k := range entry.Elts {
 			kv, ok := entry.Elts[k].(*ast.KeyValueExpr)
-			if !ok {
-				t.Fatalf("entry #%d element %d must be a KeyValueExpr, got %T", i, k, entry.Elts[k])
-			}
+			require.True(t, ok, "entry #%d element %d must be a KeyValueExpr, got %T", i, k, entry.Elts[k])
 			key, ok := kv.Key.(*ast.Ident)
-			if !ok {
-				t.Fatalf("entry #%d key %d must be a named key, got %T", i, k, kv.Key)
-			}
-			if key.Name != specKeys[k] {
-				t.Fatalf("entry #%d key %d = %q, want %q (key order must be Name/Target/Policy/Platform)",
-					i, k, key.Name, specKeys[k])
-			}
+			require.True(t, ok, "entry #%d key %d must be a named key, got %T", i, k, kv.Key)
+			require.Equal(t, specKeys[k], key.Name, "entry #%d key %d = %q, want %q (key order must be Name/Target/Policy/Platform)",
+				i, k, key.Name, specKeys[k])
 			switch key.Name {
 			case "Name":
 				lit, ok := kv.Value.(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING {
-					t.Fatalf("entry #%d (%s) Name must be a string literal, got %T", i, symbol, kv.Value)
-				}
+				require.True(t, ok, "entry #%d (%s) Name must be a string literal, got %T", i, symbol, kv.Value)
+				require.Equal(t, token.STRING, lit.Kind, "entry #%d (%s) Name must be a string literal, got %T", i, symbol, kv.Value)
 				name, err := strconv.Unquote(lit.Value)
-				if err != nil {
-					t.Fatalf("cannot unquote entry #%d's Name literal: %v", i, err)
-				}
-				if name != symbol {
-					t.Errorf("entry #%d Name = %q, want %q", i, name, symbol)
-				}
+				require.NoError(t, err, "cannot unquote entry #%d's Name literal", i)
+				assert.Equal(t, symbol, name, "entry #%d Name = %q, want %q", i, name, symbol)
 			case "Target":
 				unary, ok := kv.Value.(*ast.UnaryExpr)
-				if !ok || unary.Op != token.AND {
-					t.Fatalf("entry #%d (%s) Target must be &table.<field>, got %T", i, symbol, kv.Value)
-				}
+				require.True(t, ok, "entry #%d (%s) Target must be &table.<field>, got %T", i, symbol, kv.Value)
+				require.Equal(t, token.AND, unary.Op, "entry #%d (%s) Target must be &table.<field>, got %T", i, symbol, kv.Value)
 				sel, ok := unary.X.(*ast.SelectorExpr)
-				if !ok {
-					t.Fatalf("entry #%d (%s) Target must be &table.<field>, got %T", i, symbol, unary.X)
-				}
-				if !isIdent(sel.X, "table") {
-					t.Fatalf("entry #%d (%s) Target base name must be table (indirect variable targets are forbidden), got %T", i, symbol, sel.X)
-				}
-				if sel.Sel.Name != want.field {
-					t.Errorf("entry #%d (%s) Target field = %q, want %q", i, symbol, sel.Sel.Name, want.field)
-				}
+				require.True(t, ok, "entry #%d (%s) Target must be &table.<field>, got %T", i, symbol, unary.X)
+				require.True(t, isIdent(sel.X, "table"), "entry #%d (%s) Target base name must be table (indirect variable targets are forbidden), got %T", i, symbol, sel.X)
+				assert.Equal(t, want.field, sel.Sel.Name, "entry #%d (%s) Target field = %q, want %q", i, symbol, sel.Sel.Name, want.field)
 			case "Policy":
 				id, ok := kv.Value.(*ast.Ident)
-				if !ok || (id.Name != "required" && id.Name != "optional") {
-					t.Fatalf("entry #%d (%s) Policy must reference required/optional, got %T", i, symbol, kv.Value)
-				}
-				if id.Name != want.policy {
-					t.Errorf("entry #%d (%s) Policy = %q, want %q", i, symbol, id.Name, want.policy)
-				}
+				require.True(t, ok, "entry #%d (%s) Policy must reference required/optional, got %T", i, symbol, kv.Value)
+				require.True(t, id.Name == "required" || id.Name == "optional", "entry #%d (%s) Policy must reference required/optional, got %T", i, symbol, kv.Value)
+				assert.Equal(t, want.policy, id.Name, "entry #%d (%s) Policy = %q, want %q", i, symbol, id.Name, want.policy)
 			case "Platform":
 				id, ok := kv.Value.(*ast.Ident)
-				if !ok || (id.Name != "allPlatforms" && id.Name != "windowsOnly") {
-					t.Fatalf("entry #%d (%s) Platform must reference allPlatforms/windowsOnly, got %T", i, symbol, kv.Value)
-				}
-				if id.Name != want.platform {
-					t.Errorf("entry #%d (%s) Platform = %q, want %q", i, symbol, id.Name, want.platform)
-				}
+				require.True(t, ok, "entry #%d (%s) Platform must reference allPlatforms/windowsOnly, got %T", i, symbol, kv.Value)
+				require.True(t, id.Name == "allPlatforms" || id.Name == "windowsOnly", "entry #%d (%s) Platform must reference allPlatforms/windowsOnly, got %T", i, symbol, kv.Value)
+				assert.Equal(t, want.platform, id.Name, "entry #%d (%s) Platform = %q, want %q", i, symbol, id.Name, want.platform)
 			}
 		}
 	}
 	ast.Inspect(fn, func(n ast.Node) bool {
 		if _, ok := n.(*ast.CallExpr); ok {
-			t.Errorf("no function calls may appear inside symbolSpecs (helpers/append/concatenation/reflection)")
+			assert.Fail(t, "no function calls may appear inside symbolSpecs (helpers/append/concatenation/reflection)")
 		}
 		return true
 	})
@@ -513,80 +444,47 @@ func TestExclusionsForm(t *testing.T) {
 			vdecl = gd
 		}
 	}
-	if varCount != 1 || vdecl == nil {
-		t.Fatalf("symbols.go var declaration count = %d, want 1 (exclusions)", varCount)
-	}
-	if len(vdecl.Specs) != 1 {
-		t.Fatalf("exclusions must be a single var declaration, got %d specs", len(vdecl.Specs))
-	}
+	require.Equal(t, 1, varCount, "symbols.go var declaration count = %d, want 1 (exclusions)", varCount)
+	require.Len(t, vdecl.Specs, 1, "exclusions must be a single var declaration, got %d specs", len(vdecl.Specs))
 	vs, ok := vdecl.Specs[0].(*ast.ValueSpec)
-	if !ok || len(vs.Names) != 1 || vs.Names[0].Name != "exclusions" {
-		t.Fatal("the sole var must be named exclusions")
-	}
-	if len(vs.Values) != 1 {
-		t.Fatalf("exclusions must be a direct literal, got %d values", len(vs.Values))
-	}
+	require.True(t, ok, "the sole var must be named exclusions")
+	require.Len(t, vs.Names, 1, "the sole var must be named exclusions")
+	require.Equal(t, "exclusions", vs.Names[0].Name, "the sole var must be named exclusions")
+	require.Len(t, vs.Values, 1, "exclusions must be a direct literal, got %d values", len(vs.Values))
 	comp, ok := vs.Values[0].(*ast.CompositeLit)
-	if !ok {
-		t.Fatalf("exclusions must be an []exclusionSpec composite literal, got %T", vs.Values[0])
-	}
+	require.True(t, ok, "exclusions must be an []exclusionSpec composite literal, got %T", vs.Values[0])
 	arr, ok := comp.Type.(*ast.ArrayType)
-	if !ok || arr.Len != nil || !isIdent(arr.Elt, "exclusionSpec") {
-		t.Fatalf("exclusions' type must be []exclusionSpec, got %T", comp.Type)
-	}
-	if len(comp.Elts) != len(expectedExclusions) {
-		t.Fatalf("exclusion entry count = %d, want %d", len(comp.Elts), len(expectedExclusions))
-	}
+	require.True(t, ok, "exclusions' type must be []exclusionSpec, got %T", comp.Type)
+	require.Nil(t, arr.Len, "exclusions' type must be []exclusionSpec, got %T", comp.Type)
+	require.True(t, isIdent(arr.Elt, "exclusionSpec"), "exclusions' type must be []exclusionSpec, got %T", comp.Type)
+	require.Len(t, comp.Elts, len(expectedExclusions), "exclusion entry count = %d, want %d", len(comp.Elts), len(expectedExclusions))
 	entryKeys := [3]string{"Name", "Header", "Reason"}
 	seen := map[string]bool{}
 	for i, elt := range comp.Elts {
 		entry, ok := elt.(*ast.CompositeLit)
-		if !ok {
-			t.Fatalf("exclusion entry #%d must be a composite literal, got %T", i, elt)
-		}
-		if entry.Type != nil {
-			t.Errorf("exclusion entry #%d's type must be omitted (supplied by the outer []exclusionSpec), got %T", i, entry.Type)
-		}
-		if len(entry.Elts) != len(entryKeys) {
-			t.Fatalf("exclusion entry #%d must have exactly %d keys, got %d", i, len(entryKeys), len(entry.Elts))
-		}
+		require.True(t, ok, "exclusion entry #%d must be a composite literal, got %T", i, elt)
+		assert.Nil(t, entry.Type, "exclusion entry #%d's type must be omitted (supplied by the outer []exclusionSpec), got %T", i, entry.Type)
+		require.Len(t, entry.Elts, len(entryKeys), "exclusion entry #%d must have exactly %d keys, got %d", i, len(entryKeys), len(entry.Elts))
 		values := map[string]string{}
 		for k := range entry.Elts {
 			kv, ok := entry.Elts[k].(*ast.KeyValueExpr)
-			if !ok {
-				t.Fatalf("exclusion entry #%d element %d must be a KeyValueExpr, got %T", i, k, entry.Elts[k])
-			}
+			require.True(t, ok, "exclusion entry #%d element %d must be a KeyValueExpr, got %T", i, k, entry.Elts[k])
 			key, ok := kv.Key.(*ast.Ident)
-			if !ok {
-				t.Fatalf("exclusion entry #%d key %d must be a named key, got %T", i, k, kv.Key)
-			}
-			if key.Name != entryKeys[k] {
-				t.Fatalf("exclusion entry #%d key %d = %q, want %q (key order must be Name/Header/Reason)",
-					i, k, key.Name, entryKeys[k])
-			}
+			require.True(t, ok, "exclusion entry #%d key %d must be a named key, got %T", i, k, kv.Key)
+			require.Equal(t, entryKeys[k], key.Name, "exclusion entry #%d key %d = %q, want %q (key order must be Name/Header/Reason)",
+				i, k, key.Name, entryKeys[k])
 			lit, ok := kv.Value.(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				t.Fatalf("exclusion entry #%d's %s must be a string literal, got %T", i, key.Name, kv.Value)
-			}
+			require.True(t, ok, "exclusion entry #%d's %s must be a string literal, got %T", i, key.Name, kv.Value)
+			require.Equal(t, token.STRING, lit.Kind, "exclusion entry #%d's %s must be a string literal, got %T", i, key.Name, kv.Value)
 			text, err := strconv.Unquote(lit.Value)
-			if err != nil {
-				t.Fatalf("cannot unquote exclusion entry #%d's %s literal: %v", i, key.Name, err)
-			}
-			if text == "" {
-				t.Errorf("exclusion entry #%d's %s must not be empty", i, key.Name)
-			}
+			require.NoError(t, err, "cannot unquote exclusion entry #%d's %s literal", i, key.Name)
+			assert.NotEmpty(t, text, "exclusion entry #%d's %s must not be empty", i, key.Name)
 			values[key.Name] = text
 		}
 		want := expectedExclusions[i]
-		if values["Name"] != want.name {
-			t.Errorf("exclusion entry #%d Name = %q, want %q (both the entry set and order are frozen)", i, values["Name"], want.name)
-		}
-		if values["Header"] != want.header {
-			t.Errorf("exclusion entry %q Header = %q, want %q", values["Name"], values["Header"], want.header)
-		}
-		if seen[values["Name"]] {
-			t.Errorf("duplicate exclusion entry Name: %q", values["Name"])
-		}
+		assert.Equal(t, want.name, values["Name"], "exclusion entry #%d Name = %q, want %q (both the entry set and order are frozen)", i, values["Name"], want.name)
+		assert.Equal(t, want.header, values["Header"], "exclusion entry %q Header = %q, want %q", values["Name"], values["Header"], want.header)
+		assert.False(t, seen[values["Name"]], "duplicate exclusion entry Name: %q", values["Name"])
 		seen[values["Name"]] = true
 	}
 }
@@ -603,9 +501,7 @@ func TestPolicyPlatformConstBlocks(t *testing.T) {
 			blocks = append(blocks, gd)
 		}
 	}
-	if len(blocks) != 2 {
-		t.Fatalf("symbols.go const block count = %d, want 2", len(blocks))
-	}
+	require.Len(t, blocks, 2, "symbols.go const block count = %d, want 2", len(blocks))
 	checkEnumBlock(t, blocks[0], "symbolPolicy", "required", "optional")
 	checkEnumBlock(t, blocks[1], "symbolPlatform", "allPlatforms", "windowsOnly")
 
@@ -619,9 +515,7 @@ func TestPolicyPlatformConstBlocks(t *testing.T) {
 			if ts.Name.Name != "symbolPolicy" && ts.Name.Name != "symbolPlatform" {
 				continue
 			}
-			if !isIdent(ts.Type, "uint8") {
-				t.Errorf("type %s's underlying type must be uint8, got %T", ts.Name.Name, ts.Type)
-			}
+			assert.True(t, isIdent(ts.Type, "uint8"), "type %s's underlying type must be uint8, got %T", ts.Name.Name, ts.Type)
 		}
 	}
 }
@@ -631,29 +525,21 @@ func TestPolicyPlatformConstBlocks(t *testing.T) {
 // 显式赋值(沿用首项类型与 iota 递进)。
 func checkEnumBlock(t *testing.T, block *ast.GenDecl, blockType, first, second string) {
 	t.Helper()
-	if !block.Lparen.IsValid() {
-		t.Errorf("const %s must be written as a parenthesized const block", blockType)
-	}
-	if len(block.Specs) != 2 {
-		t.Fatalf("const %s block must have exactly 2 specs, got %d", blockType, len(block.Specs))
-	}
+	assert.True(t, block.Lparen.IsValid(), "const %s must be written as a parenthesized const block", blockType)
+	require.Len(t, block.Specs, 2, "const %s block must have exactly 2 specs, got %d", blockType, len(block.Specs))
 	firstSpec, ok := block.Specs[0].(*ast.ValueSpec)
-	if !ok || len(firstSpec.Names) != 1 || firstSpec.Names[0].Name != first {
-		t.Fatalf("the first spec of the const %s block must be named %s", blockType, first)
-	}
-	if !isIdent(firstSpec.Type, blockType) {
-		t.Errorf("the first spec of the const %s block must be explicitly typed %s, got %T", blockType, blockType, firstSpec.Type)
-	}
-	if len(firstSpec.Values) != 1 || !isIdent(firstSpec.Values[0], "iota") {
-		t.Errorf("the first spec %s of the const %s block must start with iota", blockType, first)
-	}
+	require.True(t, ok, "the first spec of the const %s block must be named %s", blockType, first)
+	require.Len(t, firstSpec.Names, 1, "the first spec of the const %s block must be named %s", blockType, first)
+	require.Equal(t, first, firstSpec.Names[0].Name, "the first spec of the const %s block must be named %s", blockType, first)
+	assert.True(t, isIdent(firstSpec.Type, blockType), "the first spec of the const %s block must be explicitly typed %s, got %T", blockType, blockType, firstSpec.Type)
+	assert.Len(t, firstSpec.Values, 1, "the first spec %s of the const %s block must start with iota", blockType, first)
+	assert.True(t, isIdent(firstSpec.Values[0], "iota"), "the first spec %s of the const %s block must start with iota", blockType, first)
 	secondSpec, ok := block.Specs[1].(*ast.ValueSpec)
-	if !ok || len(secondSpec.Names) != 1 || secondSpec.Names[0].Name != second {
-		t.Fatalf("the second spec of the const %s block must be named %s", blockType, second)
-	}
-	if secondSpec.Type != nil || len(secondSpec.Values) != 0 {
-		t.Errorf("the second spec %s of the const %s block must inherit the first spec's type and iota; no explicit value assignment", blockType, second)
-	}
+	require.True(t, ok, "the second spec of the const %s block must be named %s", blockType, second)
+	require.Len(t, secondSpec.Names, 1, "the second spec of the const %s block must be named %s", blockType, second)
+	require.Equal(t, second, secondSpec.Names[0].Name, "the second spec of the const %s block must be named %s", blockType, second)
+	assert.Nil(t, secondSpec.Type, "the second spec %s of the const %s block must inherit the first spec's type and iota; no explicit value assignment", blockType, second)
+	assert.Empty(t, secondSpec.Values, "the second spec %s of the const %s block must inherit the first spec's type and iota; no explicit value assignment", blockType, second)
 }
 
 // TestCallbackTypeSignatures 核验两个 callback 类型:直接是 func
@@ -675,17 +561,12 @@ func TestCallbackTypeSignatures(t *testing.T) {
 	for _, want := range expectedCallbackSigs {
 		t.Run(want.typeName, func(t *testing.T) {
 			ts, ok := specs[want.typeName]
-			if !ok {
-				t.Fatalf("type %s not found in callback_types.go", want.typeName)
-			}
+			require.True(t, ok, "type %s not found in callback_types.go", want.typeName)
 			ft, ok := ts.Type.(*ast.FuncType)
-			if !ok {
-				t.Fatalf("type %s must directly be a func type, got %T", want.typeName, ts.Type)
-			}
+			require.True(t, ok, "type %s must directly be a func type, got %T", want.typeName, ts.Type)
 			got := canonicalFuncType(t, ft)
-			if expect := canonicalizeSigText(t, want.sig); got != expect {
-				t.Errorf("type %s signature = %q, want %q", want.typeName, got, expect)
-			}
+			expect := canonicalizeSigText(t, want.sig)
+			assert.Equal(t, expect, got, "type %s signature = %q, want %q", want.typeName, got, expect)
 		})
 	}
 }
@@ -708,19 +589,12 @@ func TestCapabilitySwitchMatchesOptionalSpecs(t *testing.T) {
 			optional["Asst"+want.field] = true
 		}
 	}
-	if len(expectedCapabilityFields) != len(optional) {
-		t.Fatalf("capability field expectation map has %d entries, unequal to the expectation table's %d optional entries",
-			len(expectedCapabilityFields), len(optional))
-	}
+	require.Len(t, optional, len(expectedCapabilityFields), "capability field expectation map has %d entries, unequal to the expectation table's %d optional entries", len(expectedCapabilityFields), len(optional))
 	for name := range expectedCapabilityFields {
-		if !optional[name] {
-			t.Errorf("%q in the capability field map is not an optional entry of the expectation table", name)
-		}
+		assert.Contains(t, optional, name, "%q in the capability field map is not an optional entry of the expectation table", name)
 	}
 	for name := range optional {
-		if _, ok := expectedCapabilityFields[name]; !ok {
-			t.Errorf("optional entry %q is missing from the capability field map", name)
-		}
+		assert.Contains(t, expectedCapabilityFields, name, "optional entry %q is missing from the capability field map", name)
 	}
 
 	file := parsePackageFile(t, "register.go")
@@ -733,60 +607,42 @@ func TestCapabilitySwitchMatchesOptionalSpecs(t *testing.T) {
 		}
 		return true
 	})
-	if len(switches) != 1 {
-		t.Fatalf("register.go should have exactly one capability-setting switch over spec.Name, got %d", len(switches))
-	}
+	require.Len(t, switches, 1, "register.go should have exactly one capability-setting switch over spec.Name, got %d", len(switches))
 
 	got := map[string]string{}
 	for _, stmt := range switches[0].Body.List {
 		clause, ok := stmt.(*ast.CaseClause)
-		if !ok {
-			t.Fatalf("a non-case statement %T appears in the switch body", stmt)
-		}
+		require.True(t, ok, "a non-case statement %T appears in the switch body", stmt)
 		if clause.List == nil {
-			t.Fatal("the capability-setting switch must not have a default branch; the case set should equal the optional list exactly")
+			require.FailNow(t, "the capability-setting switch must not have a default branch; the case set should equal the optional list exactly")
 		}
-		if len(clause.List) != 1 {
-			t.Fatalf("each case must have exactly one symbol literal, got %d", len(clause.List))
-		}
+		require.Len(t, clause.List, 1, "each case must have exactly one symbol literal, got %d", len(clause.List))
 		lit, ok := clause.List[0].(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
-			t.Fatalf("the case value must be a string literal, got %T", clause.List[0])
-		}
+		require.True(t, ok, "the case value must be a string literal, got %T", clause.List[0])
+		require.Equal(t, token.STRING, lit.Kind, "the case value must be a string literal, got %T", clause.List[0])
 		symbol, err := strconv.Unquote(lit.Value)
-		if err != nil {
-			t.Fatalf("case value %s is not a valid string literal: %v", lit.Value, err)
-		}
-		if _, dup := got[symbol]; dup {
-			t.Errorf("case %s appears more than once", symbol)
-		}
-		if len(clause.Body) != 1 {
-			t.Fatalf("the body of case %s must be exactly one assignment, got %d", symbol, len(clause.Body))
-		}
+		require.NoError(t, err, "case value %s is not a valid string literal", lit.Value)
+		assert.NotContains(t, got, symbol, "case %s appears more than once", symbol)
+		require.Len(t, clause.Body, 1, "the body of case %s must be exactly one assignment, got %d", symbol, len(clause.Body))
 		assign, ok := clause.Body[0].(*ast.AssignStmt)
-		if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 || !isIdent(assign.Rhs[0], "true") {
-			t.Fatalf("the body of case %s must be the single assignment caps.<field> = true", symbol)
-		}
+		require.True(t, ok, "the body of case %s must be the single assignment caps.<field> = true", symbol)
+		require.Len(t, assign.Lhs, 1, "the body of case %s must be the single assignment caps.<field> = true", symbol)
+		require.Len(t, assign.Rhs, 1, "the body of case %s must be the single assignment caps.<field> = true", symbol)
+		require.True(t, isIdent(assign.Rhs[0], "true"), "the body of case %s must be the single assignment caps.<field> = true", symbol)
 		sel, ok := assign.Lhs[0].(*ast.SelectorExpr)
-		if !ok || !isIdent(sel.X, "caps") {
-			t.Fatalf("the assignment target of case %s must be caps.<field>", symbol)
-		}
+		require.True(t, ok, "the assignment target of case %s must be caps.<field>", symbol)
+		require.True(t, isIdent(sel.X, "caps"), "the assignment target of case %s must be caps.<field>", symbol)
 		got[symbol] = sel.Sel.Name
 	}
 	for symbol, field := range expectedCapabilityFields {
 		actual, ok := got[symbol]
-		if !ok {
-			t.Errorf("the capability-setting switch is missing a case for optional symbol %q", symbol)
+		if !assert.True(t, ok, "the capability-setting switch is missing a case for optional symbol %q", symbol) {
 			continue
 		}
-		if actual != field {
-			t.Errorf("case %q sets field = %q, want %q", symbol, actual, field)
-		}
+		assert.Equal(t, field, actual, "case %q sets field = %q, want %q", symbol, actual, field)
 	}
 	for symbol := range got {
-		if _, ok := expectedCapabilityFields[symbol]; !ok {
-			t.Errorf("the capability-setting switch contains symbol %q outside the optional list", symbol)
-		}
+		assert.Contains(t, expectedCapabilityFields, symbol, "the capability-setting switch contains symbol %q outside the optional list", symbol)
 	}
 }
 
@@ -802,13 +658,9 @@ func TestCapabilitySwitchMatchesOptionalSpecs(t *testing.T) {
 //     只能经方法读取。
 func TestNativePackageExportsNoRawFunctions(t *testing.T) {
 	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("os.Getwd failed, cannot locate the package directory: %v", err)
-	}
+	require.NoError(t, err, "os.Getwd failed, cannot locate the package directory")
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("failed to read the package directory %s: %v", dir, err)
-	}
+	require.NoError(t, err, "failed to read the package directory %s", dir)
 	var names []string
 	for _, entry := range entries {
 		name := entry.Name()
@@ -817,9 +669,7 @@ func TestNativePackageExportsNoRawFunctions(t *testing.T) {
 		}
 		names = append(names, name)
 	}
-	if len(names) == 0 {
-		t.Fatal("no non-test Go source files found in the package directory")
-	}
+	require.NotEmpty(t, names, "no non-test Go source files found in the package directory")
 
 	seenStructs := map[string]bool{}
 	for _, name := range names {
@@ -843,9 +693,7 @@ func TestNativePackageExportsNoRawFunctions(t *testing.T) {
 								kind = "const"
 							}
 							for _, id := range vs.Names {
-								if ast.IsExported(id.Name) {
-									t.Errorf("exported package-level %s %q has an explicit func type; copyable raw function variables must not appear in the public layer", kind, id.Name)
-								}
+								assert.False(t, ast.IsExported(id.Name), "exported package-level %s %q has an explicit func type; copyable raw function variables must not appear in the public layer", kind, id.Name)
 							}
 						}
 					case token.TYPE:
@@ -861,18 +709,14 @@ func TestNativePackageExportsNoRawFunctions(t *testing.T) {
 									continue
 								}
 								for _, id := range field.Names {
-									if exportedType && ast.IsExported(id.Name) {
-										t.Errorf("exported field %q of exported struct %s has a func type; copyable raw functions must not be exported to the public layer", ts.Name.Name, id.Name)
-									}
+									assert.False(t, exportedType && ast.IsExported(id.Name), "exported field %q of exported struct %s has a func type; copyable raw functions must not be exported to the public layer", id.Name, ts.Name.Name)
 								}
 							}
 							if ts.Name.Name == "APITable" || ts.Name.Name == "Capabilities" {
 								seenStructs[ts.Name.Name] = true
 								for _, field := range st.Fields.List {
 									for _, id := range field.Names {
-										if ast.IsExported(id.Name) {
-											t.Errorf("exported struct %s must not have any exported fields, got %q", ts.Name.Name, id.Name)
-										}
+										assert.False(t, ast.IsExported(id.Name), "exported struct %s must not have any exported fields, got %q", ts.Name.Name, id.Name)
 									}
 								}
 							}
@@ -883,16 +727,13 @@ func TestNativePackageExportsNoRawFunctions(t *testing.T) {
 						continue
 					}
 					for _, result := range d.Type.Results.List {
-						if _, isFunc := result.Type.(*ast.FuncType); isFunc {
-							t.Errorf("exported function/method %q has a func result type; copyable raw functions must not be exported to the public layer", d.Name.Name)
-						}
+						_, isFunc := result.Type.(*ast.FuncType)
+						assert.False(t, isFunc, "exported function/method %q has a func result type; copyable raw functions must not be exported to the public layer", d.Name.Name)
 					}
 				}
 			}
 		})
 	}
 
-	if !seenStructs["APITable"] || !seenStructs["Capabilities"] {
-		t.Errorf("both read-only publication types APITable and Capabilities must exist in the package, found %v", seenStructs)
-	}
+	assert.True(t, seenStructs["APITable"] && seenStructs["Capabilities"], "both read-only publication types APITable and Capabilities must exist in the package, found %v", seenStructs)
 }

@@ -8,10 +8,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/ebitengine/purego"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeRegisterCall 记录一次注册调用:target 是传入注册器的字段指针,
@@ -81,7 +82,7 @@ func expectApplicableNames(t *testing.T) []string {
 	t.Helper()
 	names, ok := expectedApplicableSymbols[runtime.GOOS]
 	if !ok {
-		t.Fatalf("platform %s lacks a standalone applicable-symbol expectation table", runtime.GOOS)
+		require.FailNow(t, "platform %s lacks a standalone applicable-symbol expectation table", runtime.GOOS)
 	}
 	return names
 }
@@ -92,9 +93,7 @@ func mustOpenLibrary(t *testing.T, fake *fakePrimitives) *Library {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "libMaaCore.so")
 	lib, err := newFakeLoader(fake).Open(path)
-	if err != nil {
-		t.Fatalf("Open(%q) returned an unexpected error: %v", path, err)
-	}
+	require.NoError(t, err, "Open(%q) returned an unexpected error", path)
 	return lib
 }
 
@@ -131,48 +130,31 @@ func TestResolveReportsAllMissingRequiredSymbols(t *testing.T) {
 
 	reg := &fakeRegistrar{}
 	table, err := resolveAndRegister(lib, reg)
-	if table != nil {
-		t.Fatalf("must not publish the API table when required symbols are missing, got %+v", table)
-	}
-	if err == nil {
-		t.Fatal("an error must be returned when required symbols are missing")
-	}
+	require.Nil(t, table, "must not publish the API table when required symbols are missing, got %+v", table)
+	require.Error(t, err, "an error must be returned when required symbols are missing")
 	var agg AggregateError
-	if !errors.As(err, &agg) {
-		t.Fatalf("errors.As did not yield an AggregateError, got %T: %v", err, err)
-	}
-	if len(agg) != 2 {
-		t.Fatalf("aggregate error item count = %d, want 2:\n%v", len(agg), err)
-	}
+	require.ErrorAs(t, err, &agg, "errors.As did not yield an AggregateError, got %T: %v", err, err)
+	require.Len(t, agg, 2, "aggregate error item count = %d, want 2:\n%v", len(agg), err)
 	want := map[string]error{
 		"AsstCreateEx":   sentinelCreateEx,
 		"AsstGetVersion": sentinelVersion,
 	}
 	for _, item := range agg {
 		var sle *SymbolLookupError
-		if !errors.As(item, &sle) {
-			t.Fatalf("aggregate item %T is not a *SymbolLookupError: %v", item, item)
-		}
+		require.ErrorAs(t, item, &sle, "aggregate item %T is not a *SymbolLookupError: %v", item, item)
 		wantErr, ok := want[sle.Symbol]
-		if !ok {
-			t.Errorf("aggregate item symbol %q is not in the expected missing set", sle.Symbol)
+		if !assert.True(t, ok, "aggregate item symbol %q is not in the expected missing set", sle.Symbol) {
 			continue
 		}
-		if !errors.Is(item, wantErr) {
-			t.Errorf("the error chain for symbol %q did not reach the injected underlying sentinel", sle.Symbol)
-		}
+		assert.ErrorIs(t, item, wantErr, "the error chain for symbol %q did not reach the injected underlying sentinel", sle.Symbol)
 		delete(want, sle.Symbol)
 	}
-	if len(want) != 0 {
-		keys := make([]string, 0, len(want))
-		for symbol := range want {
-			keys = append(keys, symbol)
-		}
-		t.Errorf("aggregate error is missing symbols: %v", keys)
+	keys := make([]string, 0, len(want))
+	for symbol := range want {
+		keys = append(keys, symbol)
 	}
-	if n := len(reg.calls); n != 0 {
-		t.Errorf("the registrar must not be called while required items are unsatisfied, got %d calls", n)
-	}
+	assert.Empty(t, keys, "aggregate error is missing symbols: %v", keys)
+	assert.Empty(t, reg.calls, "the registrar must not be called while required items are unsatisfied, got %d calls", len(reg.calls))
 }
 
 // TestResolveTreatsNullAddressAsLookupFailure 验证:必需符号解析出
@@ -190,48 +172,27 @@ func TestResolveTreatsNullAddressAsLookupFailure(t *testing.T) {
 
 	reg := &fakeRegistrar{}
 	table, err := resolveAndRegister(lib, reg)
-	if table != nil {
-		t.Fatalf("must not publish the API table when required symbols are unavailable, got %+v", table)
-	}
-	if err == nil {
-		t.Fatal("an error must be returned when required symbols are unavailable")
-	}
+	require.Nil(t, table, "must not publish the API table when required symbols are unavailable, got %+v", table)
+	require.Error(t, err, "an error must be returned when required symbols are unavailable")
 	var agg AggregateError
-	if !errors.As(err, &agg) {
-		t.Fatalf("errors.As did not yield an AggregateError, got %T: %v", err, err)
-	}
-	if len(agg) != 2 {
-		t.Fatalf("aggregate error item count = %d, want 2:\n%v", len(agg), err)
-	}
+	require.ErrorAs(t, err, &agg, "errors.As did not yield an AggregateError, got %T: %v", err, err)
+	require.Len(t, agg, 2, "aggregate error item count = %d, want 2:\n%v", len(agg), err)
 
 	bySymbol := make(map[string]error, len(agg))
 	for _, item := range agg {
 		var sle *SymbolLookupError
-		if !errors.As(item, &sle) {
-			t.Fatalf("aggregate item %T is not a *SymbolLookupError: %v", item, item)
-		}
+		require.ErrorAs(t, item, &sle, "aggregate item %T is not a *SymbolLookupError: %v", item, item)
 		bySymbol[sle.Symbol] = item
 	}
 	nullItem, ok := bySymbol["AsstCreateEx"]
-	if !ok {
-		t.Fatalf("the aggregate is missing the null-address item AsstCreateEx:\n%v", err)
-	}
-	if !errors.Is(nullItem, errSymbolNullAddress) {
-		t.Errorf("the error chain for AsstCreateEx does not identify the null-address cause")
-	}
+	require.True(t, ok, "the aggregate is missing the null-address item AsstCreateEx:\n%v", err)
+	assert.ErrorIs(t, nullItem, errSymbolNullAddress, "the error chain for AsstCreateEx does not identify the null-address cause")
 	versionItem, ok := bySymbol["AsstGetVersion"]
-	if !ok {
-		t.Fatalf("the aggregate is missing the lookup-failure item AsstGetVersion:\n%v", err)
-	}
-	if !errors.Is(versionItem, sentinel) {
-		t.Errorf("the error chain for AsstGetVersion did not reach the injected sentinel")
-	}
-	if errors.Is(nullItem, sentinel) || errors.Is(versionItem, errSymbolNullAddress) {
-		t.Errorf("null-address and lookup-failure causes must not be confused with each other")
-	}
-	if n := len(reg.calls); n != 0 {
-		t.Errorf("the registrar must not be called while required items are unsatisfied, got %d calls", n)
-	}
+	require.True(t, ok, "the aggregate is missing the lookup-failure item AsstGetVersion:\n%v", err)
+	assert.ErrorIs(t, versionItem, sentinel, "the error chain for AsstGetVersion did not reach the injected sentinel")
+	assert.NotErrorIs(t, nullItem, sentinel, "null-address and lookup-failure causes must not be confused with each other")
+	assert.NotErrorIs(t, versionItem, errSymbolNullAddress, "null-address and lookup-failure causes must not be confused with each other")
+	assert.Empty(t, reg.calls, "the registrar must not be called while required items are unsatisfied, got %d calls", len(reg.calls))
 }
 
 // TestOptionalMissingClosesCapabilityOnly 验证:可选符号缺失(查找
@@ -268,26 +229,18 @@ func TestOptionalMissingClosesCapabilityOnly(t *testing.T) {
 
 			reg := &fakeRegistrar{}
 			table, err := resolveAndRegister(lib, reg)
-			if err != nil {
-				t.Fatalf("a missing optional must not fail the transaction: %v", err)
-			}
-			if table == nil {
-				t.Fatal("the API table must still be published when an optional is missing")
-			}
+			require.NoError(t, err, "a missing optional must not fail the transaction")
+			require.NotNil(t, table, "the API table must still be published when an optional is missing")
 
 			caps := table.Capabilities()
 			// Windows 的 AsstAsyncAttachWindow 在假库中仍然存在,
 			// 只有本用例移除的两个可选项应关闭。
 			wantAttachWindow := runtime.GOOS == "windows"
-			if caps.Create() || caps.ImageBgr() || caps.AsyncAttachWindow() != wantAttachWindow {
-				t.Errorf("optional capabilities mismatch, got Create=%v ImageBgr=%v AsyncAttachWindow=%v; want false,false,%v",
-					caps.Create(), caps.ImageBgr(), caps.AsyncAttachWindow(), wantAttachWindow)
-			}
+			assert.False(t, caps.Create(), "optional capabilities mismatch, got Create=%v, want false", caps.Create())
+			assert.False(t, caps.ImageBgr(), "optional capabilities mismatch, got ImageBgr=%v, want false", caps.ImageBgr())
+			assert.Equal(t, wantAttachWindow, caps.AsyncAttachWindow(), "optional capabilities mismatch, got AsyncAttachWindow=%v, want %v", caps.AsyncAttachWindow(), wantAttachWindow)
 			wantCalls := len(expectApplicableNames(t)) - missingO
-			if n := len(reg.calls); n != wantCalls {
-				t.Errorf("registrar call count = %d, want %d (%d applicable items minus %d missing optionals)",
-					n, wantCalls, len(expectApplicableNames(t)), missingO)
-			}
+			assert.Len(t, reg.calls, wantCalls, "registrar call count = %d, want %d (%d applicable items minus %d missing optionals)", len(reg.calls), wantCalls, len(expectApplicableNames(t)), missingO)
 
 			// 缺失的两个可选项字段为 nil;非 Windows 平台上不适用
 			// 的 AsyncAttachWindow 同样为 nil,其余适用字段全部非 nil。
@@ -296,13 +249,9 @@ func TestOptionalMissingClosesCapabilityOnly(t *testing.T) {
 				expectNil["AsyncAttachWindow"] = true
 			}
 			nilFields := apiNilFields(t, table.funcs())
-			if len(nilFields) != len(expectNil) {
-				t.Errorf("nil field count = %d, want %d: %v", len(nilFields), len(expectNil), nilFields)
-			}
+			assert.Len(t, nilFields, len(expectNil), "nil field count = %d, want %d: %v", len(nilFields), len(expectNil), nilFields)
 			for field := range expectNil {
-				if !nilFields[field] {
-					t.Errorf("field %s must be nil", field)
-				}
+				assert.Contains(t, nilFields, field, "field %s must be nil", field)
 			}
 		})
 	}
@@ -320,56 +269,36 @@ func TestExcludedAndForeignPlatformSymbolsNotLookedUp(t *testing.T) {
 	want := expectApplicableNames(t)
 	reg := &fakeRegistrar{}
 	table, err := resolveAndRegister(lib, reg)
-	if err != nil {
-		t.Fatalf("the transaction must not fail when all symbols are present: %v", err)
-	}
-	if table == nil {
-		t.Fatal("the API table must be published when all symbols are present")
-	}
+	require.NoError(t, err, "the transaction must not fail when all symbols are present")
+	require.NotNil(t, table, "the API table must be published when all symbols are present")
 
 	// 查找集合:恰好适用符号数量,不多不少、无重复。
 	got := fake.lookupNames
-	if len(got) != len(want) {
-		t.Fatalf("lookup count = %d, want %d (actual %v)", len(got), len(want), got)
-	}
+	require.Len(t, got, len(want), "lookup count = %d, want %d (actual %v)", len(got), len(want), got)
 	gotSet := make(map[string]bool, len(got))
 	for _, name := range got {
 		gotSet[name] = true
 	}
 	for _, name := range want {
-		if !gotSet[name] {
-			t.Errorf("applicable symbol %s was not looked up", name)
-		}
+		assert.Contains(t, gotSet, name, "applicable symbol %s was not looked up", name)
 	}
 	for _, excluded := range []string{"AsstConnect", "AsstAttachWindow"} {
-		if gotSet[excluded] {
-			t.Errorf("excluded symbol %s must not be looked up", excluded)
-		}
+		assert.NotContains(t, gotSet, excluded, "excluded symbol %s must not be looked up", excluded)
 	}
-	if runtime.GOOS != "windows" && gotSet["AsstAsyncAttachWindow"] {
-		t.Errorf("non-Windows platforms must not look up AsstAsyncAttachWindow")
+	if runtime.GOOS != "windows" {
+		assert.NotContains(t, gotSet, "AsstAsyncAttachWindow", "non-Windows platforms must not look up AsstAsyncAttachWindow")
 	}
 
 	caps := table.Capabilities()
-	if !caps.Create() || !caps.ImageBgr() {
-		t.Errorf("present optionals must set their capabilities, got Create=%v ImageBgr=%v", caps.Create(), caps.ImageBgr())
-	}
-	if caps.AsyncAttachWindow() != (runtime.GOOS == "windows") {
-		t.Errorf("AsyncAttachWindow capability = %v, want %v (platform %s)",
-			caps.AsyncAttachWindow(), runtime.GOOS == "windows", runtime.GOOS)
-	}
+	assert.True(t, caps.Create(), "present optionals must set their capabilities, got Create=%v", caps.Create())
+	assert.True(t, caps.ImageBgr(), "present optionals must set their capabilities, got ImageBgr=%v", caps.ImageBgr())
+	assert.Equal(t, runtime.GOOS == "windows", caps.AsyncAttachWindow(), "AsyncAttachWindow capability = %v, want %v (platform %s)", caps.AsyncAttachWindow(), runtime.GOOS == "windows", runtime.GOOS)
 
-	if n := len(reg.calls); n != len(want) {
-		t.Fatalf("registrar call count = %d, want %d", n, len(want))
-	}
+	require.Len(t, reg.calls, len(want), "registrar call count = %d, want %d", len(reg.calls), len(want))
 	targets := make(map[any]bool, len(reg.calls))
 	for _, call := range reg.calls {
-		if call.addr != addr {
-			t.Errorf("registered address = %#x, want %#x (the resolved address must be passed through as-is)", call.addr, addr)
-		}
-		if targets[call.target] {
-			t.Errorf("the same field was registered twice: %v", call.target)
-		}
+		assert.Equal(t, addr, call.addr, "registered address = %#x, want %#x (the resolved address must be passed through as-is)", call.addr, addr)
+		assert.False(t, targets[call.target], "the same field was registered twice: %v", call.target)
 		targets[call.target] = true
 	}
 
@@ -380,13 +309,9 @@ func TestExcludedAndForeignPlatformSymbolsNotLookedUp(t *testing.T) {
 		expectNil["AsyncAttachWindow"] = true
 	}
 	nilFields := apiNilFields(t, table.funcs())
-	if len(nilFields) != len(expectNil) {
-		t.Errorf("nil field count = %d, want %d: %v", len(nilFields), len(expectNil), nilFields)
-	}
+	assert.Len(t, nilFields, len(expectNil), "nil field count = %d, want %d: %v", len(nilFields), len(expectNil), nilFields)
 	for field := range expectNil {
-		if !nilFields[field] {
-			t.Errorf("field %s must be nil", field)
-		}
+		assert.Contains(t, nilFields, field, "field %s must be nil", field)
 	}
 }
 
@@ -426,42 +351,20 @@ func TestRegistrationPanicKeepsContextAndDiscardsTable(t *testing.T) {
 			reg := &fakeRegistrar{panicOnNth: tc.panicOnNth, panicValue: tc.panicValue}
 
 			table, err := resolveAndRegister(lib, reg)
-			if table != nil {
-				t.Fatalf("must not publish the API table after a registration panic, got %+v", table)
-			}
-			if err == nil {
-				t.Fatal("a registration panic must return an error")
-			}
+			require.Nil(t, table, "must not publish the API table after a registration panic, got %+v", table)
+			require.Error(t, err, "a registration panic must return an error")
 			var fre *FunctionRegistrationError
-			if !errors.As(err, &fre) {
-				t.Fatalf("errors.As did not yield a *FunctionRegistrationError, got %T: %v", err, err)
-			}
-			if n := len(reg.calls); n != tc.panicOnNth {
-				t.Errorf("registrar call count = %d, want %d (aborted at item %d)", n, tc.panicOnNth, tc.panicOnNth)
-			}
-			if fre.Symbol != tc.wantSymbol {
-				t.Errorf("Symbol = %q, want %q", fre.Symbol, tc.wantSymbol)
-			}
-			if fre.Signature != tc.wantSig {
-				t.Errorf("Signature = %q, want %q", fre.Signature, tc.wantSig)
-			}
-			if fre.Err == nil {
-				t.Fatal("Err must be non-nil")
-			}
+			require.ErrorAs(t, err, &fre, "errors.As did not yield a *FunctionRegistrationError, got %T: %v", err, err)
+			assert.Len(t, reg.calls, tc.panicOnNth, "registrar call count = %d, want %d (aborted at item %d)", len(reg.calls), tc.panicOnNth, tc.panicOnNth)
+			assert.Equal(t, tc.wantSymbol, fre.Symbol, "Symbol = %q, want %q", fre.Symbol, tc.wantSymbol)
+			assert.Equal(t, tc.wantSig, fre.Signature, "Signature = %q, want %q", fre.Signature, tc.wantSig)
+			require.Error(t, fre.Err, "Err must be non-nil")
 			if wantErr, isErr := tc.panicValue.(error); isErr {
-				if !errors.Is(err, wantErr) {
-					t.Errorf("an error panic value must stay on the error chain")
-				}
-				if fre.Err != wantErr {
-					t.Errorf("an error panic value must be used directly as Err (no extra wrapping), got %T: %v", fre.Err, fre.Err)
-				}
+				assert.ErrorIs(t, err, wantErr, "an error panic value must stay on the error chain")
+				assert.True(t, fre.Err == wantErr, "an error panic value must be used directly as Err (no extra wrapping), got %T: %v", fre.Err, fre.Err)
 			} else {
-				if !strings.Contains(fre.Err.Error(), tc.panicValue.(string)) {
-					t.Errorf("diagnostic text %q does not contain the panic value %q", fre.Err.Error(), tc.panicValue)
-				}
-				if errors.Is(err, panicSentinel) {
-					t.Errorf("the diagnostic error converted from a non-error panic must not be associated with the sentinel")
-				}
+				assert.Contains(t, fre.Err.Error(), tc.panicValue.(string), "diagnostic text %q does not contain the panic value %q", fre.Err.Error(), tc.panicValue)
+				assert.NotErrorIs(t, err, panicSentinel, "the diagnostic error converted from a non-error panic must not be associated with the sentinel")
 			}
 		})
 	}
@@ -475,32 +378,17 @@ func TestEachTransactionPublishesDistinctReadOnlyTable(t *testing.T) {
 	lib := mustOpenLibrary(t, fake)
 
 	first, err := resolveAndRegister(lib, &fakeRegistrar{})
-	if err != nil {
-		t.Fatalf("the first transaction failed unexpectedly: %v", err)
-	}
+	require.NoError(t, err, "the first transaction failed unexpectedly")
 	second, err := resolveAndRegister(lib, &fakeRegistrar{})
-	if err != nil {
-		t.Fatalf("the second transaction failed unexpectedly: %v", err)
-	}
-	if first == second {
-		t.Fatal("the two transactions must publish different APITable pointers")
-	}
-	if first.funcs() == second.funcs() {
-		t.Fatal("the two transactions must each build an independent raw API table")
-	}
+	require.NoError(t, err, "the second transaction failed unexpectedly")
+	require.NotSame(t, first, second, "the two transactions must publish different APITable pointers")
+	require.NotSame(t, first.funcs(), second.funcs(), "the two transactions must each build an independent raw API table")
 	for i, table := range []*APITable{first, second} {
-		if table.funcs() == nil {
-			t.Errorf("result #%d must hold a raw API table", i+1)
-		}
+		assert.NotNil(t, table.funcs(), "result #%d must hold a raw API table", i+1)
 		caps := table.Capabilities()
-		if !caps.Create() || !caps.ImageBgr() {
-			t.Errorf("result #%d capability snapshot should reflect the present optionals: Create=%v ImageBgr=%v",
-				i+1, caps.Create(), caps.ImageBgr())
-		}
-		if caps.AsyncAttachWindow() != (runtime.GOOS == "windows") {
-			t.Errorf("result #%d AsyncAttachWindow capability = %v, want %v",
-				i+1, caps.AsyncAttachWindow(), runtime.GOOS == "windows")
-		}
+		assert.True(t, caps.Create(), "result #%d capability snapshot should reflect the present optionals: Create=%v", i+1, caps.Create())
+		assert.True(t, caps.ImageBgr(), "result #%d capability snapshot should reflect the present optionals: ImageBgr=%v", i+1, caps.ImageBgr())
+		assert.Equal(t, runtime.GOOS == "windows", caps.AsyncAttachWindow(), "result #%d AsyncAttachWindow capability = %v, want %v", i+1, caps.AsyncAttachWindow(), runtime.GOOS == "windows")
 	}
 }
 
@@ -513,19 +401,13 @@ func TestPuregoRegistrarBindsResolvedAddresses(t *testing.T) {
 	lib := mustOpenLibrary(t, fake)
 
 	table, err := resolveAndRegister(lib, puregoRegistrar{})
-	if err != nil {
-		t.Fatalf("the production registration primitive failed to bind fake addresses: %v", err)
-	}
-	if table == nil {
-		t.Fatal("the transaction must publish the API table")
-	}
+	require.NoError(t, err, "the production registration primitive failed to bind fake addresses")
+	require.NotNil(t, table, "the transaction must publish the API table")
 
 	want := expectApplicableNames(t)
 	v := reflect.ValueOf(table.funcs()).Elem()
 	typ := v.Type()
-	if typ.NumField() != 28 {
-		t.Fatalf("api field count = %d, want 28 (frozen declarations)", typ.NumField())
-	}
+	require.Equal(t, 28, typ.NumField(), "api field count = %d, want 28 (frozen declarations)", typ.NumField())
 	registered := 0
 	for i := 0; i < typ.NumField(); i++ {
 		name := typ.Field(i).Name
@@ -538,23 +420,17 @@ func TestPuregoRegistrarBindsResolvedAddresses(t *testing.T) {
 			}
 		}
 		if v.Field(i).IsNil() {
-			if applicable {
-				t.Errorf("field %s of applicable symbol %s must be bound", symbol, name)
-			}
+			assert.False(t, applicable, "field %s of applicable symbol %s must be bound", symbol, name)
 			continue
 		}
-		if !applicable {
-			t.Errorf("field %s of non-applicable symbol %s must not be bound", symbol, name)
+		if !assert.True(t, applicable, "field %s of non-applicable symbol %s must not be bound", symbol, name) {
 			continue
 		}
 		registered++
 	}
-	if registered != len(want) {
-		t.Errorf("bound field count = %d, want %d", registered, len(want))
-	}
+	assert.Equal(t, len(want), registered, "bound field count = %d, want %d", registered, len(want))
 
 	caps := table.Capabilities()
-	if !caps.Create() || !caps.ImageBgr() {
-		t.Errorf("capability snapshot should reflect the present optionals: Create=%v ImageBgr=%v", caps.Create(), caps.ImageBgr())
-	}
+	assert.True(t, caps.Create(), "capability snapshot should reflect the present optionals: Create=%v", caps.Create())
+	assert.True(t, caps.ImageBgr(), "capability snapshot should reflect the present optionals: ImageBgr=%v", caps.ImageBgr())
 }

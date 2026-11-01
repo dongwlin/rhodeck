@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/ffitest"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // 子进程模式名:本包自验证用例的注册表键,经 ffitest.ChildModeEnv
@@ -110,20 +112,12 @@ func TestRunFreshProcessPerCase(t *testing.T) {
 	pids := make([]int, 0, 2)
 	for i := 1; i <= 2; i++ {
 		out := ffitest.Run(t, ffitest.Options{Mode: modeOK, Timeout: childTimeout})
-		if out.Err != nil {
-			t.Fatalf("Run #%d failed (the success path must not fail):\n%s", i, out.Diagnostics())
-		}
-		if out.TimedOut || out.Signaled {
-			t.Fatalf("Run #%d must not report timeout/signal death:\n%s", i, out.Diagnostics())
-		}
-		if !strings.Contains(out.Stdout, okMarker) {
-			t.Fatalf("Run #%d exited 0 but stdout is missing marker %s:\n%s", i, okMarker, out.Diagnostics())
-		}
+		require.NoError(t, out.Err, "Run #%d failed (the success path must not fail):\n%s", i, out.Diagnostics())
+		require.False(t, out.TimedOut || out.Signaled, "Run #%d must not report timeout/signal death:\n%s", i, out.Diagnostics())
+		require.Contains(t, out.Stdout, okMarker, "Run #%d exited 0 but stdout is missing marker %s:\n%s", i, okMarker, out.Diagnostics())
 		pids = append(pids, parseChildPID(t, out.Stdout))
 	}
-	if pids[0] == pids[1] {
-		t.Fatalf("two consecutive Runs got the same child PID (%d), violating the fresh-process-per-case contract", pids[0])
-	}
+	require.NotEqual(t, pids[0], pids[1], "two consecutive Runs got the same child PID (%d), violating the fresh-process-per-case contract", pids[0])
 }
 
 // TestRunAbnormalExitCode 验收异常退出:os.Exit(42) 被原样报告为失败
@@ -131,18 +125,11 @@ func TestRunFreshProcessPerCase(t *testing.T) {
 // 可辨识证据。
 func TestRunAbnormalExitCode(t *testing.T) {
 	out := ffitest.Run(t, ffitest.Options{Mode: modeExit, Timeout: childTimeout})
-	if out.Err == nil {
-		t.Fatalf("the exit-code child ended via os.Exit(42), must be reported as a failure:\n%s", out.Diagnostics())
-	}
-	if out.ExitCode != 42 {
-		t.Fatalf("ExitCode = %d, want 42:\n%s", out.ExitCode, out.Diagnostics())
-	}
-	if out.Signaled || out.TimedOut {
-		t.Fatalf("a plain non-zero exit must not be misreported as signal death/timeout:\n%s", out.Diagnostics())
-	}
-	if !strings.Contains(out.Stdout, exitMarker) || !strings.Contains(out.Stderr, exitMarker) {
-		t.Fatalf("the abnormal exit's stdout/stderr must preserve recognizable output:\n%s", out.Diagnostics())
-	}
+	require.Error(t, out.Err, "the exit-code child ended via os.Exit(42), must be reported as a failure:\n%s", out.Diagnostics())
+	require.Equal(t, 42, out.ExitCode, "ExitCode = %d, want 42:\n%s", out.ExitCode, out.Diagnostics())
+	require.False(t, out.Signaled || out.TimedOut, "a plain non-zero exit must not be misreported as signal death/timeout:\n%s", out.Diagnostics())
+	require.True(t, strings.Contains(out.Stdout, exitMarker) && strings.Contains(out.Stderr, exitMarker),
+		"the abnormal exit's stdout/stderr must preserve recognizable output:\n%s", out.Diagnostics())
 }
 
 // TestRunTimeoutKillReportedAsFailure 验收超时语义:挂起子进程在 3s
@@ -153,24 +140,14 @@ func TestRunAbnormalExitCode(t *testing.T) {
 func TestRunTimeoutKillReportedAsFailure(t *testing.T) {
 	const timeout = 3 * time.Second
 	out := ffitest.Run(t, ffitest.Options{Mode: modeHang, Timeout: timeout})
-	if out.Err == nil {
-		t.Fatalf("the hanging child must be reported as a failure after the %s timeout, got exit code 0:\n%s", timeout, out.Diagnostics())
-	}
-	if !out.TimedOut {
-		t.Fatalf("the failure must be identifiable as a timeout kill (TimedOut=false, err=%v):\n%s", out.Err, out.Diagnostics())
-	}
-	if out.ExitCode == 0 {
-		t.Fatalf("an externally killed child must not report a successful exit:\n%s", out.Diagnostics())
-	}
-	if runtime.GOOS == "windows" && out.Signaled {
-		t.Fatalf("a Windows timeout kill must not report Unix signal death:\n%s", out.Diagnostics())
-	}
-	if runtime.GOOS != "windows" && !out.Signaled {
-		t.Fatalf("the timeout kill must kill the child via a signal (Signaled=false, err=%v):\n%s", out.Err, out.Diagnostics())
-	}
-	if !strings.Contains(out.Stdout, hangMarker) {
-		t.Fatalf("timeout diagnostics must preserve the output the child already produced:\n%s", out.Diagnostics())
-	}
+	require.Error(t, out.Err, "the hanging child must be reported as a failure after the %s timeout, got exit code 0:\n%s", timeout, out.Diagnostics())
+	require.True(t, out.TimedOut, "the failure must be identifiable as a timeout kill (TimedOut=false, err=%v):\n%s", out.Err, out.Diagnostics())
+	require.NotEqual(t, 0, out.ExitCode, "an externally killed child must not report a successful exit:\n%s", out.Diagnostics())
+	require.False(t, runtime.GOOS == "windows" && out.Signaled,
+		"a Windows timeout kill must not report Unix signal death:\n%s", out.Diagnostics())
+	require.False(t, runtime.GOOS != "windows" && !out.Signaled,
+		"the timeout kill must kill the child via a signal (Signaled=false, err=%v):\n%s", out.Err, out.Diagnostics())
+	require.Contains(t, out.Stdout, hangMarker, "timeout diagnostics must preserve the output the child already produced:\n%s", out.Diagnostics())
 	t.Logf("the hanging child was externally killed on the %s timeout as expected; the executor reported a failure and kept diagnostics:\n%s",
 		timeout, out.Diagnostics())
 }
@@ -181,19 +158,12 @@ func TestRunTimeoutKillReportedAsFailure(t *testing.T) {
 func TestRunUnknownModeFailsFast(t *testing.T) {
 	const missing = "no-such-mode-in-ffitest"
 	out := ffitest.Run(t, ffitest.Options{Mode: missing, Timeout: childTimeout})
-	if out.Err == nil {
-		t.Fatalf("an unknown mode must be reported as a failure:\n%s", out.Diagnostics())
-	}
-	if out.ExitCode != ffitest.ExitUnknownMode {
-		t.Fatalf("unknown mode exit code = %d, want %d:\n%s",
-			out.ExitCode, ffitest.ExitUnknownMode, out.Diagnostics())
-	}
-	if !strings.Contains(out.Stderr, missing) {
-		t.Fatalf("the unknown mode's stderr diagnostics must contain the mode name %q:\n%s", missing, out.Diagnostics())
-	}
-	if out.Signaled || out.TimedOut {
-		t.Fatalf("an unknown mode is a controlled fail-fast exit and must not be misreported as signal death/timeout:\n%s", out.Diagnostics())
-	}
+	require.Error(t, out.Err, "an unknown mode must be reported as a failure:\n%s", out.Diagnostics())
+	require.Equal(t, ffitest.ExitUnknownMode, out.ExitCode, "unknown mode exit code = %d, want %d:\n%s",
+		out.ExitCode, ffitest.ExitUnknownMode, out.Diagnostics())
+	require.Contains(t, out.Stderr, missing, "the unknown mode's stderr diagnostics must contain the mode name %q:\n%s", missing, out.Diagnostics())
+	require.False(t, out.Signaled || out.TimedOut,
+		"an unknown mode is a controlled fail-fast exit and must not be misreported as signal death/timeout:\n%s", out.Diagnostics())
 }
 
 // TestRunExtraEnvPassedThrough 验收 ExtraEnv 传递:子进程读到的变量值
@@ -204,13 +174,9 @@ func TestRunExtraEnvPassedThrough(t *testing.T) {
 		Timeout:  childTimeout,
 		ExtraEnv: map[string]string{echoEnvName: echoEnvValue},
 	})
-	if out.Err != nil {
-		t.Fatalf("echo-env child failed:\n%s", out.Diagnostics())
-	}
+	require.NoError(t, out.Err, "echo-env child failed:\n%s", out.Diagnostics())
 	want := fmt.Sprintf("%s %s=%q", echoEnvMarker, echoEnvName, echoEnvValue)
-	if !strings.Contains(out.Stdout, want) {
-		t.Fatalf("stdout does not contain %q (ExtraEnv not applied or rewritten):\n%s", want, out.Diagnostics())
-	}
+	require.Contains(t, out.Stdout, want, "stdout does not contain %q (ExtraEnv not applied or rewritten):\n%s", want, out.Diagnostics())
 }
 
 // inheritedEnvValue 与 overrideEnvValue 是 ExtraEnv 覆盖语义用例的
@@ -232,16 +198,11 @@ func TestRunExtraEnvOverridesInheritedValue(t *testing.T) {
 		Timeout:  childTimeout,
 		ExtraEnv: map[string]string{echoEnvName: overrideEnvValue},
 	})
-	if out.Err != nil {
-		t.Fatalf("echo-env child failed:\n%s", out.Diagnostics())
-	}
+	require.NoError(t, out.Err, "echo-env child failed:\n%s", out.Diagnostics())
 	want := fmt.Sprintf("%s %s=%q", echoEnvMarker, echoEnvName, overrideEnvValue)
-	if !strings.Contains(out.Stdout, want) {
-		t.Fatalf("the child should read the ExtraEnv override value %q:\n%s", overrideEnvValue, out.Diagnostics())
-	}
-	if strings.Contains(out.Stdout, inheritedEnvValue) {
-		t.Fatalf("the child read the parent-inherited value %q; the override did not take effect:\n%s", inheritedEnvValue, out.Diagnostics())
-	}
+	require.Contains(t, out.Stdout, want, "the child should read the ExtraEnv override value %q:\n%s", overrideEnvValue, out.Diagnostics())
+	require.NotContains(t, out.Stdout, inheritedEnvValue,
+		"the child read the parent-inherited value %q; the override did not take effect:\n%s", inheritedEnvValue, out.Diagnostics())
 }
 
 // TestRunChildModeEnvExclusiveOverExtraEnv 验收模式变量独占:ExtraEnv
@@ -257,13 +218,9 @@ func TestRunChildModeEnvExclusiveOverExtraEnv(t *testing.T) {
 			echoEnvName:          echoEnvValue,
 		},
 	})
-	if out.Err != nil {
-		t.Fatalf("the ChildModeEnv entry in ExtraEnv must be ignored; dispatch follows Options.Mode:\n%s", out.Diagnostics())
-	}
+	require.NoError(t, out.Err, "the ChildModeEnv entry in ExtraEnv must be ignored; dispatch follows Options.Mode:\n%s", out.Diagnostics())
 	want := fmt.Sprintf("%s %s=%q", echoEnvMarker, echoEnvName, echoEnvValue)
-	if !strings.Contains(out.Stdout, want) {
-		t.Fatalf("echo-env child exited 0 but stdout is missing the marker (dispatch may have been tampered with):\n%s", out.Diagnostics())
-	}
+	require.Contains(t, out.Stdout, want, "echo-env child exited 0 but stdout is missing the marker (dispatch may have been tampered with):\n%s", out.Diagnostics())
 }
 
 // TestRegisterContractPanics 验收 Register 的编程错误契约:重复 mode、
@@ -311,12 +268,8 @@ func TestRegisterConcurrentDistinctModes(t *testing.T) {
 	wg.Wait()
 	t.Setenv(ffitest.ChildModeEnv, "race-mode-3")
 	code, handled := ffitest.Dispatch()
-	if !handled {
-		t.Fatalf("Dispatch did not dispatch the set mode %q", ffitest.ChildModeEnv+"=race-mode-3")
-	}
-	if code != 0 {
-		t.Fatalf("race-mode-3 registered concurrently returned exit code %d via Dispatch, want 0", code)
-	}
+	require.True(t, handled, "Dispatch did not dispatch the set mode %q", ffitest.ChildModeEnv+"=race-mode-3")
+	require.Equal(t, 0, code, "race-mode-3 registered concurrently returned exit code %d via Dispatch, want 0", code)
 }
 
 // parseChildPID 从 ok 子进程的标记行提取 PID。
@@ -332,12 +285,10 @@ func parseChildPID(t *testing.T, stdout string) int {
 			continue
 		}
 		pid, err := strconv.Atoi(strings.TrimSpace(rest))
-		if err != nil {
-			t.Fatalf("the PID in the ok child's marker line is not a decimal integer %q: %v", line, err)
-		}
+		require.NoError(t, err, "the PID in the ok child's marker line is not a decimal integer %q: %v", line, err)
 		return pid
 	}
-	t.Fatalf("stdout is missing the %s pid=... marker line:\n%s", okMarker, stdout)
+	require.Fail(t, fmt.Sprintf("stdout is missing the %s pid=... marker line:\n%s", okMarker, stdout))
 	return 0
 }
 
@@ -345,11 +296,11 @@ func parseChildPID(t *testing.T, stdout string) int {
 func assertPanics(t *testing.T, what string, fn func()) {
 	t.Helper()
 	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("%s did not panic as required by the contract", what)
-		} else {
-			t.Logf("%s panicked as required by the contract: %v", what, r)
+		r := recover()
+		if !assert.NotNil(t, r, "%s did not panic as required by the contract", what) {
+			return
 		}
+		t.Logf("%s panicked as required by the contract: %v", what, r)
 	}()
 	fn()
 }

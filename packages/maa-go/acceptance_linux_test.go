@@ -26,6 +26,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // 实际安装输入不固化版本;摘要期望仅由调用方显式给出。
@@ -105,7 +107,7 @@ func requireUnpackedResources(t *testing.T) (libPath, resourceRoot string) {
 		t.Skipf("real-library admission UNVERIFIED: %v; provide %s and %s, or %s; SKIP is not a pass", unpackState.err, libPathEnv, resourceRootEnv, tarballOverrideEv)
 	}
 	if unpackState.err != nil {
-		t.Fatalf("real-library input preparation failed: %v", unpackState.err)
+		require.NoError(t, unpackState.err, "real-library input preparation failed: %v", unpackState.err)
 	}
 	r := unpackState.resources
 	t.Logf("actual installation: library SHA256=%s resource/version.json SHA256=%s tarball SHA256=%s (empty when not supplied); resource provenance is maintained by the host", r.librarySHA, r.versionSHA, r.tarballSHA)
@@ -329,7 +331,7 @@ func runCoreOpenChild(t *testing.T, timeout time.Duration, mode string, extraEnv
 	t.Helper()
 	exe, err := filepath.Abs(os.Args[0])
 	if err != nil {
-		t.Fatalf("failed to locate the test binary %q: %v", os.Args[0], err)
+		require.NoError(t, err, "failed to locate the test binary %q: %v", os.Args[0], err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -454,15 +456,16 @@ func TestRealCoreOpenSucceedsInFreshProcess(t *testing.T) {
 			userDirEnv:      userDir,
 		})
 		if out.err != nil {
-			t.Fatalf("success child run %d failed (non-zero exit/signal/timeout are all treated as failure):\n%s",
+			require.NoError(t, out.err, "success child run %d failed (non-zero exit/signal/timeout are all treated as failure):\n%s",
 				attempt, childDiagnostics(childModeSuccess, out))
 		}
 		if !strings.Contains(out.stdout, successMarker) || !strings.Contains(out.stdout, "capabilities ") {
-			t.Fatalf("success child run %d exited with exit code 0, but stdout lacks the success marker:\n%s",
+			require.True(t, strings.Contains(out.stdout, successMarker) && strings.Contains(out.stdout, "capabilities "),
+				"success child run %d exited with exit code 0, but stdout lacks the success marker:\n%s",
 				attempt, childDiagnostics(childModeSuccess, out))
 		}
 		if err := verifySuccessChildMetadata(out.stdout); err != nil {
-			t.Fatalf("success child run %d stdout metadata re-verification failed (independent of the assertions inside the child):\n%v\n%s",
+			require.NoError(t, err, "success child run %d stdout metadata re-verification failed (independent of the assertions inside the child):\n%v\n%s",
 				attempt, err, childDiagnostics(childModeSuccess, out))
 		}
 		t.Logf("success child run %d succeeded:\n%s", attempt, out.stdout)
@@ -483,11 +486,11 @@ func TestRealCoreOpenSucceedsInFreshProcess(t *testing.T) {
 func TestRealCoreMissingLibTerminatesProcessLifecycle(t *testing.T) {
 	out := runCoreOpenChild(t, missingChildTimeout, childModeMissing, nil)
 	if out.err != nil {
-		t.Fatalf("missing-lib child failed (its internal assertions did not all pass):\n%s",
+		require.NoError(t, out.err, "missing-lib child failed (its internal assertions did not all pass):\n%s",
 			childDiagnostics(childModeMissing, out))
 	}
 	if !strings.Contains(out.stdout, missingOKMarker) {
-		t.Fatalf("missing-lib child exited with exit code 0, but stdout lacks the success marker:\n%s",
+		require.Contains(t, out.stdout, missingOKMarker, "missing-lib child exited with exit code 0, but stdout lacks the success marker:\n%s",
 			childDiagnostics(childModeMissing, out))
 	}
 	t.Logf("missing-lib child internal assertions all passed:\n%s", out.stdout)
@@ -500,19 +503,19 @@ func TestRealCoreMissingLibTerminatesProcessLifecycle(t *testing.T) {
 func TestRealCoreTimeoutKillReportedAsFailure(t *testing.T) {
 	out := runCoreOpenChild(t, hangChildTimeout, childModeHang, nil)
 	if out.err == nil {
-		t.Fatalf("hang child must be reported as failed after the %s timeout, actual exit code 0:\n%s",
+		require.Error(t, out.err, "hang child must be reported as failed after the %s timeout, actual exit code 0:\n%s",
 			hangChildTimeout, childDiagnostics(childModeHang, out))
 	}
 	if !out.timedOut {
-		t.Fatalf("the failure must be identifiable as timeout termination (timedOut=false, err=%v):\n%s",
+		require.True(t, out.timedOut, "the failure must be identifiable as timeout termination (timedOut=false, err=%v):\n%s",
 			out.err, childDiagnostics(childModeHang, out))
 	}
 	if !out.signaled {
-		t.Fatalf("timeout termination must kill the child via a signal (signaled=false, err=%v):\n%s",
+		require.True(t, out.signaled, "timeout termination must kill the child via a signal (signaled=false, err=%v):\n%s",
 			out.err, childDiagnostics(childModeHang, out))
 	}
 	if !strings.Contains(out.stdout, hangMarker) {
-		t.Fatalf("timeout diagnostics must preserve the output the child already produced:\n%s",
+		require.Contains(t, out.stdout, hangMarker, "timeout diagnostics must preserve the output the child already produced:\n%s",
 			childDiagnostics(childModeHang, out))
 	}
 	t.Logf("hang child was SIGKILLed on the %s timeout as expected; the executor reported failure and preserved diagnostics:\n%s",

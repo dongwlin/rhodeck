@@ -6,13 +6,13 @@ package maa
 
 import (
 	"errors"
-	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newReadRig 构造收紧 Limits 的受控读取用例环境(复用
@@ -48,19 +48,11 @@ func TestReadEntriesProbeWithNonEmptyBuffers(t *testing.T) {
 			return writeOutputBytes(call, pngContent)
 		}
 		png, err := inst.GetImagePNG()
-		if err != nil {
-			t.Fatalf("GetImagePNG = %v, want nil", err)
-		}
-		if !slices.Equal(png, pngContent) {
-			t.Fatalf("GetImagePNG = %v, want the known content byte-for-byte equal", png)
-		}
+		require.NoError(t, err, "GetImagePNG = %v, want nil", err)
+		require.Equal(t, pngContent, png, "GetImagePNG = %v, want the known content byte-for-byte equal", png)
 		rec := rig.caller.outputRecordByName(0, "getImage")
-		if rec.handle != handle {
-			t.Errorf("GetImagePNG received handle %#x, want %#x", rec.handle, handle)
-		}
-		if rec.buffSize != 8 {
-			t.Errorf("GetImagePNG probe capacity = %d, want Initial 8 (bytes, not querying capacity with nil/0)", rec.buffSize)
-		}
+		assert.Equal(t, handle, rec.handle, "GetImagePNG received handle %#x, want %#x", rec.handle, handle)
+		assert.Equal(t, uint64(8), rec.buffSize, "GetImagePNG probe capacity = %d, want Initial 8 (bytes, not querying capacity with nil/0)", rec.buffSize)
 	})
 
 	t.Run("uuid passes Initial capacity in bytes", func(t *testing.T) {
@@ -69,19 +61,11 @@ func TestReadEntriesProbeWithNonEmptyBuffers(t *testing.T) {
 			return writeOutputBytes(call, uuidContent)
 		}
 		uuid, err := inst.UUID()
-		if err != nil {
-			t.Fatalf("UUID = %v, want nil", err)
-		}
-		if uuid != string(uuidContent) {
-			t.Fatalf("UUID = %q, want %q", uuid, string(uuidContent))
-		}
+		require.NoError(t, err, "UUID = %v, want nil", err)
+		require.Equal(t, string(uuidContent), uuid, "UUID = %q, want %q", uuid, string(uuidContent))
 		rec := rig.caller.outputRecordByName(0, "getUUID")
-		if rec.handle != handle {
-			t.Errorf("UUID received handle %#x, want %#x", rec.handle, handle)
-		}
-		if rec.buffSize != 16 {
-			t.Errorf("UUID probe capacity = %d, want Initial 16 (bytes)", rec.buffSize)
-		}
+		assert.Equal(t, handle, rec.handle, "UUID received handle %#x, want %#x", rec.handle, handle)
+		assert.Equal(t, uint64(16), rec.buffSize, "UUID probe capacity = %d, want Initial 16 (bytes)", rec.buffSize)
 	})
 
 	t.Run("tasks passes Initial capacity in elements and the return value is counted in elements", func(t *testing.T) {
@@ -91,23 +75,13 @@ func TestReadEntriesProbeWithNonEmptyBuffers(t *testing.T) {
 			return writeOutputInt32s(call, wantIDs)
 		}
 		tasks, err := inst.Tasks()
-		if err != nil {
-			t.Fatalf("Tasks = %v, want nil", err)
-		}
-		if !slices.Equal(tasks, []TaskID{12, -5, 7}) {
-			t.Fatalf("Tasks = %v, want [12 -5 7] (int32 sign bit preserved)", tasks)
-		}
+		require.NoError(t, err, "Tasks = %v, want nil", err)
+		require.Equal(t, []TaskID{12, -5, 7}, tasks, "Tasks = %v, want [12 -5 7] (int32 sign bit preserved)", tasks)
 		rec := rig.caller.outputRecordByName(0, "getTasksList")
-		if rec.handle != handle {
-			t.Errorf("Tasks received handle %#x, want %#x", rec.handle, handle)
-		}
-		if rec.buffSize != 4 {
-			t.Errorf("Tasks probe capacity = %d, want Initial 4 (element count, not 16 bytes)", rec.buffSize)
-		}
+		assert.Equal(t, handle, rec.handle, "Tasks received handle %#x, want %#x", rec.handle, handle)
+		assert.Equal(t, uint64(4), rec.buffSize, "Tasks probe capacity = %d, want Initial 4 (element count, not 16 bytes)", rec.buffSize)
 		// 返回值 3 按元素计:结果恰 3 个 TaskID,而非 3 字节或 3×4。
-		if len(tasks) != 3 {
-			t.Errorf("Tasks length = %d, want 3 (return value treated as element count)", len(tasks))
-		}
+		assert.Len(t, tasks, 3, "Tasks length = %d, want 3 (return value treated as element count)", len(tasks))
 	})
 }
 
@@ -125,16 +99,10 @@ func TestUUIDReadsOnlyReturnLength(t *testing.T) {
 			return writeOutputBytes(call, content)
 		}
 		uuid, err := inst.UUID()
-		if err != nil {
-			t.Fatalf("UUID = %v, want nil", err)
-		}
-		if uuid != string(content) {
-			t.Fatalf("UUID = %q (%d bytes), want %q containing only the returned length (9 bytes)",
-				uuid, len(uuid), string(content))
-		}
-		if strings.ContainsRune(uuid, rune(fakeOutputPoison)) {
-			t.Fatalf("UUID result carries a poisoned tail %q: read beyond the returned length", uuid)
-		}
+		require.NoError(t, err, "UUID = %v, want nil", err)
+		require.Equal(t, string(content), uuid, "UUID = %q (%d bytes), want %q containing only the returned length (9 bytes)",
+			uuid, len(uuid), string(content))
+		require.NotContains(t, uuid, string(rune(fakeOutputPoison)), "UUID result carries a poisoned tail %q: read beyond the returned length", uuid)
 	})
 
 	t.Run("ret==capacity boundary succeeds verbatim", func(t *testing.T) {
@@ -144,12 +112,8 @@ func TestUUIDReadsOnlyReturnLength(t *testing.T) {
 			return writeOutputBytes(call, content)
 		}
 		uuid, err := inst.UUID()
-		if err != nil {
-			t.Fatalf("ret==capacity must not be misjudged: %v", err)
-		}
-		if uuid != string(content) {
-			t.Fatalf("UUID = %q, want %q", uuid, string(content))
-		}
+		require.NoError(t, err, "ret==capacity must not be misjudged: %v", err)
+		require.Equal(t, string(content), uuid, "UUID = %q, want %q", uuid, string(content))
 	})
 }
 
@@ -173,25 +137,14 @@ func TestUUIDContentValidation(t *testing.T) {
 				return writeOutputBytes(call, tc.content)
 			}
 			uuid, err := inst.UUID()
-			if uuid != "" {
-				t.Fatalf("a protocol violation must not return content: %q", uuid)
-			}
-			if !errors.Is(err, native.ErrProtocol) {
-				t.Fatalf("%s: err = %v, want errors.Is ErrProtocol", tc.what, err)
-			}
-			if errors.Is(err, native.ErrBufferLimit) || errors.Is(err, native.ErrNativeRejected) {
-				t.Errorf("%s: error mixed in an adjacent category: %v", tc.what, err)
-			}
-			if got := rig.caller.count("getUUID"); got != 1 {
-				t.Errorf("call count after the protocol violation = %d, want 1 (terminates immediately, no growth retries)", got)
-			}
+			require.Empty(t, uuid, "a protocol violation must not return content: %q", uuid)
+			require.ErrorIs(t, err, native.ErrProtocol, "%s: err = %v, want errors.Is ErrProtocol", tc.what, err)
+			assert.NotErrorIs(t, err, native.ErrBufferLimit, "%s: error mixed in an adjacent category: %v", tc.what, err)
+			assert.NotErrorIs(t, err, native.ErrNativeRejected, "%s: error mixed in an adjacent category: %v", tc.what, err)
+			assert.Equal(t, 1, rig.caller.count("getUUID"), "call count after the protocol violation = %d, want 1 (terminates immediately, no growth retries)", rig.caller.count("getUUID"))
 			// 本次调用的诊断错误不改变实例阶段:后续调用照常接受。
-			if got := inst.inst.state.currentPhase(); got != phaseReady {
-				t.Errorf("phase = %d, want still ready", got)
-			}
-			if inst.inst.state.currentFault() != nil {
-				t.Errorf("first cause = %v, want nil (a read-side protocol violation does not fault the instance)", inst.inst.state.currentFault())
-			}
+			assert.Equal(t, phaseReady, inst.inst.state.currentPhase(), "phase = %d, want still ready", inst.inst.state.currentPhase())
+			assert.Nil(t, inst.inst.state.currentFault(), "first cause = %v, want nil (a read-side protocol violation does not fault the instance)", inst.inst.state.currentFault())
 		})
 	}
 }
@@ -245,31 +198,21 @@ func TestReadEntriesNullSizeExhaustion(t *testing.T) {
 			tc.configure(inst, rig, nullSize)
 
 			err := readVia(inst, tc.what)
-			if !errors.Is(err, native.ErrBufferLimit) {
-				t.Fatalf("errors.Is(err, ErrBufferLimit) = false; err = %v", err)
-			}
+			require.ErrorIs(t, err, native.ErrBufferLimit, "errors.Is(err, ErrBufferLimit) = false; err = %v", err)
 			text := err.Error()
 			for _, want := range tc.wantText {
-				if !strings.Contains(text, want) {
-					t.Errorf("diagnostic text missing element %q:\n%s", want, text)
-				}
+				assert.Contains(t, text, want, "diagnostic text missing element %q", want)
 			}
 			for _, ban := range tc.banText {
-				if strings.Contains(text, ban) {
-					t.Errorf("diagnostic text must not contain %q (the sentinel must not be converted to an allocation length / units must not be mixed):\n%s", ban, text)
-				}
+				assert.NotContains(t, text, ban, "diagnostic text must not contain %q (the sentinel must not be converted to an allocation length / units must not be mixed)", ban)
 			}
 			// 探测容量序列与调用次数:各接口按自身单位翻倍,达 Max 即停。
 			var caps []int
 			for i := 0; i < len(tc.wantCaps); i++ {
 				caps = append(caps, int(rig.caller.outputRecordByName(i, tc.name).buffSize))
 			}
-			if !slices.Equal(caps, tc.wantCaps) {
-				t.Errorf("probe capacity sequence = %v, want %v", caps, tc.wantCaps)
-			}
-			if got := rig.caller.count(tc.name); got != len(tc.wantCaps) {
-				t.Errorf("call count = %d, want %d (stops at Max without consuming remaining retries)", got, len(tc.wantCaps))
-			}
+			assert.Equal(t, tc.wantCaps, caps, "probe capacity sequence = %v, want %v", caps, tc.wantCaps)
+			assert.Equal(t, len(tc.wantCaps), rig.caller.count(tc.name), "call count = %d, want %d (stops at Max without consuming remaining retries)", rig.caller.count(tc.name), len(tc.wantCaps))
 		})
 	}
 }
@@ -315,12 +258,9 @@ func TestReadEntriesRejectsOvercapacityReturn(t *testing.T) {
 		t.Run(tc.what, func(t *testing.T) {
 			inst, rig := newReadRig(t, 0x1A40)
 			tc.script(rig)
-			if err := readVia(inst, tc.what); !errors.Is(err, native.ErrProtocol) {
-				t.Fatalf("%s: err = %v, want errors.Is ErrProtocol", tc.what, err)
-			}
-			if got := rig.caller.count(tc.name); got != 1 {
-				t.Errorf("call count after the protocol violation = %d, want 1 (terminates immediately, no growth)", got)
-			}
+			err := readVia(inst, tc.what)
+			require.ErrorIs(t, err, native.ErrProtocol, "%s: err = %v, want errors.Is ErrProtocol", tc.what, err)
+			assert.Equal(t, 1, rig.caller.count(tc.name), "call count after the protocol violation = %d, want 1 (terminates immediately, no growth)", rig.caller.count(tc.name))
 		})
 	}
 }
@@ -333,41 +273,25 @@ func TestReadEntriesLegalZeroLength(t *testing.T) {
 	t.Run("png returns a non-nil empty slice", func(t *testing.T) {
 		inst, rig := newReadRig(t, 0x1A50)
 		png, err := inst.GetImagePNG()
-		if err != nil {
-			t.Fatalf("legal 0 must not fail: %v", err)
-		}
-		if png == nil || len(png) != 0 {
-			t.Fatalf("legal 0 must return a non-nil empty slice, got %#v", png)
-		}
-		if got := rig.caller.count("getImage"); got != 1 {
-			t.Errorf("legal 0 must not trigger growth, called %d times, want 1", got)
-		}
+		require.NoError(t, err, "legal 0 must not fail: %v", err)
+		require.NotNil(t, png, "legal 0 must return a non-nil empty slice, got %#v", png)
+		require.Empty(t, png, "legal 0 must return a non-nil empty slice, got %#v", png)
+		assert.Equal(t, 1, rig.caller.count("getImage"), "legal 0 must not trigger growth, called %d times, want 1", rig.caller.count("getImage"))
 	})
 	t.Run("uuid returns an empty string", func(t *testing.T) {
 		inst, rig := newReadRig(t, 0x1A51)
 		uuid, err := inst.UUID()
-		if err != nil {
-			t.Fatalf("legal 0 must not fail: %v", err)
-		}
-		if uuid != "" {
-			t.Fatalf("legal 0 must return an empty string, got %q", uuid)
-		}
-		if got := rig.caller.count("getUUID"); got != 1 {
-			t.Errorf("legal 0 must not trigger growth, called %d times, want 1", got)
-		}
+		require.NoError(t, err, "legal 0 must not fail: %v", err)
+		require.Empty(t, uuid, "legal 0 must return an empty string, got %q", uuid)
+		assert.Equal(t, 1, rig.caller.count("getUUID"), "legal 0 must not trigger growth, called %d times, want 1", rig.caller.count("getUUID"))
 	})
 	t.Run("tasks returns a non-nil empty slice", func(t *testing.T) {
 		inst, rig := newReadRig(t, 0x1A52)
 		tasks, err := inst.Tasks()
-		if err != nil {
-			t.Fatalf("legal 0 must not fail: %v", err)
-		}
-		if tasks == nil || len(tasks) != 0 {
-			t.Fatalf("legal 0 must return a non-nil empty slice, got %#v", tasks)
-		}
-		if got := rig.caller.count("getTasksList"); got != 1 {
-			t.Errorf("legal 0 must not trigger growth, called %d times, want 1", got)
-		}
+		require.NoError(t, err, "legal 0 must not fail: %v", err)
+		require.NotNil(t, tasks, "legal 0 must return a non-nil empty slice, got %#v", tasks)
+		require.Empty(t, tasks, "legal 0 must return a non-nil empty slice, got %#v", tasks)
+		assert.Equal(t, 1, rig.caller.count("getTasksList"), "legal 0 must not trigger growth, called %d times, want 1", rig.caller.count("getTasksList"))
 	})
 }
 
@@ -381,15 +305,12 @@ func TestGetImagePNGDoesNotScreencapOrPinFrame(t *testing.T) {
 	const handle = uintptr(0x1A60)
 	inst, rig := newReadRig(t, handle)
 
-	if _, err := inst.GetImagePNG(); err != nil {
-		t.Fatalf("GetImagePNG = %v, want nil (no script configured means legal 0)", err)
-	}
-	if got := rig.caller.count("asyncScreencap"); got != 0 {
-		t.Fatalf("reading PNG triggered an implicit screencap %d times, want 0", got)
-	}
-	if got := rig.caller.calls(); len(got) != 1 || got[0] != "getImage" {
-		t.Fatalf("native call sequence of the PNG read = %v, want exactly [getImage]", got)
-	}
+	_, err := inst.GetImagePNG()
+	require.NoError(t, err, "GetImagePNG = %v, want nil (no script configured means legal 0)", err)
+	require.Equal(t, 0, rig.caller.count("asyncScreencap"), "reading PNG triggered an implicit screencap %d times, want 0", rig.caller.count("asyncScreencap"))
+	calls := rig.caller.calls()
+	require.Len(t, calls, 1, "native call sequence of the PNG read = %v, want exactly [getImage]", calls)
+	require.Equal(t, "getImage", calls[0], "native call sequence of the PNG read = %v, want exactly [getImage]", calls)
 
 	// 扩容重试不承诺同一帧:第一次探测写入旧帧并返回哨兵,第二次探测
 	// 写入新帧并返回其长度,结果必须恰为新帧(不含旧帧字节)。
@@ -407,15 +328,9 @@ func TestGetImagePNGDoesNotScreencapOrPinFrame(t *testing.T) {
 		return writeOutputBytes(call, newFrame)
 	}
 	png, err := inst.GetImagePNG()
-	if err != nil {
-		t.Fatalf("read after retry = %v, want nil", err)
-	}
-	if !slices.Equal(png, newFrame) {
-		t.Fatalf("result after retry = %q, want exactly the second valid range %q (the first stale content is not published)", png, newFrame)
-	}
-	if attempts != 2 {
-		t.Errorf("probe count = %d, want 2", attempts)
-	}
+	require.NoError(t, err, "read after retry = %v, want nil", err)
+	require.Equal(t, newFrame, png, "result after retry = %q, want exactly the second valid range %q (the first stale content is not published)", png, newFrame)
+	assert.Equal(t, 2, attempts, "probe count = %d, want 2", attempts)
 }
 
 // TestReadSnapshotsSurviveNativeAndCallerWrites 验证「返回后
@@ -431,17 +346,11 @@ func TestReadSnapshotsSurviveNativeAndCallerWrites(t *testing.T) {
 			return writeOutputBytes(call, first)
 		}
 		snap, err := inst.GetImagePNG()
-		if err != nil {
-			t.Fatalf("first read = %v, want nil", err)
-		}
-		if !slices.Equal(snap, first) {
-			t.Fatalf("first snapshot = %q, want %q", snap, first)
-		}
+		require.NoError(t, err, "first read = %v, want nil", err)
+		require.Equal(t, first, snap, "first snapshot = %q, want %q", snap, first)
 		// 原生在返回后改写缓存:快照不受影响。
 		overwriteOutput(rig.caller.outputRecordByName(0, "getImage"))
-		if !slices.Equal(snap, first) {
-			t.Fatalf("snapshot penetrated after the native overwrite = %q, want %q (copied before return)", snap, first)
-		}
+		require.Equal(t, first, snap, "snapshot penetrated after the native overwrite = %q, want %q (copied before return)", snap, first)
 
 		// 后续读取取得新内容;调用者改写旧快照不影响它。
 		second := []byte("SECOND!!")
@@ -449,22 +358,14 @@ func TestReadSnapshotsSurviveNativeAndCallerWrites(t *testing.T) {
 			return writeOutputBytes(call, second)
 		}
 		again, err := inst.GetImagePNG()
-		if err != nil {
-			t.Fatalf("second read = %v, want nil", err)
-		}
-		if !slices.Equal(again, second) {
-			t.Fatalf("second result polluted = %q, want %q", again, second)
-		}
+		require.NoError(t, err, "second read = %v, want nil", err)
+		require.Equal(t, second, again, "second result polluted = %q, want %q", again, second)
 		for i := range snap {
 			snap[i] = 0
 		}
 		third, err := inst.GetImagePNG()
-		if err != nil {
-			t.Fatalf("third read = %v, want nil", err)
-		}
-		if !slices.Equal(third, second) {
-			t.Fatalf("rewriting the old snapshot affected later results = %q, want %q", third, second)
-		}
+		require.NoError(t, err, "third read = %v, want nil", err)
+		require.Equal(t, second, third, "rewriting the old snapshot affected later results = %q, want %q", third, second)
 	})
 
 	t.Run("UUID", func(t *testing.T) {
@@ -474,16 +375,10 @@ func TestReadSnapshotsSurviveNativeAndCallerWrites(t *testing.T) {
 			return writeOutputBytes(call, first)
 		}
 		snap, err := inst.UUID()
-		if err != nil {
-			t.Fatalf("first read = %v, want nil", err)
-		}
-		if snap != string(first) {
-			t.Fatalf("first snapshot = %q, want %q", snap, string(first))
-		}
+		require.NoError(t, err, "first read = %v, want nil", err)
+		require.Equal(t, string(first), snap, "first snapshot = %q, want %q", snap, string(first))
 		overwriteOutput(rig.caller.outputRecordByName(0, "getUUID"))
-		if snap != string(first) {
-			t.Fatalf("snapshot penetrated after the native overwrite = %q, want %q", snap, string(first))
-		}
+		require.Equal(t, string(first), snap, "snapshot penetrated after the native overwrite = %q, want %q", snap, string(first))
 	})
 
 	t.Run("Tasks", func(t *testing.T) {
@@ -492,36 +387,22 @@ func TestReadSnapshotsSurviveNativeAndCallerWrites(t *testing.T) {
 			return writeOutputInt32s(call, []int32{12, -5, 7})
 		}
 		snap, err := inst.Tasks()
-		if err != nil {
-			t.Fatalf("first read = %v, want nil", err)
-		}
-		if !slices.Equal(snap, []TaskID{12, -5, 7}) {
-			t.Fatalf("first snapshot = %v, want [12 -5 7]", snap)
-		}
+		require.NoError(t, err, "first read = %v, want nil", err)
+		require.Equal(t, []TaskID{12, -5, 7}, snap, "first snapshot = %v, want [12 -5 7]", snap)
 		// 原生在返回后改写缓存:快照不受影响。
 		overwriteOutput(rig.caller.outputRecordByName(0, "getTasksList"))
-		if !slices.Equal(snap, []TaskID{12, -5, 7}) {
-			t.Fatalf("snapshot penetrated after the native overwrite = %v, want [12 -5 7]", snap)
-		}
+		require.Equal(t, []TaskID{12, -5, 7}, snap, "snapshot penetrated after the native overwrite = %v, want [12 -5 7]", snap)
 		// 后续读取取得新列表;调用者改写旧快照不影响它。
 		rig.caller.tasksRespond = func(call fakeOutputCall) uint64 {
 			return writeOutputInt32s(call, []int32{1, 2})
 		}
 		again, err := inst.Tasks()
-		if err != nil {
-			t.Fatalf("second read = %v, want nil", err)
-		}
-		if !slices.Equal(again, []TaskID{1, 2}) {
-			t.Fatalf("second result polluted = %v, want [1 2]", again)
-		}
+		require.NoError(t, err, "second read = %v, want nil", err)
+		require.Equal(t, []TaskID{1, 2}, again, "second result polluted = %v, want [1 2]", again)
 		snap[0] = 0
 		third, err := inst.Tasks()
-		if err != nil {
-			t.Fatalf("third read = %v, want nil", err)
-		}
-		if !slices.Equal(third, []TaskID{1, 2}) {
-			t.Fatalf("rewriting the old snapshot affected later results = %v, want [1 2]", third)
-		}
+		require.NoError(t, err, "third read = %v, want nil", err)
+		require.Equal(t, []TaskID{1, 2}, third, "rewriting the old snapshot affected later results = %v, want [1 2]", third)
 	})
 }
 
@@ -554,9 +435,7 @@ func TestReadEntriesShareLeaseAndRawGate(t *testing.T) {
 		go func() { _, err := inst.Running(); errRunning <- err }()
 		waitUntil(t, "Running admitted and queued before the gate", func() bool { return inFlightCalls(inst.inst.state) == 2 })
 		<-time.After(notWithin)
-		if got := rig.caller.count("running"); got != 0 {
-			t.Fatalf("Running entered native %d times while the same raw gate is held by the read", got)
-		}
+		require.Equal(t, 0, rig.caller.count("running"), "Running entered native %d times while the same raw gate is held by the read", rig.caller.count("running"))
 
 		close(release)
 		for _, wait := range []struct {
@@ -568,11 +447,9 @@ func TestReadEntriesShareLeaseAndRawGate(t *testing.T) {
 		} {
 			select {
 			case err := <-wait.ch:
-				if err != nil {
-					t.Fatalf("%s = %v, want nil", wait.what, err)
-				}
+				require.NoError(t, err, "%s = %v, want nil", wait.what, err)
 			case <-time.After(hangGuard):
-				t.Fatalf("%s did not complete within the hang-guard deadline", wait.what)
+				require.Fail(t, wait.what+" did not complete within the hang-guard deadline")
 			}
 		}
 	})
@@ -599,33 +476,26 @@ func TestReadEntriesShareLeaseAndRawGate(t *testing.T) {
 		go func() { closeErr <- inst.Close() }()
 		waitUntil(t, "close won the election and transitioned to closing", func() bool { return inst.inst.state.currentPhase() == phaseClosing })
 		<-time.After(notWithin)
-		if got := rig.closer.count("stop"); got != 0 {
-			t.Fatalf("Stop called %d times while the in-flight read has not exited", got)
-		}
-		if got := rig.closer.count("destroy"); got != 0 {
-			t.Fatalf("Destroy called %d times while the in-flight read has not exited", got)
-		}
+		require.Equal(t, 0, rig.closer.count("stop"), "Stop called %d times while the in-flight read has not exited", rig.closer.count("stop"))
+		require.Equal(t, 0, rig.closer.count("destroy"), "Destroy called %d times while the in-flight read has not exited", rig.closer.count("destroy"))
 
 		close(release)
 		select {
 		case err := <-errRead:
-			if err != nil {
-				t.Fatalf("read admitted before close = %v, want nil (admitted calls are not revoked by close)", err)
-			}
+			require.NoError(t, err, "read admitted before close = %v, want nil (admitted calls are not revoked by close)", err)
 		case <-time.After(hangGuard):
-			t.Fatal("the read did not complete within the hang-guard deadline")
+			require.Fail(t, "the read did not complete within the hang-guard deadline")
 		}
 		select {
 		case err := <-closeErr:
-			if err != nil {
-				t.Fatalf("Close = %v, want nil", err)
-			}
+			require.NoError(t, err, "Close = %v, want nil", err)
 		case <-time.After(hangGuard):
-			t.Fatal("Close did not complete within the hang-guard deadline")
+			require.Fail(t, "Close did not complete within the hang-guard deadline")
 		}
-		if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-			t.Fatalf("native call sequence = %v, want [stop destroy]", seq)
-		}
+		seq := rig.closer.calls()
+		require.Len(t, seq, 2, "native call sequence = %v, want [stop destroy]", seq)
+		require.Equal(t, "stop", seq[0], "native call sequence = %v, want [stop destroy]", seq)
+		require.Equal(t, "destroy", seq[1], "native call sequence = %v, want [stop destroy]", seq)
 	})
 }
 
@@ -643,17 +513,12 @@ func TestReadEntriesRejectByLifecycle(t *testing.T) {
 
 	t.Run("closed phase rejects all entries with no native side effects", func(t *testing.T) {
 		inst, rig := newReadRig(t, 0x1A90)
-		if err := inst.Close(); err != nil {
-			t.Fatalf("Close = %v, want nil", err)
-		}
+		closeRet := inst.Close()
+		require.NoError(t, closeRet, "Close = %v, want nil", closeRet)
 		for i, err := range allReads(inst) {
-			if !errors.Is(err, native.ErrClosed) {
-				t.Errorf("read entry %d = %v, want errors.Is native.ErrClosed", i, err)
-			}
+			assert.ErrorIs(t, err, native.ErrClosed, "read entry %d = %v, want errors.Is native.ErrClosed", i, err)
 		}
-		if got := rig.caller.total(); got != 0 {
-			t.Errorf("business call count after closed = %d, want 0 (does not bypass the state calls)", got)
-		}
+		assert.Equal(t, 0, rig.caller.total(), "business call count after closed = %d, want 0 (does not bypass the state calls)", rig.caller.total())
 	})
 
 	t.Run("faulted phase rejects all entries with the first cause reachable along the chain", func(t *testing.T) {
@@ -661,13 +526,9 @@ func TestReadEntriesRejectByLifecycle(t *testing.T) {
 		cause := errors.New("fake: first fault")
 		inst.inst.state.recordFault(cause)
 		for i, err := range allReads(inst) {
-			if !errors.Is(err, cause) {
-				t.Errorf("read entry %d = %v, want the first cause reachable along the error chain", i, err)
-			}
+			assert.ErrorIs(t, err, cause, "read entry %d = %v, want the first cause reachable along the error chain", i, err)
 		}
-		if got := rig.caller.total(); got != 0 {
-			t.Errorf("business call count after faulted = %d, want 0", got)
-		}
+		assert.Equal(t, 0, rig.caller.total(), "business call count after faulted = %d, want 0", rig.caller.total())
 	})
 
 	t.Run("closing phase rejects all entries", func(t *testing.T) {
@@ -682,21 +543,15 @@ func TestReadEntriesRejectByLifecycle(t *testing.T) {
 		go func() { closeErr <- inst.Close() }()
 		<-entered // 关闭所有者已进入一次 Stop(closing 已生效)。
 		for i, err := range allReads(inst) {
-			if !errors.Is(err, native.ErrClosing) {
-				t.Errorf("read entry %d during closing = %v, want errors.Is native.ErrClosing", i, err)
-			}
+			assert.ErrorIs(t, err, native.ErrClosing, "read entry %d during closing = %v, want errors.Is native.ErrClosing", i, err)
 		}
-		if got := rig.caller.total(); got != 0 {
-			t.Errorf("business call count during closing = %d, want 0", got)
-		}
+		assert.Equal(t, 0, rig.caller.total(), "business call count during closing = %d, want 0", rig.caller.total())
 		close(release)
 		select {
 		case err := <-closeErr:
-			if err != nil {
-				t.Fatalf("Close = %v, want nil", err)
-			}
+			require.NoError(t, err, "Close = %v, want nil", err)
 		case <-time.After(hangGuard):
-			t.Fatal("Close did not complete within the hang-guard deadline")
+			require.Fail(t, "Close did not complete within the hang-guard deadline")
 		}
 	})
 }
@@ -711,35 +566,22 @@ func TestGetImageBGRCapabilityGate(t *testing.T) {
 		inst, rig := newReadRig(t, handle)
 		// newReadRig 的能力快照为零值:ImageBgr 关闭。
 		bgr, err := inst.GetImageBGR()
-		if bgr != nil {
-			t.Errorf("GetImageBGR with the capability absent = %v, want nil", bgr)
-		}
-		if !errors.Is(err, native.ErrUnsupported) {
-			t.Fatalf("error with the capability absent = %v, want ErrUnsupported", err)
-		}
-		if n := len(rig.caller.outputRecordAll("getImageBgr")); n != 0 {
-			t.Errorf("getImageBgr called %d times with the capability absent, want 0 (rejected before admission)", n)
-		}
+		assert.Nil(t, bgr, "GetImageBGR with the capability absent = %v, want nil", bgr)
+		require.ErrorIs(t, err, native.ErrUnsupported, "error with the capability absent = %v, want ErrUnsupported", err)
+		bgrRecords := rig.caller.outputRecordAll("getImageBgr")
+		assert.Empty(t, bgrRecords, "getImageBgr called %d times with the capability absent, want 0 (rejected before admission)", len(bgrRecords))
 	})
 	t.Run("capability present probes with the Initial capacity and returns an independent snapshot", func(t *testing.T) {
 		inst, rig := newReadRig(t, handle)
 		rig.rt.caps = native.CapabilitiesForTest(false, true, false, false, false)
 		rig.caller.imageBgrRespond = func(call fakeOutputCall) uint64 {
-			if call.handle != handle {
-				t.Errorf("GetImageBGR received handle %#x, want %#x", call.handle, handle)
-			}
-			if call.buffSize != 12 {
-				t.Errorf("GetImageBGR first probe capacity = %d, want Limits.ImageBGR.Initial 12 (bytes)", call.buffSize)
-			}
+			assert.Equal(t, handle, call.handle, "GetImageBGR received handle %#x, want %#x", call.handle, handle)
+			assert.Equal(t, uint64(12), call.buffSize, "GetImageBGR first probe capacity = %d, want Limits.ImageBGR.Initial 12 (bytes)", call.buffSize)
 			return writeOutputBytes(call, []byte{0x00, 0x11, 0x22, 0x33})
 		}
 		bgr, err := inst.GetImageBGR()
-		if err != nil {
-			t.Fatalf("GetImageBGR = %v, want nil", err)
-		}
-		if !slices.Equal(bgr, []byte{0x00, 0x11, 0x22, 0x33}) {
-			t.Fatalf("GetImageBGR = %v, want the known BGR content", bgr)
-		}
+		require.NoError(t, err, "GetImageBGR = %v, want nil", err)
+		require.Equal(t, []byte{0x00, 0x11, 0x22, 0x33}, bgr, "GetImageBGR = %v, want the known BGR content", bgr)
 		// 快照独立性:原地改写结果不影响后续读取。
 		for i := range bgr {
 			bgr[i] = 0xFF
@@ -748,12 +590,8 @@ func TestGetImageBGRCapabilityGate(t *testing.T) {
 			return writeOutputBytes(call, []byte{0x00, 0x11, 0x22, 0x33})
 		}
 		again, err := inst.GetImageBGR()
-		if err != nil {
-			t.Fatalf("second GetImageBGR = %v, want nil", err)
-		}
-		if !slices.Equal(again, []byte{0x00, 0x11, 0x22, 0x33}) {
-			t.Fatalf("second read after rewriting the snapshot = %v, want the original content (independent snapshot)", again)
-		}
+		require.NoError(t, err, "second GetImageBGR = %v, want nil", err)
+		require.Equal(t, []byte{0x00, 0x11, 0x22, 0x33}, again, "second read after rewriting the snapshot = %v, want the original content (independent snapshot)", again)
 	})
 	t.Run("probe exhaustion returns ErrBufferLimit", func(t *testing.T) {
 		inst, rig := newReadRig(t, handle)
@@ -762,11 +600,7 @@ func TestGetImageBGRCapabilityGate(t *testing.T) {
 			return profileNullSize // 恒 NullSize,耗尽全部重试
 		}
 		_, err := inst.GetImageBGR()
-		if !errors.Is(err, native.ErrBufferLimit) {
-			t.Fatalf("probe exhaustion error = %v, want ErrBufferLimit", err)
-		}
-		if !strings.Contains(err.Error(), "GetImageBgr") {
-			t.Errorf("exhaustion diagnostics should carry the interface name GetImageBgr: %v", err)
-		}
+		require.ErrorIs(t, err, native.ErrBufferLimit, "probe exhaustion error = %v, want ErrBufferLimit", err)
+		assert.Contains(t, err.Error(), "GetImageBgr", "exhaustion diagnostics should carry the interface name GetImageBgr: %v", err)
 	})
 }

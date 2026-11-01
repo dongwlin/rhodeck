@@ -11,10 +11,11 @@ package maa
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestAttachWindowCapabilityGate 验证能力门:能力缺席时在准入前直接
@@ -25,18 +26,10 @@ func TestAttachWindowCapabilityGate(t *testing.T) {
 	// 能力快照为零值:AsyncAttachWindow 关闭(非 Windows 生产运行时
 	// 的真实形态)。
 	op, err := inst.AttachWindow(0x10010, Win32ScreencapGDI, Win32InputPostMessage, Win32InputSeize)
-	if op != nil {
-		t.Fatalf("AttachWindow with a missing capability = (%+v, nil), want nil Operation", op)
-	}
-	if !errors.Is(err, native.ErrUnsupported) {
-		t.Fatalf("error with a missing capability = %v, want ErrUnsupported", err)
-	}
-	if n := len(rig.caller.asyncCalls); n != 0 {
-		t.Errorf("asyncAttachWindow called %d times with a missing capability, want 0 (rejected before admission)", n)
-	}
-	if n := int(pendingReservedOf(inst.inst.state)); n != 0 {
-		t.Errorf("pending reservation with a missing capability = %d, want 0 (no slot consumed)", n)
-	}
+	require.Nil(t, op, "AttachWindow with a missing capability = (%+v, nil), want nil Operation", op)
+	require.ErrorIs(t, err, native.ErrUnsupported, "error with a missing capability = %v, want ErrUnsupported", err)
+	assert.Equal(t, 0, len(rig.caller.asyncCalls), "asyncAttachWindow called %d times with a missing capability, want 0 (rejected before admission)", len(rig.caller.asyncCalls))
+	assert.Equal(t, 0, int(pendingReservedOf(inst.inst.state)), "pending reservation with a missing capability = %d, want 0 (no slot consumed)", int(pendingReservedOf(inst.inst.state)))
 }
 
 // TestAttachWindowSubmitsAndJoins 验证门开启后的提交接线:六参数逐字
@@ -61,32 +54,20 @@ func TestAttachWindowSubmitsAndJoins(t *testing.T) {
 		}
 
 		op, err := inst.AttachWindow(0x20020, Win32ScreencapDXGIDesktopDup, Win32InputSendMessage|Win32InputPostMessage, Win32InputLegacyEvent)
-		if err != nil {
-			t.Fatalf("AttachWindow = %v, want nil", err)
-		}
-		if op.ID() != 7 {
-			t.Fatalf("AttachWindow returned ID = %d, want 7", op.ID())
-		}
+		require.NoError(t, err, "AttachWindow = %v, want nil", err)
+		require.Equal(t, AsyncID(7), op.ID(), "AttachWindow returned ID = %d, want 7", op.ID())
 		rec := rig.caller.asyncRecordByName(0, "asyncAttachWindow")
-		if rec.attach == nil {
-			t.Fatalf("the record is missing the attach detail: %+v", rec)
-		}
-		if rec.attach.handle != handle || rec.attach.hwnd != 0x20020 ||
-			rec.attach.screencapMethod != uint64(Win32ScreencapDXGIDesktopDup) ||
-			rec.attach.mouseMethod != uint64(Win32InputSendMessage|Win32InputPostMessage) ||
-			rec.attach.keyboardMethod != uint64(Win32InputLegacyEvent) {
-			t.Fatalf("AttachWindow forwarded parameters = %+v, want all six parameters passed through verbatim", rec.attach)
-		}
-		if rec.attach.block != 0 {
-			t.Errorf("AttachWindow block = %d, want 0 (frozen block=false)", rec.attach.block)
-		}
+		require.NotNil(t, rec.attach, "the record is missing the attach detail: %+v", rec)
+		require.True(t, rec.attach.handle == handle && rec.attach.hwnd == 0x20020 &&
+			rec.attach.screencapMethod == uint64(Win32ScreencapDXGIDesktopDup) &&
+			rec.attach.mouseMethod == uint64(Win32InputSendMessage|Win32InputPostMessage) &&
+			rec.attach.keyboardMethod == uint64(Win32InputLegacyEvent),
+			"AttachWindow forwarded parameters = %+v, want all six parameters passed through verbatim", rec.attach)
+		assert.Equal(t, uint8(0), rec.attach.block, "AttachWindow block = %d, want 0 (frozen block=false)", rec.attach.block)
 		res, err := waitOperationGuarded(t, op, context.Background())
-		if err != nil {
-			t.Fatalf("wait after the early join = %v, want nil", err)
-		}
-		if res.ID != 7 || res.What != "AttachWindow" || !res.OK {
-			t.Fatalf("early-join result = %+v, want the AttachWindow completion terminal state", res)
-		}
+		require.NoError(t, err, "wait after the early join = %v, want nil", err)
+		require.True(t, res.ID == 7 && res.What == "AttachWindow" && res.OK,
+			"early-join result = %+v, want the AttachWindow completion terminal state", res)
 	})
 
 	t.Run("late result settled by ID", func(t *testing.T) {
@@ -95,16 +76,11 @@ func TestAttachWindowSubmitsAndJoins(t *testing.T) {
 		token := rig.creator.exToken(0)
 
 		op, err := inst.AttachWindow(0x30030, Win32ScreencapPrintWindow, Win32InputPostMessage, Win32InputNone)
-		if err != nil {
-			t.Fatalf("AttachWindow = %v, want nil", err)
-		}
+		require.NoError(t, err, "AttachWindow = %v, want nil", err)
 		deliverAsyncInfo(t, token, op.ID(), "AttachWindow", `{"ret":true,"cost":9}`)
 		res, err := waitOperationGuarded(t, op, context.Background())
-		if err != nil {
-			t.Fatalf("late settlement wait = %v, want nil", err)
-		}
-		if res.What != "AttachWindow" || !res.OK || string(res.Details) != `{"ret":true,"cost":9}` {
-			t.Fatalf("late settlement result = %+v, want the AttachWindow completion terminal state", res)
-		}
+		require.NoError(t, err, "late settlement wait = %v, want nil", err)
+		require.True(t, res.What == "AttachWindow" && res.OK && string(res.Details) == `{"ret":true,"cost":9}`,
+			"late settlement result = %+v, want the AttachWindow completion terminal state", res)
 	})
 }

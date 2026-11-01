@@ -4,15 +4,15 @@
 package maa
 
 import (
-	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -33,9 +33,7 @@ const (
 func assertPanics(t *testing.T, what string, f func()) {
 	t.Helper()
 	defer func() {
-		if recover() == nil {
-			t.Errorf("%s must panic per the contract", what)
-		}
+		assert.True(t, recover() != nil, "%s must panic per the contract", what)
 	}()
 	f()
 }
@@ -59,18 +57,14 @@ func stateHandle(s *instanceState) uintptr {
 func mustAdmit(t *testing.T, s *instanceState, what string) callLease {
 	t.Helper()
 	l, err := s.admitCall(what)
-	if err != nil {
-		t.Fatalf("admitting %q must not fail: %v", what, err)
-	}
+	require.NoError(t, err, "admitting %q must not fail: %v", what, err)
 	return l
 }
 
 // mustElectClose 要求关闭选主胜出(首个申请恰成为唯一所有者)。
 func mustElectClose(t *testing.T, s *instanceState) {
 	t.Helper()
-	if !s.electClose() {
-		t.Fatal("the first close request must win and become the owner")
-	}
+	require.True(t, s.electClose(), "the first close request must win and become the owner")
 }
 
 // finishClose 以所有者身份完成关闭发布序列:关门、发布最终错误、
@@ -108,11 +102,10 @@ func releaseAndAssertDrained(t *testing.T, s *instanceState, l callLease) {
 	select {
 	case <-drained:
 	case <-time.After(hangGuard):
-		t.Fatal("waitCallsDrained did not converge after the lease was released (hang-guard limit hit)")
+		require.Fail(t, "waitCallsDrained did not converge after the lease was released (hang-guard limit hit)")
 	}
-	if n := inFlightCalls(s); n != 0 {
-		t.Fatalf("in-flight call count after release = %d, want 0", n)
-	}
+	n := inFlightCalls(s)
+	require.Equal(t, uint64(0), n, "in-flight call count after release = %d, want 0", n)
 }
 
 // TestInstanceStateRejectsCallsByPhase 验证「closing、
@@ -129,22 +122,12 @@ func TestInstanceStateRejectsCallsByPhase(t *testing.T) {
 		mustElectClose(t, s)
 
 		_, err := s.admitCall("new call during closing")
-		if err == nil {
-			t.Fatal("closing must reject new business calls")
-		}
-		if !errors.Is(err, native.ErrClosing) {
-			t.Errorf("errors.Is(err, native.ErrClosing) = false; err = %v", err)
-		}
+		require.Error(t, err, "closing must reject new business calls")
+		assert.ErrorIs(t, err, native.ErrClosing, "errors.Is(err, native.ErrClosing) = false; err = %v", err)
 		// 逐一排除相邻哨兵:类别不得与 closed/协议破坏混淆。
-		if errors.Is(err, native.ErrClosed) {
-			t.Errorf("the closing rejection must not be mislabelled as ErrClosed: %v", err)
-		}
-		if errors.Is(err, native.ErrProtocol) {
-			t.Errorf("the closing rejection must not be mislabelled as ErrProtocol: %v", err)
-		}
-		if !strings.Contains(err.Error(), "new call during closing") {
-			t.Errorf("the rejection error should carry the what context text:\n%s", err.Error())
-		}
+		assert.NotErrorIs(t, err, native.ErrClosed, "the closing rejection must not be mislabelled as ErrClosed: %v", err)
+		assert.NotErrorIs(t, err, native.ErrProtocol, "the closing rejection must not be mislabelled as ErrProtocol: %v", err)
+		assert.Contains(t, err.Error(), "new call during closing", "the rejection error should carry the what context text:\n%s", err.Error())
 
 		releaseAndAssertDrained(t, s, inflight)
 	})
@@ -157,20 +140,13 @@ func TestInstanceStateRejectsCallsByPhase(t *testing.T) {
 		s.recordFault(cause)
 
 		_, err := s.admitCall("new call during faulted")
-		if err == nil {
-			t.Fatal("faulted must reject new business calls")
-		}
+		require.Error(t, err, "faulted must reject new business calls")
 		// errors.Is 沿 %w 链可达真正故障的底层哨兵。
-		if !errors.Is(err, native.ErrEventOverflow) {
-			t.Errorf("errors.Is(err, native.ErrEventOverflow) = false; err = %v", err)
-		}
+		assert.ErrorIs(t, err, native.ErrEventOverflow, "errors.Is(err, native.ErrEventOverflow) = false; err = %v", err)
 		// faulted 拒绝与实例首因共享同一错误身份。
-		if !errors.Is(err, cause) {
-			t.Errorf("errors.Is(err, cause) = false; err = %v", err)
-		}
-		if errors.Is(err, native.ErrClosing) || errors.Is(err, native.ErrClosed) {
-			t.Errorf("the faulted rejection must not be mislabelled as closing/closed: %v", err)
-		}
+		assert.ErrorIs(t, err, cause, "errors.Is(err, cause) = false; err = %v", err)
+		assert.NotErrorIs(t, err, native.ErrClosing, "the faulted rejection must not be mislabelled as closing/closed: %v", err)
+		assert.NotErrorIs(t, err, native.ErrClosed, "the faulted rejection must not be mislabelled as closing/closed: %v", err)
 
 		releaseAndAssertDrained(t, s, inflight)
 	})
@@ -185,19 +161,12 @@ func TestInstanceStateRejectsCallsByPhase(t *testing.T) {
 		finishClose(t, s, nil)
 
 		_, err := s.admitCall("new call during closed")
-		if err == nil {
-			t.Fatal("closed must reject new business calls")
-		}
-		if !errors.Is(err, native.ErrClosed) {
-			t.Errorf("errors.Is(err, native.ErrClosed) = false; err = %v", err)
-		}
-		if errors.Is(err, native.ErrClosing) {
-			t.Errorf("the closed rejection must not be mislabelled as ErrClosing: %v", err)
-		}
+		require.Error(t, err, "closed must reject new business calls")
+		assert.ErrorIs(t, err, native.ErrClosed, "errors.Is(err, native.ErrClosed) = false; err = %v", err)
+		assert.NotErrorIs(t, err, native.ErrClosing, "the closed rejection must not be mislabelled as ErrClosing: %v", err)
 		// 正常关闭(无故障)的最终错误为 nil。
-		if got := s.waitClose(); got != nil {
-			t.Errorf("waitClose() of a normal close = %v, want nil", got)
-		}
+		got := s.waitClose()
+		assert.NoError(t, got, "waitClose() of a normal close = %v, want nil", got)
 
 		releaseAndAssertDrained(t, s, inflight)
 	})
@@ -219,9 +188,8 @@ func TestCloseWaitsForCallsQueuedBeforeRawGate(t *testing.T) {
 
 	// B:已准入、将在门禁前排队。A 全程未退出,B 必然还在门禁前。
 	leaseB := mustAdmit(t, s, "call B")
-	if n := inFlightCalls(s); n != 2 {
-		t.Fatalf("in-flight count after both calls admitted = %d, want 2", n)
-	}
+	n := inFlightCalls(s)
+	require.Equal(t, uint64(2), n, "in-flight count after both calls admitted = %d, want 2", n)
 	bInRaw := make(chan struct{})
 	bFinish := make(chan struct{})
 	go func() {
@@ -243,14 +211,13 @@ func TestCloseWaitsForCallsQueuedBeforeRawGate(t *testing.T) {
 	// 负面断言一:A、B 均未释放,关闭等待必须仍阻塞。
 	select {
 	case <-drained:
-		t.Fatal("waitCallsDrained returned early while in-flight calls were unreleased: it missed an in-flight call")
+		require.Fail(t, "waitCallsDrained returned early while in-flight calls were unreleased: it missed an in-flight call")
 	case <-time.After(notWithin):
 	}
 
 	// 等待期间在途计数必须包含尚在门禁前排队的 B。
-	if n := inFlightCalls(s); n != 2 {
-		t.Fatalf("in-flight count during the close wait = %d, want 2 (including the caller queued before the raw gate)", n)
-	}
+	n = inFlightCalls(s)
+	require.Equal(t, uint64(2), n, "in-flight count during the close wait = %d, want 2 (including the caller queued before the raw gate)", n)
 
 	// A 完成 raw 段并释放 lease。
 	s.raw.exit()
@@ -259,7 +226,7 @@ func TestCloseWaitsForCallsQueuedBeforeRawGate(t *testing.T) {
 	// 负面断言二:B 仍在途(排队转准入段、未释放),等待必须继续。
 	select {
 	case <-drained:
-		t.Fatal("waitCallsDrained returned early while call B was unreleased: it missed the queued caller")
+		require.Fail(t, "waitCallsDrained returned early while call B was unreleased: it missed the queued caller")
 	case <-time.After(notWithin):
 	}
 
@@ -270,14 +237,12 @@ func TestCloseWaitsForCallsQueuedBeforeRawGate(t *testing.T) {
 	select {
 	case <-drained:
 	case <-time.After(hangGuard):
-		t.Fatal("waitCallsDrained still did not converge after all leases were released (hang-guard limit hit)")
+		require.Fail(t, "waitCallsDrained still did not converge after all leases were released (hang-guard limit hit)")
 	}
-	if n := inFlightCalls(s); n != 0 {
-		t.Fatalf("in-flight count after convergence = %d, want 0", n)
-	}
-	if got := s.currentPhase(); got != phaseClosing {
-		t.Fatalf("phase after the close wait converged = %d, want closing (terminal state publication belongs to the later flow)", got)
-	}
+	n = inFlightCalls(s)
+	require.Equal(t, uint64(0), n, "in-flight count after convergence = %d, want 0", n)
+	got := s.currentPhase()
+	require.Equal(t, phaseClosing, got, "phase after the close wait converged = %d, want closing (terminal state publication belongs to the later flow)", got)
 }
 
 // TestStateLockNotHeldAcrossRawSection 验证「状态锁只用于
@@ -296,11 +261,9 @@ func TestStateLockNotHeldAcrossRawSection(t *testing.T) {
 	go func() { phaseCh <- s.currentPhase() }()
 	select {
 	case got := <-phaseCh:
-		if got != phaseReady {
-			t.Fatalf("currentPhase() inside the raw section = %d, want ready", got)
-		}
+		require.Equal(t, phaseReady, got, "currentPhase() inside the raw section = %d, want ready", got)
 	case <-time.After(hangGuard):
-		t.Fatal("another goroutine's state lock operation inside the raw section did not complete in time: the implementation appears to hold the state lock across raw calls")
+		require.Fail(t, "another goroutine's state lock operation inside the raw section did not complete in time: the implementation appears to hold the state lock across raw calls")
 	}
 
 	// 进入关闭:等待清零阻塞在 A 未释放上。
@@ -320,21 +283,17 @@ func TestStateLockNotHeldAcrossRawSection(t *testing.T) {
 	}()
 	select {
 	case err := <-probe:
-		if !errors.Is(err, native.ErrClosing) {
-			t.Fatalf("probe during closing = %v, want errors.Is native.ErrClosing", err)
-		}
+		require.ErrorIs(t, err, native.ErrClosing, "probe during closing = %v, want errors.Is native.ErrClosing", err)
 	case <-time.After(hangGuard):
-		t.Fatal("another goroutine's admitCall while waiting for the drain did not complete in time: the implementation appears to hold the state lock while waiting for in-flight calls to drain")
+		require.Fail(t, "another goroutine's admitCall while waiting for the drain did not complete in time: the implementation appears to hold the state lock while waiting for in-flight calls to drain")
 	}
 	phaseCh2 := make(chan instancePhase, 1)
 	go func() { phaseCh2 <- s.currentPhase() }()
 	select {
 	case got := <-phaseCh2:
-		if got != phaseClosing {
-			t.Fatalf("currentPhase() while waiting for the drain = %d, want closing", got)
-		}
+		require.Equal(t, phaseClosing, got, "currentPhase() while waiting for the drain = %d, want closing", got)
 	case <-time.After(hangGuard):
-		t.Fatal("another goroutine's currentPhase while waiting for the drain did not complete in time: the implementation appears to hold the state lock while waiting for in-flight calls to drain")
+		require.Fail(t, "another goroutine's currentPhase while waiting for the drain did not complete in time: the implementation appears to hold the state lock while waiting for in-flight calls to drain")
 	}
 
 	// A 完成 raw 段并释放,关闭等待收敛。
@@ -343,7 +302,7 @@ func TestStateLockNotHeldAcrossRawSection(t *testing.T) {
 	select {
 	case <-drained:
 	case <-time.After(hangGuard):
-		t.Fatal("waitCallsDrained did not converge after the lease was released (hang-guard limit hit)")
+		require.Fail(t, "waitCallsDrained did not converge after the lease was released (hang-guard limit hit)")
 	}
 }
 
@@ -373,12 +332,9 @@ func TestConcurrentElectCloseSingleOwner(t *testing.T) {
 			}(i)
 		}
 		wg.Wait()
-		if wins.Load() != 1 {
-			t.Fatalf("election winners = %d, want exactly 1", wins.Load())
-		}
-		if got := s.currentPhase(); got != phaseClosing {
-			t.Fatalf("phase after the election = %d, want closing", got)
-		}
+		require.Equal(t, int32(1), wins.Load(), "election winners = %d, want exactly 1", wins.Load())
+		got := s.currentPhase()
+		require.Equal(t, phaseClosing, got, "phase after the election = %d, want closing", got)
 
 		finalErr := fmt.Errorf("stop diagnostic: %w", native.ErrProtocol)
 		// 全部失败者先行等待同一 closeDone;随后代行所有者发布终态。
@@ -401,33 +357,22 @@ func TestConcurrentElectCloseSingleOwner(t *testing.T) {
 		finishClose(t, s, finalErr)
 		waitWG.Wait()
 
-		if len(loserErrs) != n-1 {
-			t.Fatalf("loser count = %d, want %d", len(loserErrs), n-1)
-		}
+		require.Len(t, loserErrs, n-1, "loser count = %d, want %d", len(loserErrs), n-1)
 		for i, err := range loserErrs {
 			// 同一最终错误存储:失败者拿到的就是所有者发布的同一错误值。
-			if err != finalErr {
-				t.Errorf("loser %d final error = %v, want the same stored %v as the owner", i, err, finalErr)
-			}
-			if !errors.Is(err, native.ErrProtocol) {
-				t.Errorf("loser %d: errors.Is(err, native.ErrProtocol) = false; err = %v", i, err)
-			}
+			assert.True(t, err == finalErr, "loser %d final error = %v, want the same stored %v as the owner", i, err, finalErr)
+			assert.ErrorIs(t, err, native.ErrProtocol, "loser %d: errors.Is(err, native.ErrProtocol) = false; err = %v", i, err)
 		}
 		select {
 		case <-closeCh:
 		default:
-			t.Fatal("closeDone not closed after the owner published the terminal state")
+			require.Fail(t, "closeDone not closed after the owner published the terminal state")
 		}
-		if s.done() != closeCh {
-			t.Fatal("done() returned a different channel: closeDone is not shared")
-		}
-		if got := s.currentPhase(); got != phaseClosed {
-			t.Fatalf("phase after publication = %d, want closed", got)
-		}
+		require.Equal(t, closeCh, s.done(), "done() returned a different channel: closeDone is not shared")
+		got = s.currentPhase()
+		require.Equal(t, phaseClosed, got, "phase after publication = %d, want closed", got)
 		// closed 后的幂等申请仍不成为所有者。
-		if s.electClose() {
-			t.Error("a repeated request after closed must not become the owner")
-		}
+		assert.False(t, s.electClose(), "a repeated request after closed must not become the owner")
 	})
 
 	t.Run("concurrent requests in faulted elect exactly one owner sharing the first-cause terminal state", func(t *testing.T) {
@@ -449,9 +394,7 @@ func TestConcurrentElectCloseSingleOwner(t *testing.T) {
 			}()
 		}
 		wg.Wait()
-		if wins.Load() != 1 {
-			t.Fatalf("election winners in the faulted phase = %d, want exactly 1", wins.Load())
-		}
+		require.Equal(t, int32(1), wins.Load(), "election winners in the faulted phase = %d, want exactly 1", wins.Load())
 
 		var waitWG sync.WaitGroup
 		loserErrs := make([]error, 0, n)
@@ -470,12 +413,8 @@ func TestConcurrentElectCloseSingleOwner(t *testing.T) {
 		waitWG.Wait()
 
 		for i, err := range loserErrs {
-			if err != cause {
-				t.Errorf("loser %d final error = %v, want first cause %v", i, err, cause)
-			}
-			if !errors.Is(err, native.ErrEventOverflow) {
-				t.Errorf("loser %d: errors.Is(err, native.ErrEventOverflow) = false; err = %v", i, err)
-			}
+			assert.True(t, err == cause, "loser %d final error = %v, want first cause %v", i, err, cause)
+			assert.ErrorIs(t, err, native.ErrEventOverflow, "loser %d: errors.Is(err, native.ErrEventOverflow) = false; err = %v", i, err)
 		}
 	})
 }
@@ -497,12 +436,8 @@ func TestPublishFinalErrorFirstWriteWins(t *testing.T) {
 	s.publishClosed()
 	s.publishCloseDone()
 	got := s.waitClose()
-	if got != first {
-		t.Fatalf("waitClose() = %v, want the first published %v (must not be overwritten)", got, first)
-	}
-	if errors.Is(got, native.ErrClosing) {
-		t.Errorf("the final error must not mix in the later diagnostic: %v", got)
-	}
+	require.True(t, got == first, "waitClose() = %v, want the first published %v (must not be overwritten)", got, first)
+	assert.NotErrorIs(t, got, native.ErrClosing, "the final error must not mix in the later diagnostic: %v", got)
 }
 
 func TestCloseCompletionFollowsFinalState(t *testing.T) {
@@ -516,16 +451,13 @@ func TestCloseCompletionFollowsFinalState(t *testing.T) {
 	s.publishClosed()
 	select {
 	case <-s.done():
-		t.Fatal("publishing the closed state must not notify Events closed early")
+		require.Fail(t, "publishing the closed state must not notify Events closed early")
 	default:
 	}
-	if s.currentError() != nil {
-		t.Fatal("the normal final error was rewritten by a later publication")
-	}
+	require.NoError(t, s.currentError(), "the normal final error was rewritten by a later publication")
 	s.publishCloseDone()
-	if err := s.waitClose(); err != nil {
-		t.Fatalf("waitClose = %v, want nil", err)
-	}
+	err := s.waitClose()
+	require.NoError(t, err, "waitClose = %v, want nil", err)
 	assertPanics(t, "duplicate close-completion notification", s.publishCloseDone)
 }
 
@@ -535,21 +467,18 @@ func TestStopDiagnosticIsVisibleWithoutFault(t *testing.T) {
 	mustElectClose(t, s)
 	diagnostic := fmt.Errorf("AsstStop returned 0 (false): %w", native.ErrNativeRejected)
 	s.recordStopDiagnostic(diagnostic)
-	if got := s.currentError(); got != diagnostic {
-		t.Fatalf("error during close = %v, want the Stop diagnostic", got)
-	}
-	if got := s.faultDiagnostics(); got.stopDiagnostic != diagnostic || got.firstFault != nil {
-		t.Fatalf("diagnostics during close = %+v", got)
-	}
+	got := s.currentError()
+	require.True(t, got == diagnostic, "error during close = %v, want the Stop diagnostic", got)
+	diags := s.faultDiagnostics()
+	require.True(t, diags.stopDiagnostic == diagnostic && diags.firstFault == nil, "diagnostics during close = %+v", diags)
 	select {
 	case <-s.faultNotify():
-		t.Fatal("a Stop rejection during close must not trigger the first-fault notification")
+		require.Fail(t, "a Stop rejection during close must not trigger the first-fault notification")
 	default:
 	}
 	finishClose(t, s, s.currentError())
-	if got := s.currentError(); got != s.waitClose() || got != diagnostic {
-		t.Fatalf("error after completion = %v, want the stable Stop diagnostic", got)
-	}
+	got = s.currentError()
+	require.True(t, got == s.waitClose() && got == diagnostic, "error after completion = %v, want the stable Stop diagnostic", got)
 }
 
 // TestInstanceStateSingleGatedHandle 验证「状态路径只保留
@@ -561,25 +490,20 @@ func TestInstanceStateSingleGatedHandle(t *testing.T) {
 	t.Run("handle unique throughout and read only via a lease", func(t *testing.T) {
 		const h = uintptr(0x3001)
 		s := newInstanceState(h, 128, 1_048_576)
-		if got := stateHandle(s); got != h {
-			t.Fatalf("handle after construction = %#x, want %#x", got, h)
-		}
+		got := stateHandle(s)
+		require.Equal(t, h, got, "handle after construction = %#x, want %#x", got, h)
 		s.publishReady()
-		if got := stateHandle(s); got != h {
-			t.Fatalf("handle after publishing ready = %#x, want %#x", got, h)
-		}
+		got = stateHandle(s)
+		require.Equal(t, h, got, "handle after publishing ready = %#x, want %#x", got, h)
 		l := mustAdmit(t, s, "handle read")
-		if got := l.handle(); got != h {
-			t.Fatalf("lease.handle() = %#x, want %#x", got, h)
-		}
+		got = l.handle()
+		require.Equal(t, h, got, "lease.handle() = %#x, want %#x", got, h)
 		mustElectClose(t, s)
-		if got := stateHandle(s); got != h {
-			t.Fatalf("handle in the closing phase = %#x, want %#x", got, h)
-		}
+		got = stateHandle(s)
+		require.Equal(t, h, got, "handle in the closing phase = %#x, want %#x", got, h)
 		finishClose(t, s, nil)
-		if got := stateHandle(s); got != h {
-			t.Fatalf("handle after closed = %#x, want %#x (must not be rewritten by a side channel)", got, h)
-		}
+		got = stateHandle(s)
+		require.Equal(t, h, got, "handle after closed = %#x, want %#x (must not be rewritten by a side channel)", got, h)
 	})
 
 	t.Run("closeHandle obtainable only after calls drain", func(t *testing.T) {
@@ -594,12 +518,8 @@ func TestInstanceStateSingleGatedHandle(t *testing.T) {
 
 		releaseAndAssertDrained(t, s, l)
 		got, ok := s.closeHandle()
-		if !ok {
-			t.Fatalf("closeHandle ok after draining = false, want true (handle=%#x)", h)
-		}
-		if got != h {
-			t.Fatalf("closeHandle() = %#x, want %#x", got, h)
-		}
+		require.True(t, ok, "closeHandle ok after draining = false, want true (handle=%#x)", h)
+		require.Equal(t, h, got, "closeHandle() = %#x, want %#x", got, h)
 	})
 
 	t.Run("CreateEx=0 path with handle=0 has no close handle", func(t *testing.T) {
@@ -614,12 +534,8 @@ func TestInstanceStateSingleGatedHandle(t *testing.T) {
 		s.waitCallsDrained()
 		finishClose(t, s, nil)
 		got, ok := s.closeHandle()
-		if ok {
-			t.Fatalf("CreateEx=0 path closeHandle ok = true, want false")
-		}
-		if got != 0 {
-			t.Fatalf("CreateEx=0 path closeHandle() = %#x, want 0", got)
-		}
+		require.False(t, ok, "CreateEx=0 path closeHandle ok = true, want false")
+		require.Equal(t, uintptr(0), got, "CreateEx=0 path closeHandle() = %#x, want 0", got)
 	})
 }
 
@@ -635,19 +551,14 @@ func TestRecordFaultStickySemantics(t *testing.T) {
 		s.recordFault(first)
 		s.recordFault(second)
 
-		if got := s.currentFault(); !errors.Is(got, first) {
-			t.Fatalf("currentFault() = %v, want first cause %v", got, first)
-		}
-		if got := s.currentFault(); errors.Is(got, native.ErrEventOverflow) {
-			t.Fatalf("the first cause was overwritten by the later fault: %v", got)
-		}
+		got := s.currentFault()
+		require.ErrorIs(t, got, first, "currentFault() = %v, want first cause %v", got, first)
+		got = s.currentFault()
+		require.NotErrorIs(t, got, native.ErrEventOverflow, "the first cause was overwritten by the later fault: %v", got)
 		_, err := s.admitCall("new call after faulted")
-		if !errors.Is(err, first) || !errors.Is(err, native.ErrProtocol) {
-			t.Fatalf("the rejection error should reach the first cause along the chain: err = %v", err)
-		}
-		if errors.Is(err, native.ErrEventOverflow) {
-			t.Fatalf("the rejection error mixed in the later fault: %v", err)
-		}
+		require.ErrorIs(t, err, first, "the rejection error should reach the first cause along the chain: err = %v", err)
+		require.ErrorIs(t, err, native.ErrProtocol, "the rejection error should reach the first cause along the chain: err = %v", err)
+		require.NotErrorIs(t, err, native.ErrEventOverflow, "the rejection error mixed in the later fault: %v", err)
 	})
 
 	t.Run("during closing only the cause is recorded, the phase unchanged", func(t *testing.T) {
@@ -658,22 +569,17 @@ func TestRecordFaultStickySemantics(t *testing.T) {
 
 		cause := fmt.Errorf("fault during close: %w", native.ErrProtocol)
 		s.recordFault(cause)
-		if got := s.currentPhase(); got != phaseClosing {
-			t.Fatalf("phase after recordFault during closing = %d, want closing (only the cause is recorded, the phase unchanged)", got)
-		}
-		if got := s.currentFault(); !errors.Is(got, cause) {
-			t.Fatalf("currentFault() = %v, want the newly recorded first cause %v", got, cause)
-		}
+		phase := s.currentPhase()
+		require.Equal(t, phaseClosing, phase, "phase after recordFault during closing = %d, want closing (only the cause is recorded, the phase unchanged)", phase)
+		fault := s.currentFault()
+		require.ErrorIs(t, fault, cause, "currentFault() = %v, want the newly recorded first cause %v", fault, cause)
 		// 阶段未变:新调用仍按 closing 拒绝。
 		_, err := s.admitCall("new call after the closing fault")
-		if !errors.Is(err, native.ErrClosing) {
-			t.Fatalf("errors.Is(err, native.ErrClosing) = false; err = %v", err)
-		}
+		require.ErrorIs(t, err, native.ErrClosing, "errors.Is(err, native.ErrClosing) = false; err = %v", err)
 		// 所有者随后发布的最终错误携带首因。
 		finishClose(t, s, cause)
-		if got := s.waitClose(); !errors.Is(got, cause) {
-			t.Fatalf("waitClose() = %v, want it to contain the first cause %v", got, cause)
-		}
+		final := s.waitClose()
+		require.ErrorIs(t, final, cause, "waitClose() = %v, want it to contain the first cause %v", final, cause)
 		// 已准入调用在关闭全过程后照常释放。
 		releaseAndAssertDrained(t, s, inflight)
 	})
@@ -763,21 +669,16 @@ func TestCallbackGateBasics(t *testing.T) {
 		s := newInstanceState(0x6001, 128, 1_048_576)
 		s.publishReady()
 		l1, ok := s.admitCallback()
-		if !ok {
-			t.Fatal("admitCallback must succeed while the gate is open")
-		}
+		require.True(t, ok, "admitCallback must succeed while the gate is open")
 		mustElectClose(t, s)
 		l2, ok := s.admitCallback()
-		if !ok {
-			t.Fatal("the gate is still open in the closing phase; admitCallback must succeed")
-		}
+		require.True(t, ok, "the gate is still open in the closing phase; admitCallback must succeed")
 		l1.release()
 		l2.release()
 
 		s.closeCallbackGate()
-		if _, ok := s.admitCallback(); ok {
-			t.Fatal("admitCallback must fail after the gate is closed")
-		}
+		_, ok = s.admitCallback()
+		require.False(t, ok, "admitCallback must fail after the gate is closed")
 		s.waitCallbacksDrained()
 		// 已显式关门,此处只做所有者的错误与终态发布。
 		s.publishFinalError(nil)
@@ -796,9 +697,7 @@ func TestCallbackGateBasics(t *testing.T) {
 		s := newInstanceState(0x6003, 128, 1_048_576)
 		s.publishReady()
 		l, ok := s.admitCallback()
-		if !ok {
-			t.Fatal("admitCallback must succeed while the gate is open")
-		}
+		require.True(t, ok, "admitCallback must succeed while the gate is open")
 		drained := make(chan struct{})
 		go func() {
 			s.waitCallbacksDrained()
@@ -808,7 +707,7 @@ func TestCallbackGateBasics(t *testing.T) {
 		// 负面断言:callback 在途时不得返回。
 		select {
 		case <-drained:
-			t.Fatal("waitCallbacksDrained returned early while a callback was in flight")
+			require.Fail(t, "waitCallbacksDrained returned early while a callback was in flight")
 		case <-time.After(notWithin):
 		}
 
@@ -816,7 +715,7 @@ func TestCallbackGateBasics(t *testing.T) {
 		select {
 		case <-drained:
 		case <-time.After(hangGuard):
-			t.Fatal("waitCallbacksDrained did not converge after the callback exited (hang-guard limit hit)")
+			require.Fail(t, "waitCallbacksDrained did not converge after the callback exited (hang-guard limit hit)")
 		}
 	})
 
@@ -829,9 +728,7 @@ func TestCallbackGateBasics(t *testing.T) {
 		assertPanics(t, "publishClosed with the callback gate open", func() { s.publishClosed() })
 		// 门开着仍可准入;关门后仍有在途 callback 不得发布终态。
 		l, ok := s.admitCallback()
-		if !ok {
-			t.Fatal("the gate is still open in the closing phase; admitCallback must succeed")
-		}
+		require.True(t, ok, "the gate is still open in the closing phase; admitCallback must succeed")
 		s.closeCallbackGate()
 		assertPanics(t, "publishClosed with a callback in flight", func() { s.publishClosed() })
 
@@ -840,8 +737,7 @@ func TestCallbackGateBasics(t *testing.T) {
 		s.publishFinalError(nil)
 		s.publishClosed()
 		s.publishCloseDone()
-		if got := s.currentPhase(); got != phaseClosed {
-			t.Fatalf("phase after publishClosed following the gate close and drain = %d, want closed", got)
-		}
+		got := s.currentPhase()
+		require.Equal(t, phaseClosed, got, "phase after publishClosed following the gate close and drain = %d, want closed", got)
 	})
 }

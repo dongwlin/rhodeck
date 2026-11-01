@@ -3,7 +3,6 @@
 package native
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +10,9 @@ import (
 	"testing"
 
 	"github.com/ebitengine/purego"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // 本文件是与真实系统 loader 的冒烟测试:只执行打开与符号查找,
@@ -21,15 +23,11 @@ import (
 // TestLoadFlagsFrozen 把冻结的加载标志数值钉死:RTLD_NOW|RTLD_LOCAL
 // 在 Linux 上恰为 0x2,且不得混入 RTLD_GLOBAL 或 RTLD_LAZY。
 func TestLoadFlagsFrozen(t *testing.T) {
-	if loadFlags != 0x2 {
-		t.Errorf("loadFlags = %#x, want 0x2 (RTLD_NOW|RTLD_LOCAL)", loadFlags)
-	}
-	if loadFlags&purego.RTLD_GLOBAL != 0 {
-		t.Errorf("loadFlags = %#x, must not contain RTLD_GLOBAL (frozen policy: do not widen symbol visibility)", loadFlags)
-	}
-	if loadFlags&purego.RTLD_LAZY != 0 {
-		t.Errorf("loadFlags = %#x, must not contain RTLD_LAZY (frozen policy: complete all relocations at load time)", loadFlags)
-	}
+	assert.True(t, loadFlags == 0x2, "loadFlags = %#x, want 0x2 (RTLD_NOW|RTLD_LOCAL)", loadFlags)
+	assert.True(t, loadFlags&purego.RTLD_GLOBAL == 0,
+		"loadFlags = %#x, must not contain RTLD_GLOBAL (frozen policy: do not widen symbol visibility)", loadFlags)
+	assert.True(t, loadFlags&purego.RTLD_LAZY == 0,
+		"loadFlags = %#x, must not contain RTLD_LAZY (frozen policy: complete all relocations at load time)", loadFlags)
 }
 
 // TestOpenMissingLibraryReportsSystemCause 用真实系统 loader 打开
@@ -40,32 +38,19 @@ func TestOpenMissingLibraryReportsSystemCause(t *testing.T) {
 	const missing = "/nonexistent/libMaaCore.so"
 
 	lib, err := newLoader(dlopenPrimitives{}, abiProfile).Open(missing)
-	if lib != nil {
-		t.Fatalf("opening a nonexistent library must not return a Library, got %+v", lib)
-	}
+	require.Nil(t, lib, "opening a nonexistent library must not return a Library, got %+v", lib)
 	var lle *LibraryLoadError
-	if !errors.As(err, &lle) {
-		t.Fatalf("errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
-	}
-	if lle.Err == nil {
-		t.Fatal("the underlying load error must be preserved")
-	}
-	if !strings.Contains(lle.Err.Error(), "No such file or directory") {
-		t.Errorf("underlying error text = %q, want it to contain %q", lle.Err.Error(), "No such file or directory")
-	}
-	if lle.Path != missing {
-		t.Errorf("Path = %q, want %q", lle.Path, missing)
-	}
-	if lle.GOOS != runtime.GOOS || lle.GOARCH != runtime.GOARCH {
-		t.Errorf("GOOS/GOARCH = %s/%s, want %s/%s", lle.GOOS, lle.GOARCH, runtime.GOOS, runtime.GOARCH)
-	}
+	require.ErrorAs(t, err, &lle, "errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
+	require.Error(t, lle.Err, "the underlying load error must be preserved")
+	assert.Contains(t, lle.Err.Error(), "No such file or directory",
+		"underlying error text = %q, want it to contain %q", lle.Err.Error(), "No such file or directory")
+	assert.Equal(t, missing, lle.Path, "Path = %q, want %q", lle.Path, missing)
+	assert.True(t, lle.GOOS == runtime.GOOS && lle.GOARCH == runtime.GOARCH,
+		"GOOS/GOARCH = %s/%s, want %s/%s", lle.GOOS, lle.GOARCH, runtime.GOOS, runtime.GOARCH)
 	text := err.Error()
-	if want := runtime.GOOS + "/" + runtime.GOARCH; !strings.Contains(text, want) {
-		t.Errorf("Error() = %q, want it to contain target platform %q", text, want)
-	}
-	if !strings.Contains(text, missing) {
-		t.Errorf("Error() = %q, want it to contain path %q", text, missing)
-	}
+	assert.Contains(t, text, runtime.GOOS+"/"+runtime.GOARCH,
+		"Error() = %q, want it to contain target platform %q", text, runtime.GOOS+"/"+runtime.GOARCH)
+	assert.Contains(t, text, missing, "Error() = %q, want it to contain path %q", text, missing)
 }
 
 // TestOpenRejectsInvalidELF 用真实系统 loader 打开非 ELF 文件:
@@ -73,21 +58,14 @@ func TestOpenMissingLibraryReportsSystemCause(t *testing.T) {
 // 文本随 libc 实现而异,不作断言。
 func TestOpenRejectsInvalidELF(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "not-an-elf.so")
-	if err := os.WriteFile(path, []byte("this file is not an ELF object, just plain bytes"), 0o755); err != nil {
-		t.Fatalf("failed to write the fixture file: %v", err)
-	}
+	err := os.WriteFile(path, []byte("this file is not an ELF object, just plain bytes"), 0o755)
+	require.NoError(t, err, "failed to write the fixture file: %v", err)
 
 	lib, err := newLoader(dlopenPrimitives{}, abiProfile).Open(path)
-	if lib != nil {
-		t.Fatalf("opening a non-ELF file must not return a Library, got %+v", lib)
-	}
+	require.Nil(t, lib, "opening a non-ELF file must not return a Library, got %+v", lib)
 	var lle *LibraryLoadError
-	if !errors.As(err, &lle) {
-		t.Fatalf("errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
-	}
-	if lle.Err == nil {
-		t.Error("the underlying load error must be preserved")
-	}
+	require.ErrorAs(t, err, &lle, "errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
+	assert.Error(t, lle.Err, "the underlying load error must be preserved")
 }
 
 // TestOpenAndLookupRealSystemLibrary 打开本机真实存在的 libm.so.6
@@ -112,33 +90,20 @@ func TestOpenAndLookupRealSystemLibrary(t *testing.T) {
 	}
 
 	lib, err := newLoader(dlopenPrimitives{}, abiProfile).Open(found)
-	if err != nil {
-		t.Fatalf("failed to open the real system library %s: %v", found, err)
-	}
-	if lib.Path() != found {
-		t.Errorf("Library.Path() = %q, want %q", lib.Path(), found)
-	}
-	if lib.Name() != "libm.so.6" {
-		t.Errorf("Library.Name() = %q, want %q", lib.Name(), "libm.so.6")
-	}
+	require.NoError(t, err, "failed to open the real system library %s: %v", found, err)
+	assert.Equal(t, found, lib.Path(), "Library.Path() = %q, want %q", lib.Path(), found)
+	assert.Equal(t, "libm.so.6", lib.Name(), "Library.Name() = %q, want %q", lib.Name(), "libm.so.6")
 
 	sqrtAddr, err := lib.Lookup("sqrt")
-	if err != nil {
-		t.Fatalf("Lookup(sqrt) returned an unexpected error: %v", err)
-	}
-	if sqrtAddr == 0 {
-		t.Fatal("Lookup(sqrt) returned a null address")
-	}
+	require.NoError(t, err, "Lookup(sqrt) returned an unexpected error: %v", err)
+	require.NotZero(t, sqrtAddr, "Lookup(sqrt) returned a null address")
 
 	const absent = "AsstNoSuchSymbolRhodeck"
 	_, err = lib.Lookup(absent)
 	var sle *SymbolLookupError
-	if !errors.As(err, &sle) {
-		t.Fatalf("errors.As did not yield a *SymbolLookupError, got %T: %v", err, err)
-	}
-	if sle.Symbol != absent || sle.LibraryPath != found || sle.Profile != abiProfile {
-		t.Errorf("diagnostic fields mismatch: %+v", sle)
-	}
+	require.ErrorAs(t, err, &sle, "errors.As did not yield a *SymbolLookupError, got %T: %v", err, err)
+	assert.True(t, sle.Symbol == absent && sle.LibraryPath == found && sle.Profile == abiProfile,
+		"diagnostic fields mismatch: %+v", sle)
 }
 
 // TestNewLoaderProductionWiring 验证生产构造入口 NewLoader 接线正确:
@@ -150,25 +115,14 @@ func TestNewLoaderProductionWiring(t *testing.T) {
 	const missing = "/nonexistent/rhodeck-libMaaCore.so"
 
 	ldr := NewLoader()
-	if ldr == nil {
-		t.Fatal("NewLoader must return the production loader")
-	}
-	if ldr.profile != abiProfile {
-		t.Errorf("production loader ABI profile = %q, want %q", ldr.profile, abiProfile)
-	}
+	require.NotNil(t, ldr, "NewLoader must return the production loader")
+	assert.Equal(t, abiProfile, ldr.profile, "production loader ABI profile = %q, want %q", ldr.profile, abiProfile)
 
 	lib, err := ldr.Open(missing)
-	if lib != nil {
-		t.Fatalf("opening a nonexistent library must not return a Library, got %+v", lib)
-	}
+	require.Nil(t, lib, "opening a nonexistent library must not return a Library, got %+v", lib)
 	var lle *LibraryLoadError
-	if !errors.As(err, &lle) {
-		t.Fatalf("errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
-	}
-	if lle.Path != missing {
-		t.Errorf("Path = %q, want %q", lle.Path, missing)
-	}
-	if lle.Err == nil || !strings.Contains(lle.Err.Error(), "No such file or directory") {
-		t.Errorf("underlying error = %v, want the system loader's \"No such file or directory\" cause preserved", lle.Err)
-	}
+	require.ErrorAs(t, err, &lle, "errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
+	assert.Equal(t, missing, lle.Path, "Path = %q, want %q", lle.Path, missing)
+	assert.True(t, lle.Err != nil && strings.Contains(lle.Err.Error(), "No such file or directory"),
+		"underlying error = %v, want the system loader's \"No such file or directory\" cause preserved", lle.Err)
 }

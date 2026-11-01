@@ -3,22 +3,20 @@ package maa
 import (
 	"bytes"
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
+	"github.com/stretchr/testify/require"
 )
 
 // 注入只经过 fake native 的 callback token；观察结果全部从公开方法读取。
 func deliverObservationEvent(t *testing.T, rig *createRig, id MessageID, raw string) {
 	t.Helper()
 	deliver := native.LookupCallbackDelivery(rig.creator.exToken(0))
-	if deliver == nil {
-		t.Fatal("instance callback token not registered")
-	}
+	require.NotNil(t, deliver, "instance callback token not registered")
 	deliver(int32(id), callbackCBytes(raw))
 }
 
@@ -27,7 +25,7 @@ func waitObservationSignal(t *testing.T, ch <-chan struct{}, what string) {
 	select {
 	case <-ch:
 	case <-time.After(hangGuard):
-		t.Fatalf("timed out waiting for %s", what)
+		require.Fail(t, "timed out waiting for "+what)
 	}
 }
 
@@ -35,35 +33,34 @@ func assertObservationOpen(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
 	select {
 	case <-ch:
-		t.Fatalf("%s closed early", what)
+		require.Fail(t, what+" closed early")
 	default:
 	}
 }
 
 func TestInstanceObservationTaskCompletionAndNormalClose(t *testing.T) {
 	inst, rig := newSyncRig(t, 0x0B5100)
-	if inst.Events() == nil || inst.Done() == nil || inst.Fault() == nil {
-		t.Fatal("observation channels must be available after successful creation")
-	}
-	if inst.Events() != inst.Events() || inst.Done() != inst.Done() || inst.Fault() != inst.Fault() {
-		t.Fatal("repeated calls must return the same observation channel")
-	}
-	if err := inst.Err(); err != nil {
-		t.Fatalf("ready Err = %v, want nil", err)
-	}
+	require.NotNil(t, inst.Events(), "observation channels must be available after successful creation")
+	require.NotNil(t, inst.Done(), "observation channels must be available after successful creation")
+	require.NotNil(t, inst.Fault(), "observation channels must be available after successful creation")
+	require.True(t, inst.Events() == inst.Events() && inst.Done() == inst.Done() && inst.Fault() == inst.Fault(),
+		"repeated calls must return the same observation channel")
+	readyErr := inst.Err()
+	require.NoError(t, readyErr, "ready Err = %v, want nil", readyErr)
 	diag := inst.Diagnostics()
-	if diag.LostEvents != 0 || diag.FirstFault != nil || diag.StopDiagnostic != nil || len(diag.RawPrefix) != 0 {
-		t.Fatalf("ready Diagnostics = %+v, want empty diagnostics", diag)
-	}
+	require.Equal(t, uint64(0), diag.LostEvents, "ready Diagnostics = %+v, want empty diagnostics", diag)
+	require.Nil(t, diag.FirstFault, "ready Diagnostics = %+v, want empty diagnostics", diag)
+	require.Nil(t, diag.StopDiagnostic, "ready Diagnostics = %+v, want empty diagnostics", diag)
+	require.Empty(t, diag.RawPrefix, "ready Diagnostics = %+v, want empty diagnostics", diag)
 	assertObservationOpen(t, inst.Done(), "Done")
 	assertObservationOpen(t, inst.Fault(), "Fault")
 
 	const raw = `{"what":"AllTasksCompleted","future":9007199254740993}`
 	deliverObservationEvent(t, rig, 3, raw)
 	ev := mustReadEvent(t, inst.Events())
-	if ev.MessageID != 3 || ev.Sequence != 1 || string(ev.JSON) != raw {
-		t.Fatalf("task completion event = %+v, want the raw message and sequence 1", ev)
-	}
+	require.Equal(t, MessageID(3), ev.MessageID, "task completion event = %+v, want the raw message and sequence 1", ev)
+	require.Equal(t, uint64(1), ev.Sequence, "task completion event = %+v, want the raw message and sequence 1", ev)
+	require.Equal(t, raw, string(ev.JSON), "task completion event = %+v, want the raw message and sequence 1", ev)
 	assertObservationOpen(t, inst.Done(), "Done after task completion")
 	assertObservationOpen(t, inst.Fault(), "Fault after normal task completion")
 
@@ -73,82 +70,66 @@ func TestInstanceObservationTaskCompletionAndNormalClose(t *testing.T) {
 	closed := make(chan error, 1)
 	go func() { closed <- inst.Close() }()
 	waitObservationSignal(t, inst.Done(), "Done")
-	if err := inst.Err(); err != nil {
-		t.Fatalf("Err after Done = %v, want nil", err)
-	}
+	errAfterDone := inst.Err()
+	require.NoError(t, errAfterDone, "Err after Done = %v, want nil", errAfterDone)
 	ev = mustReadEvent(t, inst.Events())
-	if ev.MessageID != 99 || ev.Sequence != 2 || string(ev.JSON) != buffered {
-		t.Fatalf("buffered event after close = %+v, want FutureMessage and sequence 2", ev)
-	}
+	require.Equal(t, MessageID(99), ev.MessageID, "buffered event after close = %+v, want FutureMessage and sequence 2", ev)
+	require.Equal(t, uint64(2), ev.Sequence, "buffered event after close = %+v, want FutureMessage and sequence 2", ev)
+	require.Equal(t, buffered, string(ev.JSON), "buffered event after close = %+v, want FutureMessage and sequence 2", ev)
 	select {
 	case _, ok := <-inst.Events():
-		if ok {
-			t.Fatal("unexpected extra event after Done")
-		}
+		require.False(t, ok, "unexpected extra event after Done")
 	default:
-		t.Fatal("Done is closed but Events is not yet closed")
+		require.Fail(t, "Done is closed but Events is not yet closed")
 	}
-	if err := waitErr(t, closed, "Instance.Close"); err != nil {
-		t.Fatalf("Close = %v, want nil", err)
-	}
+	closeRet := waitErr(t, closed, "Instance.Close")
+	require.NoError(t, closeRet, "Close = %v, want nil", closeRet)
 	assertObservationOpen(t, inst.Fault(), "Fault after normal close")
 }
 
 func TestInstanceObservationOverflowPreservesCompletedOperation(t *testing.T) {
 	inst, rig := newAsyncRig(t, 0x0B5200, func(l *Limits) { l.PublicEvents = 1 })
 	completed, err := inst.Screencap()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	rig.caller.asyncRets = map[string]int32{"asyncClick": 2}
 	pending, err := inst.Click(1, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	deliverAsyncInfo(t, rig.creator.exToken(0), completed.ID(), "Screencap", `{"ret":true}`)
 	before, err := waitOperationGuarded(t, completed, context.Background())
-	if err != nil || !before.OK {
-		t.Fatalf("first completion = %+v, %v, want success", before, err)
-	}
+	require.NoError(t, err, "first completion = %+v, %v, want success", before, err)
+	require.True(t, before.OK, "first completion = %+v, %v, want success", before, err)
 	// 唯一公开缓冲由完成消息占据，消费者停读，后两条均应明确计失。
 	deliverObservationEvent(t, rig, 90, `{"future":1}`)
 	deliverObservationEvent(t, rig, 91, `{"future":2}`)
 	waitObservationSignal(t, inst.Fault(), "overflow Fault")
 	assertObservationOpen(t, inst.Done(), "Done with fault only")
-	if !errors.Is(inst.Err(), ErrEventOverflow) {
-		t.Fatalf("Err during the fault = %v, want ErrEventOverflow", inst.Err())
-	}
-	if err := inst.Start(); !errors.Is(err, ErrEventOverflow) {
-		t.Fatalf("new request after the fault = %v, want ErrEventOverflow", err)
-	}
-	if _, err := waitOperationGuarded(t, pending, context.Background()); !errors.Is(err, ErrEventOverflow) {
-		t.Fatalf("unsettled Operation = %v, want ErrEventOverflow", err)
-	}
+	require.ErrorIs(t, inst.Err(), ErrEventOverflow, "Err during the fault = %v, want ErrEventOverflow", inst.Err())
+	errStart := inst.Start()
+	require.ErrorIs(t, errStart, ErrEventOverflow, "new request after the fault = %v, want ErrEventOverflow", errStart)
+	_, unsettledErr := waitOperationGuarded(t, pending, context.Background())
+	require.ErrorIs(t, unsettledErr, ErrEventOverflow, "unsettled Operation = %v, want ErrEventOverflow", unsettledErr)
 	closed := make(chan error, 1)
 	go func() { closed <- inst.Close() }()
 	waitObservationSignal(t, inst.Done(), "Done with Events reads stopped")
 	final := inst.Err()
-	if !errors.Is(final, ErrEventOverflow) {
-		t.Fatalf("final Err = %v, want ErrEventOverflow", final)
-	}
+	require.ErrorIs(t, final, ErrEventOverflow, "final Err = %v, want ErrEventOverflow", final)
 	diag := inst.Diagnostics()
-	if diag.LostEvents != 2 || diag.FirstFault != final || diag.StopDiagnostic != nil {
-		t.Fatalf("final Diagnostics = %+v, want 2 lost events with the first cause preserved", diag)
-	}
-	if err := waitErr(t, closed, "Instance.Close"); err != final {
-		t.Fatalf("Close = %v, want the same final state as Err %v", err, final)
-	}
+	require.Equal(t, uint64(2), diag.LostEvents, "final Diagnostics = %+v, want 2 lost events with the first cause preserved", diag)
+	require.True(t, diag.FirstFault == final, "final Diagnostics = %+v, want 2 lost events with the first cause preserved", diag)
+	require.Nil(t, diag.StopDiagnostic, "final Diagnostics = %+v, want 2 lost events with the first cause preserved", diag)
+	closeRet := waitErr(t, closed, "Instance.Close")
+	require.True(t, closeRet == final, "Close = %v, want the same final state as Err %v", closeRet, final)
 	after, err := waitOperationGuarded(t, completed, context.Background())
-	if err != nil || after.ID != before.ID || after.OK != before.OK || !bytes.Equal(after.Details, before.Details) {
-		t.Fatalf("a subsequent overflow rewrote the completion result: before=%+v after=%+v err=%v", before, after, err)
-	}
+	require.NoError(t, err, "a subsequent overflow rewrote the completion result: before=%+v after=%+v err=%v", before, after, err)
+	require.Equal(t, before.ID, after.ID, "a subsequent overflow rewrote the completion result: before=%+v after=%+v err=%v", before, after, err)
+	require.Equal(t, before.OK, after.OK, "a subsequent overflow rewrote the completion result: before=%+v after=%+v err=%v", before, after, err)
+	require.True(t, bytes.Equal(after.Details, before.Details), "a subsequent overflow rewrote the completion result: before=%+v after=%+v err=%v", before, after, err)
 	_ = mustReadEvent(t, inst.Events())
-	if _, ok := <-inst.Events(); ok {
-		t.Fatal("Events should be closed after the buffer is drained")
-	}
-	if later := inst.Diagnostics(); later.LostEvents != diag.LostEvents || later.FirstFault != diag.FirstFault || inst.Err() != final {
-		t.Fatalf("diagnostics/error changed after Done: %+v", later)
-	}
+	_, eventsOK := <-inst.Events()
+	require.False(t, eventsOK, "Events should be closed after the buffer is drained")
+	later := inst.Diagnostics()
+	require.True(t, later.LostEvents == diag.LostEvents && later.FirstFault == diag.FirstFault && inst.Err() == final,
+		"diagnostics/error changed after Done: %+v", later)
 }
 
 func TestInstanceObservationStopDiagnosticBeforeDestroyReturns(t *testing.T) {
@@ -164,9 +145,7 @@ func TestInstanceObservationStopDiagnosticBeforeDestroyReturns(t *testing.T) {
 				deliverObservationEvent(t, rig, 92, `invalid-json`)
 				waitObservationSignal(t, inst.Fault(), "protocol Fault")
 				first = inst.Err()
-				if !errors.Is(first, ErrProtocol) {
-					t.Fatalf("first cause = %v, want ErrProtocol", first)
-				}
+				require.ErrorIs(t, first, ErrProtocol, "first cause = %v, want ErrProtocol", first)
 			}
 			rig.closer.stopRet = 0
 			destroying := make(chan struct{})
@@ -185,11 +164,11 @@ func TestInstanceObservationStopDiagnosticBeforeDestroyReturns(t *testing.T) {
 			waitObservationSignal(t, destroying, "entering Destroy")
 			assertObservationOpen(t, inst.Done(), "Done before Destroy returns")
 			diag := inst.Diagnostics()
-			if !errors.Is(diag.StopDiagnostic, ErrNativeRejected) || diag.FirstFault != first {
-				t.Fatalf("Diagnostics before Destroy returns = %+v, want the saved stop diagnostic and first cause", diag)
-			}
-			if !errors.Is(inst.Err(), ErrNativeRejected) || (first != nil && !errors.Is(inst.Err(), first)) {
-				t.Fatalf("Err before Destroy returns = %v, want the stop rejection and first cause recognizable", inst.Err())
+			require.ErrorIs(t, diag.StopDiagnostic, ErrNativeRejected, "Diagnostics before Destroy returns = %+v, want the saved stop diagnostic and first cause", diag)
+			require.True(t, diag.FirstFault == first, "Diagnostics before Destroy returns = %+v, want the saved stop diagnostic and first cause", diag)
+			require.ErrorIs(t, inst.Err(), ErrNativeRejected, "Err before Destroy returns = %v, want the stop rejection", inst.Err())
+			if first != nil {
+				require.ErrorIs(t, inst.Err(), first, "Err before Destroy returns = %v, want the first cause recognizable", inst.Err())
 			}
 			if !faultFirst {
 				assertObservationOpen(t, inst.Fault(), "Fault with stop rejection only")
@@ -198,17 +177,14 @@ func TestInstanceObservationStopDiagnosticBeforeDestroyReturns(t *testing.T) {
 			waitObservationSignal(t, inst.Done(), "Done")
 			final := inst.Err()
 			for range closers {
-				if err := waitErr(t, results, "concurrent Instance.Close"); err != final {
-					t.Fatalf("concurrent Close = %v, want the same final error %v", err, final)
-				}
+				closeRet := waitErr(t, results, "concurrent Instance.Close")
+				require.True(t, closeRet == final, "concurrent Close = %v, want the same final error %v", closeRet, final)
 			}
-			if err := inst.Close(); err != final || inst.Err() != final {
-				t.Fatalf("repeated close changed the final error: Close=%v Err=%v", err, inst.Err())
-			}
+			err := inst.Close()
+			require.True(t, err == final && inst.Err() == final, "repeated close changed the final error: Close=%v Err=%v", err, inst.Err())
 			later := inst.Diagnostics()
-			if later.FirstFault != first || later.StopDiagnostic != diag.StopDiagnostic {
-				t.Fatalf("diagnostics changed after Done: before=%+v after=%+v", diag, later)
-			}
+			require.True(t, later.FirstFault == first && later.StopDiagnostic == diag.StopDiagnostic,
+				"diagnostics changed after Done: before=%+v after=%+v", diag, later)
 			if !faultFirst {
 				assertObservationOpen(t, inst.Fault(), "Fault after close with stop rejection only")
 			}
@@ -224,30 +200,25 @@ func TestInstanceObservationDiagnosticPrefixOwnership(t *testing.T) {
 	waitObservationSignal(t, inst.Fault(), "protocol Fault")
 	first := inst.Err()
 	diag := inst.Diagnostics()
-	if !errors.Is(first, ErrProtocol) || diag.FirstFault != first {
-		t.Fatalf("protocol first cause not exposed: Err=%v Diagnostics=%+v", first, diag)
-	}
-	if len(diag.RawPrefix) != 4096 || string(diag.RawPrefix) != raw[:4096] {
-		t.Fatalf("first-cause prefix length = %d, want 4096 with the original text preserved", len(diag.RawPrefix))
-	}
+	require.ErrorIs(t, first, ErrProtocol, "protocol first cause not exposed: Err=%v Diagnostics=%+v", first, diag)
+	require.True(t, diag.FirstFault == first, "protocol first cause not exposed: Err=%v Diagnostics=%+v", first, diag)
+	require.Len(t, diag.RawPrefix, 4096, "first-cause prefix length = %d, want 4096 with the original text preserved", len(diag.RawPrefix))
+	require.Equal(t, raw[:4096], string(diag.RawPrefix), "first-cause prefix length = %d, want 4096 with the original text preserved", len(diag.RawPrefix))
 	ev := mustReadEvent(t, inst.Events())
-	if string(ev.JSON) != raw {
-		t.Fatal("the invalid JSON event should preserve the full original text for diagnostics")
-	}
+	require.Equal(t, raw, string(ev.JSON), "the invalid JSON event should preserve the full original text for diagnostics")
 	diag.RawPrefix[0] = '!'
 	ev.JSON[1] = '!'
 	deliverObservationEvent(t, rig, 94, `another-invalid-json`)
 	_ = mustReadEvent(t, inst.Events())
-	if later := inst.Diagnostics(); later.FirstFault != first || string(later.RawPrefix) != raw[:4096] {
-		t.Fatal("mutating the public copy or a later fault rewrote the internal first-cause prefix")
-	}
+	later := inst.Diagnostics()
+	require.True(t, later.FirstFault == first && string(later.RawPrefix) == raw[:4096],
+		"mutating the public copy or a later fault rewrote the internal first-cause prefix")
 	closed := make(chan error, 1)
 	go func() { closed <- inst.Close() }()
 	waitObservationSignal(t, inst.Done(), "Done")
-	if err := waitErr(t, closed, "Instance.Close"); err != first || inst.Err() != first {
-		t.Fatalf("close changed the first cause: Close=%v Err=%v", err, inst.Err())
-	}
-	if later := inst.Diagnostics(); later.LostEvents != 0 || string(later.RawPrefix) != raw[:4096] {
-		t.Fatalf("first-cause prefix/lost count abnormal after close: %+v", later)
-	}
+	closeRet := waitErr(t, closed, "Instance.Close")
+	require.True(t, closeRet == first && inst.Err() == first, "close changed the first cause: Close=%v Err=%v", closeRet, inst.Err())
+	laterAfterClose := inst.Diagnostics()
+	require.Equal(t, uint64(0), laterAfterClose.LostEvents, "first-cause prefix/lost count abnormal after close: %+v", laterAfterClose)
+	require.Equal(t, raw[:4096], string(laterAfterClose.RawPrefix), "first-cause prefix/lost count abnormal after close: %+v", laterAfterClose)
 }

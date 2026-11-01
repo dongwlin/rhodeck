@@ -16,6 +16,8 @@ import (
 	"unsafe"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // errStepSentinel 是 loadLibrary 阶段的注入失败:open 必须原样返回。
@@ -210,26 +212,15 @@ func TestOpenValidationFailureDoesNotConsumeLifecycle(t *testing.T) {
 	cfg := validRuntimeConfig()
 	cfg.LibraryPath = "relative/libMaaCore.so"
 	rt, err := open(cfg, env, gate)
-	if rt != nil {
-		t.Fatal("a validation failure must not return a Runtime")
-	}
-	if !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
-	}
-	if !strings.Contains(err.Error(), "LibraryPath") {
-		t.Errorf("error text %q does not contain the field path", err.Error())
-	}
-	if n := env.loadCount(); n != 0 {
-		t.Errorf("loadLibrary called %d times, want 0 (a validation failure must not enter native loading)", n)
-	}
+	require.Nil(t, rt, "a validation failure must not return a Runtime")
+	require.ErrorIs(t, err, ErrInvalidInput, "errors.Is(err, ErrInvalidInput) = false; err = %v", err)
+	assert.Contains(t, err.Error(), "LibraryPath", "error text %q does not contain the field path", err.Error())
+	assert.Equal(t, 0, env.loadCount(), "loadLibrary called %d times, want 0 (a validation failure must not enter native loading)", env.loadCount())
 
 	rt, err = open(validRuntimeConfig(), env, gate)
-	if err != nil || rt == nil {
-		t.Fatalf("the same gate must still Open successfully after a validation failure: rt=%v err=%v", rt, err)
-	}
-	if gate.state != lifecycleReady || gate.active != rt {
-		t.Errorf("gate state = %d active=%v, want ready with this Runtime recorded", gate.state, gate.active)
-	}
+	require.NoError(t, err, "the same gate must still Open successfully after a validation failure: rt=%v err=%v", rt, err)
+	require.NotNil(t, rt, "the same gate must still Open successfully after a validation failure: rt=%v err=%v", rt, err)
+	assert.True(t, gate.state == lifecycleReady && gate.active == rt, "gate state = %d active=%v, want ready with this Runtime recorded", gate.state, gate.active)
 }
 
 // TestPublicOpenRejectsInvalidConfig 经公开 Open 冒烟验证接线:
@@ -238,15 +229,9 @@ func TestPublicOpenRejectsInvalidConfig(t *testing.T) {
 	cfg := validRuntimeConfig()
 	cfg.UserDir = "relative/dir"
 	rt, err := Open(cfg)
-	if rt != nil {
-		t.Fatal("the public Open must not return a Runtime for an invalid config")
-	}
-	if !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
-	}
-	if !strings.Contains(err.Error(), "UserDir") {
-		t.Errorf("error text %q does not contain the field path", err.Error())
-	}
+	require.Nil(t, rt, "the public Open must not return a Runtime for an invalid config")
+	require.ErrorIs(t, err, ErrInvalidInput, "errors.Is(err, ErrInvalidInput) = false; err = %v", err)
+	assert.Contains(t, err.Error(), "UserDir", "error text %q does not contain the field path", err.Error())
 }
 
 // TestOpenSessionStepsAndMetadata 验证顺序 happy path:调用序列恰为
@@ -267,12 +252,8 @@ func TestOpenSessionStepsAndMetadata(t *testing.T) {
 	}
 
 	rt, err := open(cfg, env, gate)
-	if err != nil {
-		t.Fatalf("the happy path must not fail: %v", err)
-	}
-	if rt == nil {
-		t.Fatal("the happy path must return a Runtime")
-	}
+	require.NoError(t, err, "the happy path must not fail: %v", err)
+	require.NotNil(t, rt, "the happy path must return a Runtime")
 
 	want := []fakeCall{
 		{step: "version"},
@@ -286,27 +267,20 @@ func TestOpenSessionStepsAndMetadata(t *testing.T) {
 		{step: "setConnectionExtras", value: "other", extra: `{}`},
 	}
 	got := sess.recorded()
-	if len(got) != len(want) {
-		t.Fatalf("session call count = %d, want %d:\n%+v", len(got), len(want), got)
-	}
+	require.Len(t, got, len(want), "session call count = %d, want %d:\n%+v", len(got), len(want), got)
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("session call #%d = %+v, want %+v (order and content must match)", i, got[i], want[i])
-		}
+		assert.Equal(t, want[i], got[i], "session call #%d = %+v, want %+v (order and content must match)", i, got[i], want[i])
 	}
 
 	// 元数据与注入值一致;全部来自初始化时复制的不可变数据。
-	if v := rt.Version(); v != "6.20.1" {
-		t.Errorf("Version() = %q, want %q", v, "6.20.1")
-	}
-	if ns := rt.NullSize(); ns != profileNullSize {
-		t.Errorf("NullSize() = %#x, want the ABI sentinel %#x", ns, uint64(profileNullSize))
-	}
+	v := rt.Version()
+	assert.Equal(t, "6.20.1", v, "Version() = %q, want %q", v, "6.20.1")
+	ns := rt.NullSize()
+	assert.Equal(t, uint64(profileNullSize), ns, "NullSize() = %#x, want the ABI sentinel %#x", ns, uint64(profileNullSize))
 	caps := rt.Capabilities()
-	if caps.Create() || caps.ImageBgr() || caps.AsyncAttachWindow() {
-		t.Errorf("Capabilities() = (Create=%v ImageBgr=%v AsyncAttachWindow=%v), want the zero-value snapshot injected by the fake session",
-			caps.Create(), caps.ImageBgr(), caps.AsyncAttachWindow())
-	}
+	assert.True(t, !caps.Create() && !caps.ImageBgr() && !caps.AsyncAttachWindow(),
+		"Capabilities() = (Create=%v ImageBgr=%v AsyncAttachWindow=%v), want the zero-value snapshot injected by the fake session",
+		caps.Create(), caps.ImageBgr(), caps.AsyncAttachWindow())
 
 	// 重复读取元数据不得增加原生调用。
 	before := len(sess.recorded())
@@ -315,18 +289,13 @@ func TestOpenSessionStepsAndMetadata(t *testing.T) {
 		_ = rt.NullSize()
 		_ = rt.Capabilities()
 	}
-	if after := len(sess.recorded()); after != before {
-		t.Errorf("re-reading metadata increased the session call count from %d to %d", before, after)
-	}
+	after := len(sess.recorded())
+	assert.Equal(t, before, after, "re-reading metadata increased the session call count from %d to %d", before, after)
 
 	// 白盒:发布后的 Runtime 持有限制快照;gate 处于 ready 并记录
 	// 该 Runtime。
-	if rt.limits != defaultLimits() {
-		t.Errorf("the Runtime limits snapshot = %+v, want the defaults", rt.limits)
-	}
-	if gate.state != lifecycleReady || gate.active != rt {
-		t.Errorf("gate state = %d active=%v, want ready with this Runtime recorded", gate.state, gate.active)
-	}
+	assert.Equal(t, defaultLimits(), rt.limits, "the Runtime limits snapshot = %+v, want the defaults", rt.limits)
+	assert.True(t, gate.state == lifecycleReady && gate.active == rt, "gate state = %d active=%v, want ready with this Runtime recorded", gate.state, gate.active)
 }
 
 // TestOpenAcceptsVersionAtScanWindowBoundary 验证 Version 扫描窗的
@@ -346,12 +315,10 @@ func TestOpenAcceptsVersionAtScanWindowBoundary(t *testing.T) {
 	sess.versionText = text
 
 	rt, err := open(validRuntimeConfig(), env, gate)
-	if err != nil || rt == nil {
-		t.Fatalf("a Version with its NUL at the end of the scan window should be accepted: rt=%v err=%v", rt, err)
-	}
-	if got := rt.Version(); got != text {
-		t.Errorf("Version() length = %d, want %d, and the content must be byte-for-byte identical", len(got), versionBytesLimit)
-	}
+	require.NoError(t, err, "a Version with its NUL at the end of the scan window should be accepted: rt=%v err=%v", rt, err)
+	require.NotNil(t, rt, "a Version with its NUL at the end of the scan window should be accepted: rt=%v err=%v", rt, err)
+	got := rt.Version()
+	assert.Equal(t, text, got, "Version() length = %d, want %d, and the content must be byte-for-byte identical", len(got), versionBytesLimit)
 }
 
 // TestOpenSnapshotIsDeepCopy 验证:Open 返回后修改原配置的一切可变
@@ -375,9 +342,8 @@ func TestOpenSnapshotIsDeepCopy(t *testing.T) {
 	wantLimits := explicit
 
 	rt, err := open(cfg, env, gate)
-	if err != nil || rt == nil {
-		t.Fatalf("Open failed unexpectedly: rt=%v err=%v", rt, err)
-	}
+	require.NoError(t, err, "Open failed unexpectedly: rt=%v err=%v", rt, err)
+	require.NotNil(t, rt, "Open failed unexpectedly: rt=%v err=%v", rt, err)
 
 	// Open 返回后修改原配置。
 	cfg.UserDir = testAbsolutePath("tampered")
@@ -390,9 +356,8 @@ func TestOpenSnapshotIsDeepCopy(t *testing.T) {
 	cfg.ConnectionExtras = append(cfg.ConnectionExtras, ConnectionExtra{Name: "t2", JSON: json.RawMessage(`{}`)})
 	cfg.Limits.InputStringBytes = 1
 
-	if rt.limits != wantLimits || rt.limits.InputStringBytes != 12_345 {
-		t.Errorf("the Runtime limits snapshot was rewritten: got %+v, want %+v", rt.limits, wantLimits)
-	}
+	assert.True(t, rt.limits == wantLimits && rt.limits.InputStringBytes == 12_345,
+		"the Runtime limits snapshot was rewritten: got %+v, want %+v", rt.limits, wantLimits)
 	want := []fakeCall{
 		{step: "version"},
 		{step: "nullSize"},
@@ -402,13 +367,9 @@ func TestOpenSnapshotIsDeepCopy(t *testing.T) {
 		{step: "setConnectionExtras", value: "sink", extra: `{"orig":1}`},
 	}
 	got := sess.recorded()
-	if len(got) != len(want) {
-		t.Fatalf("session call count = %d, want %d:\n%+v", len(got), len(want), got)
-	}
+	require.Len(t, got, len(want), "session call count = %d, want %d:\n%+v", len(got), len(want), got)
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("session call #%d = %+v, want %+v (the snapshot must not be affected by later modifications)", i, got[i], want[i])
-		}
+		assert.Equal(t, want[i], got[i], "session call #%d = %+v, want %+v (the snapshot must not be affected by later modifications)", i, got[i], want[i])
 	}
 }
 
@@ -451,32 +412,22 @@ func TestConcurrentOpenSingleReserve(t *testing.T) {
 		case errors.Is(errs[i], ErrRuntimeInUse):
 			// 其余调用必须得到占用错误。
 		default:
-			t.Errorf("goroutine %d error = %v, want ErrRuntimeInUse or success", i, errs[i])
+			assert.ErrorIs(t, errs[i], ErrRuntimeInUse, "goroutine %d error = %v, want ErrRuntimeInUse or success", i, errs[i])
 		}
 	}
-	if winners != 1 {
-		t.Fatalf("the count that entered native initialization = %d, want 1", winners)
-	}
-	if got := env.loadCount(); got != 1 {
-		t.Errorf("loadLibrary call count = %d, want 1", got)
-	}
+	require.Equal(t, 1, winners, "the count that entered native initialization = %d, want 1", winners)
+	assert.Equal(t, 1, env.loadCount(), "loadLibrary call count = %d, want 1", env.loadCount())
 	for _, c := range env.session.recorded() {
 		if c.step == "setUserDir" && c.value != cfgs[winIdx].UserDir {
-			t.Fatalf("the winner's config was not used: setUserDir(%q), want %q", c.value, cfgs[winIdx].UserDir)
+			require.Equal(t, cfgs[winIdx].UserDir, c.value, "the winner's config was not used: setUserDir(%q), want %q", c.value, cfgs[winIdx].UserDir)
 		}
 	}
 
 	// gate 已 ready:重复 open 被拒绝,不复用已有对象。
 	rt, err := open(cfgs[0], env, gate)
-	if rt != nil {
-		t.Fatal("a repeated open after ready must not return a Runtime")
-	}
-	if !errors.Is(err, ErrRuntimeInUse) {
-		t.Fatalf("errors.Is(err, ErrRuntimeInUse) = false; err = %v", err)
-	}
-	if got := env.loadCount(); got != 1 {
-		t.Errorf("a rejected open must not enter native loading; cumulative loadLibrary = %d, want 1", got)
-	}
+	require.Nil(t, rt, "a repeated open after ready must not return a Runtime")
+	require.ErrorIs(t, err, ErrRuntimeInUse, "errors.Is(err, ErrRuntimeInUse) = false; err = %v", err)
+	assert.Equal(t, 1, env.loadCount(), "a rejected open must not enter native loading; cumulative loadLibrary = %d, want 1", env.loadCount())
 }
 
 // TestOpenStepFailuresTerminateLifecycle 逐步失败注入:每个初始化
@@ -498,9 +449,7 @@ func TestOpenStepFailuresTerminateLifecycle(t *testing.T) {
 			},
 			wantIs: errStepSentinel,
 			check: func(t *testing.T, env *fakeEnv, err error) {
-				if err != errStepSentinel {
-					t.Errorf("a loadLibrary failure must return the sentinel as is, got %T: %v", err, err)
-				}
+				assert.True(t, err == errStepSentinel, "a loadLibrary failure must return the sentinel as is, got %T: %v", err, err)
 			},
 		},
 		{
@@ -549,9 +498,7 @@ func TestOpenStepFailuresTerminateLifecycle(t *testing.T) {
 						calls++
 					}
 				}
-				if calls != 2 {
-					t.Errorf("setStaticOption call count = %d, want 2 (1st succeeded, 2nd rejected)", calls)
-				}
+				assert.Equal(t, 2, calls, "setStaticOption call count = %d, want 2 (1st succeeded, 2nd rejected)", calls)
 			},
 		},
 		{
@@ -570,9 +517,7 @@ func TestOpenStepFailuresTerminateLifecycle(t *testing.T) {
 						calls++
 					}
 				}
-				if calls != 1 {
-					t.Errorf("loadResource call count = %d, want 1 (aborted right after the 1st rejection)", calls)
-				}
+				assert.Equal(t, 1, calls, "loadResource call count = %d, want 1 (aborted right after the 1st rejection)", calls)
 			},
 		},
 	}
@@ -590,19 +535,13 @@ func TestOpenStepFailuresTerminateLifecycle(t *testing.T) {
 			}
 
 			rt, err := open(cfg, env, gate)
-			if rt != nil {
-				t.Fatal("a failure must not publish a Runtime")
-			}
-			if err == nil {
-				t.Fatal("an error must be returned")
-			}
-			if !errors.Is(err, tc.wantIs) {
-				t.Fatalf("errors.Is(err, %v) = false; err = %v", tc.wantIs, err)
-			}
+			require.Nil(t, rt, "a failure must not publish a Runtime")
+			require.Error(t, err, "an error must be returned")
+			require.ErrorIs(t, err, tc.wantIs, "errors.Is(err, %v) = false; err = %v", tc.wantIs, err)
 			// 错误类别不得与 terminated 混淆:原始错误直接返回,
 			// terminated 只影响后续 Open。
-			if errors.Is(err, ErrRuntimeTerminated) && tc.wantIs != errStepSentinel {
-				t.Errorf("the original failure must not be wrapped as ErrRuntimeTerminated: %v", err)
+			if tc.wantIs != errStepSentinel {
+				assert.NotErrorIs(t, err, ErrRuntimeTerminated, "the original failure must not be wrapped as ErrRuntimeTerminated: %v", err)
 			}
 			if tc.check != nil {
 				tc.check(t, env, err)
@@ -611,19 +550,11 @@ func TestOpenStepFailuresTerminateLifecycle(t *testing.T) {
 			// gate 已 terminated:后续 open(无论配置如何有效)返回
 			// ErrRuntimeTerminated,且不再进入原生加载。
 			rt2, err2 := open(validRuntimeConfig(), env, gate)
-			if rt2 != nil {
-				t.Fatal("no Runtime may be published after terminated")
-			}
-			if !errors.Is(err2, ErrRuntimeTerminated) {
-				t.Fatalf("subsequent open error = %v, want errors.Is ErrRuntimeTerminated", err2)
-			}
-			if env.loadCount() != 1 {
-				t.Errorf("cumulative loadLibrary calls = %d, want 1 (no retry after terminated)", env.loadCount())
-			}
+			require.Nil(t, rt2, "no Runtime may be published after terminated")
+			require.ErrorIs(t, err2, ErrRuntimeTerminated, "subsequent open error = %v, want errors.Is ErrRuntimeTerminated", err2)
+			assert.Equal(t, 1, env.loadCount(), "cumulative loadLibrary calls = %d, want 1 (no retry after terminated)", env.loadCount())
 			// terminated 错误附首个失败原因作诊断。
-			if !strings.Contains(err2.Error(), "first failure") {
-				t.Errorf("terminated error text %q does not carry the first-failure diagnostic", err2.Error())
-			}
+			assert.Contains(t, err2.Error(), "first failure", "terminated error text %q does not carry the first-failure diagnostic", err2.Error())
 		})
 	}
 }

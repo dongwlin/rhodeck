@@ -6,13 +6,15 @@ package maa
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
 )
@@ -57,9 +59,7 @@ func newTestDispatcher(t *testing.T, settle func(completionInfo), b dispatchBudg
 func enqueue(t *testing.T, d *eventDispatcher, messageID MessageID, payload []byte) {
 	t.Helper()
 	slot, err := d.admit(messageID, len(payload))
-	if err != nil {
-		t.Fatalf("admitting message %d must not fail: %v", messageID, err)
-	}
+	require.NoError(t, err, "admitting message %d must not fail: %v", messageID, err)
 	slot.commit(payload)
 }
 
@@ -80,7 +80,7 @@ func mustReadEvent(t *testing.T, ch <-chan Event) Event {
 	case ev := <-ch:
 		return ev
 	case <-time.After(hangGuard):
-		t.Fatal("timed out reading a public event: the dispatcher appears blocked or not delivering (hang guard triggered)")
+		require.Fail(t, "timed out reading a public event: the dispatcher appears blocked or not delivering (hang guard triggered)")
 		return Event{}
 	}
 }
@@ -98,7 +98,7 @@ func mustDrain(t *testing.T, d *eventDispatcher) {
 	select {
 	case <-done:
 	case <-time.After(hangGuard):
-		t.Fatal("drain did not return within the hang guard limit: draining appears to be waiting for an external consumer")
+		require.Fail(t, "drain did not return within the hang guard limit: draining appears to be waiting for an external consumer")
 	}
 }
 
@@ -149,15 +149,9 @@ func (r *settleRecorder) all() []completionInfo {
 // native.ErrEventOverflow,且不误标为相邻哨兵 ErrProtocol。
 func assertOverflowClass(t *testing.T, err error) {
 	t.Helper()
-	if err == nil {
-		t.Fatal("a budget overflow must return an error")
-	}
-	if !errors.Is(err, native.ErrEventOverflow) {
-		t.Errorf("errors.Is(err, native.ErrEventOverflow) = false; err = %v", err)
-	}
-	if errors.Is(err, native.ErrProtocol) {
-		t.Errorf("a budget overflow must not be mislabeled as ErrProtocol: %v", err)
-	}
+	require.Error(t, err, "a budget overflow must return an error")
+	assert.ErrorIs(t, err, native.ErrEventOverflow, "errors.Is(err, native.ErrEventOverflow) = false; err = %v", err)
+	assert.NotErrorIs(t, err, native.ErrProtocol, "a budget overflow must not be mislabeled as ErrProtocol: %v", err)
 }
 
 // TestEventDispatchBudgetOverflowReportsFault 验证「内部队列
@@ -174,30 +168,23 @@ func TestEventDispatchBudgetOverflowReportsFault(t *testing.T) {
 
 		slot, err := d.admit(MessageID(100), 9)
 		assertOverflowClass(t, err)
-		if slot.d != nil {
-			t.Error("a rejected admission must not return a usable slot")
-		}
+		assert.Nil(t, slot.d, "a rejected admission must not return a usable slot")
 		// 不预留任何额度:计数与字节都保持 0。
-		if count, hold := internalBudgetHold(d); count != 0 || hold != 0 {
-			t.Errorf("internal budget held after rejection = (%d, %d), want (0, 0)", count, hold)
-		}
+		count, hold := internalBudgetHold(d)
+		assert.True(t, count == 0 && hold == 0, "internal budget held after rejection = (%d, %d), want (0, 0)", count, hold)
 		// 越界按溢出契约上报故障并计 1 条丢失;故障通知独立关闭。
-		if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
-			t.Errorf("currentFault() = %v, want errors.Is native.ErrEventOverflow", s.currentFault())
-		}
-		if n := s.currentLostEvents(); n != 1 {
-			t.Errorf("lost events count = %d, want 1", n)
-		}
+		fault := s.currentFault()
+		assert.ErrorIs(t, fault, native.ErrEventOverflow, "currentFault() = %v, want errors.Is native.ErrEventOverflow", fault)
+		n := s.currentLostEvents()
+		assert.Equal(t, uint64(1), n, "lost events count = %d, want 1", n)
 		select {
 		case <-s.faultNotify():
 		default:
-			t.Fatal("the first overflow must close the one-shot fault notification")
+			require.Fail(t, "the first overflow must close the one-shot fault notification")
 		}
 		// 恰好等于 CallbackBytes 的消息仍在界内:准入成功(随后退回)。
 		boundary, err := d.admit(MessageID(100), 8)
-		if err != nil {
-			t.Fatalf("admission of exactly CallbackBytes must not fail: %v", err)
-		}
+		require.NoError(t, err, "admission of exactly CallbackBytes must not fail: %v", err)
 		boundary.abort()
 	})
 
@@ -207,29 +194,21 @@ func TestEventDispatchBudgetOverflowReportsFault(t *testing.T) {
 		d, s := newTestDispatcher(t, nil, b)
 
 		first, err := d.admit(MessageID(101), 4)
-		if err != nil {
-			t.Fatalf("admission #1 must not fail: %v", err)
-		}
+		require.NoError(t, err, "admission #1 must not fail: %v", err)
 		second, err := d.admit(MessageID(101), 4)
-		if err != nil {
-			t.Fatalf("admission #2 must not fail: %v", err)
-		}
+		require.NoError(t, err, "admission #2 must not fail: %v", err)
 		_, err = d.admit(MessageID(101), 4)
 		assertOverflowClass(t, err)
 		// 已持有的预留不受拒绝影响:计数仍为 2,字节仍为 8。
-		if count, hold := internalBudgetHold(d); count != 2 || hold != 8 {
-			t.Errorf("internal budget held after rejection = (%d, %d), want (2, 8)", count, hold)
-		}
-		if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
-			t.Errorf("currentFault() = %v, want errors.Is native.ErrEventOverflow", s.currentFault())
-		}
+		count, hold := internalBudgetHold(d)
+		assert.True(t, count == 2 && hold == 8, "internal budget held after rejection = (%d, %d), want (2, 8)", count, hold)
+		fault := s.currentFault()
+		assert.ErrorIs(t, fault, native.ErrEventOverflow, "currentFault() = %v, want errors.Is native.ErrEventOverflow", fault)
 		// 退回预留后同一预算可再次准入:拒绝不污染预算。
 		first.abort()
 		second.abort()
 		again, err := d.admit(MessageID(101), 4)
-		if err != nil {
-			t.Fatalf("admission after reservations are returned must not fail: %v", err)
-		}
+		require.NoError(t, err, "admission after reservations are returned must not fail: %v", err)
 		again.abort()
 	})
 
@@ -242,27 +221,22 @@ func TestEventDispatchBudgetOverflowReportsFault(t *testing.T) {
 		var slots []eventSlot
 		for i := 0; i < 4; i++ {
 			slot, err := d.admit(MessageID(102), 4)
-			if err != nil {
-				t.Fatalf("admission #%d of 4 bytes must not fail (byte budget not full): %v", i+1, err)
-			}
+			require.NoError(t, err, "admission #%d of 4 bytes must not fail (byte budget not full): %v", i+1, err)
 			slots = append(slots, slot)
 		}
 		// 4 条恰好装满 16 字节字节预算;事件计数预算(64)远未触顶,
 		// 第 5 条越界确由字节触发。
-		if count, hold := internalBudgetHold(d); count != 4 || hold != 16 {
-			t.Fatalf("internal budget held after filling = (%d, %d), want (4, 16)", count, hold)
-		}
+		count, hold := internalBudgetHold(d)
+		require.True(t, count == 4 && hold == 16, "internal budget held after filling = (%d, %d), want (4, 16)", count, hold)
 		_, err := d.admit(MessageID(102), 4)
 		assertOverflowClass(t, err)
-		if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
-			t.Errorf("currentFault() = %v, want errors.Is native.ErrEventOverflow", s.currentFault())
-		}
+		fault := s.currentFault()
+		assert.ErrorIs(t, fault, native.ErrEventOverflow, "currentFault() = %v, want errors.Is native.ErrEventOverflow", fault)
 		for i := range slots {
 			slots[i].abort()
 		}
-		if count, hold := internalBudgetHold(d); count != 0 || hold != 0 {
-			t.Errorf("internal budget held after returning all = (%d, %d), want (0, 0)", count, hold)
-		}
+		count, hold = internalBudgetHold(d)
+		assert.True(t, count == 0 && hold == 0, "internal budget held after returning all = (%d, %d), want (0, 0)", count, hold)
 	})
 
 	t.Run("public buffer event count overflow (consumer stops reading)", func(t *testing.T) {
@@ -279,15 +253,12 @@ func TestEventDispatchBudgetOverflowReportsFault(t *testing.T) {
 		}
 		closeAndDrain(t, d)
 
-		if n := len(d.events()); n != 2 {
-			t.Errorf("events left in the public buffer = %d, want exactly PublicEvents 2", n)
-		}
-		if lost := s.currentLostEvents(); lost != 3 {
-			t.Errorf("lost events count = %d, want 3", lost)
-		}
-		if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
-			t.Errorf("currentFault() = %v, want errors.Is native.ErrEventOverflow", s.currentFault())
-		}
+		n := len(d.events())
+		assert.Equal(t, 2, n, "events left in the public buffer = %d, want exactly PublicEvents 2", n)
+		lost := s.currentLostEvents()
+		assert.Equal(t, uint64(3), lost, "lost events count = %d, want 3", lost)
+		fault := s.currentFault()
+		assert.ErrorIs(t, fault, native.ErrEventOverflow, "currentFault() = %v, want errors.Is native.ErrEventOverflow", fault)
 		// 计数越界与字节越界互不混用:本用例字节预算(4096)远未触顶。
 	})
 
@@ -305,15 +276,12 @@ func TestEventDispatchBudgetOverflowReportsFault(t *testing.T) {
 		}
 		closeAndDrain(t, d)
 
-		if n := len(d.events()); n != 2 {
-			t.Errorf("events left in the public buffer = %d, want 2 (exactly 14/16 bytes fit)", n)
-		}
-		if lost := s.currentLostEvents(); lost != 3 {
-			t.Errorf("lost events count = %d, want 3", lost)
-		}
-		if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
-			t.Errorf("currentFault() = %v, want errors.Is native.ErrEventOverflow", s.currentFault())
-		}
+		n := len(d.events())
+		assert.Equal(t, 2, n, "events left in the public buffer = %d, want 2 (exactly 14/16 bytes fit)", n)
+		lost := s.currentLostEvents()
+		assert.Equal(t, uint64(3), lost, "lost events count = %d, want 3", lost)
+		fault := s.currentFault()
+		assert.ErrorIs(t, fault, native.ErrEventOverflow, "currentFault() = %v, want errors.Is native.ErrEventOverflow", fault)
 	})
 }
 
@@ -341,31 +309,24 @@ func TestEventDispatchBoundedWhenConsumerStopsReading(t *testing.T) {
 	select {
 	case <-s.faultNotify():
 	default:
-		t.Fatal("the overflow fault caused by a consumer stopping reading did not close the fault notification")
+		require.Fail(t, "the overflow fault caused by a consumer stopping reading did not close the fault notification")
 	}
-	if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
-		t.Errorf("currentFault() = %v, want errors.Is native.ErrEventOverflow", s.currentFault())
-	}
+	fault := s.currentFault()
+	assert.ErrorIs(t, fault, native.ErrEventOverflow, "currentFault() = %v, want errors.Is native.ErrEventOverflow", fault)
 	// 恰好 PublicEvents 条已入缓冲,其余全部计入丢失。
-	if n := len(d.events()); n != 3 {
-		t.Errorf("events left in the public buffer = %d, want 3", n)
-	}
-	if lost := s.currentLostEvents(); lost != total-3 {
-		t.Errorf("lost events count = %d, want %d", lost, total-3)
-	}
+	n := len(d.events())
+	assert.Equal(t, 3, n, "events left in the public buffer = %d, want 3", n)
+	lost := s.currentLostEvents()
+	assert.Equal(t, uint64(total-3), lost, "lost events count = %d, want %d", lost, total-3)
 	// 关闭后已缓冲事件仍可读:序号 1,2,3、原文完整、FIFO。
 	for i := 0; i < 3; i++ {
 		ev := mustReadEvent(t, d.events())
-		if ev.Sequence != uint64(i+1) {
-			t.Fatalf("buffered event %d sequence = %d, want %d", i+1, ev.Sequence, i+1)
-		}
-		if want := fmt.Sprintf(`{"n":%d}`, i); string(ev.JSON) != want {
-			t.Fatalf("buffered event %d raw JSON = %s, want %s", i+1, ev.JSON, want)
-		}
+		require.Equal(t, uint64(i+1), ev.Sequence, "buffered event %d sequence = %d, want %d", i+1, ev.Sequence, i+1)
+		want := fmt.Sprintf(`{"n":%d}`, i)
+		require.Equal(t, want, string(ev.JSON), "buffered event %d raw JSON = %s, want %s", i+1, ev.JSON, want)
 	}
-	if ev, ok := <-d.events(); ok {
-		t.Fatalf("the public channel must be closed after draining, but read %+v", ev)
-	}
+	ev, ok := <-d.events()
+	require.False(t, ok, "the public channel must be closed after draining, but read %+v", ev)
 }
 
 // TestEventDispatchLedgerReconcilesAfterConsumerReads 钉住公开
@@ -385,9 +346,7 @@ func TestEventDispatchLedgerReconcilesAfterConsumerReads(t *testing.T) {
 		}
 		for i := 0; i < 2; i++ {
 			ev := mustReadEvent(t, d.events())
-			if ev.Sequence != uint64(i+1) {
-				t.Fatalf("event %d sequence = %d, want %d", i+1, ev.Sequence, i+1)
-			}
+			require.Equal(t, uint64(i+1), ev.Sequence, "event %d sequence = %d, want %d", i+1, ev.Sequence, i+1)
 		}
 		// 缓冲已空;账本仍保守计费这 2 条,直到下次投递前对账回收。
 		// 续投 2 条必须全部成功:对账删除最老 2 条长度记录并扣减字节。
@@ -399,22 +358,17 @@ func TestEventDispatchLedgerReconcilesAfterConsumerReads(t *testing.T) {
 		// 续投的 2 条全部进入缓冲且完好;全程无丢失、无故障。
 		for i := 2; i < 4; i++ {
 			ev := mustReadEvent(t, d.events())
-			if want := fmt.Sprintf(`{"i":%d}`, i); string(ev.JSON) != want {
-				t.Fatalf("redelivered event raw JSON = %s, want %s", ev.JSON, want)
-			}
-			if ev.Sequence != uint64(i+1) {
-				t.Fatalf("redelivered event sequence = %d, want %d", ev.Sequence, i+1)
-			}
+			want := fmt.Sprintf(`{"i":%d}`, i)
+			require.Equal(t, want, string(ev.JSON), "redelivered event raw JSON = %s, want %s", ev.JSON, want)
+			require.Equal(t, uint64(i+1), ev.Sequence, "redelivered event sequence = %d, want %d", ev.Sequence, i+1)
 		}
-		if ev, ok := <-d.events(); ok {
-			t.Fatalf("the public channel must be closed after draining, but read %+v", ev)
-		}
-		if lost := s.currentLostEvents(); lost != 0 {
-			t.Errorf("lost events count = %d, want 0 (budget reclaimed after reading, redelivered events must not be lost)", lost)
-		}
+		ev, ok := <-d.events()
+		require.False(t, ok, "the public channel must be closed after draining, but read %+v", ev)
+		lost := s.currentLostEvents()
+		assert.Equal(t, uint64(0), lost, "lost events count = %d, want 0 (budget reclaimed after reading, redelivered events must not be lost)", lost)
 		select {
 		case <-s.faultNotify():
-			t.Fatal("redelivery after reading must not trigger an overflow fault")
+			require.Fail(t, "redelivery after reading must not trigger an overflow fault")
 		default:
 		}
 	})
@@ -436,21 +390,16 @@ func TestEventDispatchLedgerReconcilesAfterConsumerReads(t *testing.T) {
 		closeAndDrain(t, d)
 
 		// 恰好装满的 2 条完好入缓冲(序号 1,2);只有越界的第 3 条丢失。
-		if n := len(d.events()); n != 2 {
-			t.Errorf("events left in the public buffer = %d, want 2 (both events exactly at the limit must be accepted)", n)
-		}
+		n := len(d.events())
+		assert.Equal(t, 2, n, "events left in the public buffer = %d, want 2 (both events exactly at the limit must be accepted)", n)
 		for i := 0; i < 2; i++ {
 			ev := mustReadEvent(t, d.events())
-			if ev.Sequence != uint64(i+1) {
-				t.Fatalf("buffered event %d sequence = %d, want %d", i+1, ev.Sequence, i+1)
-			}
+			require.Equal(t, uint64(i+1), ev.Sequence, "buffered event %d sequence = %d, want %d", i+1, ev.Sequence, i+1)
 		}
-		if lost := s.currentLostEvents(); lost != 1 {
-			t.Errorf("lost events count = %d, want 1 (only the overflowing third one is lost)", lost)
-		}
-		if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
-			t.Errorf("currentFault() = %v, want errors.Is native.ErrEventOverflow", s.currentFault())
-		}
+		lost := s.currentLostEvents()
+		assert.Equal(t, uint64(1), lost, "lost events count = %d, want 1 (only the overflowing third one is lost)", lost)
+		fault := s.currentFault()
+		assert.ErrorIs(t, fault, native.ErrEventOverflow, "currentFault() = %v, want errors.Is native.ErrEventOverflow", fault)
 	})
 }
 
@@ -479,22 +428,13 @@ func TestInstanceFaultFirstOverflowStickyAndCallRejection(t *testing.T) {
 		closeAndDrain(t, d)
 
 		first := s.currentFault()
-		if first == nil {
-			t.Fatal("the first overflow must record a fault")
-		}
-		if !errors.Is(first, native.ErrEventOverflow) {
-			t.Errorf("errors.Is(first fault, native.ErrEventOverflow) = false; first fault = %v", first)
-		}
+		require.Error(t, first, "the first overflow must record a fault")
+		assert.ErrorIs(t, first, native.ErrEventOverflow, "errors.Is(first fault, native.ErrEventOverflow) = false; first fault = %v", first)
 		snap := s.faultDiagnostics()
-		if snap.lostEvents != 2 {
-			t.Errorf("lost events count = %d, want 2 (deliveries #2 and #3 failed)", snap.lostEvents)
-		}
-		if snap.rawPrefix != nil {
-			t.Errorf("an overflow fault must not carry a raw prefix, got %q", snap.rawPrefix)
-		}
-		if got := s.currentPhase(); got != phaseFaulted {
-			t.Fatalf("phase after the first overflow = %d, want faulted", got)
-		}
+		assert.Equal(t, uint64(2), snap.lostEvents, "lost events count = %d, want 2 (deliveries #2 and #3 failed)", snap.lostEvents)
+		assert.Nil(t, snap.rawPrefix, "an overflow fault must not carry a raw prefix, got %q", snap.rawPrefix)
+		got := s.currentPhase()
+		require.Equal(t, phaseFaulted, got, "phase after the first overflow = %d, want faulted", got)
 	})
 
 	t.Run("admitCall rejected after faulted and reaches overflow along the chain", func(t *testing.T) {
@@ -505,19 +445,13 @@ func TestInstanceFaultFirstOverflowStickyAndCallRejection(t *testing.T) {
 		closeAndDrain(t, d)
 
 		_, err := s.admitCall("new call after overflow")
-		if err == nil {
-			t.Fatal("a faulted instance must reject new business calls")
-		}
-		if !errors.Is(err, native.ErrEventOverflow) {
-			t.Errorf("errors.Is(err, native.ErrEventOverflow) = false; err = %v", err)
-		}
+		require.Error(t, err, "a faulted instance must reject new business calls")
+		assert.ErrorIs(t, err, native.ErrEventOverflow, "errors.Is(err, native.ErrEventOverflow) = false; err = %v", err)
 		// 拒绝与实例首因共享同一错误身份。
-		if !errors.Is(err, s.currentFault()) {
-			t.Errorf("errors.Is(err, first fault) = false; err = %v, first fault = %v", err, s.currentFault())
-		}
-		if errors.Is(err, native.ErrClosing) || errors.Is(err, native.ErrClosed) {
-			t.Errorf("the overflow rejection must not be mislabeled as closing/closed: %v", err)
-		}
+		firstFault := s.currentFault()
+		assert.ErrorIs(t, err, firstFault, "errors.Is(err, first fault) = false; err = %v, first fault = %v", err, firstFault)
+		assert.NotErrorIs(t, err, native.ErrClosing, "the overflow rejection must not be mislabeled as closing/closed: %v", err)
+		assert.NotErrorIs(t, err, native.ErrClosed, "the overflow rejection must not be mislabeled as closing/closed: %v", err)
 	})
 
 	t.Run("repeated faults only accumulate losses, first fault and prefix unchanged", func(t *testing.T) {
@@ -528,27 +462,17 @@ func TestInstanceFaultFirstOverflowStickyAndCallRejection(t *testing.T) {
 		closeAndDrain(t, d)
 
 		before := s.faultDiagnostics()
-		if before.lostEvents != 2 {
-			t.Fatalf("repeated overflows should accumulate lost = 2, got %d", before.lostEvents)
-		}
+		require.Equal(t, uint64(2), before.lostEvents, "repeated overflows should accumulate lost = 2, got %d", before.lostEvents)
 		// 后到的异类故障与带前缀记录都不得覆盖首因、前缀或丢失计数。
 		s.recordFaultWithDetail(
 			fmt.Errorf("late-arriving protocol fault: %w", native.ErrProtocol),
 			[]byte("late prefix"),
 		)
 		after := s.faultDiagnostics()
-		if !errors.Is(after.firstFault, native.ErrEventOverflow) {
-			t.Errorf("the first fault was overwritten by a late-arriving fault: %v", after.firstFault)
-		}
-		if errors.Is(after.firstFault, native.ErrProtocol) {
-			t.Errorf("a late-arriving fault mixed into the first fault: %v", after.firstFault)
-		}
-		if !bytes.Equal(after.rawPrefix, before.rawPrefix) {
-			t.Errorf("the prefix was overwritten by a late record = %q, want it kept as %q", after.rawPrefix, before.rawPrefix)
-		}
-		if after.lostEvents != before.lostEvents {
-			t.Errorf("lost events count after repeated records = %d, want it kept as %d (repeated faults only accumulate losses, diagnostics unchanged)", after.lostEvents, before.lostEvents)
-		}
+		assert.ErrorIs(t, after.firstFault, native.ErrEventOverflow, "the first fault was overwritten by a late-arriving fault: %v", after.firstFault)
+		assert.NotErrorIs(t, after.firstFault, native.ErrProtocol, "a late-arriving fault mixed into the first fault: %v", after.firstFault)
+		assert.True(t, bytes.Equal(after.rawPrefix, before.rawPrefix), "the prefix was overwritten by a late record = %q, want it kept as %q", after.rawPrefix, before.rawPrefix)
+		assert.Equal(t, before.lostEvents, after.lostEvents, "lost events count after repeated records = %d, want it kept as %d (repeated faults only accumulate losses, diagnostics unchanged)", after.lostEvents, before.lostEvents)
 	})
 }
 
@@ -566,9 +490,7 @@ func TestEventDispatchUnknownAndInvalidMessages(t *testing.T) {
 		want := []byte(`{"unknown":[1,2,{"deep":null}],"what":"Whatever","big":9007199254740993}`)
 		original := bytes.Clone(want)
 		slot, err := d.admit(MessageID(99), len(original))
-		if err != nil {
-			t.Fatalf("admitting an unknown message must not fail: %v", err)
-		}
+		require.NoError(t, err, "admitting an unknown message must not fail: %v", err)
 		slot.commit(original)
 		// commit 已逐字节克隆:此后原地改写调用者缓冲不影响队列记录。
 		for i := range original {
@@ -576,25 +498,18 @@ func TestEventDispatchUnknownAndInvalidMessages(t *testing.T) {
 		}
 
 		ev := mustReadEvent(t, d.events())
-		if !bytes.Equal(ev.JSON, want) {
-			t.Fatalf("unknown message raw JSON = %s, want byte-for-byte equal %s", ev.JSON, want)
-		}
-		if ev.MessageID != MessageID(99) {
-			t.Errorf("MessageID = %d, want 99", ev.MessageID)
-		}
-		if ev.Sequence != 1 {
-			t.Errorf("sequence = %d, want 1 (unknown messages are also assigned normal sequence numbers)", ev.Sequence)
-		}
+		require.True(t, bytes.Equal(ev.JSON, want), "unknown message raw JSON = %s, want byte-for-byte equal %s", ev.JSON, want)
+		assert.Equal(t, MessageID(99), ev.MessageID, "MessageID = %d, want 99", ev.MessageID)
+		assert.Equal(t, uint64(1), ev.Sequence, "sequence = %d, want 1 (unknown messages are also assigned normal sequence numbers)", ev.Sequence)
 		closeAndDrain(t, d)
 		// 未知消息与未知字段不进故障流程:不故障、不丢失。
 		select {
 		case <-s.faultNotify():
-			t.Fatal("unknown messages and unknown fields must not trigger a fault")
+			require.Fail(t, "unknown messages and unknown fields must not trigger a fault")
 		default:
 		}
-		if n := s.currentLostEvents(); n != 0 {
-			t.Errorf("lost events count = %d, want 0", n)
-		}
+		n := s.currentLostEvents()
+		assert.Equal(t, uint64(0), n, "lost events count = %d, want 0", n)
 	})
 
 	t.Run("legal completion with unknown what settles and is delivered verbatim", func(t *testing.T) {
@@ -606,19 +521,15 @@ func TestEventDispatchUnknownAndInvalidMessages(t *testing.T) {
 		enqueue(t, d, asyncCallInfoMessageID, payload)
 		closeAndDrain(t, d)
 
-		if got := rec.total(); got != 1 {
-			t.Fatalf("settle notification called %d times, want 1 (unknown what is still delivered verbatim to the settler)", got)
-		}
-		if got := rec.all()[0]; got.ID != 7 || got.What != "SomeFutureWhat" || !got.OK {
-			t.Fatalf("settlement info = %+v, want {7 SomeFutureWhat true}", got)
-		}
+		got := rec.total()
+		require.Equal(t, 1, got, "settle notification called %d times, want 1 (unknown what is still delivered verbatim to the settler)", got)
+		info := rec.all()[0]
+		require.True(t, info.ID == 7 && info.What == "SomeFutureWhat" && info.OK, "settlement info = %+v, want {7 SomeFutureWhat true}", info)
 		ev := mustReadEvent(t, d.events())
-		if !bytes.Equal(ev.JSON, payload) {
-			t.Fatalf("event raw JSON = %s, want %s with unknown what and unknown fields preserved byte-for-byte", ev.JSON, payload)
-		}
+		require.True(t, bytes.Equal(ev.JSON, payload), "event raw JSON = %s, want %s with unknown what and unknown fields preserved byte-for-byte", ev.JSON, payload)
 		select {
 		case <-s.faultNotify():
-			t.Fatal("an unknown what must not trigger a fault")
+			require.Fail(t, "an unknown what must not trigger a fault")
 		default:
 		}
 	})
@@ -647,41 +558,31 @@ func TestEventDispatchUnknownAndInvalidMessages(t *testing.T) {
 				enqueue(t, d, asyncCallInfoMessageID, tc.raw)
 				// 原文仍按公开事件预算尝试交付(步骤 1 故障不取消步骤 4)。
 				ev := mustReadEvent(t, d.events())
-				if !bytes.Equal(ev.JSON, original) {
-					t.Fatal("invalid raw data must be delivered byte-for-byte, not truncated or replaced")
-				}
+				require.True(t, bytes.Equal(ev.JSON, original), "invalid raw data must be delivered byte-for-byte, not truncated or replaced")
 				closeAndDrain(t, d)
 
 				// 无法关联的完成信息绝不结算为成功:结算通知零调用。
-				if got := rec.total(); got != 0 {
-					t.Fatalf("an invalid message must not call the settle notification, got %d calls", got)
-				}
+				got := rec.total()
+				require.Equal(t, 0, got, "an invalid message must not call the settle notification, got %d calls", got)
 				// 协议故障 + 原文前缀(至多 faultRawPrefixBytes 字节)。
-				if !errors.Is(s.currentFault(), native.ErrProtocol) {
-					t.Errorf("currentFault() = %v, want errors.Is native.ErrProtocol", s.currentFault())
-				}
+				fault := s.currentFault()
+				assert.ErrorIs(t, fault, native.ErrProtocol, "currentFault() = %v, want errors.Is native.ErrProtocol", fault)
 				wantLen := len(original)
 				if wantLen > faultRawPrefixBytes {
 					wantLen = faultRawPrefixBytes
 				}
 				snap := s.faultDiagnostics()
-				if len(snap.rawPrefix) != wantLen {
-					t.Fatalf("raw prefix length = %d, want %d", len(snap.rawPrefix), wantLen)
-				}
-				if !bytes.Equal(snap.rawPrefix, original[:wantLen]) {
-					t.Fatal("the raw prefix content does not match the raw data prefix")
-				}
+				require.Len(t, snap.rawPrefix, wantLen, "raw prefix length = %d, want %d", len(snap.rawPrefix), wantLen)
+				require.True(t, bytes.Equal(snap.rawPrefix, original[:wantLen]), "the raw prefix content does not match the raw data prefix")
 				// 深拷贝:改写调用者原文不得穿透已保存前缀。
 				for i := range tc.raw {
 					tc.raw[i] = 0x00
 				}
-				if again := s.faultDiagnostics(); !bytes.Equal(again.rawPrefix, original[:wantLen]) {
-					t.Fatal("overwriting the caller's raw data affected the saved prefix: the prefix is not a deep copy")
-				}
+				again := s.faultDiagnostics()
+				require.True(t, bytes.Equal(again.rawPrefix, original[:wantLen]), "overwriting the caller's raw data affected the saved prefix: the prefix is not a deep copy")
 				// 交付成功:该条不计丢失。
-				if n := s.currentLostEvents(); n != 0 {
-					t.Errorf("lost events count = %d, want 0 (the raw data was fully delivered)", n)
-				}
+				n := s.currentLostEvents()
+				assert.Equal(t, uint64(0), n, "lost events count = %d, want 0 (the raw data was fully delivered)", n)
 			})
 		}
 	})
@@ -715,22 +616,17 @@ func TestEventDispatchUnknownAndInvalidMessages(t *testing.T) {
 				enqueue(t, d, asyncCallInfoMessageID, []byte(tc.payload))
 				// 原文仍按公开事件预算交付,供诊断观察。
 				ev := mustReadEvent(t, d.events())
-				if !bytes.Equal(ev.JSON, []byte(tc.payload)) {
-					t.Fatal("raw data with malformed correlation fields must be delivered byte-for-byte")
-				}
+				require.True(t, bytes.Equal(ev.JSON, []byte(tc.payload)), "raw data with malformed correlation fields must be delivered byte-for-byte")
 				closeAndDrain(t, d)
 
 				// 无法关联的完成信息不得视为成功:绝不调用结算通知。
-				if got := rec.total(); got != 0 {
-					t.Fatalf("the settle notification was called %d times, want 0 (uncorrelatable completion info must not settle)", got)
-				}
-				if !errors.Is(s.currentFault(), native.ErrProtocol) {
-					t.Errorf("currentFault() = %v, want errors.Is native.ErrProtocol", s.currentFault())
-				}
+				got := rec.total()
+				require.Equal(t, 0, got, "the settle notification was called %d times, want 0 (uncorrelatable completion info must not settle)", got)
+				fault := s.currentFault()
+				assert.ErrorIs(t, fault, native.ErrProtocol, "currentFault() = %v, want errors.Is native.ErrProtocol", fault)
 				// 交付成功:该条不计丢失。
-				if n := s.currentLostEvents(); n != 0 {
-					t.Errorf("lost events count = %d, want 0", n)
-				}
+				n := s.currentLostEvents()
+				assert.Equal(t, uint64(0), n, "lost events count = %d, want 0", n)
 			})
 		}
 	})
@@ -760,45 +656,35 @@ func TestEventDispatchUnknownAndInvalidMessages(t *testing.T) {
 
 		<-entered // 分发器已进入结算通知并被挡在结算点
 		mu.Lock()
-		if len(calls) != 1 {
-			t.Fatalf("settle called %d times, want exactly 1", len(calls))
-		}
+		require.Len(t, calls, 1, "settle called %d times, want exactly 1", len(calls))
 		got := calls[0]
 		mu.Unlock()
 		// json.Number 精确解析:int32 上界 ID 精确读出,不经 float64 往返。
-		if want := (completionInfo{ID: 2147483647, What: "AsyncCallFinished", OK: true}); got.ID != want.ID || got.What != want.What || got.OK != want.OK {
-			t.Fatalf("settlement info = %+v, want %+v", got, want)
-		}
+		want := completionInfo{ID: 2147483647, What: "AsyncCallFinished", OK: true}
+		require.True(t, got.ID == want.ID && got.What == want.What && got.OK == want.OK, "settlement info = %+v, want %+v", got, want)
 		// 结算未返回,公开通道此刻不可能有事件。
 		select {
 		case ev := <-d.events():
-			t.Fatalf("delivery completed before settle returned, violating settle-before-deliver: %+v", ev)
+			require.Fail(t, fmt.Sprintf("delivery completed before settle returned, violating settle-before-deliver: %+v", ev))
 		default:
 		}
 		close(release) // 放行投递
 
 		ev := mustReadEvent(t, d.events())
-		if !bytes.Equal(ev.JSON, payload) {
-			t.Fatalf("event raw JSON = %s, want %s with big integers and unknown fields preserved byte-for-byte", ev.JSON, payload)
-		}
-		if ev.Sequence != 1 {
-			t.Errorf("sequence = %d, want 1", ev.Sequence)
-		}
+		require.True(t, bytes.Equal(ev.JSON, payload), "event raw JSON = %s, want %s with big integers and unknown fields preserved byte-for-byte", ev.JSON, payload)
+		assert.Equal(t, uint64(1), ev.Sequence, "sequence = %d, want 1", ev.Sequence)
 		closeAndDrain(t, d)
 		mu.Lock()
 		n := len(calls)
 		mu.Unlock()
-		if n != 1 {
-			t.Fatalf("settle calls accumulated after release = %d, want exactly 1 (settle can happen only once)", n)
-		}
+		require.Equal(t, 1, n, "settle calls accumulated after release = %d, want exactly 1 (settle can happen only once)", n)
 		select {
 		case <-s.faultNotify():
-			t.Fatal("a legal completion must not trigger a fault")
+			require.Fail(t, "a legal completion must not trigger a fault")
 		default:
 		}
-		if lost := s.currentLostEvents(); lost != 0 {
-			t.Errorf("lost events count = %d, want 0", lost)
-		}
+		lost := s.currentLostEvents()
+		assert.Equal(t, uint64(0), lost, "lost events count = %d, want 0", lost)
 	})
 
 	t.Run("ret=false normal completion settles OK=false without faulting", func(t *testing.T) {
@@ -810,25 +696,20 @@ func TestEventDispatchUnknownAndInvalidMessages(t *testing.T) {
 		enqueue(t, d, asyncCallInfoMessageID, payload)
 		closeAndDrain(t, d)
 
-		if got := rec.total(); got != 1 {
-			t.Fatalf("settle notification called %d times, want 1", got)
-		}
-		if got := rec.all()[0]; got.ID != 5 || got.What != "AsyncCallFinished" || got.OK {
-			t.Fatalf("settlement info = %+v, want {5 AsyncCallFinished false}", got)
-		}
+		got := rec.total()
+		require.Equal(t, 1, got, "settle notification called %d times, want 1", got)
+		info := rec.all()[0]
+		require.True(t, info.ID == 5 && info.What == "AsyncCallFinished" && !info.OK, "settlement info = %+v, want {5 AsyncCallFinished false}", info)
 		// ret=false 是正常完成:不使实例故障,事件照常交付。
 		select {
 		case <-s.faultNotify():
-			t.Fatal("ret=false is a normal completion and must not fault the instance")
+			require.Fail(t, "ret=false is a normal completion and must not fault the instance")
 		default:
 		}
-		if lost := s.currentLostEvents(); lost != 0 {
-			t.Errorf("lost events count = %d, want 0", lost)
-		}
+		lost := s.currentLostEvents()
+		assert.Equal(t, uint64(0), lost, "lost events count = %d, want 0", lost)
 		ev := mustReadEvent(t, d.events())
-		if !bytes.Equal(ev.JSON, payload) {
-			t.Fatalf("event raw JSON = %s, want %s", ev.JSON, payload)
-		}
+		require.True(t, bytes.Equal(ev.JSON, payload), "event raw JSON = %s, want %s", ev.JSON, payload)
 	})
 }
 
@@ -858,26 +739,17 @@ func TestEventDispatchDrainAndTerminate(t *testing.T) {
 		// 通道已关闭,已缓冲的 2 条(FIFO 最老两条)仍可读且完好。
 		for i := 0; i < 2; i++ {
 			ev := mustReadEvent(t, d.events())
-			if ev.MessageID != MessageID(230)+MessageID(i) {
-				t.Fatalf("buffered event %d MessageID = %d, want %d (FIFO)", i, ev.MessageID, MessageID(230)+MessageID(i))
-			}
-			if string(ev.JSON) != string(payloads[i]) {
-				t.Fatalf("buffered event %d raw JSON = %s, want %s", i, ev.JSON, payloads[i])
-			}
-			if ev.Sequence != uint64(i+1) {
-				t.Fatalf("buffered event %d sequence = %d, want %d", i, ev.Sequence, i+1)
-			}
+			require.Equal(t, MessageID(230)+MessageID(i), ev.MessageID, "buffered event %d MessageID = %d, want %d (FIFO)", i, ev.MessageID, MessageID(230)+MessageID(i))
+			require.Equal(t, string(payloads[i]), string(ev.JSON), "buffered event %d raw JSON = %s, want %s", i, ev.JSON, payloads[i])
+			require.Equal(t, uint64(i+1), ev.Sequence, "buffered event %d sequence = %d, want %d", i, ev.Sequence, i+1)
 		}
-		if ev, ok := <-d.events(); ok {
-			t.Fatalf("the public channel must be closed after draining, but read %+v", ev)
-		}
+		ev, ok := <-d.events()
+		require.False(t, ok, "the public channel must be closed after draining, but read %+v", ev)
 		// 无法投递的两条计丢失并按溢出契约报告故障。
-		if lost := s.currentLostEvents(); lost != 2 {
-			t.Errorf("lost events count = %d, want 2", lost)
-		}
-		if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
-			t.Errorf("currentFault() = %v, want errors.Is native.ErrEventOverflow", s.currentFault())
-		}
+		lost := s.currentLostEvents()
+		assert.Equal(t, uint64(2), lost, "lost events count = %d, want 2", lost)
+		fault := s.currentFault()
+		assert.ErrorIs(t, fault, native.ErrEventOverflow, "currentFault() = %v, want errors.Is native.ErrEventOverflow", fault)
 	})
 
 	t.Run("completions queued during draining settle before delivering and undeliverable ones count as lost", func(t *testing.T) {
@@ -896,24 +768,19 @@ func TestEventDispatchDrainAndTerminate(t *testing.T) {
 
 		// 完成信息绝不静默丢弃:3 条都先经过结算通知(含排空期间排队
 		// 且最终投递失败的两条),再各自尝试投递。
-		if got := rec.total(); got != 3 {
-			t.Fatalf("settle notification called %d times, want 3 (completions queued during draining also settle first)", got)
-		}
+		got := rec.total()
+		require.Equal(t, 3, got, "settle notification called %d times, want 3 (completions queued during draining also settle first)", got)
 		for i, info := range rec.all() {
-			if want := (completionInfo{ID: 9, What: "AsyncCallFinished", OK: true}); info.ID != want.ID || info.What != want.What || info.OK != want.OK {
-				t.Fatalf("settlement info #%d = %+v, want %+v", i+1, info, want)
-			}
+			want := completionInfo{ID: 9, What: "AsyncCallFinished", OK: true}
+			require.True(t, info.ID == want.ID && info.What == want.What && info.OK == want.OK, "settlement info #%d = %+v, want %+v", i+1, info, want)
 		}
 		// 只有第 1 条进入公开缓冲;投不出的 2 条计丢失并报告溢出故障。
-		if n := len(d.events()); n != 1 {
-			t.Errorf("events left in the public buffer = %d, want 1", n)
-		}
-		if lost := s.currentLostEvents(); lost != 2 {
-			t.Errorf("lost events count = %d, want 2", lost)
-		}
-		if !errors.Is(s.currentFault(), native.ErrEventOverflow) {
-			t.Errorf("currentFault() = %v, want errors.Is native.ErrEventOverflow", s.currentFault())
-		}
+		n := len(d.events())
+		assert.Equal(t, 1, n, "events left in the public buffer = %d, want 1", n)
+		lost := s.currentLostEvents()
+		assert.Equal(t, uint64(2), lost, "lost events count = %d, want 2", lost)
+		fault := s.currentFault()
+		assert.ErrorIs(t, fault, native.ErrEventOverflow, "currentFault() = %v, want errors.Is native.ErrEventOverflow", fault)
 	})
 }
 
@@ -924,14 +791,11 @@ func TestEventDispatchSlotDiscipline(t *testing.T) {
 	t.Run("commit and abort may each be called only once", func(t *testing.T) {
 		d, _ := newTestDispatcher(t, nil, generousBudgets())
 		slot, err := d.admit(MessageID(300), 2)
-		if err != nil {
-			t.Fatalf("admission must not fail: %v", err)
-		}
+		require.NoError(t, err, "admission must not fail: %v", err)
 		slot.commit([]byte("ok"))
 		// 已 commit 的额度由内部队列持有,直到分发器处理。
-		if count, hold := internalBudgetHold(d); count != 1 || hold != 2 {
-			t.Fatalf("internal budget held after commit = (%d, %d), want (1, 2)", count, hold)
-		}
+		count, hold := internalBudgetHold(d)
+		require.True(t, count == 1 && hold == 2, "internal budget held after commit = (%d, %d), want (1, 2)", count, hold)
 		assertPanics(t, "commit after commit", func() { slot.commit([]byte("ok")) })
 		assertPanics(t, "abort after commit", func() { slot.abort() })
 	})
@@ -939,9 +803,7 @@ func TestEventDispatchSlotDiscipline(t *testing.T) {
 	t.Run("abort after abort panics", func(t *testing.T) {
 		d, _ := newTestDispatcher(t, nil, generousBudgets())
 		slot, err := d.admit(MessageID(300), 2)
-		if err != nil {
-			t.Fatalf("admission must not fail: %v", err)
-		}
+		require.NoError(t, err, "admission must not fail: %v", err)
 		slot.abort()
 		assertPanics(t, "abort after abort", func() { slot.abort() })
 	})
@@ -955,14 +817,11 @@ func TestEventDispatchSlotDiscipline(t *testing.T) {
 	t.Run("commit length mismatching the reservation panics", func(t *testing.T) {
 		d, _ := newTestDispatcher(t, nil, generousBudgets())
 		slot, err := d.admit(MessageID(300), 2)
-		if err != nil {
-			t.Fatalf("admission must not fail: %v", err)
-		}
+		require.NoError(t, err, "admission must not fail: %v", err)
 		assertPanics(t, "commit length 3 mismatches reserved 2", func() { slot.commit([]byte("abc")) })
 		// 长度不符的 commit 未结算 slot:额度仍按预留持有,可正常 abort。
-		if count, hold := internalBudgetHold(d); count != 1 || hold != 2 {
-			t.Fatalf("internal budget held after the length-mismatch panic = (%d, %d), want (1, 2)", count, hold)
-		}
+		count, hold := internalBudgetHold(d)
+		require.True(t, count == 1 && hold == 2, "internal budget held after the length-mismatch panic = (%d, %d), want (1, 2)", count, hold)
 		slot.abort()
 	})
 
@@ -973,21 +832,15 @@ func TestEventDispatchSlotDiscipline(t *testing.T) {
 		d, _ := newTestDispatcher(t, nil, b)
 
 		slot, err := d.admit(MessageID(301), 4)
-		if err != nil {
-			t.Fatalf("admission must not fail: %v", err)
-		}
-		if count, hold := internalBudgetHold(d); count != 1 || hold != 4 {
-			t.Fatalf("internal budget held after reservation = (%d, %d), want (1, 4)", count, hold)
-		}
+		require.NoError(t, err, "admission must not fail: %v", err)
+		count, hold := internalBudgetHold(d)
+		require.True(t, count == 1 && hold == 4, "internal budget held after reservation = (%d, %d), want (1, 4)", count, hold)
 		slot.abort()
-		if count, hold := internalBudgetHold(d); count != 0 || hold != 0 {
-			t.Fatalf("internal budget held after abort = (%d, %d), want (0, 0): count and bytes must both be returned exactly", count, hold)
-		}
+		count, hold = internalBudgetHold(d)
+		require.True(t, count == 0 && hold == 0, "internal budget held after abort = (%d, %d), want (0, 0): count and bytes must both be returned exactly", count, hold)
 		// 额度已退回:同样的预算可再次准入(此后 abort 收尾)。
 		again, err := d.admit(MessageID(301), 4)
-		if err != nil {
-			t.Fatalf("admission after abort returns must not fail: %v", err)
-		}
+		require.NoError(t, err, "admission after abort returns must not fail: %v", err)
 		again.abort()
 	})
 
@@ -999,17 +852,13 @@ func TestEventDispatchSlotDiscipline(t *testing.T) {
 		}
 		for i := 0; i < 3; i++ {
 			ev := mustReadEvent(t, d.events())
-			if ev.Sequence != uint64(i+1) {
-				t.Fatalf("event %d sequence = %d, want %d (monotonic and starting from 1)", i+1, ev.Sequence, i+1)
-			}
-			if ev.MessageID != MessageID(302)+MessageID(i) {
-				t.Fatalf("event %d MessageID = %d, want %d (FIFO delivery)", i+1, ev.MessageID, MessageID(302)+MessageID(i))
-			}
+			require.Equal(t, uint64(i+1), ev.Sequence, "event %d sequence = %d, want %d (monotonic and starting from 1)", i+1, ev.Sequence, i+1)
+			require.Equal(t, MessageID(302)+MessageID(i), ev.MessageID, "event %d MessageID = %d, want %d (FIFO delivery)", i+1, ev.MessageID, MessageID(302)+MessageID(i))
 		}
 		closeAndDrain(t, d)
 		select {
 		case <-s.faultNotify():
-			t.Fatal("normal delivery must not trigger a fault")
+			require.Fail(t, "normal delivery must not trigger a fault")
 		default:
 		}
 	})
@@ -1064,9 +913,7 @@ func TestEventDispatchLifecyclePanics(t *testing.T) {
 	t.Run("commit after drain request panics", func(t *testing.T) {
 		d, _ := newTestDispatcher(t, nil, generousBudgets())
 		slot, err := d.admit(MessageID(303), 2)
-		if err != nil {
-			t.Fatalf("admission must not fail: %v", err)
-		}
+		require.NoError(t, err, "admission must not fail: %v", err)
 		d.start()
 		d.closeIntake()
 		d.requestDrain()
@@ -1098,22 +945,21 @@ func TestEventDispatchStopPointAndRelease(t *testing.T) {
 		select {
 		case <-stopped:
 		case <-time.After(hangGuard):
-			t.Fatal("waitProcessed did not return within the hang guard limit: the sender stop point was not reached")
+			require.Fail(t, "waitProcessed did not return within the hang guard limit: the sender stop point was not reached")
 		}
 		// 停止点已到达而 Events 尚未关闭:无缓冲事件时接收不得就绪。
 		select {
 		case _, ok := <-d.events():
 			if ok {
-				t.Error("an event should not be received when no events are buffered")
+				assert.Fail(t, "an event should not be received when no events are buffered")
 			} else {
-				t.Error("Events must not be closed before closeEvents (close order: publish the terminal state first, then close Events)")
+				assert.Fail(t, "Events must not be closed before closeEvents (close order: publish the terminal state first, then close Events)")
 			}
 		default:
 		}
 		d.closeEvents()
-		if _, ok := <-d.events(); ok {
-			t.Error("Events should be closed after closeEvents")
-		}
+		_, ok := <-d.events()
+		assert.False(t, ok, "Events should be closed after closeEvents")
 	})
 
 	t.Run("precondition contract violation panics", func(t *testing.T) {
@@ -1147,20 +993,16 @@ func TestEventDispatchSequenceExhaustionProtocolFault(t *testing.T) {
 	closeAndDrain(t, d)
 
 	// 序号耗尽的条目以 ErrProtocol 故障并计 1 条丢失。
-	if !errors.Is(s.currentFault(), native.ErrProtocol) {
-		t.Errorf("currentFault() = %v, want errors.Is native.ErrProtocol", s.currentFault())
-	}
-	if lost := s.currentLostEvents(); lost != 1 {
-		t.Errorf("lost events count = %d, want 1", lost)
-	}
+	fault := s.currentFault()
+	assert.ErrorIs(t, fault, native.ErrProtocol, "currentFault() = %v, want errors.Is native.ErrProtocol", fault)
+	lost := s.currentLostEvents()
+	assert.Equal(t, uint64(1), lost, "lost events count = %d, want 1", lost)
 	// 不投递:通道已关闭且为空。
-	if ev, ok := <-d.events(); ok {
-		t.Fatalf("an entry with an exhausted sequence must not be delivered, but read %+v", ev)
-	}
+	ev, ok := <-d.events()
+	require.False(t, ok, "an entry with an exhausted sequence must not be delivered, but read %+v", ev)
 	// 不结算:该条在任何关联步骤之前已被丢弃。
-	if got := rec.total(); got != 0 {
-		t.Errorf("the settle notification was called %d times, want 0 (an entry with an exhausted sequence does not settle)", got)
-	}
+	got := rec.total()
+	assert.Equal(t, 0, got, "the settle notification was called %d times, want 0 (an entry with an exhausted sequence does not settle)", got)
 }
 
 // TestEventDispatchConcurrentAdmitAndConsume 验证「并发
@@ -1189,7 +1031,7 @@ func TestEventDispatchConcurrentAdmitAndConsume(t *testing.T) {
 				payload := fmt.Appendf(nil, `{"w":%d,"i":%d}`, w, i)
 				slot, err := d.admit(MessageID(400)+MessageID(w), len(payload))
 				if err != nil {
-					t.Errorf("concurrent admission must not fail: %v", err)
+					assert.Fail(t, fmt.Sprintf("concurrent admission must not fail: %v", err))
 					return
 				}
 				slot.commit(payload)
@@ -1217,24 +1059,19 @@ func TestEventDispatchConcurrentAdmitAndConsume(t *testing.T) {
 	mustDrain(t, d)
 	<-consumerDone
 
-	if len(seen) != workers*perWorker {
-		t.Fatalf("delivered events = %d, want exactly %d (each delivered exactly once)", len(seen), workers*perWorker)
-	}
+	require.Len(t, seen, workers*perWorker, "delivered events = %d, want exactly %d (each delivered exactly once)", len(seen), workers*perWorker)
 	seqSeen := make(map[uint64]bool, len(seen))
 	for _, ev := range seen {
-		if seqSeen[ev.Sequence] {
-			t.Fatalf("sequence %d was assigned more than once", ev.Sequence)
-		}
+		require.False(t, seqSeen[ev.Sequence], "sequence %d was assigned more than once", ev.Sequence)
 		seqSeen[ev.Sequence] = true
 	}
 	select {
 	case <-s.faultNotify():
-		t.Fatal("concurrent admission and consumption under ample budgets must not produce an overflow fault")
+		require.Fail(t, "concurrent admission and consumption under ample budgets must not produce an overflow fault")
 	default:
 	}
-	if lost := s.currentLostEvents(); lost != 0 {
-		t.Errorf("lost events count = %d, want 0", lost)
-	}
+	lost := s.currentLostEvents()
+	assert.Equal(t, uint64(0), lost, "lost events count = %d, want 0", lost)
 }
 
 // TestLostEventsSaturatingAndFaultSnapshot 钉住在实例状态上
@@ -1247,18 +1084,15 @@ func TestLostEventsSaturatingAndFaultSnapshot(t *testing.T) {
 		s := newInstanceState(0x0D01, 128, 1_048_576)
 		s.recordLostEvents(math.MaxUint64 - 1)
 		s.recordLostEvents(1)
-		if got := s.currentLostEvents(); got != math.MaxUint64 {
-			t.Fatalf("lost events count = %d, want %d (exactly at the limit)", got, uint64(math.MaxUint64))
-		}
+		got := s.currentLostEvents()
+		require.Equal(t, uint64(math.MaxUint64), got, "lost events count = %d, want %d (exactly at the limit)", got, uint64(math.MaxUint64))
 		// 越过上限:夹到 MaxUint64,不回绕。
 		s.recordLostEvents(1)
-		if got := s.currentLostEvents(); got != math.MaxUint64 {
-			t.Fatalf("counting 1 more after saturation = %d, want it kept as %d (no wrapping)", got, uint64(math.MaxUint64))
-		}
+		got = s.currentLostEvents()
+		require.Equal(t, uint64(math.MaxUint64), got, "counting 1 more after saturation = %d, want it kept as %d (no wrapping)", got, uint64(math.MaxUint64))
 		s.recordLostEvents(math.MaxUint64)
-		if got := s.faultDiagnostics().lostEvents; got != math.MaxUint64 {
-			t.Fatalf("snapshot lost events count = %d, want it kept saturated at %d", got, uint64(math.MaxUint64))
-		}
+		snapLost := s.faultDiagnostics().lostEvents
+		require.Equal(t, uint64(math.MaxUint64), snapLost, "snapshot lost events count = %d, want it kept saturated at %d", snapLost, uint64(math.MaxUint64))
 	})
 
 	t.Run("prefix truncated to at most 4096 bytes", func(t *testing.T) {
@@ -1272,18 +1106,11 @@ func TestLostEventsSaturatingAndFaultSnapshot(t *testing.T) {
 		s.recordFaultWithDetail(cause, prefix)
 
 		snap := s.faultDiagnostics()
-		if len(snap.rawPrefix) != faultRawPrefixBytes {
-			t.Fatalf("prefix length = %d, want at most %d", len(snap.rawPrefix), faultRawPrefixBytes)
-		}
-		if !bytes.Equal(snap.rawPrefix, prefix[:faultRawPrefixBytes]) {
-			t.Fatal("the prefix content does not match the first 4096 bytes of the raw data")
-		}
-		if !errors.Is(snap.firstFault, cause) {
-			t.Errorf("snapshot first fault = %v, want errors.Is %v", snap.firstFault, cause)
-		}
-		if got := s.currentPhase(); got != phaseFaulted {
-			t.Fatalf("phase after recording a fault in the ready phase = %d, want faulted", got)
-		}
+		require.Len(t, snap.rawPrefix, faultRawPrefixBytes, "prefix length = %d, want at most %d", len(snap.rawPrefix), faultRawPrefixBytes)
+		require.True(t, bytes.Equal(snap.rawPrefix, prefix[:faultRawPrefixBytes]), "the prefix content does not match the first 4096 bytes of the raw data")
+		assert.ErrorIs(t, snap.firstFault, cause, "snapshot first fault = %v, want errors.Is %v", snap.firstFault, cause)
+		got := s.currentPhase()
+		require.Equal(t, phaseFaulted, got, "phase after recording a fault in the ready phase = %d, want faulted", got)
 	})
 
 	t.Run("repeated faults do not overwrite the first fault and prefix", func(t *testing.T) {
@@ -1296,18 +1123,10 @@ func TestLostEventsSaturatingAndFaultSnapshot(t *testing.T) {
 		s.recordFaultWithDetail(second, bytes.Repeat([]byte("second!"), 1000))
 
 		snap := s.faultDiagnostics()
-		if !errors.Is(snap.firstFault, first) {
-			t.Errorf("the first fault was overwritten by a late-arriving fault: %v", snap.firstFault)
-		}
-		if errors.Is(snap.firstFault, native.ErrProtocol) {
-			t.Errorf("a late-arriving fault mixed into the first fault: %v", snap.firstFault)
-		}
-		if !bytes.Equal(snap.rawPrefix, firstPrefix) {
-			t.Errorf("the prefix was overwritten by a late record = %q, want %q", snap.rawPrefix, firstPrefix)
-		}
-		if snap.lostEvents != 0 {
-			t.Errorf("recordFaultWithDetail must not change the lost events count, got %d", snap.lostEvents)
-		}
+		assert.ErrorIs(t, snap.firstFault, first, "the first fault was overwritten by a late-arriving fault: %v", snap.firstFault)
+		assert.NotErrorIs(t, snap.firstFault, native.ErrProtocol, "a late-arriving fault mixed into the first fault: %v", snap.firstFault)
+		assert.True(t, bytes.Equal(snap.rawPrefix, firstPrefix), "the prefix was overwritten by a late record = %q, want %q", snap.rawPrefix, firstPrefix)
+		assert.Equal(t, uint64(0), snap.lostEvents, "recordFaultWithDetail must not change the lost events count, got %d", snap.lostEvents)
 	})
 
 	t.Run("prefix and snapshot are both deep copies", func(t *testing.T) {
@@ -1321,26 +1140,21 @@ func TestLostEventsSaturatingAndFaultSnapshot(t *testing.T) {
 			prefix[i] = 0xCD
 		}
 		snap1 := s.faultDiagnostics()
-		if !bytes.Equal(snap1.rawPrefix, bytes.Repeat([]byte{0xAB}, 64)) {
-			t.Fatal("overwriting the caller's raw data affected the snapshot: the prefix is not a deep copy")
-		}
+		require.True(t, bytes.Equal(snap1.rawPrefix, bytes.Repeat([]byte{0xAB}, 64)), "overwriting the caller's raw data affected the snapshot: the prefix is not a deep copy")
 		// 原地改写快照:不得穿透状态内原值与后续快照。
 		for i := range snap1.rawPrefix {
 			snap1.rawPrefix[i] = 0xEF
 		}
 		snap2 := s.faultDiagnostics()
-		if !bytes.Equal(snap2.rawPrefix, bytes.Repeat([]byte{0xAB}, 64)) {
-			t.Fatal("overwriting the snapshot affected the original value in state: the snapshot is not a deep copy")
-		}
+		require.True(t, bytes.Equal(snap2.rawPrefix, bytes.Repeat([]byte{0xAB}, 64)), "overwriting the snapshot affected the original value in state: the snapshot is not a deep copy")
 	})
 
 	t.Run("fault snapshot without a prefix has nil rawPrefix", func(t *testing.T) {
 		s := newInstanceState(0x0D05, 128, 1_048_576)
 		s.publishReady()
 		s.recordFault(fmt.Errorf("no prefix: %w", native.ErrEventOverflow))
-		if snap := s.faultDiagnostics(); snap.rawPrefix != nil {
-			t.Errorf("snapshot rawPrefix for a fault without a prefix = %q, want nil", snap.rawPrefix)
-		}
+		snap := s.faultDiagnostics()
+		assert.Nil(t, snap.rawPrefix, "snapshot rawPrefix for a fault without a prefix = %q, want nil", snap.rawPrefix)
 	})
 
 	t.Run("fault notification exactly once and normal close does not trigger it", func(t *testing.T) {
@@ -1348,13 +1162,13 @@ func TestLostEventsSaturatingAndFaultSnapshot(t *testing.T) {
 		closed := newClosedState(t, 0x0D06)
 		select {
 		case <-closed.faultNotify():
-			t.Fatal("a normal close must not trigger the fault notification")
+			require.Fail(t, "a normal close must not trigger the fault notification")
 		default:
 		}
 		select {
 		case <-closed.done():
 		default:
-			t.Fatal("a normal close must close closeDone")
+			require.Fail(t, "a normal close must close closeDone")
 		}
 		// 首次故障线性化时关闭一次;重复记录不重复关闭(重复 close 会
 		// panic,实现若有缺陷将以 panic 暴露)。
@@ -1364,13 +1178,13 @@ func TestLostEventsSaturatingAndFaultSnapshot(t *testing.T) {
 		select {
 		case <-s.faultNotify():
 		default:
-			t.Fatal("the first fault must close the fault notification")
+			require.Fail(t, "the first fault must close the fault notification")
 		}
 		s.recordFault(fmt.Errorf("second time: %w", native.ErrEventOverflow))
 		select {
 		case <-s.faultNotify():
 		default:
-			t.Fatal("the fault notification must remain closed")
+			require.Fail(t, "the fault notification must remain closed")
 		}
 	})
 }

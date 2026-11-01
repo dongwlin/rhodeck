@@ -4,8 +4,10 @@ import (
 	"errors"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakePrimitives 是可记录调用的假平台原语,在不进入系统 loader 的
@@ -89,47 +91,28 @@ func TestOpenRejectsInvalidPathBeforeNativeLoad(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &fakePrimitives{}
 			lib, err := newFakeLoader(fake).Open(tc.raw)
-			if lib != nil {
-				t.Fatalf("invalid path %q must not return a Library, got %+v", tc.raw, lib)
-			}
-			if err == nil {
-				t.Fatalf("invalid path %q must return an error", tc.raw)
-			}
+			require.Nil(t, lib, "invalid path %q must not return a Library, got %+v", tc.raw, lib)
+			require.Error(t, err, "invalid path %q must return an error", tc.raw)
 			// 拒绝必须发生在进入原生加载之前。
-			if len(fake.openPaths) != 0 {
-				t.Errorf("the open primitive was called %d times, want 0 (calls: %v)", len(fake.openPaths), fake.openPaths)
-			}
+			assert.Empty(t, fake.openPaths, "the open primitive was called %d times, want 0 (calls: %v)", len(fake.openPaths), fake.openPaths)
 			var lle *LibraryLoadError
-			if !errors.As(err, &lle) {
-				t.Fatalf("errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
-			}
-			if !errors.Is(err, ErrInvalidInput) {
-				t.Errorf("errors.Is(err, ErrInvalidInput) = false, want true; err = %v", err)
-			}
+			require.ErrorAs(t, err, &lle, "errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
+			assert.ErrorIs(t, err, ErrInvalidInput, "errors.Is(err, ErrInvalidInput) = false, want true; err = %v", err)
 			wantPath := tc.wantPath
 			if wantPath != "" {
 				wantPath = filepath.Clean(wantPath)
 			}
-			if lle.Path != wantPath {
-				t.Errorf("Path = %q, want %q", lle.Path, wantPath)
-			}
-			if lle.LibraryName != tc.wantName {
-				t.Errorf("LibraryName = %q, want %q", lle.LibraryName, tc.wantName)
-			}
-			if lle.GOOS != runtime.GOOS || lle.GOARCH != runtime.GOARCH {
-				t.Errorf("GOOS/GOARCH = %s/%s, want %s/%s", lle.GOOS, lle.GOARCH, runtime.GOOS, runtime.GOARCH)
-			}
-			if lle.Err == nil {
-				t.Error("Err must be non-nil")
-			}
+			assert.Equal(t, wantPath, lle.Path, "Path = %q, want %q", lle.Path, wantPath)
+			assert.Equal(t, tc.wantName, lle.LibraryName, "LibraryName = %q, want %q", lle.LibraryName, tc.wantName)
+			assert.Equal(t, runtime.GOOS, lle.GOOS, "GOOS = %s, want %s", lle.GOOS, runtime.GOOS)
+			assert.Equal(t, runtime.GOARCH, lle.GOARCH, "GOARCH = %s, want %s", lle.GOARCH, runtime.GOARCH)
+			assert.Error(t, lle.Err, "Err must be non-nil")
 			// 错误文本应包含路径与目标平台,便于就地诊断。
 			text := err.Error()
-			if wantPath != "" && !strings.Contains(text, wantPath) {
-				t.Errorf("Error() = %q, want it to contain path %q", text, wantPath)
+			if wantPath != "" {
+				assert.Contains(t, text, wantPath, "Error() = %q, want it to contain path %q", text, wantPath)
 			}
-			if want := runtime.GOOS + "/" + runtime.GOARCH; !strings.Contains(text, want) {
-				t.Errorf("Error() = %q, want it to contain target platform %q", text, want)
-			}
+			assert.Contains(t, text, runtime.GOOS+"/"+runtime.GOARCH, "Error() = %q, want it to contain target platform %q", text, runtime.GOOS+"/"+runtime.GOARCH)
 		})
 	}
 }
@@ -143,18 +126,10 @@ func TestOpenNormalizesAbsolutePath(t *testing.T) {
 	normalized := filepath.Join(dir, "a", "libMaaCore.so")
 	fake := &fakePrimitives{openHandle: 0x1000}
 	lib, err := newFakeLoader(fake).Open(raw)
-	if err != nil {
-		t.Fatalf("Open(%q) returned an unexpected error: %v", raw, err)
-	}
-	if len(fake.openPaths) != 1 || fake.openPaths[0] != normalized {
-		t.Errorf("path received by the primitive = %v, want exactly [%s]", fake.openPaths, normalized)
-	}
-	if lib.Path() != normalized {
-		t.Errorf("Library.Path() = %q, want %q", lib.Path(), normalized)
-	}
-	if lib.Name() != "libMaaCore.so" {
-		t.Errorf("Library.Name() = %q, want %q", lib.Name(), "libMaaCore.so")
-	}
+	require.NoError(t, err, "Open(%q) returned an unexpected error", raw)
+	assert.Equal(t, []string{normalized}, fake.openPaths, "path received by the primitive = %v, want exactly [%s]", fake.openPaths, normalized)
+	assert.Equal(t, normalized, lib.Path(), "Library.Path() = %q, want %q", lib.Path(), normalized)
+	assert.Equal(t, "libMaaCore.so", lib.Name(), "Library.Name() = %q, want %q", lib.Name(), "libMaaCore.so")
 }
 
 // TestOpenPrimitiveFailureKeepsUnderlyingCause 验证:open 原语失败时,
@@ -166,28 +141,15 @@ func TestOpenPrimitiveFailureKeepsUnderlyingCause(t *testing.T) {
 	fake := &fakePrimitives{openErr: sentinel}
 
 	lib, err := newFakeLoader(fake).Open(path)
-	if lib != nil {
-		t.Fatalf("a primitive failure must not return a Library, got %+v", lib)
-	}
+	require.Nil(t, lib, "a primitive failure must not return a Library, got %+v", lib)
 	var lle *LibraryLoadError
-	if !errors.As(err, &lle) {
-		t.Fatalf("errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
-	}
-	if lle.Path != path {
-		t.Errorf("Path = %q, want %q", lle.Path, path)
-	}
-	if lle.LibraryName != "libMaaCore.so" {
-		t.Errorf("LibraryName = %q, want %q", lle.LibraryName, "libMaaCore.so")
-	}
-	if lle.GOOS != runtime.GOOS || lle.GOARCH != runtime.GOARCH {
-		t.Errorf("GOOS/GOARCH = %s/%s, want %s/%s", lle.GOOS, lle.GOARCH, runtime.GOOS, runtime.GOARCH)
-	}
-	if !errors.Is(err, sentinel) {
-		t.Error("errors.Is did not reach the underlying sentinel along the error chain")
-	}
-	if errors.Is(err, ErrInvalidInput) {
-		t.Error("an underlying load failure must not be associated with ErrInvalidInput")
-	}
+	require.ErrorAs(t, err, &lle, "errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
+	assert.Equal(t, path, lle.Path, "Path = %q, want %q", lle.Path, path)
+	assert.Equal(t, "libMaaCore.so", lle.LibraryName, "LibraryName = %q, want %q", lle.LibraryName, "libMaaCore.so")
+	assert.Equal(t, runtime.GOOS, lle.GOOS, "GOOS = %s, want %s", lle.GOOS, runtime.GOOS)
+	assert.Equal(t, runtime.GOARCH, lle.GOARCH, "GOARCH = %s, want %s", lle.GOARCH, runtime.GOARCH)
+	assert.ErrorIs(t, err, sentinel, "errors.Is did not reach the underlying sentinel along the error chain")
+	assert.NotErrorIs(t, err, ErrInvalidInput, "an underlying load failure must not be associated with ErrInvalidInput")
 }
 
 // TestOpenRejectsNullHandle 验证:open 原语返回 (0, nil) 的契约破坏
@@ -198,22 +160,13 @@ func TestOpenRejectsNullHandle(t *testing.T) {
 	fake := &fakePrimitives{zeroHandle: true}
 
 	lib, err := newFakeLoader(fake).Open(path)
-	if lib != nil {
-		t.Fatalf("a contract-violating case must not return a Library, got %+v", lib)
-	}
+	require.Nil(t, lib, "a contract-violating case must not return a Library, got %+v", lib)
 	var lle *LibraryLoadError
-	if !errors.As(err, &lle) {
-		t.Fatalf("errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
-	}
-	if lle.Path != path || lle.LibraryName != "libMaaCore.so" {
-		t.Errorf("diagnostic fields mismatch: Path=%q LibraryName=%q", lle.Path, lle.LibraryName)
-	}
-	if lle.Err == nil {
-		t.Error("Err must be non-nil")
-	}
-	if errors.Is(err, ErrInvalidInput) {
-		t.Error("a null handle is a system loader contract violation and must not be associated with ErrInvalidInput")
-	}
+	require.ErrorAs(t, err, &lle, "errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
+	assert.Equal(t, path, lle.Path, "diagnostic fields mismatch: Path=%q LibraryName=%q", lle.Path, lle.LibraryName)
+	assert.Equal(t, "libMaaCore.so", lle.LibraryName, "diagnostic fields mismatch: Path=%q LibraryName=%q", lle.Path, lle.LibraryName)
+	assert.Error(t, lle.Err, "Err must be non-nil")
+	assert.NotErrorIs(t, err, ErrInvalidInput, "a null handle is a system loader contract violation and must not be associated with ErrInvalidInput")
 }
 
 // TestLookupSuccess 验证:查找成功返回原语给出的地址,且查找恰好
@@ -226,23 +179,13 @@ func TestLookupSuccess(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "libMaaCore.so")
 	fake := &fakePrimitives{openHandle: handle, lookupAddr: addr}
 	lib, err := newFakeLoader(fake).Open(path)
-	if err != nil {
-		t.Fatalf("Open(%q) returned an unexpected error: %v", path, err)
-	}
+	require.NoError(t, err, "Open(%q) returned an unexpected error", path)
 
 	got, err := lib.Lookup("AsstCreateEx")
-	if err != nil {
-		t.Fatalf("Lookup returned an unexpected error: %v", err)
-	}
-	if got != addr {
-		t.Errorf("Lookup address = %#x, want %#x", got, addr)
-	}
-	if len(fake.lookupNames) != 1 || fake.lookupNames[0] != "AsstCreateEx" {
-		t.Errorf("symbol names received by lookup = %v, want [AsstCreateEx]", fake.lookupNames)
-	}
-	if len(fake.lookupHandles) != 1 || fake.lookupHandles[0] != handle {
-		t.Errorf("handles received by lookup = %v, want [%#x]", fake.lookupHandles, handle)
-	}
+	require.NoError(t, err, "Lookup returned an unexpected error")
+	assert.Equal(t, addr, got, "Lookup address = %#x, want %#x", got, addr)
+	assert.Equal(t, []string{"AsstCreateEx"}, fake.lookupNames, "symbol names received by lookup = %v, want [AsstCreateEx]", fake.lookupNames)
+	assert.Equal(t, []uintptr{handle}, fake.lookupHandles, "handles received by lookup = %v, want [%#x]", fake.lookupHandles, handle)
 }
 
 // TestLookupFailureKeepsUnderlyingCause 验证:查找失败返回
@@ -254,30 +197,16 @@ func TestLookupFailureKeepsUnderlyingCause(t *testing.T) {
 	sentinel := errors.New("fake dlsym: undefined symbol")
 	fake := &fakePrimitives{openHandle: 0x2000, lookupErr: sentinel}
 	lib, err := newFakeLoader(fake).Open(path)
-	if err != nil {
-		t.Fatalf("Open(%q) returned an unexpected error: %v", path, err)
-	}
+	require.NoError(t, err, "Open(%q) returned an unexpected error", path)
 
 	addr, err := lib.Lookup(symbol)
-	if addr != 0 {
-		t.Errorf("address on failure = %#x, want 0", addr)
-	}
+	assert.Zero(t, addr, "address on failure = %#x, want 0", addr)
 	var sle *SymbolLookupError
-	if !errors.As(err, &sle) {
-		t.Fatalf("errors.As did not yield a *SymbolLookupError, got %T: %v", err, err)
-	}
-	if sle.LibraryPath != path {
-		t.Errorf("LibraryPath = %q, want %q", sle.LibraryPath, path)
-	}
-	if sle.Symbol != symbol {
-		t.Errorf("Symbol = %q, want %q", sle.Symbol, symbol)
-	}
-	if sle.Profile != abiProfile {
-		t.Errorf("Profile = %q, want %q", sle.Profile, abiProfile)
-	}
-	if !errors.Is(err, sentinel) {
-		t.Error("errors.Is did not reach the underlying sentinel along the error chain")
-	}
+	require.ErrorAs(t, err, &sle, "errors.As did not yield a *SymbolLookupError, got %T: %v", err, err)
+	assert.Equal(t, path, sle.LibraryPath, "LibraryPath = %q, want %q", sle.LibraryPath, path)
+	assert.Equal(t, symbol, sle.Symbol, "Symbol = %q, want %q", sle.Symbol, symbol)
+	assert.Equal(t, abiProfile, sle.Profile, "Profile = %q, want %q", sle.Profile, abiProfile)
+	assert.ErrorIs(t, err, sentinel, "errors.Is did not reach the underlying sentinel along the error chain")
 }
 
 // TestLookupNullAddressNotCallable 验证:原语返回 (0, nil) 时,零地址
@@ -287,25 +216,15 @@ func TestLookupNullAddressNotCallable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "libMaaCore.so")
 	fake := &fakePrimitives{openHandle: 0x2000, nullAddr: true}
 	lib, err := newFakeLoader(fake).Open(path)
-	if err != nil {
-		t.Fatalf("Open(%q) returned an unexpected error: %v", path, err)
-	}
+	require.NoError(t, err, "Open(%q) returned an unexpected error", path)
 
 	addr, err := lib.Lookup("AsstCreateEx")
-	if err == nil {
-		t.Fatal("a null address must not be returned as a successful (0, nil) result")
-	}
-	if addr != 0 {
-		t.Errorf("address on failure = %#x, want 0", addr)
-	}
+	require.Error(t, err, "a null address must not be returned as a successful (0, nil) result")
+	assert.Zero(t, addr, "address on failure = %#x, want 0", addr)
 	var sle *SymbolLookupError
-	if !errors.As(err, &sle) {
-		t.Fatalf("errors.As did not yield a *SymbolLookupError, got %T: %v", err, err)
-	}
-	if !errors.Is(err, errSymbolNullAddress) {
-		t.Error("errors.Is did not identify the null-address cause")
-	}
-	if sle.Symbol != "AsstCreateEx" || sle.LibraryPath != path || sle.Profile != abiProfile {
-		t.Errorf("diagnostic fields mismatch: %+v", sle)
-	}
+	require.ErrorAs(t, err, &sle, "errors.As did not yield a *SymbolLookupError, got %T: %v", err, err)
+	assert.ErrorIs(t, err, errSymbolNullAddress, "errors.Is did not identify the null-address cause")
+	assert.Equal(t, "AsstCreateEx", sle.Symbol, "diagnostic fields mismatch: %+v", sle)
+	assert.Equal(t, path, sle.LibraryPath, "diagnostic fields mismatch: %+v", sle)
+	assert.Equal(t, abiProfile, sle.Profile, "diagnostic fields mismatch: %+v", sle)
 }

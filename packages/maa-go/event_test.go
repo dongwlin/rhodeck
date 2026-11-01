@@ -5,9 +5,13 @@ package maa
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // 事件与结果的测试原文:含未知字段与超过 2^53 的整数,验证逐字节
@@ -30,12 +34,9 @@ func TestEventRecordConstructionCopiesInput(t *testing.T) {
 		src[i] = 'X'
 	}
 
-	if got := string(rec.json); got != testEventJSON {
-		t.Fatalf("record raw JSON was overwritten by the source: got %q, want %q", got, testEventJSON)
-	}
-	if rec.messageID != 7 || rec.sequence != 3 {
-		t.Errorf("record metadata mismatch: messageID=%d sequence=%d", rec.messageID, rec.sequence)
-	}
+	got := string(rec.json)
+	require.Equal(t, testEventJSON, got, "record raw JSON was overwritten by the source: got %q, want %q", got, testEventJSON)
+	assert.True(t, rec.messageID == 7 && rec.sequence == 3, "record metadata mismatch: messageID=%d sequence=%d", rec.messageID, rec.sequence)
 }
 
 // TestEventRecordSnapshotIsIndependent 验证:每次快照返回独立副本,
@@ -45,9 +46,7 @@ func TestEventRecordSnapshotIsIndependent(t *testing.T) {
 	rec := newEventRecord(MessageID(7), json.RawMessage(testEventJSON), 3)
 
 	s1 := rec.snapshot()
-	if s1.MessageID != 7 || s1.Sequence != 3 || string(s1.JSON) != testEventJSON {
-		t.Fatalf("first snapshot mismatch: %+v", s1)
-	}
+	require.True(t, s1.MessageID == 7 && s1.Sequence == 3 && string(s1.JSON) == testEventJSON, "first snapshot mismatch: %+v", s1)
 
 	// 原地改写快照副本的底层字节。
 	for i := range s1.JSON {
@@ -57,16 +56,11 @@ func TestEventRecordSnapshotIsIndependent(t *testing.T) {
 	s1.Sequence = 42
 
 	s2 := rec.snapshot()
-	if s2.MessageID != 7 || s2.Sequence != 3 || string(s2.JSON) != testEventJSON {
-		t.Errorf("overwriting a previous snapshot affected the next snapshot: %+v", s2)
-	}
-	if got := string(rec.json); got != testEventJSON {
-		t.Errorf("overwriting a snapshot rewrote the internal cache: %q", got)
-	}
+	assert.True(t, s2.MessageID == 7 && s2.Sequence == 3 && string(s2.JSON) == testEventJSON, "overwriting a previous snapshot affected the next snapshot: %+v", s2)
+	got := string(rec.json)
+	assert.Equal(t, testEventJSON, got, "overwriting a snapshot rewrote the internal cache: %q", got)
 	// 先前副本保持被改写状态:它是调用者拥有的独立数据。
-	if s1.MessageID != 99 || string(s1.JSON) != strings.Repeat("!", len(testEventJSON)) {
-		t.Errorf("modifications to the previous copy were lost: %+v %q", s1.MessageID, string(s1.JSON))
-	}
+	assert.True(t, s1.MessageID == 99 && string(s1.JSON) == strings.Repeat("!", len(testEventJSON)), "modifications to the previous copy were lost: %+v %q", s1.MessageID, string(s1.JSON))
 }
 
 // TestAsyncResultRecordSnapshotIsIndependent 验证:结果记录构造时
@@ -83,12 +77,9 @@ func TestAsyncResultRecordSnapshotIsIndependent(t *testing.T) {
 	}
 
 	s1 := rec.snapshot()
-	if s1.ID != 9 || s1.What != testResultWhat || s1.OK {
-		t.Fatalf("first snapshot metadata mismatch: %+v", s1)
-	}
-	if string(s1.Details) != testResultDetails {
-		t.Fatalf("details were overwritten by the source: %q", string(s1.Details))
-	}
+	require.True(t, s1.ID == 9 && s1.What == testResultWhat && !s1.OK, "first snapshot metadata mismatch: %+v", s1)
+	gotDetails := string(s1.Details)
+	require.Equal(t, testResultDetails, gotDetails, "details were overwritten by the source: %q", gotDetails)
 
 	for i := range s1.Details {
 		s1.Details[i] = '?'
@@ -97,15 +88,11 @@ func TestAsyncResultRecordSnapshotIsIndependent(t *testing.T) {
 	s1.OK = true
 
 	s2 := rec.snapshot()
-	if s2.ID != 9 || s2.What != testResultWhat || s2.OK {
-		t.Errorf("overwriting a previous snapshot affected the next snapshot: %+v", s2)
-	}
-	if string(s2.Details) != testResultDetails {
-		t.Errorf("details of the next snapshot were rewritten: %q", string(s2.Details))
-	}
-	if got := string(rec.details); got != testResultDetails {
-		t.Errorf("overwriting a snapshot rewrote the internal cache: %q", got)
-	}
+	assert.True(t, s2.ID == 9 && s2.What == testResultWhat && !s2.OK, "overwriting a previous snapshot affected the next snapshot: %+v", s2)
+	got := string(s2.Details)
+	assert.Equal(t, testResultDetails, got, "details of the next snapshot were rewritten: %q", got)
+	got = string(rec.details)
+	assert.Equal(t, testResultDetails, got, "overwriting a snapshot rewrote the internal cache: %q", got)
 }
 
 // TestEventAndResultSnapshotsDoNotShareBuffers 验证:Event 与
@@ -124,15 +111,12 @@ func TestEventAndResultSnapshotsDoNotShareBuffers(t *testing.T) {
 	for i := range ev.JSON {
 		ev.JSON[i] = '#'
 	}
-	if string(res.Details) != testEventJSON {
-		t.Errorf("the Event snapshot rewrite crosstalked into the AsyncResult snapshot: %q", string(res.Details))
-	}
-	if got := string(evRec.snapshot().JSON); got != testEventJSON {
-		t.Errorf("the Event snapshot rewrite crosstalked into the event cache: %q", got)
-	}
-	if got := string(resRec.snapshot().Details); got != testEventJSON {
-		t.Errorf("the Event snapshot rewrite crosstalked into the result cache: %q", got)
-	}
+	got := string(res.Details)
+	assert.Equal(t, testEventJSON, got, "the Event snapshot rewrite crosstalked into the AsyncResult snapshot: %q", got)
+	got = string(evRec.snapshot().JSON)
+	assert.Equal(t, testEventJSON, got, "the Event snapshot rewrite crosstalked into the event cache: %q", got)
+	got = string(resRec.snapshot().Details)
+	assert.Equal(t, testEventJSON, got, "the Event snapshot rewrite crosstalked into the result cache: %q", got)
 
 	// AsyncResult 侧原地改写:全新取得的 Event 快照与两条记录缓存
 	// 不受影响(ev 副本已被上一段有意改写,它是调用者拥有的独立
@@ -140,15 +124,12 @@ func TestEventAndResultSnapshotsDoNotShareBuffers(t *testing.T) {
 	for i := range res.Details {
 		res.Details[i] = '@'
 	}
-	if got := string(evRec.snapshot().JSON); got != testEventJSON {
-		t.Errorf("the AsyncResult snapshot rewrite crosstalked into the event cache: %q", got)
-	}
-	if got := string(resRec.snapshot().Details); got != testEventJSON {
-		t.Errorf("the AsyncResult snapshot rewrite crosstalked into the result cache: %q", got)
-	}
-	if got := string(evRec.snapshot().JSON); got != testEventJSON {
-		t.Errorf("the AsyncResult snapshot rewrite crosstalked into a freshly taken Event snapshot: %q", got)
-	}
+	got = string(evRec.snapshot().JSON)
+	assert.Equal(t, testEventJSON, got, "the AsyncResult snapshot rewrite crosstalked into the event cache: %q", got)
+	got = string(resRec.snapshot().Details)
+	assert.Equal(t, testEventJSON, got, "the AsyncResult snapshot rewrite crosstalked into the result cache: %q", got)
+	got = string(evRec.snapshot().JSON)
+	assert.Equal(t, testEventJSON, got, "the AsyncResult snapshot rewrite crosstalked into a freshly taken Event snapshot: %q", got)
 }
 
 // TestConcurrentSnapshotsStayIndependent 验证:并发对同一记录取得
@@ -167,7 +148,7 @@ func TestConcurrentSnapshotsStayIndependent(t *testing.T) {
 			ev := evRec.snapshot()
 			res := resRec.snapshot()
 			if string(ev.JSON) != testEventJSON || string(res.Details) != testResultDetails {
-				t.Errorf("concurrent snapshots obtained polluted copies: %q / %q", string(ev.JSON), string(res.Details))
+				assert.Fail(t, fmt.Sprintf("concurrent snapshots obtained polluted copies: %q / %q", string(ev.JSON), string(res.Details)))
 				return
 			}
 			for j := range ev.JSON {
@@ -180,10 +161,8 @@ func TestConcurrentSnapshotsStayIndependent(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := string(evRec.snapshot().JSON); got != testEventJSON {
-		t.Errorf("concurrent rewrites affected the event cache: %q", got)
-	}
-	if got := string(resRec.snapshot().Details); got != testResultDetails {
-		t.Errorf("concurrent rewrites affected the result cache: %q", got)
-	}
+	got := string(evRec.snapshot().JSON)
+	assert.Equal(t, testEventJSON, got, "concurrent rewrites affected the event cache: %q", got)
+	got = string(resRec.snapshot().Details)
+	assert.Equal(t, testResultDetails, got, "concurrent rewrites affected the result cache: %q", got)
 }

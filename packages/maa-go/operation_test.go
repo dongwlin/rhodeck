@@ -8,13 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newReadyState 构造已发布 ready 的实例状态,pendingOperations 为
@@ -30,12 +31,8 @@ func newReadyState(t *testing.T, handle uintptr, pendingOperations uint64) *inst
 func mustAdmitPending(t *testing.T, s *instanceState, id AsyncID, what string) *operation {
 	t.Helper()
 	op, err := s.admitPendingOperation(id, what)
-	if err != nil {
-		t.Fatalf("admitting pending operation %d (%s) must not fail: %v", id, what, err)
-	}
-	if op == nil {
-		t.Fatalf("admitting pending operation %d returned a nil record", id)
-	}
+	require.NoError(t, err, "admitting pending operation %d (%s) must not fail: %v", id, what, err)
+	require.NotNil(t, op, "admitting pending operation %d returned a nil record", id)
 	return op
 }
 
@@ -64,7 +61,7 @@ func waitGuarded(t *testing.T, op *operation, ctx context.Context) (AsyncResult,
 	case o := <-ch:
 		return o.res, o.err
 	case <-time.After(hangGuard):
-		t.Fatal("operation.wait did not return within the hang-guard limit: the done notification appears not closed")
+		require.Fail(t, "operation.wait did not return within the hang-guard limit: the done notification appears not closed")
 		return AsyncResult{}, nil
 	}
 }
@@ -121,16 +118,16 @@ func TestOperationSettlesExactlyOnceUnderRaces(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(hangGuard):
-			t.Fatal("concurrent waiters did not converge within the hang-guard limit: the done notification appears not closed")
+			require.Fail(t, "concurrent waiters did not converge within the hang-guard limit: the done notification appears not closed")
 		}
-		if n := mismatch.Load(); n != 0 {
-			t.Fatalf("%d waiters obtained a terminal state inconsistent with the single settlement result", n)
-		}
+		require.Equal(t, int32(0), mismatch.Load(), "%d waiters obtained a terminal state inconsistent with the single settlement result", mismatch.Load())
 		// 全部并发等待收敛后,再次等待仍取得同一终态。
 		res, err := waitGuarded(t, op, context.Background())
-		if err != nil || res.ID != id || res.What != what || !res.OK || string(res.Details) != details {
-			t.Fatalf("standalone wait after settlement = (%+v, %v), want the same completion terminal state", res, err)
-		}
+		require.NoError(t, err, "standalone wait after settlement = (%+v, %v), want the same completion terminal state", res, err)
+		require.Equal(t, id, res.ID, "standalone wait after settlement = (%+v, %v), want the same completion terminal state", res, err)
+		require.Equal(t, what, res.What, "standalone wait after settlement = (%+v, %v), want the same completion terminal state", res, err)
+		require.True(t, res.OK, "standalone wait after settlement = (%+v, %v), want the same completion terminal state", res, err)
+		require.Equal(t, details, string(res.Details), "standalone wait after settlement = (%+v, %v), want the same completion terminal state", res, err)
 	})
 
 	t.Run("completion, close scan and fault scan race for exactly one terminal state", func(t *testing.T) {
@@ -213,22 +210,14 @@ func TestOperationSettlesExactlyOnceUnderRaces(t *testing.T) {
 			select {
 			case <-done:
 			case <-time.After(hangGuard):
-				t.Fatalf("round %d race did not converge within the hang-guard limit", round)
+				require.Fail(t, fmt.Sprintf("round %d race did not converge within the hang-guard limit", round))
 			}
 
-			if len(seen) != roundWaiters {
-				t.Fatalf("round %d waiter result count = %d, want %d", round, len(seen), roundWaiters)
-			}
+			require.Len(t, seen, roundWaiters, "round %d waiter result count = %d, want %d", round, len(seen), roundWaiters)
 			for i, class := range seen {
-				if class != seen[0] {
-					t.Fatalf("round %d waiter %d saw terminal state %q, inconsistent with waiter 0's %q", round, i, class, seen[0])
-				}
+				require.Equal(t, seen[0], class, "round %d waiter %d saw terminal state %q, inconsistent with waiter 0's %q", round, i, class, seen[0])
 			}
-			switch seen[0] {
-			case "completed", "closed", "fault":
-			default:
-				t.Fatalf("round %d terminal state class %q out of range", round, seen[0])
-			}
+			require.Contains(t, []string{"completed", "closed", "fault"}, seen[0], "round %d terminal state class %q out of range", round, seen[0])
 
 			// 先结算者胜:后到的其余结算入口不得覆盖、不得 panic。
 			// electClose 把阶段统一带入 closing(ready/faulted 合法迁
@@ -239,9 +228,8 @@ func TestOperationSettlesExactlyOnceUnderRaces(t *testing.T) {
 			s.recordFault(lateCause)
 			s.settleRemainingPending()
 			again, err := op.wait(context.Background())
-			if class := classify(again, err); class != seen[0] {
-				t.Fatalf("round %d late settlement rewrote the terminal state: %q → %q (%+v, %v)", round, seen[0], class, again, err)
-			}
+			lateClass := classify(again, err)
+			require.Equal(t, seen[0], lateClass, "round %d late settlement rewrote the terminal state: %q → %q (%+v, %v)", round, seen[0], lateClass, again, err)
 		}
 	})
 
@@ -260,12 +248,11 @@ func TestOperationSettlesExactlyOnceUnderRaces(t *testing.T) {
 		s.settleRemainingPending()
 
 		res, err := waitGuarded(t, op, context.Background())
-		if err != nil || !res.OK || res.ID != id || string(res.Details) != `{"ret":true}` {
-			t.Fatalf("the late settlement rewrote the terminal state: (%+v, %v), want the completion terminal state unchanged", res, err)
-		}
-		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("the late settlement must not revive the pending record: occupancy = %d", n)
-		}
+		require.NoError(t, err, "the late settlement rewrote the terminal state: (%+v, %v), want the completion terminal state unchanged", res, err)
+		require.True(t, res.OK, "the late settlement rewrote the terminal state: (%+v, %v), want the completion terminal state unchanged", res, err)
+		require.Equal(t, id, res.ID, "the late settlement rewrote the terminal state: (%+v, %v), want the completion terminal state unchanged", res, err)
+		require.Equal(t, `{"ret":true}`, string(res.Details), "the late settlement rewrote the terminal state: (%+v, %v), want the completion terminal state unchanged", res, err)
+		require.Equal(t, 0, pendingOccupancy(s), "the late settlement must not revive the pending record: occupancy = %d", pendingOccupancy(s))
 	})
 }
 
@@ -286,20 +273,15 @@ func TestOperationTerminalErrorSemantics(t *testing.T) {
 		op.complete(newResultRecord(id, what, false, json.RawMessage(details)))
 
 		res, err := waitGuarded(t, op, context.Background())
-		if err == nil {
-			t.Fatal("ret=false must return a non-nil error")
-		}
-		if !errors.Is(err, native.ErrNativeRejected) {
-			t.Errorf("errors.Is(err, native.ErrNativeRejected) = false; err = %v", err)
-		}
+		require.Error(t, err, "ret=false must return a non-nil error")
+		assert.ErrorIs(t, err, native.ErrNativeRejected, "errors.Is(err, native.ErrNativeRejected) = false; err = %v", err)
 		// 结果与可辨识失败错误同时给出,快照字段完好(不在 OK
 		// 字段编造结构化原因)。
-		if res.ID != id || res.What != what || res.OK || string(res.Details) != details {
-			t.Fatalf("ret=false result = %+v, want a failure result with intact fields", res)
-		}
-		if got := op.id(); got != id {
-			t.Errorf("ID must stay readable after settlement: got %d, want %d", got, id)
-		}
+		require.Equal(t, id, res.ID, "ret=false result = %+v, want a failure result with intact fields", res)
+		require.Equal(t, what, res.What, "ret=false result = %+v, want a failure result with intact fields", res)
+		require.False(t, res.OK, "ret=false result = %+v, want a failure result with intact fields", res)
+		require.Equal(t, details, string(res.Details), "ret=false result = %+v, want a failure result with intact fields", res)
+		assert.Equal(t, id, op.id(), "ID must stay readable after settlement: got %d, want %d", op.id(), id)
 	})
 
 	t.Run("close settlement returns ErrClosed with no result", func(t *testing.T) {
@@ -307,15 +289,12 @@ func TestOperationTerminalErrorSemantics(t *testing.T) {
 		op.settleClosed()
 
 		res, err := waitGuarded(t, op, context.Background())
-		if !errors.Is(err, native.ErrClosed) {
-			t.Fatalf("errors.Is(err, native.ErrClosed) = false; err = %v", err)
-		}
-		if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-			t.Fatalf("the close settlement must carry no result: %+v", res)
-		}
-		if got := op.id(); got != id {
-			t.Errorf("ID must stay readable after settlement: got %d, want %d", got, id)
-		}
+		require.ErrorIs(t, err, native.ErrClosed, "errors.Is(err, native.ErrClosed) = false; err = %v", err)
+		require.Equal(t, AsyncID(0), res.ID, "the close settlement must carry no result: %+v", res)
+		require.Empty(t, res.What, "the close settlement must carry no result: %+v", res)
+		require.False(t, res.OK, "the close settlement must carry no result: %+v", res)
+		require.Nil(t, res.Details, "the close settlement must carry no result: %+v", res)
+		assert.Equal(t, id, op.id(), "ID must stay readable after settlement: got %d, want %d", op.id(), id)
 	})
 
 	t.Run("fault settlement returns the first cause as is", func(t *testing.T) {
@@ -324,18 +303,13 @@ func TestOperationTerminalErrorSemantics(t *testing.T) {
 		op.settleFault(cause)
 
 		res, err := waitGuarded(t, op, context.Background())
-		if !errors.Is(err, cause) {
-			t.Fatalf("errors.Is(err, cause) = false; err = %v, want first cause %v", err, cause)
-		}
-		if !errors.Is(err, native.ErrEventOverflow) {
-			t.Errorf("errors.Is(err, native.ErrEventOverflow) = false; err = %v", err)
-		}
-		if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-			t.Fatalf("the fault settlement must carry no result: %+v", res)
-		}
-		if got := op.id(); got != id {
-			t.Errorf("ID must stay readable after settlement: got %d, want %d", got, id)
-		}
+		require.ErrorIs(t, err, cause, "errors.Is(err, cause) = false; err = %v, want first cause %v", err, cause)
+		assert.ErrorIs(t, err, native.ErrEventOverflow, "errors.Is(err, native.ErrEventOverflow) = false; err = %v", err)
+		require.Equal(t, AsyncID(0), res.ID, "the fault settlement must carry no result: %+v", res)
+		require.Empty(t, res.What, "the fault settlement must carry no result: %+v", res)
+		require.False(t, res.OK, "the fault settlement must carry no result: %+v", res)
+		require.Nil(t, res.Details, "the fault settlement must carry no result: %+v", res)
+		assert.Equal(t, id, op.id(), "ID must stay readable after settlement: got %d, want %d", op.id(), id)
 	})
 
 	t.Run("the three terminal error classes must not be conflated with each other", func(t *testing.T) {
@@ -352,26 +326,20 @@ func TestOperationTerminalErrorSemantics(t *testing.T) {
 		_, faultErr := waitGuarded(t, faultOp, context.Background())
 
 		// 原生失败只含 ErrNativeRejected,不得混入关闭/溢出。
-		if !errors.Is(nativeErr, native.ErrNativeRejected) {
-			t.Errorf("native failure error = %v, want it to contain ErrNativeRejected", nativeErr)
-		}
-		if errors.Is(nativeErr, native.ErrClosed) || errors.Is(nativeErr, native.ErrEventOverflow) || errors.Is(nativeErr, cause) {
-			t.Errorf("the native failure error mixed in an adjacent class: %v", nativeErr)
-		}
+		assert.ErrorIs(t, nativeErr, native.ErrNativeRejected, "native failure error = %v, want it to contain ErrNativeRejected", nativeErr)
+		assert.NotErrorIs(t, nativeErr, native.ErrClosed, "the native failure error mixed in an adjacent class: %v", nativeErr)
+		assert.NotErrorIs(t, nativeErr, native.ErrEventOverflow, "the native failure error mixed in an adjacent class: %v", nativeErr)
+		assert.NotErrorIs(t, nativeErr, cause, "the native failure error mixed in an adjacent class: %v", nativeErr)
 		// 关闭只含 ErrClosed。
-		if !errors.Is(closedErr, native.ErrClosed) {
-			t.Errorf("close error = %v, want it to contain ErrClosed", closedErr)
-		}
-		if errors.Is(closedErr, native.ErrNativeRejected) || errors.Is(closedErr, native.ErrEventOverflow) || errors.Is(closedErr, cause) {
-			t.Errorf("the close error mixed in an adjacent class: %v", closedErr)
-		}
+		assert.ErrorIs(t, closedErr, native.ErrClosed, "close error = %v, want it to contain ErrClosed", closedErr)
+		assert.NotErrorIs(t, closedErr, native.ErrNativeRejected, "the close error mixed in an adjacent class: %v", closedErr)
+		assert.NotErrorIs(t, closedErr, native.ErrEventOverflow, "the close error mixed in an adjacent class: %v", closedErr)
+		assert.NotErrorIs(t, closedErr, cause, "the close error mixed in an adjacent class: %v", closedErr)
 		// 故障只沿首因链可达,不得混入原生失败/关闭。
-		if !errors.Is(faultErr, cause) || !errors.Is(faultErr, native.ErrEventOverflow) {
-			t.Errorf("fault error = %v, want ErrEventOverflow reachable along the first-cause chain", faultErr)
-		}
-		if errors.Is(faultErr, native.ErrNativeRejected) || errors.Is(faultErr, native.ErrClosed) {
-			t.Errorf("the fault error mixed in an adjacent class: %v", faultErr)
-		}
+		assert.ErrorIs(t, faultErr, cause, "fault error = %v, want ErrEventOverflow reachable along the first-cause chain", faultErr)
+		assert.ErrorIs(t, faultErr, native.ErrEventOverflow, "fault error = %v, want ErrEventOverflow reachable along the first-cause chain", faultErr)
+		assert.NotErrorIs(t, faultErr, native.ErrNativeRejected, "the fault error mixed in an adjacent class: %v", faultErr)
+		assert.NotErrorIs(t, faultErr, native.ErrClosed, "the fault error mixed in an adjacent class: %v", faultErr)
 	})
 }
 
@@ -388,22 +356,19 @@ func TestOperationWaitCancellation(t *testing.T) {
 		cancel()
 
 		res, err := waitGuarded(t, op, ctx)
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("wait error with a cancelled ctx = %v, want context.Canceled", err)
-		}
-		if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-			t.Fatalf("the cancelled wait must return a zero-value result: %+v", res)
-		}
+		require.ErrorIs(t, err, context.Canceled, "wait error with a cancelled ctx = %v, want context.Canceled", err)
+		require.Equal(t, AsyncID(0), res.ID, "the cancelled wait must return a zero-value result: %+v", res)
+		require.Empty(t, res.What, "the cancelled wait must return a zero-value result: %+v", res)
+		require.False(t, res.OK, "the cancelled wait must return a zero-value result: %+v", res)
+		require.Nil(t, res.Details, "the cancelled wait must return a zero-value result: %+v", res)
 		// 取消不迁移终态、不提前回收:记录仍在实例 pending 表中。
-		if n := pendingOccupancy(s); n != 1 {
-			t.Fatalf("pending occupancy after cancelling one wait = %d, want 1 (cancel does not reclaim early)", n)
-		}
+		require.Equal(t, 1, pendingOccupancy(s), "pending occupancy after cancelling one wait = %d, want 1 (cancel does not reclaim early)", pendingOccupancy(s))
 		// 之后仍可再次等待取得真实结果。
 		s.settleCompletion(completionInfo{ID: id, What: "Click", OK: true, Details: json.RawMessage(`{"ret":true}`)})
 		res2, err2 := waitGuarded(t, op, context.Background())
-		if err2 != nil || res2.ID != id || !res2.OK {
-			t.Fatalf("re-wait after cancellation = (%+v, %v), want the real completion result", res2, err2)
-		}
+		require.NoError(t, err2, "re-wait after cancellation = (%+v, %v), want the real completion result", res2, err2)
+		require.Equal(t, id, res2.ID, "re-wait after cancellation = (%+v, %v), want the real completion result", res2, err2)
+		require.True(t, res2.OK, "re-wait after cancellation = (%+v, %v), want the real completion result", res2, err2)
 	})
 
 	t.Run("an expired deadline returns DeadlineExceeded and can wait again", func(t *testing.T) {
@@ -414,20 +379,18 @@ func TestOperationWaitCancellation(t *testing.T) {
 		defer cancel()
 
 		res, err := waitGuarded(t, op, ctx)
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("wait error with an expired deadline = %v, want context.DeadlineExceeded", err)
-		}
-		if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-			t.Fatalf("the timed-out wait must return a zero-value result: %+v", res)
-		}
-		if n := pendingOccupancy(s); n != 1 {
-			t.Fatalf("pending occupancy after one timed-out wait = %d, want 1", n)
-		}
+		require.ErrorIs(t, err, context.DeadlineExceeded, "wait error with an expired deadline = %v, want context.DeadlineExceeded", err)
+		require.Equal(t, AsyncID(0), res.ID, "the timed-out wait must return a zero-value result: %+v", res)
+		require.Empty(t, res.What, "the timed-out wait must return a zero-value result: %+v", res)
+		require.False(t, res.OK, "the timed-out wait must return a zero-value result: %+v", res)
+		require.Nil(t, res.Details, "the timed-out wait must return a zero-value result: %+v", res)
+		require.Equal(t, 1, pendingOccupancy(s), "pending occupancy after one timed-out wait = %d, want 1", pendingOccupancy(s))
 		op.complete(newResultRecord(id, "Click", true, json.RawMessage(`{"ret":true}`)))
 		res2, err2 := waitGuarded(t, op, context.Background())
-		if err2 != nil || res2.ID != id || !res2.OK || string(res2.Details) != `{"ret":true}` {
-			t.Fatalf("re-wait after timeout = (%+v, %v), want the real completion result", res2, err2)
-		}
+		require.NoError(t, err2, "re-wait after timeout = (%+v, %v), want the real completion result", res2, err2)
+		require.Equal(t, id, res2.ID, "re-wait after timeout = (%+v, %v), want the real completion result", res2, err2)
+		require.True(t, res2.OK, "re-wait after timeout = (%+v, %v), want the real completion result", res2, err2)
+		require.Equal(t, `{"ret":true}`, string(res2.Details), "re-wait after timeout = (%+v, %v), want the real completion result", res2, err2)
 	})
 
 	t.Run("a cancelled ctx still obtains the terminal state once it is published", func(t *testing.T) {
@@ -449,12 +412,11 @@ func TestOperationWaitCancellation(t *testing.T) {
 			// 完成与取消竞争时已发布终态优先:done 与 ctx.Done() 同时
 			// 就绪,无论 select 取哪一支,观察到的都必须是稳定终态。
 			res, err := waitGuarded(t, op, ctx)
-			if errors.Is(err, context.Canceled) {
-				t.Fatalf("round %d: the wait with a cancelled ctx after settlement was misreported as cancelled (err = %v), want the terminal state to win", round, err)
-			}
-			if err != nil || res.ID != id || !res.OK || string(res.Details) != `{"ret":true}` {
-				t.Fatalf("round %d: the wait with a cancelled ctx after settlement = (%+v, %v), want the terminal state to win", round, res, err)
-			}
+			require.NotErrorIs(t, err, context.Canceled, "round %d: the wait with a cancelled ctx after settlement was misreported as cancelled (err = %v), want the terminal state to win", round, err)
+			require.NoError(t, err, "round %d: the wait with a cancelled ctx after settlement = (%+v, %v), want the terminal state to win", round, res, err)
+			require.Equal(t, id, res.ID, "round %d: the wait with a cancelled ctx after settlement = (%+v, %v), want the terminal state to win", round, res, err)
+			require.True(t, res.OK, "round %d: the wait with a cancelled ctx after settlement = (%+v, %v), want the terminal state to win", round, res, err)
+			require.Equal(t, `{"ret":true}`, string(res.Details), "round %d: the wait with a cancelled ctx after settlement = (%+v, %v), want the terminal state to win", round, res, err)
 		}
 	})
 }
@@ -488,22 +450,23 @@ func TestOperationWaitSnapshotIndependence(t *testing.T) {
 		}
 		w1.What = "tampered"
 		w1.OK = false
-		if w2.ID != id || w2.What != what || !w2.OK || string(w2.Details) != details {
-			t.Fatalf("mutating an earlier copy affected another waiter's result: %+v", w2)
-		}
+		require.Equal(t, id, w2.ID, "mutating an earlier copy affected another waiter's result: %+v", w2)
+		require.Equal(t, what, w2.What, "mutating an earlier copy affected another waiter's result: %+v", w2)
+		require.True(t, w2.OK, "mutating an earlier copy affected another waiter's result: %+v", w2)
+		require.Equal(t, details, string(w2.Details), "mutating an earlier copy affected another waiter's result: %+v", w2)
 		w3, _ := waitGuarded(t, op, context.Background())
-		if w3.ID != id || w3.What != what || !w3.OK || string(w3.Details) != details {
-			t.Fatalf("mutating an earlier copy affected the cache: %+v", w3)
-		}
+		require.Equal(t, id, w3.ID, "mutating an earlier copy affected the cache: %+v", w3)
+		require.Equal(t, what, w3.What, "mutating an earlier copy affected the cache: %+v", w3)
+		require.True(t, w3.OK, "mutating an earlier copy affected the cache: %+v", w3)
+		require.Equal(t, details, string(w3.Details), "mutating an earlier copy affected the cache: %+v", w3)
 		// 改写 w2 同理:w1 保持被改写状态(它是调用者拥有的独立数据),
 		// 新快照仍取原始内容。
 		for i := range w2.Details {
 			w2.Details[i] = '@'
 		}
 		w4, _ := waitGuarded(t, op, context.Background())
-		if string(w4.Details) != details || w4.What != what {
-			t.Fatalf("mutating the second copy affected the cache: %+v", w4)
-		}
+		require.Equal(t, details, string(w4.Details), "mutating the second copy affected the cache: %+v", w4)
+		require.Equal(t, what, w4.What, "mutating the second copy affected the cache: %+v", w4)
 	})
 
 	t.Run("concurrent waiters mutating their own copies do not crosstalk", func(t *testing.T) {
@@ -528,13 +491,11 @@ func TestOperationWaitSnapshotIndependence(t *testing.T) {
 			}(i)
 		}
 		wg.Wait()
-		if polluted.Load() != 0 {
-			t.Fatalf("%d concurrent waiters obtained polluted copies", polluted.Load())
-		}
+		require.Equal(t, int32(0), polluted.Load(), "%d concurrent waiters obtained polluted copies", polluted.Load())
 		final, err := waitGuarded(t, op, context.Background())
-		if err != nil || string(final.Details) != details || final.What != what {
-			t.Fatalf("concurrent mutation affected the cache: (%+v, %v)", final, err)
-		}
+		require.NoError(t, err, "concurrent mutation affected the cache: (%+v, %v)", final, err)
+		require.Equal(t, details, string(final.Details), "concurrent mutation affected the cache: (%+v, %v)", final, err)
+		require.Equal(t, what, final.What, "concurrent mutation affected the cache: (%+v, %v)", final, err)
 	})
 }
 
@@ -550,23 +511,16 @@ func TestPendingOperationOwnershipAndReclaim(t *testing.T) {
 		id := AsyncID(9)
 		mustAdmitPending(t, s, id, "submission to be dropped")
 		// 调用者从此不再持有 *operation:实例关联不受影响。
-		if n := pendingOccupancy(s); n != 1 {
-			t.Fatalf("pending occupancy after admit = %d, want 1", n)
-		}
+		require.Equal(t, 1, pendingOccupancy(s), "pending occupancy after admit = %d, want 1", pendingOccupancy(s))
 		s.mu.Lock()
 		_, stillTracked := s.pending[id]
 		s.mu.Unlock()
-		if !stillTracked {
-			t.Fatal("the instance pending table must still hold the record after the caller reference is dropped")
-		}
+		require.True(t, stillTracked, "the instance pending table must still hold the record after the caller reference is dropped")
 		// 只有最终结算移出记录并回收 PendingOperations 容量。
 		s.settleCompletion(completionInfo{ID: id, What: "DroppedCall", OK: true, Details: json.RawMessage(`{"ret":true}`)})
-		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("pending occupancy after settlement = %d, want 0 (capacity reclaimed)", n)
-		}
-		if _, err := s.admitPendingOperation(id, "new submission after reclamation"); err != nil {
-			t.Fatalf("re-admitting the same ID after reclamation must not fail: %v", err)
-		}
+		require.Equal(t, 0, pendingOccupancy(s), "pending occupancy after settlement = %d, want 0 (capacity reclaimed)", pendingOccupancy(s))
+		_, admitErr := s.admitPendingOperation(id, "new submission after reclamation")
+		require.NoError(t, admitErr, "re-admitting the same ID after reclamation must not fail: %v", admitErr)
 	})
 
 	t.Run("cancelling one wait does not release the slot early", func(t *testing.T) {
@@ -575,17 +529,12 @@ func TestPendingOperationOwnershipAndReclaim(t *testing.T) {
 		op := mustAdmitPending(t, s, id, "submission still holding a slot after cancellation")
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if _, err := waitGuarded(t, op, ctx); !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancelled wait error = %v, want context.Canceled", err)
-		}
+		_, cancelErr := waitGuarded(t, op, ctx)
+		require.ErrorIs(t, cancelErr, context.Canceled, "cancelled wait error = %v, want context.Canceled", cancelErr)
 		// 取消不释放槽位:容量仍被占用,真实完成仍可按 ID 结算。
-		if n := pendingOccupancy(s); n != 1 {
-			t.Fatalf("pending occupancy after cancel = %d, want 1", n)
-		}
+		require.Equal(t, 1, pendingOccupancy(s), "pending occupancy after cancel = %d, want 1", pendingOccupancy(s))
 		s.settleCompletion(completionInfo{ID: id, What: "Click", OK: false, Details: json.RawMessage(`{"ret":false}`)})
-		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("pending occupancy after completion settlement = %d, want 0", n)
-		}
+		require.Equal(t, 0, pendingOccupancy(s), "pending occupancy after completion settlement = %d, want 0", pendingOccupancy(s))
 	})
 }
 
@@ -602,77 +551,52 @@ func TestAdmitPendingOperationBoundaries(t *testing.T) {
 		mustAdmitPending(t, s, AsyncID(2), "submission 2")
 
 		_, err := s.admitPendingOperation(AsyncID(3), "submission 3")
-		if err == nil {
-			t.Fatal("admit must reject once capacity is full")
-		}
-		if !errors.Is(err, native.ErrOperationLimit) {
-			t.Errorf("errors.Is(err, native.ErrOperationLimit) = false; err = %v", err)
-		}
-		if errors.Is(err, native.ErrClosed) || errors.Is(err, native.ErrClosing) {
-			t.Errorf("the capacity rejection must not be mislabelled as closed/closing: %v", err)
-		}
-		if !strings.Contains(err.Error(), "submission 3") {
-			t.Errorf("the rejection error should carry the what context text:\n%s", err.Error())
-		}
+		require.Error(t, err, "admit must reject once capacity is full")
+		assert.ErrorIs(t, err, native.ErrOperationLimit, "errors.Is(err, native.ErrOperationLimit) = false; err = %v", err)
+		assert.NotErrorIs(t, err, native.ErrClosed, "the capacity rejection must not be mislabelled as closed/closing: %v", err)
+		assert.NotErrorIs(t, err, native.ErrClosing, "the capacity rejection must not be mislabelled as closed/closing: %v", err)
+		assert.Contains(t, err.Error(), "submission 3", "the rejection error should carry the what context text:\n%s", err.Error())
 		// 实例不因容量拒绝而故障。
-		if got := s.currentPhase(); got != phaseReady {
-			t.Errorf("phase after the capacity rejection = %d, want still ready", got)
-		}
-		if s.currentFault() != nil {
-			t.Errorf("first cause after the capacity rejection = %v, want nil", s.currentFault())
-		}
+		assert.Equal(t, phaseReady, s.currentPhase(), "phase after the capacity rejection = %d, want still ready", s.currentPhase())
+		assert.Nil(t, s.currentFault(), "first cause after the capacity rejection = %v, want nil", s.currentFault())
 		select {
 		case <-s.faultNotify():
-			t.Error("the capacity rejection must not trigger the one-shot fault notification")
+			assert.Fail(t, "the capacity rejection must not trigger the one-shot fault notification")
 		default:
 		}
 		// 被拒的准入不占容量:占用仍为 2。
-		if n := pendingOccupancy(s); n != 2 {
-			t.Fatalf("occupancy after the rejected admit = %d, want 2 (a rejection consumes no capacity)", n)
-		}
+		require.Equal(t, 2, pendingOccupancy(s), "occupancy after the rejected admit = %d, want 2 (a rejection consumes no capacity)", pendingOccupancy(s))
 		// 结算释放后可再 admit;再次填满后再次拒绝。
 		s.settleCompletion(completionInfo{ID: 1, What: "submission 1", OK: true, Details: json.RawMessage(`{"ret":true}`)})
-		if n := pendingOccupancy(s); n != 1 {
-			t.Fatalf("occupancy after settlement released it = %d, want 1", n)
-		}
-		if _, err := s.admitPendingOperation(AsyncID(3), "submission 3"); err != nil {
-			t.Fatalf("admit must not fail after settlement released capacity: %v", err)
-		}
-		if _, err := s.admitPendingOperation(AsyncID(4), "submission 4"); !errors.Is(err, native.ErrOperationLimit) {
-			t.Fatalf("must reject again once capacity is full again: %v", err)
-		}
+		require.Equal(t, 1, pendingOccupancy(s), "occupancy after settlement released it = %d, want 1", pendingOccupancy(s))
+		_, admitErr := s.admitPendingOperation(AsyncID(3), "submission 3")
+		require.NoError(t, admitErr, "admit must not fail after settlement released capacity: %v", admitErr)
+		_, fullErr := s.admitPendingOperation(AsyncID(4), "submission 4")
+		require.ErrorIs(t, fullErr, native.ErrOperationLimit, "must reject again once capacity is full again: %v", fullErr)
 	})
 
 	t.Run("closing, faulted and closed phases reject admission", func(t *testing.T) {
 		closing := newReadyState(t, 0x0A62, 8)
 		mustElectClose(t, closing)
 		_, err := closing.admitPendingOperation(AsyncID(1), "submission during closing")
-		if !errors.Is(err, native.ErrClosing) {
-			t.Fatalf("errors.Is(err, native.ErrClosing) = false; err = %v", err)
-		}
-		if errors.Is(err, native.ErrClosed) || errors.Is(err, native.ErrOperationLimit) {
-			t.Errorf("the closing rejection must not be mislabelled as an adjacent class: %v", err)
-		}
+		require.ErrorIs(t, err, native.ErrClosing, "errors.Is(err, native.ErrClosing) = false; err = %v", err)
+		assert.NotErrorIs(t, err, native.ErrClosed, "the closing rejection must not be mislabelled as an adjacent class: %v", err)
+		assert.NotErrorIs(t, err, native.ErrOperationLimit, "the closing rejection must not be mislabelled as an adjacent class: %v", err)
 
 		faulted := newReadyState(t, 0x0A63, 8)
 		cause := fmt.Errorf("event queue overflow: %w", native.ErrEventOverflow)
 		faulted.recordFault(cause)
 		_, err = faulted.admitPendingOperation(AsyncID(2), "submission during faulted")
-		if !errors.Is(err, cause) || !errors.Is(err, native.ErrEventOverflow) {
-			t.Fatalf("the faulted rejection should reach the first cause along the chain: err = %v", err)
-		}
-		if errors.Is(err, native.ErrClosing) || errors.Is(err, native.ErrClosed) {
-			t.Errorf("the faulted rejection must not be mislabelled as closing/closed: %v", err)
-		}
+		require.ErrorIs(t, err, cause, "the faulted rejection should reach the first cause along the chain: err = %v", err)
+		require.ErrorIs(t, err, native.ErrEventOverflow, "the faulted rejection should reach the first cause along the chain: err = %v", err)
+		assert.NotErrorIs(t, err, native.ErrClosing, "the faulted rejection must not be mislabelled as closing/closed: %v", err)
+		assert.NotErrorIs(t, err, native.ErrClosed, "the faulted rejection must not be mislabelled as closing/closed: %v", err)
 
 		closed := newClosedState(t, 0x0A64)
 		_, err = closed.admitPendingOperation(AsyncID(3), "submission during closed")
-		if !errors.Is(err, native.ErrClosed) {
-			t.Fatalf("errors.Is(err, native.ErrClosed) = false; err = %v", err)
-		}
-		if errors.Is(err, native.ErrClosing) || errors.Is(err, native.ErrOperationLimit) {
-			t.Errorf("the closed rejection must not be mislabelled as an adjacent class: %v", err)
-		}
+		require.ErrorIs(t, err, native.ErrClosed, "errors.Is(err, native.ErrClosed) = false; err = %v", err)
+		assert.NotErrorIs(t, err, native.ErrClosing, "the closed rejection must not be mislabelled as an adjacent class: %v", err)
+		assert.NotErrorIs(t, err, native.ErrOperationLimit, "the closed rejection must not be mislabelled as an adjacent class: %v", err)
 	})
 
 	t.Run("admission panics for id 0 and in the initializing phase", func(t *testing.T) {
@@ -702,26 +626,20 @@ func TestFirstFaultLinearizesPendingOperations(t *testing.T) {
 
 		for i, op := range []*operation{op1, op3} {
 			res, err := waitGuarded(t, op, context.Background())
-			if !errors.Is(err, cause) {
-				t.Fatalf("pending item %d error = %v, want first cause %v", i+1, err, cause)
-			}
-			if errors.Is(err, native.ErrClosed) || errors.Is(err, native.ErrNativeRejected) {
-				t.Errorf("pending item %d fault error mixed in an adjacent class: %v", i+1, err)
-			}
-			if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-				t.Errorf("pending item %d fault settlement must carry no result: %+v", i+1, res)
-			}
+			require.ErrorIs(t, err, cause, "pending item %d error = %v, want first cause %v", i+1, err, cause)
+			assert.NotErrorIs(t, err, native.ErrClosed, "pending item %d fault error mixed in an adjacent class: %v", i+1, err)
+			assert.NotErrorIs(t, err, native.ErrNativeRejected, "pending item %d fault error mixed in an adjacent class: %v", i+1, err)
+			assert.Equal(t, AsyncID(0), res.ID, "pending item %d fault settlement must carry no result: %+v", i+1, res)
+			assert.Empty(t, res.What, "pending item %d fault settlement must carry no result: %+v", i+1, res)
+			assert.False(t, res.OK, "pending item %d fault settlement must carry no result: %+v", i+1, res)
+			assert.Nil(t, res.Details, "pending item %d fault settlement must carry no result: %+v", i+1, res)
 		}
 		res2, err2 := waitGuarded(t, op2, context.Background())
-		if err2 != nil || !res2.OK || string(res2.Details) != `{"ret":true}` {
-			t.Fatalf("the success settled before the fault was rewritten: (%+v, %v)", res2, err2)
-		}
-		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("pending occupancy after the first-cause scan = %d, want 0", n)
-		}
-		if got := s.currentPhase(); got != phaseFaulted {
-			t.Errorf("phase after recording the first cause = %d, want faulted", got)
-		}
+		require.NoError(t, err2, "the success settled before the fault was rewritten: (%+v, %v)", res2, err2)
+		require.True(t, res2.OK, "the success settled before the fault was rewritten: (%+v, %v)", res2, err2)
+		require.Equal(t, `{"ret":true}`, string(res2.Details), "the success settled before the fault was rewritten: (%+v, %v)", res2, err2)
+		require.Equal(t, 0, pendingOccupancy(s), "pending occupancy after the first-cause scan = %d, want 0", pendingOccupancy(s))
+		assert.Equal(t, phaseFaulted, s.currentPhase(), "phase after recording the first cause = %d, want faulted", s.currentPhase())
 	})
 
 	t.Run("a completion arriving after the fault must not overwrite the fault terminal state", func(t *testing.T) {
@@ -735,12 +653,9 @@ func TestFirstFaultLinearizesPendingOperations(t *testing.T) {
 		// 故障而非成功。
 		s.settleCompletion(completionInfo{ID: id, What: "late completion", OK: true, Details: json.RawMessage(`{"ret":true}`)})
 		res, err := waitGuarded(t, op, context.Background())
-		if !errors.Is(err, cause) || res.ID != 0 {
-			t.Fatalf("the completion arriving after the fault rewrote the terminal state: (%+v, %v), want the first-cause fault", res, err)
-		}
-		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("a missed completion must not revive the record: occupancy = %d", n)
-		}
+		require.ErrorIs(t, err, cause, "the completion arriving after the fault rewrote the terminal state: (%+v, %v), want the first-cause fault", res, err)
+		require.Equal(t, AsyncID(0), res.ID, "the completion arriving after the fault rewrote the terminal state: (%+v, %v), want the first-cause fault", res, err)
+		require.Equal(t, 0, pendingOccupancy(s), "a missed completion must not revive the record: occupancy = %d", pendingOccupancy(s))
 	})
 
 	t.Run("a duplicate fault neither rescans nor overwrites the first cause", func(t *testing.T) {
@@ -757,17 +672,16 @@ func TestFirstFaultLinearizesPendingOperations(t *testing.T) {
 
 		for i, op := range []*operation{op1, op2} {
 			_, err := waitGuarded(t, op, context.Background())
-			if !errors.Is(err, first) || errors.Is(err, second) {
-				t.Fatalf("pending item %d error = %v, want first cause %v without the late cause", i+1, err, first)
-			}
+			require.ErrorIs(t, err, first, "pending item %d error = %v, want first cause %v without the late cause", i+1, err, first)
+			require.NotErrorIs(t, err, second, "pending item %d error = %v, want first cause %v without the late cause", i+1, err, first)
 		}
-		if got := s.currentFault(); !errors.Is(got, first) || errors.Is(got, native.ErrEventOverflow) {
-			t.Fatalf("the first cause was overwritten by the later fault: %v", got)
-		}
+		got := s.currentFault()
+		require.ErrorIs(t, got, first, "the first cause was overwritten by the later fault: %v", got)
+		require.NotErrorIs(t, got, native.ErrEventOverflow, "the first cause was overwritten by the later fault: %v", got)
 		select {
 		case <-s.faultNotify():
 		default:
-			t.Fatal("the first cause must close the one-shot fault notification")
+			require.Fail(t, "the first cause must close the one-shot fault notification")
 		}
 	})
 }
@@ -785,25 +699,19 @@ func TestSettleRemainingPendingClosingSemantics(t *testing.T) {
 		s.settleRemainingPending()
 		for i, op := range []*operation{op1, op2} {
 			res, err := waitGuarded(t, op, context.Background())
-			if !errors.Is(err, native.ErrClosed) {
-				t.Fatalf("remaining item %d error = %v, want ErrClosed", i+1, err)
-			}
-			if errors.Is(err, native.ErrNativeRejected) || errors.Is(err, native.ErrClosing) {
-				t.Errorf("remaining item %d close error mixed in an adjacent class: %v", i+1, err)
-			}
-			if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-				t.Errorf("remaining item %d close settlement must carry no result: %+v", i+1, res)
-			}
+			require.ErrorIs(t, err, native.ErrClosed, "remaining item %d error = %v, want ErrClosed", i+1, err)
+			assert.NotErrorIs(t, err, native.ErrNativeRejected, "remaining item %d close error mixed in an adjacent class: %v", i+1, err)
+			assert.NotErrorIs(t, err, native.ErrClosing, "remaining item %d close error mixed in an adjacent class: %v", i+1, err)
+			assert.Equal(t, AsyncID(0), res.ID, "remaining item %d close settlement must carry no result: %+v", i+1, res)
+			assert.Empty(t, res.What, "remaining item %d close settlement must carry no result: %+v", i+1, res)
+			assert.False(t, res.OK, "remaining item %d close settlement must carry no result: %+v", i+1, res)
+			assert.Nil(t, res.Details, "remaining item %d close settlement must carry no result: %+v", i+1, res)
 		}
-		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("occupancy after close drained it = %d, want 0", n)
-		}
+		require.Equal(t, 0, pendingOccupancy(s), "occupancy after close drained it = %d, want 0", pendingOccupancy(s))
 		// 表已空后再次调用为无害空操作,随后可正常走完关闭发布。
 		s.settleRemainingPending()
 		finishClose(t, s, nil)
-		if got := s.currentPhase(); got != phaseClosed {
-			t.Fatalf("close completed after draining, phase = %d, want closed", got)
-		}
+		require.Equal(t, phaseClosed, s.currentPhase(), "close completed after draining, phase = %d, want closed", s.currentPhase())
 	})
 
 	t.Run("calling in a non-closing phase panics", func(t *testing.T) {
@@ -850,32 +758,22 @@ func TestDispatcherWiringSettlesCompletion(t *testing.T) {
 
 		enqueue(t, d, asyncCallInfoMessageID, payload)
 		ev := mustReadEvent(t, d.events())
-		if string(ev.JSON) != string(payload) {
-			t.Fatalf("public event raw = %s, want byte-for-byte preserved %s", ev.JSON, payload)
-		}
+		require.Equal(t, string(payload), string(ev.JSON), "public event raw = %s, want byte-for-byte preserved %s", ev.JSON, payload)
 		// 先结算后投递(第 5 步):公开事件可读时,等待必须立即取
 		// 得终态,不得再有任何延迟。
 		res, err := waitGuarded(t, op, context.Background())
-		if err != nil {
-			t.Fatalf("the wait must return the terminal state immediately once the event is readable: %v", err)
-		}
-		if res.ID != id || res.What != "Screencap" || !res.OK {
-			t.Fatalf("settled result = %+v, want {42 Screencap true}", res)
-		}
-		if string(res.Details) != details {
-			t.Fatalf("settled details = %q, want byte-for-byte identical to the details sub-object in the message %q", res.Details, details)
-		}
-		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("pending occupancy after settlement = %d, want 0", n)
-		}
+		require.NoError(t, err, "the wait must return the terminal state immediately once the event is readable: %v", err)
+		require.Equal(t, id, res.ID, "settled result = %+v, want {42 Screencap true}", res)
+		require.Equal(t, "Screencap", res.What, "settled result = %+v, want {42 Screencap true}", res)
+		require.True(t, res.OK, "settled result = %+v, want {42 Screencap true}", res)
+		require.Equal(t, details, string(res.Details), "settled details = %q, want byte-for-byte identical to the details sub-object in the message %q", res.Details, details)
+		require.Equal(t, 0, pendingOccupancy(s), "pending occupancy after settlement = %d, want 0", pendingOccupancy(s))
 		select {
 		case <-s.faultNotify():
-			t.Fatal("a valid completion must not trigger a fault")
+			require.Fail(t, "a valid completion must not trigger a fault")
 		default:
 		}
-		if lost := s.currentLostEvents(); lost != 0 {
-			t.Errorf("lost count = %d, want 0", lost)
-		}
+		assert.Equal(t, uint64(0), s.currentLostEvents(), "lost count = %d, want 0", s.currentLostEvents())
 	})
 
 	t.Run("a ret=false message settles as a native failure", func(t *testing.T) {
@@ -889,24 +787,20 @@ func TestDispatcherWiringSettlesCompletion(t *testing.T) {
 		mustReadEvent(t, d.events())
 
 		res, err := waitGuarded(t, op, context.Background())
-		if !errors.Is(err, native.ErrNativeRejected) {
-			t.Fatalf("wait error for ret=false = %v, want ErrNativeRejected", err)
-		}
-		if res.ID != id || res.What != "Click" || res.OK || string(res.Details) != `{"ret":false}` {
-			t.Fatalf("ret=false result = %+v, want the intact snapshot coexisting with the failure error", res)
-		}
-		if errors.Is(err, native.ErrClosed) || errors.Is(err, native.ErrEventOverflow) {
-			t.Errorf("ret=false is this Operation's normal failure and must not be mixed into the lifecycle/overflow classes: %v", err)
-		}
+		require.ErrorIs(t, err, native.ErrNativeRejected, "wait error for ret=false = %v, want ErrNativeRejected", err)
+		require.Equal(t, id, res.ID, "ret=false result = %+v, want the intact snapshot coexisting with the failure error", res)
+		require.Equal(t, "Click", res.What, "ret=false result = %+v, want the intact snapshot coexisting with the failure error", res)
+		require.False(t, res.OK, "ret=false result = %+v, want the intact snapshot coexisting with the failure error", res)
+		require.Equal(t, `{"ret":false}`, string(res.Details), "ret=false result = %+v, want the intact snapshot coexisting with the failure error", res)
+		assert.NotErrorIs(t, err, native.ErrClosed, "ret=false is this Operation's normal failure and must not be mixed into the lifecycle/overflow classes: %v", err)
+		assert.NotErrorIs(t, err, native.ErrEventOverflow, "ret=false is this Operation's normal failure and must not be mixed into the lifecycle/overflow classes: %v", err)
 		// ret=false 不使实例故障。
 		select {
 		case <-s.faultNotify():
-			t.Fatal("ret=false must not fault the instance")
+			require.Fail(t, "ret=false must not fault the instance")
 		default:
 		}
-		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("pending occupancy after settlement = %d, want 0", n)
-		}
+		require.Equal(t, 0, pendingOccupancy(s), "pending occupancy after settlement = %d, want 0", pendingOccupancy(s))
 	})
 
 	t.Run("an unknown-ID completion without a window faults with ErrProtocol, raw still delivered", func(t *testing.T) {
@@ -922,30 +816,25 @@ func TestDispatcherWiringSettlesCompletion(t *testing.T) {
 		unknown := asyncCallInfoPayload(AsyncID(999), "Screencap", `{"ret":true}`)
 		enqueue(t, d, asyncCallInfoMessageID, unknown)
 		ev := mustReadEvent(t, d.events())
-		if string(ev.JSON) != string(unknown) {
-			t.Fatalf("unknown completion event raw = %s, want %s", ev.JSON, unknown)
-		}
+		require.Equal(t, string(unknown), string(ev.JSON), "unknown completion event raw = %s, want %s", ev.JSON, unknown)
 
 		// 故障即首因:错误链可达 ErrProtocol;记录被首因扫描统一结算,
 		// 等待取得首因而非成功。
 		res, err := waitGuarded(t, op, context.Background())
-		if !errors.Is(err, native.ErrProtocol) {
-			t.Fatalf("wait error after the unknown completion = %v, want ErrProtocol reachable along the first-cause chain", err)
-		}
-		if res.ID != 0 || res.What != "" || res.OK || res.Details != nil {
-			t.Fatalf("the fault settlement must carry no result: %+v", res)
-		}
-		if got := s.currentFault(); got == nil || !errors.Is(got, native.ErrProtocol) {
-			t.Fatalf("first cause = %v, want ErrProtocol", got)
-		}
+		require.ErrorIs(t, err, native.ErrProtocol, "wait error after the unknown completion = %v, want ErrProtocol reachable along the first-cause chain", err)
+		require.Equal(t, AsyncID(0), res.ID, "the fault settlement must carry no result: %+v", res)
+		require.Empty(t, res.What, "the fault settlement must carry no result: %+v", res)
+		require.False(t, res.OK, "the fault settlement must carry no result: %+v", res)
+		require.Nil(t, res.Details, "the fault settlement must carry no result: %+v", res)
+		got := s.currentFault()
+		require.NotNil(t, got, "first cause = %v, want ErrProtocol", got)
+		require.ErrorIs(t, got, native.ErrProtocol, "first cause = %v, want ErrProtocol", got)
 		select {
 		case <-s.faultNotify():
 		default:
-			t.Fatal("an unknown completion must trigger the one-shot fault notification")
+			require.Fail(t, "an unknown completion must trigger the one-shot fault notification")
 		}
-		if n := pendingOccupancy(s); n != 0 {
-			t.Fatalf("occupancy after the first-cause scan = %d, want 0", n)
-		}
+		require.Equal(t, 0, pendingOccupancy(s), "occupancy after the first-cause scan = %d, want 0", pendingOccupancy(s))
 	})
 }
 

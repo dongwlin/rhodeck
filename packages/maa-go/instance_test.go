@@ -6,14 +6,14 @@ package maa
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // destroyedMessageID 是 AsstMsg::Destroyed 的消息编号(5),冻结自
@@ -118,9 +118,7 @@ func newCloseRigWithSettle(t *testing.T, handle uintptr, b dispatchBudgets, sett
 	d.start()
 	target := newCallbackTarget(s, d, b.callbackBytes)
 	token, err := native.RegisterCallbackTarget(target.deliver)
-	if err != nil {
-		t.Fatalf("registering target.deliver via the production entry must not fail: %v", err)
-	}
+	require.NoError(t, err, "registering target.deliver via the production entry must not fail: %v", err)
 	closer := newFakeInstanceCloser()
 	in := newInstance(s, d, token, closer)
 	rig := &closeRig{in: in, s: s, d: d, target: target, token: token, closer: closer}
@@ -150,7 +148,7 @@ func runClose(t *testing.T, in *instance) error {
 	case err := <-errCh:
 		return err
 	case <-time.After(hangGuard):
-		t.Fatal("close did not complete within the hang-guard deadline: the close flow is suspected hung")
+		require.Fail(t, "close did not complete within the hang-guard deadline: the close flow is suspected hung")
 		return nil
 	}
 }
@@ -163,7 +161,7 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 	deadline := time.Now().Add(hangGuard)
 	for !cond() {
 		if time.Now().After(deadline) {
-			t.Fatalf("%s did not hold within the hang-guard deadline", what)
+			require.Fail(t, what+" did not hold within the hang-guard deadline")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -176,7 +174,7 @@ func assertClosedChannels(t *testing.T, rig *closeRig) {
 	select {
 	case <-rig.s.done():
 	default:
-		t.Error("closeDone/Done not closed after close completed")
+		assert.Fail(t, "closeDone/Done not closed after close completed")
 	}
 	for {
 		select {
@@ -185,7 +183,7 @@ func assertClosedChannels(t *testing.T, rig *closeRig) {
 				return
 			}
 		case <-time.After(hangGuard):
-			t.Fatal("timed out reading public events (hang-guard deadline hit)")
+			require.Fail(t, "timed out reading public events (hang-guard deadline hit)")
 		}
 	}
 }
@@ -201,15 +199,13 @@ func TestNewInstanceContract(t *testing.T) {
 	d.start()
 	target := newCallbackTarget(s, d, b.callbackBytes)
 	token, err := native.RegisterCallbackTarget(target.deliver)
-	if err != nil {
-		t.Fatalf("registration must not fail: %v", err)
-	}
+	require.NoError(t, err, "registration must not fail: %v", err)
 	defer native.UnregisterCallbackTarget(token)
 	closer := newFakeInstanceCloser()
 
-	if got := newInstance(s, d, token, closer); got == nil || got.state != s || got.disp != d || got.token != token {
-		t.Fatalf("newInstance assembled fields mismatch: %+v", got)
-	}
+	got := newInstance(s, d, token, closer)
+	require.NotNil(t, got, "newInstance assembled fields mismatch: %+v", got)
+	require.True(t, got.state == s && got.disp == d && got.token == token, "newInstance assembled fields mismatch: %+v", got)
 	assertPanics(t, "nil state", func() { newInstance(nil, d, token, closer) })
 	assertPanics(t, "nil dispatcher", func() { newInstance(s, nil, token, closer) })
 	assertPanics(t, "nil closer", func() { newInstance(s, d, token, nil) })
@@ -239,38 +235,24 @@ func TestInstanceCloseConcurrentSingleDestroy(t *testing.T) {
 		}
 		wg.Wait()
 
-		if got := rig.closer.count("stop"); got != 1 {
-			t.Fatalf("Stop call count = %d, want exactly 1", got)
-		}
-		if got := rig.closer.count("destroy"); got != 1 {
-			t.Fatalf("Destroy call count = %d, want exactly 1", got)
-		}
-		if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-			t.Fatalf("native call sequence = %v, want [stop destroy] (one Stop then one Destroy)", seq)
-		}
-		if got := rig.closer.stopHandles[0]; got != handle {
-			t.Errorf("Stop received handle %#x, want %#x", got, handle)
-		}
-		if got := rig.closer.destroyHandles[0]; got != handle {
-			t.Errorf("Destroy received handle %#x, want %#x", got, handle)
-		}
+		require.Equal(t, 1, rig.closer.count("stop"), "Stop call count = %d, want exactly 1", rig.closer.count("stop"))
+		require.Equal(t, 1, rig.closer.count("destroy"), "Destroy call count = %d, want exactly 1", rig.closer.count("destroy"))
+		seq := rig.closer.calls()
+		require.Len(t, seq, 2, "native call sequence = %v, want [stop destroy] (one Stop then one Destroy)", seq)
+		require.Equal(t, "stop", seq[0], "native call sequence = %v, want [stop destroy] (one Stop then one Destroy)", seq)
+		require.Equal(t, "destroy", seq[1], "native call sequence = %v, want [stop destroy] (one Stop then one Destroy)", seq)
+		assert.Equal(t, handle, rig.closer.stopHandles[0], "Stop received handle %#x, want %#x", rig.closer.stopHandles[0], handle)
+		assert.Equal(t, handle, rig.closer.destroyHandles[0], "Destroy received handle %#x, want %#x", rig.closer.destroyHandles[0], handle)
 		for i, err := range errs {
-			if err != nil {
-				t.Errorf("Close %d = %v, want nil (normal Stop/Destroy with no fault)", i, err)
-			}
+			assert.NoError(t, err, "Close %d = %v, want nil (normal Stop/Destroy with no fault)", i, err)
 		}
 
 		// closed 后的幂等 close:同一终态,不再触发 native 调用。
-		if err := rig.in.close(); err != nil {
-			t.Errorf("idempotent close = %v, want nil", err)
-		}
-		if got := rig.closer.count("destroy"); got != 1 {
-			t.Errorf("Destroy count after the idempotent close = %d, want still 1", got)
-		}
+		idemErr := rig.in.close()
+		assert.NoError(t, idemErr, "idempotent close = %v, want nil", idemErr)
+		assert.Equal(t, 1, rig.closer.count("destroy"), "Destroy count after the idempotent close = %d, want still 1", rig.closer.count("destroy"))
 		assertClosedChannels(t, rig)
-		if got := rig.s.currentPhase(); got != phaseClosed {
-			t.Errorf("phase after close = %d, want closed", got)
-		}
+		assert.Equal(t, phaseClosed, rig.s.currentPhase(), "phase after close = %d, want closed", rig.s.currentPhase())
 	})
 
 	t.Run("concurrent closes share the first-cause final state", func(t *testing.T) {
@@ -293,17 +275,11 @@ func TestInstanceCloseConcurrentSingleDestroy(t *testing.T) {
 		for i, err := range errs {
 			// 同一最终错误存储:所有申请者取得与首因同一错误值,首因
 			// 身份沿错误链可达,不混入其他哨兵。
-			if err != cause {
-				t.Errorf("Close %d = %v, want the same stored value as the first cause %v", i, err, cause)
-			}
-			if !errors.Is(err, native.ErrEventOverflow) {
-				t.Errorf("Close %d: errors.Is(err, native.ErrEventOverflow) = false; err = %v", i, err)
-			}
+			assert.True(t, err == cause, "Close %d = %v, want the same stored value as the first cause %v", i, err, cause)
+			assert.ErrorIs(t, err, native.ErrEventOverflow, "Close %d: errors.Is(err, native.ErrEventOverflow) = false; err = %v", i, err)
 		}
 		// faulted 进入关闭仍无条件执行一次 Stop/Destroy()。
-		if got := rig.closer.count("destroy"); got != 1 {
-			t.Errorf("Destroy count of the faulted close = %d, want exactly 1", got)
-		}
+		assert.Equal(t, 1, rig.closer.count("destroy"), "Destroy count of the faulted close = %d, want exactly 1", rig.closer.count("destroy"))
 	})
 }
 
@@ -341,16 +317,11 @@ func TestInstanceCloseWaitsCallsBeforeDestroy(t *testing.T) {
 
 	// 负面断言一:A、B 均在途,Stop/Destroy 不得发生。
 	<-time.After(notWithin)
-	if got := rig.closer.count("stop"); got != 0 {
-		t.Fatalf("Stop called %d times while in-flight calls have not exited", got)
-	}
-	if got := rig.closer.count("destroy"); got != 0 {
-		t.Fatalf("Destroy called %d times while in-flight calls have not exited", got)
-	}
+	require.Equal(t, 0, rig.closer.count("stop"), "Stop called %d times while in-flight calls have not exited", rig.closer.count("stop"))
+	require.Equal(t, 0, rig.closer.count("destroy"), "Destroy called %d times while in-flight calls have not exited", rig.closer.count("destroy"))
 	// closing 后新业务调用被拒绝(包装 native.ErrClosing)。
-	if _, err := s.admitCall("new call during closing"); !errors.Is(err, native.ErrClosing) {
-		t.Fatalf("new call during closing = %v, want errors.Is native.ErrClosing", err)
-	}
+	_, admitErr := s.admitCall("new call during closing")
+	require.ErrorIs(t, admitErr, native.ErrClosing, "new call during closing = %v, want errors.Is native.ErrClosing", admitErr)
 
 	// A 完成 raw 段并释放;排队者 B 转入门禁段(排队者被等待覆盖)。
 	s.raw.exit()
@@ -358,40 +329,32 @@ func TestInstanceCloseWaitsCallsBeforeDestroy(t *testing.T) {
 	select {
 	case <-bInRaw:
 	case <-time.After(hangGuard):
-		t.Fatal("B did not acquire the raw gate after A released (hang-guard deadline hit)")
+		require.Fail(t, "B did not acquire the raw gate after A released (hang-guard deadline hit)")
 	}
 
 	// 负面断言二:B 仍在途,Stop/Destroy 仍不得发生。
 	<-time.After(notWithin)
-	if got := rig.closer.count("stop"); got != 0 {
-		t.Fatalf("Stop called %d times while queued call B has not exited", got)
-	}
-	if got := rig.closer.count("destroy"); got != 0 {
-		t.Fatalf("Destroy called %d times while queued call B has not exited", got)
-	}
+	require.Equal(t, 0, rig.closer.count("stop"), "Stop called %d times while queued call B has not exited", rig.closer.count("stop"))
+	require.Equal(t, 0, rig.closer.count("destroy"), "Destroy called %d times while queued call B has not exited", rig.closer.count("destroy"))
 
 	// B 退出后关闭才前进:先 Stop 后 Destroy 各恰一次,handle 逐字
 	// 转发;close 返回 nil。
 	close(releaseB)
 	select {
 	case err := <-closeErr:
-		if err != nil {
-			t.Fatalf("close = %v, want nil", err)
-		}
+		require.NoError(t, err, "close = %v, want nil", err)
 	case <-time.After(hangGuard):
-		t.Fatal("close did not complete within the hang-guard deadline after B released")
+		require.Fail(t, "close did not complete within the hang-guard deadline after B released")
 	}
-	if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-		t.Fatalf("native call sequence = %v, want [stop destroy]", seq)
-	}
-	if got := rig.closer.destroyHandles[0]; got != handle {
-		t.Errorf("Destroy received handle %#x, want %#x", got, handle)
-	}
+	seq := rig.closer.calls()
+	require.Len(t, seq, 2, "native call sequence = %v, want [stop destroy]", seq)
+	require.Equal(t, "stop", seq[0], "native call sequence = %v, want [stop destroy]", seq)
+	require.Equal(t, "destroy", seq[1], "native call sequence = %v, want [stop destroy]", seq)
+	assert.Equal(t, handle, rig.closer.destroyHandles[0], "Destroy received handle %#x, want %#x", rig.closer.destroyHandles[0], handle)
 
 	// closed 后新业务调用包装 native.ErrClosed。
-	if _, err := s.admitCall("new call after closed"); !errors.Is(err, native.ErrClosed) {
-		t.Fatalf("new call after closed = %v, want errors.Is native.ErrClosed", err)
-	}
+	_, closedErr := s.admitCall("new call after closed")
+	require.ErrorIs(t, closedErr, native.ErrClosed, "new call after closed = %v, want errors.Is native.ErrClosed", closedErr)
 }
 
 // TestInstanceCloseSyncCallbackDuringNativeCalls 验证「Stop/
@@ -422,11 +385,9 @@ func TestInstanceCloseSyncCallbackDuringNativeCalls(t *testing.T) {
 		go func() { phaseCh <- s.currentPhase() }()
 		select {
 		case got := <-phaseCh:
-			if got != phaseClosing {
-				t.Errorf("currentPhase() during stop = %d, want closing", got)
-			}
+			assert.Equal(t, phaseClosing, got, "currentPhase() during stop = %d, want closing", got)
 		case <-time.After(hangGuard):
-			t.Fatal("the state-lock operation of another goroutine did not complete during stop: the implementation is suspected of holding the state lock across native calls")
+			require.Fail(t, "the state-lock operation of another goroutine did not complete during stop: the implementation is suspected of holding the state lock across native calls")
 		}
 
 		// 探针二:callback 准入 + 分发器入队(native stop 调用挂起期
@@ -439,21 +400,17 @@ func TestInstanceCloseSyncCallbackDuringNativeCalls(t *testing.T) {
 		select {
 		case <-delivered:
 		case <-time.After(hangGuard):
-			t.Fatal("callback delivery during stop did not complete: the implementation is suspected of holding the callback/dispatcher/registry lock across native calls")
+			require.Fail(t, "callback delivery during stop did not complete: the implementation is suspected of holding the callback/dispatcher/registry lock across native calls")
 		}
 
 		close(releaseStop)
-		if err := <-closeErr; err != nil {
-			t.Fatalf("close = %v, want nil", err)
-		}
+		closeRet := <-closeErr
+		require.NoError(t, closeRet, "close = %v, want nil", closeRet)
 		// stop 期间投递的事件关闭后仍可读,Events 随后已关闭。
 		ev := mustReadEvent(t, rig.d.events())
-		if ev.MessageID != 60 {
-			t.Errorf("event MessageID = %d, want 60", ev.MessageID)
-		}
-		if _, ok := <-rig.d.events(); ok {
-			t.Error("Events should be closed after close")
-		}
+		assert.Equal(t, MessageID(60), ev.MessageID, "event MessageID = %d, want 60", ev.MessageID)
+		_, eventsOK := <-rig.d.events()
+		assert.False(t, eventsOK, "Events should be closed after close")
 	})
 
 	t.Run("Destroy synchronously triggering Destroyed does not deadlock", func(t *testing.T) {
@@ -473,36 +430,28 @@ func TestInstanceCloseSyncCallbackDuringNativeCalls(t *testing.T) {
 		<-destroyEntered
 		close(releaseDestroy)
 
-		if err := <-closeErr; err != nil {
-			t.Fatalf("close = %v, want nil (a synchronous Destroyed must not deadlock close)", err)
-		}
+		closeRet := <-closeErr
+		require.NoError(t, closeRet, "close = %v, want nil (a synchronous Destroyed must not deadlock close)", closeRet)
 		// Destroyed 事件关闭后仍可读;Events 随后已关闭。
 		ev := mustReadEvent(t, rig.d.events())
-		if ev.MessageID != destroyedMessageID {
-			t.Errorf("event MessageID = %d, want Destroyed(%d)", ev.MessageID, destroyedMessageID)
-		}
-		if _, ok := <-rig.d.events(); ok {
-			t.Error("Events should be closed after close")
-		}
+		assert.Equal(t, destroyedMessageID, ev.MessageID, "event MessageID = %d, want Destroyed(%d)", ev.MessageID, destroyedMessageID)
+		_, eventsOK := <-rig.d.events()
+		assert.False(t, eventsOK, "Events should be closed after close")
 	})
 
 	t.Run("Destroyed is not the sole condition for close completion", func(t *testing.T) {
 		rig := newCloseRig(t, 0xC302, generousBudgets())
 		// fake Destroy 不投递任何回调:close 仍必须完成。
-		if err := runClose(t, rig.in); err != nil {
-			t.Fatalf("close = %v, want nil (close should complete without Destroyed too)", err)
-		}
+		closeRet := runClose(t, rig.in)
+		require.NoError(t, closeRet, "close = %v, want nil (close should complete without Destroyed too)", closeRet)
 		select {
 		case <-rig.s.done():
 		default:
-			t.Fatal("Done not closed after close returned")
+			require.Fail(t, "Done not closed after close returned")
 		}
-		if got := rig.s.currentPhase(); got != phaseClosed {
-			t.Errorf("phase = %d, want closed", got)
-		}
-		if _, ok := <-rig.d.events(); ok {
-			t.Error("Events should be closed and empty (no Destroyed event)")
-		}
+		assert.Equal(t, phaseClosed, rig.s.currentPhase(), "phase = %d, want closed", rig.s.currentPhase())
+		_, eventsOK := <-rig.d.events()
+		assert.False(t, eventsOK, "Events should be closed and empty (no Destroyed event)")
 	})
 }
 
@@ -520,22 +469,17 @@ func TestInstanceCloseGateAndTokenAfterDestroy(t *testing.T) {
 			// Destroy 返回前同步投递:门必须仍开放,消息照常入队。
 			rig.target.deliver(int32(destroyedMessageID), callbackCBytes(`{}`))
 		}
-		if err := runClose(t, rig.in); err != nil {
-			t.Fatalf("close = %v, want nil", err)
-		}
+		closeRet := runClose(t, rig.in)
+		require.NoError(t, closeRet, "close = %v, want nil", closeRet)
 		// Destroy 返回前投递的消息在关闭后仍可读——若实现把关门提前
 		// 到 Destroy 返回之前,该投递被拒收,事件缺失即暴露失序。
 		ev := mustReadEvent(t, rig.d.events())
-		if ev.MessageID != destroyedMessageID {
-			t.Errorf("event MessageID = %d, want Destroyed(%d)", ev.MessageID, destroyedMessageID)
-		}
-		if _, ok := <-rig.d.events(); ok {
-			t.Error("Events should be closed after close")
-		}
+		assert.Equal(t, destroyedMessageID, ev.MessageID, "event MessageID = %d, want Destroyed(%d)", ev.MessageID, destroyedMessageID)
+		_, eventsOK := <-rig.d.events()
+		assert.False(t, eventsOK, "Events should be closed after close")
 		// close 完成后:门已关闭,新 callback 一律拒绝。
-		if _, ok := rig.s.admitCallback(); ok {
-			t.Error("callback admission gate still open after close returned")
-		}
+		_, gateOK := rig.s.admitCallback()
+		assert.False(t, gateOK, "callback admission gate still open after close returned")
 	})
 
 	t.Run("close does not complete before the last admitted callback exits", func(t *testing.T) {
@@ -566,24 +510,21 @@ func TestInstanceCloseGateAndTokenAfterDestroy(t *testing.T) {
 		<-time.After(notWithin)
 		select {
 		case err := <-closeErr:
-			t.Fatalf("close returned early while the in-flight callback has not exited: %v", err)
+			require.Fail(t, fmt.Sprintf("close returned early while the in-flight callback has not exited: %v", err))
 		default:
 		}
 		// 关门后新准入一律失败,而在途者仍持 lease 不受影响。
-		if _, ok := s.admitCallback(); ok {
-			t.Error("admitCallback must fail after the gate closed")
-		}
+		_, admitOK := s.admitCallback()
+		assert.False(t, admitOK, "admitCallback must fail after the gate closed")
 
 		// 放行:复制、入队、退出 lease;关闭流程随之收敛(入队发生在
 		// closeIntake 之前——waitCallbacksDrained 先于排空段)。
 		rig.d.mu.Unlock()
 		select {
 		case err := <-closeErr:
-			if err != nil {
-				t.Fatalf("close = %v, want nil", err)
-			}
+			require.NoError(t, err, "close = %v, want nil", err)
 		case <-time.After(hangGuard):
-			t.Fatal("close did not complete within the hang-guard deadline after the callback exited")
+			require.Fail(t, "close did not complete within the hang-guard deadline after the callback exited")
 		}
 
 		// token 已由流程移除:重复注销按注册表契约 panic(正向证明)。
@@ -593,19 +534,14 @@ func TestInstanceCloseGateAndTokenAfterDestroy(t *testing.T) {
 		// 在途 callback 的消息排空期间已投递,关闭后仍可读;Events 随
 		// 后已关闭;终态发布完成。
 		ev := mustReadEvent(t, rig.d.events())
-		if ev.MessageID != 61 {
-			t.Errorf("event MessageID = %d, want 61", ev.MessageID)
-		}
-		if _, ok := <-rig.d.events(); ok {
-			t.Error("Events should be closed after close")
-		}
-		if got := s.currentPhase(); got != phaseClosed {
-			t.Errorf("phase = %d, want closed", got)
-		}
+		assert.Equal(t, MessageID(61), ev.MessageID, "event MessageID = %d, want 61", ev.MessageID)
+		_, eventsOK := <-rig.d.events()
+		assert.False(t, eventsOK, "Events should be closed after close")
+		assert.Equal(t, phaseClosed, s.currentPhase(), "phase = %d, want closed", s.currentPhase())
 		select {
 		case <-s.done():
 		default:
-			t.Error("closeDone not closed after close completed")
+			assert.Fail(t, "closeDone not closed after close completed")
 		}
 	})
 }
@@ -640,24 +576,18 @@ func TestInstanceCloseWithStalledEventConsumer(t *testing.T) {
 	select {
 	case finalErr = <-closeErr:
 	case <-time.After(hangGuard):
-		t.Fatal("close did not complete within the hang-guard deadline with Events reads externally stopped: the drain is suspected of waiting on readers")
+		require.Fail(t, "close did not complete within the hang-guard deadline with Events reads externally stopped: the drain is suspected of waiting on readers")
 	}
 
 	// 溢出按契约成为首因并成为 Close 错误;丢失计数为 2;故障通知独立
 	// 于 Events 有空间与否,已关闭。
-	if finalErr == nil {
-		t.Fatal("the public drain overflow must become the Close error and must not masquerade as complete delivery")
-	}
-	if !errors.Is(finalErr, native.ErrEventOverflow) {
-		t.Errorf("errors.Is(finalErr, native.ErrEventOverflow) = false; err = %v", finalErr)
-	}
-	if lost := s.currentLostEvents(); lost != 2 {
-		t.Errorf("lost count = %d, want 2", lost)
-	}
+	require.Error(t, finalErr, "the public drain overflow must become the Close error and must not masquerade as complete delivery")
+	assert.ErrorIs(t, finalErr, native.ErrEventOverflow, "errors.Is(finalErr, native.ErrEventOverflow) = false; err = %v", finalErr)
+	assert.Equal(t, uint64(2), s.currentLostEvents(), "lost count = %d, want 2", s.currentLostEvents())
 	select {
 	case <-s.faultNotify():
 	default:
-		t.Error("the overflow fault notification is not closed")
+		assert.Fail(t, "the overflow fault notification is not closed")
 	}
 
 	// 观察到 Done 即见稳定终态:Done 已关闭,Err 与 finalErr 同一存储
@@ -665,48 +595,31 @@ func TestInstanceCloseWithStalledEventConsumer(t *testing.T) {
 	select {
 	case <-s.done():
 	default:
-		t.Error("closeDone not closed after close returned")
+		assert.Fail(t, "closeDone not closed after close returned")
 	}
-	if got := s.finalError(); got != finalErr {
-		t.Errorf("finalError() = %v, want the same stored value as the Close return %v", got, finalErr)
-	}
+	assert.True(t, s.finalError() == finalErr, "finalError() = %v, want the same stored value as the Close return %v", s.finalError(), finalErr)
 
 	// 全部 Operation 终态立即稳定:已确认的成功结果不被随后的溢出
 	// 改写;未完成项由首因线性化扫描统一结项,错误与最
 	// 终错误同一存储值;等待无需任何额外延迟。
 	res, werr := waitGuarded(t, opSettled, context.Background())
-	if werr != nil {
-		t.Fatalf("wait of the confirmed completion = %v, want nil (the successful final state is not rewritten by the overflow)", werr)
-	}
-	if res.ID != idSettled || res.What != "Screencap" || !res.OK {
-		t.Fatalf("settlement result = %+v, want {7 Screencap true}", res)
-	}
+	require.NoError(t, werr, "wait of the confirmed completion = %v, want nil (the successful final state is not rewritten by the overflow)", werr)
+	require.Equal(t, idSettled, res.ID, "settlement result = %+v, want {7 Screencap true}", res)
+	require.Equal(t, "Screencap", res.What, "settlement result = %+v, want {7 Screencap true}", res)
+	require.True(t, res.OK, "settlement result = %+v, want {7 Screencap true}", res)
 	_, werr = waitGuarded(t, opClosed, context.Background())
-	if werr == nil {
-		t.Fatal("the unsettled item must already be closed out under the first cause and must not remain waitable")
-	}
-	if !errors.Is(werr, native.ErrEventOverflow) {
-		t.Errorf("errors.Is(unsettled item settlement error, native.ErrEventOverflow) = false; err = %v", werr)
-	}
-	if werr != finalErr {
-		t.Errorf("unsettled item settlement error = %v, want the same stored value as the final error %v", werr, finalErr)
-	}
-	if n := pendingOccupancy(s); n != 0 {
-		t.Errorf("pending occupancy = %d, want 0 (all closed out)", n)
-	}
+	require.Error(t, werr, "the unsettled item must already be closed out under the first cause and must not remain waitable")
+	assert.ErrorIs(t, werr, native.ErrEventOverflow, "errors.Is(unsettled item settlement error, native.ErrEventOverflow) = false; err = %v", werr)
+	assert.True(t, werr == finalErr, "unsettled item settlement error = %v, want the same stored value as the final error %v", werr, finalErr)
+	assert.Equal(t, 0, pendingOccupancy(s), "pending occupancy = %d, want 0 (all closed out)", pendingOccupancy(s))
 
 	// 已在公开缓冲中的事件关闭后仍可读:恰为第 1 条(完成消息)。
 	ev := mustReadEvent(t, rig.d.events())
-	if ev.MessageID != asyncCallInfoMessageID {
-		t.Errorf("buffered event MessageID = %d, want AsyncCallInfo(%d)", ev.MessageID, asyncCallInfoMessageID)
-	}
-	if _, ok := <-rig.d.events(); ok {
-		t.Error("Events should be closed after close")
-	}
+	assert.Equal(t, asyncCallInfoMessageID, ev.MessageID, "buffered event MessageID = %d, want AsyncCallInfo(%d)", ev.MessageID, asyncCallInfoMessageID)
+	_, eventsOK := <-rig.d.events()
+	assert.False(t, eventsOK, "Events should be closed after close")
 	// faulted 进入关闭仍无条件执行一次 Stop/Destroy()。
-	if got := rig.closer.count("destroy"); got != 1 {
-		t.Errorf("Destroy count = %d, want exactly 1", got)
-	}
+	assert.Equal(t, 1, rig.closer.count("destroy"), "Destroy count = %d, want exactly 1", rig.closer.count("destroy"))
 }
 
 // TestInstanceCloseErrorComposition 验证「不从 Destroy 的
@@ -725,26 +638,17 @@ func TestInstanceCloseErrorComposition(t *testing.T) {
 		op := mustAdmitPending(t, rig.s, id, "unsettled submission")
 
 		err := runClose(t, rig.in)
-		if err == nil {
-			t.Fatal("Close must not return nil when Stop returns 0: a success code must not be fabricated from the void return of Destroy")
-		}
-		if !errors.Is(err, native.ErrNativeRejected) {
-			t.Errorf("errors.Is(err, native.ErrNativeRejected) = false; err = %v", err)
-		}
+		require.Error(t, err, "Close must not return nil when Stop returns 0: a success code must not be fabricated from the void return of Destroy")
+		assert.ErrorIs(t, err, native.ErrNativeRejected, "errors.Is(err, native.ErrNativeRejected) = false; err = %v", err)
 		for _, want := range []string{"AsstStop", "0 (false)"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("the stop diagnostic should contain the interface and raw bool %q:\n%s", want, err.Error())
-			}
+			assert.Contains(t, err.Error(), want, "the stop diagnostic should contain the interface and raw bool %q", want)
 		}
 		// 拒绝后继续 Destroy(),各恰一次。
-		if got := rig.closer.count("stop"); got != 1 || rig.closer.count("destroy") != 1 {
-			t.Errorf("Stop/Destroy count = %d/%d, want 1/1", rig.closer.count("stop"), rig.closer.count("destroy"))
-		}
+		assert.Equal(t, 1, rig.closer.count("stop"), "Stop count = %d, want 1", rig.closer.count("stop"))
+		assert.Equal(t, 1, rig.closer.count("destroy"), "Destroy count = %d, want 1", rig.closer.count("destroy"))
 		// 剩余 Operation 不被结为成功:以 ErrClosed 结项(第 5 步)。
 		_, werr := waitGuarded(t, op, context.Background())
-		if !errors.Is(werr, native.ErrClosed) {
-			t.Errorf("errors.Is(remaining Operation settlement error, native.ErrClosed) = false; err = %v", werr)
-		}
+		assert.ErrorIs(t, werr, native.ErrClosed, "errors.Is(remaining Operation settlement error, native.ErrClosed) = false; err = %v", werr)
 	})
 
 	t.Run("first cause as the primary cause, stop rejection as an additional diagnostic, both discernible", func(t *testing.T) {
@@ -754,16 +658,11 @@ func TestInstanceCloseErrorComposition(t *testing.T) {
 		rig.closer.stopRet = 0
 
 		err := runClose(t, rig.in)
-		if err == nil {
-			t.Fatal("Close must not return nil with the first cause plus stop rejection")
-		}
+		require.Error(t, err, "Close must not return nil with the first cause plus stop rejection")
 		// 两者均沿错误链可辨:首因身份保留,停止拒绝可达。
-		if !errors.Is(err, cause) || !errors.Is(err, native.ErrProtocol) {
-			t.Errorf("the final error must preserve the first-cause identity: err = %v", err)
-		}
-		if !errors.Is(err, native.ErrNativeRejected) {
-			t.Errorf("the stop-rejection diagnostic must be discernible along the error chain: err = %v", err)
-		}
+		assert.ErrorIs(t, err, cause, "the final error must preserve the first-cause identity: err = %v", err)
+		assert.ErrorIs(t, err, native.ErrProtocol, "the final error must preserve the first-cause identity: err = %v", err)
+		assert.ErrorIs(t, err, native.ErrNativeRejected, "the stop-rejection diagnostic must be discernible along the error chain: err = %v", err)
 	})
 
 	t.Run("close sets no timeout of its own while Destroy is stuck; concurrent requests wait on the same closeDone", func(t *testing.T) {
@@ -786,17 +685,15 @@ func TestInstanceCloseErrorComposition(t *testing.T) {
 		<-time.After(notWithin)
 		select {
 		case err := <-closeErr:
-			t.Fatalf("close returned early while Destroy has not returned: %v (no self-imposed forced-reclaim timeout allowed)", err)
+			require.Fail(t, fmt.Sprintf("close returned early while Destroy has not returned: %v (no self-imposed forced-reclaim timeout allowed)", err))
 		default:
 		}
 		select {
 		case <-rig.s.done():
-			t.Fatal("closeDone closed while Destroy has not returned: masquerading close completion")
+			require.Fail(t, "closeDone closed while Destroy has not returned: masquerading close completion")
 		default:
 		}
-		if err := rig.s.finalError(); err != nil {
-			t.Errorf("final error published while Destroy has not returned: %v", err)
-		}
+		assert.NoError(t, rig.s.finalError(), "final error published while Destroy has not returned: %v", rig.s.finalError())
 
 		// 并发第二申请:等待同一 closeDone,同样不得提前返回。
 		closeErr2 := make(chan error, 1)
@@ -804,7 +701,7 @@ func TestInstanceCloseErrorComposition(t *testing.T) {
 		<-time.After(notWithin)
 		select {
 		case err := <-closeErr2:
-			t.Fatalf("the concurrent second request did not wait on the same closeDone: returned early %v", err)
+			require.Fail(t, fmt.Sprintf("the concurrent second request did not wait on the same closeDone: returned early %v", err))
 		default:
 		}
 
@@ -812,16 +709,12 @@ func TestInstanceCloseErrorComposition(t *testing.T) {
 		for i, ch := range []chan error{closeErr, closeErr2} {
 			select {
 			case err := <-ch:
-				if err != nil {
-					t.Errorf("close %d = %v, want nil", i, err)
-				}
+				assert.NoError(t, err, "close %d = %v, want nil", i, err)
 			case <-time.After(hangGuard):
-				t.Fatal("close did not complete within the hang-guard deadline after release")
+				require.Fail(t, "close did not complete within the hang-guard deadline after release")
 			}
 		}
-		if got := rig.closer.count("destroy"); got != 1 {
-			t.Errorf("Destroy count = %d, want exactly 1", got)
-		}
+		assert.Equal(t, 1, rig.closer.count("destroy"), "Destroy count = %d, want exactly 1", rig.closer.count("destroy"))
 	})
 }
 
@@ -831,32 +724,23 @@ func TestInstanceCloseErrorComposition(t *testing.T) {
 func TestInstanceCloseZeroHandleSkipsStopDestroy(t *testing.T) {
 	rig := newCloseRig(t, 0, generousBudgets())
 
-	if err := runClose(t, rig.in); err != nil {
-		t.Fatalf("close = %v, want nil", err)
-	}
-	if got := rig.closer.count("stop"); got != 0 {
-		t.Errorf("Stop count on the CreateEx=0 path = %d, want 0", got)
-	}
-	if got := rig.closer.count("destroy"); got != 0 {
-		t.Errorf("Destroy count on the CreateEx=0 path = %d, want 0", got)
-	}
+	closeRet := runClose(t, rig.in)
+	require.NoError(t, closeRet, "close = %v, want nil", closeRet)
+	assert.Equal(t, 0, rig.closer.count("stop"), "Stop count on the CreateEx=0 path = %d, want 0", rig.closer.count("stop"))
+	assert.Equal(t, 0, rig.closer.count("destroy"), "Destroy count on the CreateEx=0 path = %d, want 0", rig.closer.count("destroy"))
 	// 其余清理照常:门已关闭、token 已移除、Events 已关闭、终态发布。
-	if _, ok := rig.s.admitCallback(); ok {
-		t.Error("callback admission gate still open after close")
-	}
+	_, gateOK := rig.s.admitCallback()
+	assert.False(t, gateOK, "callback admission gate still open after close")
 	assertPanics(t, "double unregister after close removed the token", func() {
 		native.UnregisterCallbackTarget(rig.token)
 	})
-	if _, ok := <-rig.d.events(); ok {
-		t.Error("Events should be closed and empty")
-	}
-	if got := rig.s.currentPhase(); got != phaseClosed {
-		t.Errorf("phase = %d, want closed", got)
-	}
+	_, eventsOK := <-rig.d.events()
+	assert.False(t, eventsOK, "Events should be closed and empty")
+	assert.Equal(t, phaseClosed, rig.s.currentPhase(), "phase = %d, want closed", rig.s.currentPhase())
 	select {
 	case <-rig.s.done():
 	default:
-		t.Error("closeDone not closed after close completed")
+		assert.Fail(t, "closeDone not closed after close completed")
 	}
 }
 
@@ -920,7 +804,7 @@ func TestInstanceCloseEventsClosedAfterSettlementAndPublication(t *testing.T) {
 	case <-rig.d.processed:
 	case <-time.After(hangGuard):
 		rig.s.mu.Unlock()
-		t.Fatal("the sender stop point was not reached within the hang-guard deadline")
+		require.Fail(t, "the sender stop point was not reached within the hang-guard deadline")
 	}
 	// 观察窗(仍持状态锁):正确实现中,剩余结算、终态发布与
 	// closeEvents 都被状态锁挡在冻结点之后,持有期间 Events 不可能被
@@ -932,19 +816,15 @@ func TestInstanceCloseEventsClosedAfterSettlementAndPublication(t *testing.T) {
 	// 结果已结算、剩余 Operation 未结算、最终错误未发布;Events 排空
 	// 缓冲后必须仍然开放——带缓冲的已关闭通道会先交出缓冲项(ok=
 	// true),故以排空到 ok=false 或 default 为准判别。
-	if n := len(rig.s.pending); n != 1 {
-		t.Errorf("pending occupancy at the freeze point = %d, want 1 (only the unsettled item without a completion message remains)", n)
-	}
-	if rig.s.finalErr != nil {
-		t.Errorf("final error at the freeze point = %v, want nil (not yet published)", rig.s.finalErr)
-	}
+	assert.Equal(t, 1, len(rig.s.pending), "pending occupancy at the freeze point = %d, want 1 (only the unsettled item without a completion message remains)", len(rig.s.pending))
+	assert.Nil(t, rig.s.finalErr, "final error at the freeze point = %v, want nil (not yet published)", rig.s.finalErr)
 	eventsOpen := true
 	for eventsOpen {
 		select {
 		case _, ok := <-rig.d.events():
 			eventsOpen = ok
 			if !ok {
-				t.Error("Events must not be closed before remaining settlement and final-state publication (frozen order)")
+				assert.Fail(t, "Events must not be closed before remaining settlement and final-state publication (frozen order)")
 			}
 		default:
 			eventsOpen = false // 已空且未关闭:顺序正确
@@ -956,23 +836,20 @@ func TestInstanceCloseEventsClosedAfterSettlementAndPublication(t *testing.T) {
 	rig.s.mu.Unlock()
 	select {
 	case err := <-closeErr:
-		if !errors.Is(err, native.ErrNativeRejected) {
-			t.Fatalf("close = %v, want a stop diagnostic containing ErrNativeRejected (stopRet=0 makes the final error observable)", err)
-		}
+		require.ErrorIs(t, err, native.ErrNativeRejected, "close = %v, want a stop diagnostic containing ErrNativeRejected (stopRet=0 makes the final error observable)", err)
 	case <-time.After(hangGuard):
-		t.Fatal("close did not complete within the hang-guard deadline after release")
+		require.Fail(t, "close did not complete within the hang-guard deadline after release")
 	}
 
 	// close 返回后复核终态稳定:未完成项已按 ErrClosed 结项,可确认
 	// 结果不因随后公开排空而改写,Events 已由通道所有者关闭,缓冲中
 	// 的事件(冻结点若未读走)关闭后仍可读。
-	if _, werr := waitGuarded(t, op, context.Background()); !errors.Is(werr, native.ErrClosed) {
-		t.Errorf("unsettled item settlement error = %v, want wrapping native.ErrClosed", werr)
-	}
+	_, werr := waitGuarded(t, op, context.Background())
+	assert.ErrorIs(t, werr, native.ErrClosed, "unsettled item settlement error = %v, want wrapping native.ErrClosed", werr)
 	res, werr := waitGuarded(t, opSettled, context.Background())
-	if werr != nil || !res.OK || res.ID != AsyncID(20) {
-		t.Errorf("confirmable result = %+v, %v; want the successful final state not rewritten", res, werr)
-	}
+	assert.NoError(t, werr, "confirmable result = %+v, %v; want the successful final state not rewritten", res, werr)
+	assert.True(t, res.OK, "confirmable result = %+v, %v; want the successful final state not rewritten", res, werr)
+	assert.Equal(t, AsyncID(20), res.ID, "confirmable result = %+v, %v; want the successful final state not rewritten", res, werr)
 	for {
 		select {
 		case _, ok := <-rig.d.events():
@@ -980,13 +857,13 @@ func TestInstanceCloseEventsClosedAfterSettlementAndPublication(t *testing.T) {
 				continue // 冻结点未读走的缓冲事件关闭后仍可读
 			}
 		case <-time.After(hangGuard):
-			t.Fatal("timed out draining the public buffer (hang-guard deadline hit)")
+			require.Fail(t, "timed out draining the public buffer (hang-guard deadline hit)")
 		}
 		break // ok=false:已关闭且排空,终态成立
 	}
 	select {
 	case <-rig.s.done():
 	default:
-		t.Error("Done not closed after close returned")
+		assert.Fail(t, "Done not closed after close returned")
 	}
 }

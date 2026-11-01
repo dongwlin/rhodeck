@@ -5,13 +5,15 @@
 package maa
 
 import (
-	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // runRuntimeClose 以防挂死上限兜底执行一次 Runtime.Close(对照
@@ -31,7 +33,7 @@ func waitErr(t *testing.T, ch <-chan error, what string) error {
 	case err := <-ch:
 		return err
 	case <-time.After(hangGuard):
-		t.Fatalf("%s did not complete within the hang-guard limit: suspected hang", what)
+		require.FailNow(t, what+" did not complete within the hang-guard limit: suspected hang")
 		return nil
 	}
 }
@@ -43,7 +45,7 @@ func assertRuntimeCloseNotReturned(t *testing.T, ch <-chan error, what string) {
 	t.Helper()
 	select {
 	case err := <-ch:
-		t.Fatalf("%s: Runtime.Close returned early: %v", what, err)
+		require.FailNow(t, fmt.Sprintf("%s: Runtime.Close returned early: %v", what, err))
 	case <-time.After(notWithin):
 	}
 }
@@ -52,24 +54,16 @@ func assertRuntimeCloseNotReturned(t *testing.T, ch <-chan error, what string) {
 // 未被调用)。
 func assertNoStopDestroy(t *testing.T, closer *fakeInstanceCloser, what string) {
 	t.Helper()
-	if got := closer.count("stop"); got != 0 {
-		t.Errorf("%s: Stop count = %d, want 0", what, got)
-	}
-	if got := closer.count("destroy"); got != 0 {
-		t.Errorf("%s: Destroy count = %d, want 0", what, got)
-	}
+	assert.Equal(t, 0, closer.count("stop"), "%s: Stop count = %d, want 0", what, closer.count("stop"))
+	assert.Equal(t, 0, closer.count("destroy"), "%s: Destroy count = %d, want 0", what, closer.count("destroy"))
 }
 
 // assertSingleStopDestroy 断言恰一次 Stop、一次 Destroy 且顺序固定,
 // Destroy 收到给定 handle(一次 Stop 再一次 Destroy)。
 func assertSingleStopDestroy(t *testing.T, closer *fakeInstanceCloser, handle uintptr) {
 	t.Helper()
-	if seq := closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-		t.Fatalf("native call sequence = %v, want [stop destroy]", seq)
-	}
-	if got := closer.destroyHandles[0]; got != handle {
-		t.Errorf("Destroy received handle %#x, want %#x", got, handle)
-	}
+	require.Equal(t, []string{"stop", "destroy"}, closer.calls(), "native call sequence = %v, want [stop destroy]", closer.calls())
+	assert.Equal(t, handle, closer.destroyHandles[0], "Destroy received handle %#x, want %#x", closer.destroyHandles[0], handle)
 }
 
 // TestRuntimeCloseWithoutInstanceTerminatesLifecycle 钉住无任何实例时
@@ -79,28 +73,23 @@ func assertSingleStopDestroy(t *testing.T, closer *fakeInstanceCloser, handle ui
 // 入 native;同门 Open 被终止使用契约拒绝且不进入原生加载。
 func TestRuntimeCloseWithoutInstanceTerminatesLifecycle(t *testing.T) {
 	rig := newCreateRig(t, 0xEA00)
-	if err := runRuntimeClose(t, rig.rt); err != nil {
-		t.Fatalf("Runtime.Close = %v, want nil (a normal close with no instance)", err)
-	}
-	if v := gateSnapshot(rig.gate); v.state != lifecycleTerminated || !v.closeRequested || v.hasActive || v.hasLease {
-		t.Errorf("gate view after Close = %+v, want terminated/creation admission closed/no active instance/no lease", v)
-	}
+	err := runRuntimeClose(t, rig.rt)
+	require.NoError(t, err, "Runtime.Close = %v, want nil (a normal close with no instance)", err)
+	v := gateSnapshot(rig.gate)
+	assert.True(t, v.state == lifecycleTerminated && v.closeRequested && !v.hasActive && !v.hasLease,
+		"gate view after Close = %+v, want terminated/creation admission closed/no active instance/no lease", v)
 	assertNoStopDestroy(t, rig.closer, "close with no instance")
 
 	// 重复 Close:同一稳定最终结果,不再进入 native。
-	if err := runRuntimeClose(t, rig.rt); err != nil {
-		t.Errorf("repeated Runtime.Close = %v, want the same result nil as the first", err)
-	}
+	repeatErr := runRuntimeClose(t, rig.rt)
+	assert.NoError(t, repeatErr, "repeated Runtime.Close = %v, want the same result nil as the first", repeatErr)
 	assertNoStopDestroy(t, rig.closer, "repeated close")
 
 	// 终止使用契约:同门 Open 一律拒绝,不进入原生加载。
 	env := &fakeEnv{session: newValidFakeSession()}
-	if _, err := open(validRuntimeConfig(), env, rig.gate); !errors.Is(err, native.ErrRuntimeTerminated) {
-		t.Errorf("Open after termination = %v, want errors.Is native.ErrRuntimeTerminated", err)
-	}
-	if n := env.loadCount(); n != 0 {
-		t.Errorf("Open after termination entered native loading %d times, want 0", n)
-	}
+	_, openErr := open(validRuntimeConfig(), env, rig.gate)
+	assert.ErrorIs(t, openErr, native.ErrRuntimeTerminated, "Open after termination = %v, want errors.Is native.ErrRuntimeTerminated", openErr)
+	assert.Equal(t, 0, env.loadCount(), "Open after termination entered native loading %d times, want 0", env.loadCount())
 }
 
 // TestRuntimeCloseWaitsUnpublishedRollback 验证「未发布实例
@@ -149,23 +138,16 @@ func TestRuntimeCloseWaitsUnpublishedRollback(t *testing.T) {
 			_, err := createInstance(rig.rt, InstanceConfig{}, rig.creator, rig.closer, rig.caller)
 			lateErr <- err
 		}()
-		if err := waitErr(t, lateErr, "new creation within the window"); !errors.Is(err, native.ErrClosing) {
-			t.Errorf("new creation within the window = %v, want errors.Is native.ErrClosing", err)
-		}
-		if got := rig.creator.count("createEx"); got != 1 {
-			t.Errorf("CreateEx count = %d, want still 1 (a rejected creation does not enter native)", got)
-		}
+		lateResult := waitErr(t, lateErr, "new creation within the window")
+		assert.ErrorIs(t, lateResult, native.ErrClosing, "new creation within the window = %v, want errors.Is native.ErrClosing", lateResult)
+		assert.Equal(t, 1, rig.creator.count("createEx"), "CreateEx count = %d, want still 1 (a rejected creation does not enter native)", rig.creator.count("createEx"))
 
 		// 放行:创建者发布被拒,完成统一回滚并释放 lease。
 		close(release)
 		creatorResult := waitErr(t, creationErr, "creation transaction wrap-up")
-		if !errors.Is(creatorResult, native.ErrClosing) {
-			t.Errorf("creator error = %v, want errors.Is native.ErrClosing (publish pre-empted by Close)", creatorResult)
-		}
+		assert.ErrorIs(t, creatorResult, native.ErrClosing, "creator error = %v, want errors.Is native.ErrClosing (publish pre-empted by Close)", creatorResult)
 		closeResult := waitErr(t, closeErr, "Runtime.Close")
-		if closeResult != creatorResult {
-			t.Errorf("Runtime.Close = %v, want the same stored value as the creator %v", closeResult, creatorResult)
-		}
+		assert.True(t, closeResult == creatorResult, "Runtime.Close = %v, want the same stored value as the creator %v", closeResult, creatorResult)
 
 		// 回滚恰一次 Stop/Destroy,handle 不遗留;token 已移除;lease
 		// 释放(等待返回即证明回滚先于其完成);Runtime 终止使用。
@@ -206,18 +188,12 @@ func TestRuntimeCloseWaitsUnpublishedRollback(t *testing.T) {
 
 		close(release)
 		creatorResult := waitErr(t, creationErr, "creation transaction wrap-up")
-		if !errors.Is(creatorResult, native.ErrClosing) {
-			t.Errorf("creator error = %v, want errors.Is native.ErrClosing", creatorResult)
-		}
+		assert.ErrorIs(t, creatorResult, native.ErrClosing, "creator error = %v, want errors.Is native.ErrClosing", creatorResult)
 		closeResult := waitErr(t, closeErr, "Runtime.Close")
-		if closeResult != creatorResult {
-			t.Errorf("Runtime.Close = %v, want the same stored value as the creator %v", closeResult, creatorResult)
-		}
+		assert.True(t, closeResult == creatorResult, "Runtime.Close = %v, want the same stored value as the creator %v", closeResult, creatorResult)
 
 		//  步骤顺序:选项应用先于发布复核——中途关闭不中断剩余选项。
-		if got := rig.creator.optionCount(); got != 2 {
-			t.Errorf("option call count = %d, want 2", got)
-		}
+		assert.Equal(t, 2, rig.creator.optionCount(), "option call count = %d, want 2", rig.creator.optionCount())
 		assertSingleStopDestroy(t, rig.closer, handle)
 		assertTokenGone(t, rig.creator.exToken(0))
 		waitLeaseReleased(t, rig.gate)
@@ -250,16 +226,10 @@ func TestRuntimeCloseWaitsUnpublishedRollback(t *testing.T) {
 
 		close(release)
 		creatorResult := waitErr(t, creationErr, "creation transaction wrap-up")
-		if !errors.Is(creatorResult, native.ErrNativeRejected) {
-			t.Errorf("creator error = %v, want errors.Is native.ErrNativeRejected", creatorResult)
-		}
-		if !strings.Contains(creatorResult.Error(), "AsstCreateEx") {
-			t.Errorf("the creator error should contain the AsstCreateEx context:\n%s", creatorResult.Error())
-		}
+		assert.ErrorIs(t, creatorResult, native.ErrNativeRejected, "creator error = %v, want errors.Is native.ErrNativeRejected", creatorResult)
+		assert.Contains(t, creatorResult.Error(), "AsstCreateEx", "the creator error should contain the AsstCreateEx context:\n%s", creatorResult.Error())
 		closeResult := waitErr(t, closeErr, "Runtime.Close")
-		if closeResult != creatorResult {
-			t.Errorf("Runtime.Close = %v, want the same stored value as the creator %v", closeResult, creatorResult)
-		}
+		assert.True(t, closeResult == creatorResult, "Runtime.Close = %v, want the same stored value as the creator %v", closeResult, creatorResult)
 
 		// CreateEx=0 的路径不调用 Stop/Destroy(不对 0 handle 销
 		// 毁);Go 桥接状态(token/门/分发循环)照常清理。
@@ -304,16 +274,10 @@ func TestRuntimeCloseWaitsUnpublishedRollback(t *testing.T) {
 		// 发布被抢先返回 ErrClosing,但早到故障是主因(已有的首
 		// 次故障/创建失败是主因):错误身份为 ErrEventOverflow 且不再可
 		// 辨 ErrClosing。
-		if !errors.Is(creatorResult, native.ErrEventOverflow) {
-			t.Errorf("creator error = %v, want errors.Is native.ErrEventOverflow (first cause dominates)", creatorResult)
-		}
-		if errors.Is(creatorResult, native.ErrClosing) {
-			t.Errorf("the creator error must not overwrite the first cause with the publish rejection: %v", creatorResult)
-		}
+		assert.ErrorIs(t, creatorResult, native.ErrEventOverflow, "creator error = %v, want errors.Is native.ErrEventOverflow (first cause dominates)", creatorResult)
+		assert.NotErrorIs(t, creatorResult, native.ErrClosing, "the creator error must not overwrite the first cause with the publish rejection: %v", creatorResult)
 		closeResult := waitErr(t, closeErr, "Runtime.Close")
-		if closeResult != creatorResult {
-			t.Errorf("Runtime.Close = %v, want the same stored value as the creator %v", closeResult, creatorResult)
-		}
+		assert.True(t, closeResult == creatorResult, "Runtime.Close = %v, want the same stored value as the creator %v", closeResult, creatorResult)
 
 		assertSingleStopDestroy(t, rig.closer, handle)
 		assertTokenGone(t, rig.creator.exToken(0))
@@ -332,9 +296,7 @@ func TestRuntimeCloseClosesActiveInstanceOnce(t *testing.T) {
 	const handle = uintptr(0xEC00)
 	rig := newCreateRig(t, handle)
 	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, InstanceConfig{})
-	if err != nil {
-		t.Fatalf("NewInstance = %v, want nil", err)
-	}
+	require.NoError(t, err, "NewInstance = %v, want nil", err)
 	rig.track(inst)
 	token := rig.creator.exToken(0)
 
@@ -355,22 +317,16 @@ func TestRuntimeCloseClosesActiveInstanceOnce(t *testing.T) {
 	}
 	wg.Wait()
 	for i, e := range errs {
-		if e != nil {
-			t.Errorf("Close %d = %v, want nil (the stable terminal state of a normal close)", i, e)
-		}
+		assert.NoError(t, e, "Close %d = %v, want nil (the stable terminal state of a normal close)", i, e)
 	}
 	assertSingleStopDestroy(t, rig.closer, handle)
 
 	// 终止后的重复关闭:同一结果,不再进入 native。
-	if err := runRuntimeClose(t, rig.rt); err != nil {
-		t.Errorf("repeated Runtime.Close = %v, want nil", err)
-	}
-	if err := inst.Close(); err != nil {
-		t.Errorf("repeated Instance.Close = %v, want nil", err)
-	}
-	if got := rig.closer.count("destroy"); got != 1 {
-		t.Errorf("Destroy count after repeated closes = %d, want still 1", got)
-	}
+	repeatRtErr := runRuntimeClose(t, rig.rt)
+	assert.NoError(t, repeatRtErr, "repeated Runtime.Close = %v, want nil", repeatRtErr)
+	repeatInstErr := inst.Close()
+	assert.NoError(t, repeatInstErr, "repeated Instance.Close = %v, want nil", repeatInstErr)
+	assert.Equal(t, 1, rig.closer.count("destroy"), "Destroy count after repeated closes = %d, want still 1", rig.closer.count("destroy"))
 	assertTokenGone(t, token)
 	assertRuntimeTerminated(t, rig.rt, rig.gate, "")
 }
@@ -383,32 +339,22 @@ func TestRuntimeCloseSharesStableFaultedResult(t *testing.T) {
 	const handle = uintptr(0xEC01)
 	rig := newCreateRig(t, handle)
 	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, InstanceConfig{})
-	if err != nil {
-		t.Fatalf("NewInstance = %v, want nil", err)
-	}
+	require.NoError(t, err, "NewInstance = %v, want nil", err)
 	rig.track(inst)
 	rig.closer.stopRet = 0 // Stop 拒绝:最终错误非 nil,可观察同一性
 
 	rtResult := runRuntimeClose(t, rig.rt)
-	if rtResult == nil {
-		t.Fatal("Runtime.Close must not return nil when Stop returns 0")
-	}
-	if !errors.Is(rtResult, native.ErrNativeRejected) {
-		t.Errorf("errors.Is(rtResult, native.ErrNativeRejected) = false; err = %v", rtResult)
-	}
+	require.NotNil(t, rtResult, "Runtime.Close must not return nil when Stop returns 0")
+	assert.ErrorIs(t, rtResult, native.ErrNativeRejected, "errors.Is(rtResult, native.ErrNativeRejected) = false; err = %v", rtResult)
 	for _, want := range []string{"AsstStop", "0 (false)"} {
-		if !strings.Contains(rtResult.Error(), want) {
-			t.Errorf("the final error should contain %q:\n%s", want, rtResult.Error())
-		}
+		assert.Contains(t, rtResult.Error(), want, "the final error should contain %q:\n%s", want, rtResult.Error())
 	}
 	// 并发(此处为后到)Instance.Close 与终止后的重复 Runtime.Close:
 	// 同一存储值。
-	if instResult := inst.Close(); instResult != rtResult {
-		t.Errorf("Instance.Close = %v, want the same stored value as Runtime.Close %v", instResult, rtResult)
-	}
-	if rtRepeat := runRuntimeClose(t, rig.rt); rtRepeat != rtResult {
-		t.Errorf("repeated Runtime.Close = %v, want the same stored value %v", rtRepeat, rtResult)
-	}
+	instResult := inst.Close()
+	assert.True(t, instResult == rtResult, "Instance.Close = %v, want the same stored value as Runtime.Close %v", instResult, rtResult)
+	rtRepeat := runRuntimeClose(t, rig.rt)
+	assert.True(t, rtRepeat == rtResult, "repeated Runtime.Close = %v, want the same stored value %v", rtRepeat, rtResult)
 	assertSingleStopDestroy(t, rig.closer, handle)
 	assertTokenGone(t, rig.creator.exToken(0))
 	assertRuntimeTerminated(t, rig.rt, rig.gate, "AsstStop")
@@ -423,9 +369,7 @@ func TestRuntimeCloseNativeWithoutHeldLocks(t *testing.T) {
 	const handle = uintptr(0xED00)
 	rig := newCreateRig(t, handle)
 	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, InstanceConfig{})
-	if err != nil {
-		t.Fatalf("NewInstance = %v, want nil", err)
-	}
+	require.NoError(t, err, "NewInstance = %v, want nil", err)
 	rig.track(inst)
 	token := rig.creator.exToken(0)
 
@@ -444,11 +388,9 @@ func TestRuntimeCloseNativeWithoutHeldLocks(t *testing.T) {
 	go func() { gateCh <- gateSnapshot(rig.gate) }()
 	select {
 	case v := <-gateCh:
-		if !v.closeRequested {
-			t.Error("creation admission should already be closed in the destroy phase")
-		}
+		assert.True(t, v.closeRequested, "creation admission should already be closed in the destroy phase")
 	case <-time.After(hangGuard):
-		t.Fatal("the lifecycle gate lock operation did not complete during the native stop: the implementation appears to hold the gate lock across native calls")
+		require.Fail(t, "the lifecycle gate lock operation did not complete during the native stop: the implementation appears to hold the gate lock across native calls")
 	}
 
 	// 探针二:实例状态锁操作必须能完成(closing 阶段可观察)。
@@ -456,11 +398,9 @@ func TestRuntimeCloseNativeWithoutHeldLocks(t *testing.T) {
 	go func() { phaseCh <- inst.inst.state.currentPhase() }()
 	select {
 	case got := <-phaseCh:
-		if got != phaseClosing {
-			t.Errorf("instance phase during the native stop = %d, want closing", got)
-		}
+		assert.Equal(t, phaseClosing, got, "instance phase during the native stop = %d, want closing", got)
 	case <-time.After(hangGuard):
-		t.Fatal("the state lock operation did not complete during the native stop: the implementation appears to hold the state lock across native calls")
+		require.Fail(t, "the state lock operation did not complete during the native stop: the implementation appears to hold the state lock across native calls")
 	}
 
 	// 探针三:callback 准入 + 入队(closing 阶段门仍开放)必须能
@@ -475,21 +415,17 @@ func TestRuntimeCloseNativeWithoutHeldLocks(t *testing.T) {
 	select {
 	case <-delivered:
 	case <-time.After(hangGuard):
-		t.Fatal("callback delivery did not complete during the native stop: the implementation appears to hold the callback/dispatcher/registry lock across native calls")
+		require.Fail(t, "callback delivery did not complete during the native stop: the implementation appears to hold the callback/dispatcher/registry lock across native calls")
 	}
 
 	close(releaseStop)
-	if err := waitErr(t, closeErr, "Runtime.Close"); err != nil {
-		t.Fatalf("Runtime.Close = %v, want nil", err)
-	}
+	err = waitErr(t, closeErr, "Runtime.Close")
+	require.NoError(t, err, "Runtime.Close = %v, want nil", err)
 	// stop 期间投递的事件关闭后仍可读,Events 随后已关闭。
 	ev := mustReadEvent(t, inst.inst.disp.events())
-	if ev.MessageID != 83 {
-		t.Errorf("event MessageID = %d, want 83", ev.MessageID)
-	}
-	if _, ok := <-inst.inst.disp.events(); ok {
-		t.Error("Events should be closed after Close")
-	}
+	assert.Equal(t, MessageID(83), ev.MessageID, "event MessageID = %d, want 83", ev.MessageID)
+	_, ok := <-inst.inst.disp.events()
+	assert.False(t, ok, "Events should be closed after Close")
 	assertSingleStopDestroy(t, rig.closer, handle)
 }
 
@@ -505,39 +441,26 @@ func TestRuntimeCloseTerminatedUseContract(t *testing.T) {
 
 	// 预占前纯 Go 配置错误:ErrInvalidInput,不触碰生命周期门。
 	_, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, badCfg)
-	if !errors.Is(err, native.ErrInvalidInput) {
-		t.Fatalf("config error before reservation = %v, want errors.Is native.ErrInvalidInput", err)
-	}
-	if v := gateSnapshot(rig.gate); v.state != lifecycleReady || v.closeRequested || v.hasLease {
-		t.Fatalf("the config error consumed the lifecycle gate: %+v", v)
-	}
-	if got := rig.creator.count("createEx"); got != 0 {
-		t.Fatalf("a validation failure must not reach CreateEx")
-	}
+	require.ErrorIs(t, err, native.ErrInvalidInput, "config error before reservation = %v, want errors.Is native.ErrInvalidInput", err)
+	v := gateSnapshot(rig.gate)
+	require.True(t, v.state == lifecycleReady && !v.closeRequested && !v.hasLease, "the config error consumed the lifecycle gate: %+v", v)
+	require.Equal(t, 0, rig.creator.count("createEx"), "a validation failure must not reach CreateEx")
 
 	// Close 正常终止使用(配置错误未预消耗生命周期)。
-	if err := runRuntimeClose(t, rig.rt); err != nil {
-		t.Fatalf("Runtime.Close = %v, want nil", err)
-	}
+	err = runRuntimeClose(t, rig.rt)
+	require.NoError(t, err, "Runtime.Close = %v, want nil", err)
 
 	// 终止后 Open:一律拒绝,不进入原生加载。
 	env := &fakeEnv{session: newValidFakeSession()}
-	if _, err := open(validRuntimeConfig(), env, rig.gate); !errors.Is(err, native.ErrRuntimeTerminated) {
-		t.Errorf("Open after termination = %v, want errors.Is native.ErrRuntimeTerminated", err)
-	}
-	if n := env.loadCount(); n != 0 {
-		t.Errorf("Open after termination entered native loading %d times, want 0", n)
-	}
+	_, openErr := open(validRuntimeConfig(), env, rig.gate)
+	assert.ErrorIs(t, openErr, native.ErrRuntimeTerminated, "Open after termination = %v, want errors.Is native.ErrRuntimeTerminated", openErr)
+	assert.Equal(t, 0, env.loadCount(), "Open after termination entered native loading %d times, want 0", env.loadCount())
 
 	// 终止后 NewInstance:有效配置在预留处被拒(公开入口,生产接缝在
 	// 触达 native 前被拒);无效配置仍在预占前被拒,不消耗生命周期。
-	if _, err := runPublicNewInstance(t, rig.rt, InstanceConfig{}); !errors.Is(err, native.ErrRuntimeTerminated) {
-		t.Errorf("NewInstance after termination (valid config) = %v, want errors.Is native.ErrRuntimeTerminated", err)
-	}
-	if _, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, badCfg); !errors.Is(err, native.ErrInvalidInput) {
-		t.Errorf("NewInstance after termination (invalid config) = %v, want errors.Is native.ErrInvalidInput", err)
-	}
-	if got := rig.creator.count("createEx"); got != 0 {
-		t.Errorf("CreateEx count after termination = %d, want 0", got)
-	}
+	_, err = runPublicNewInstance(t, rig.rt, InstanceConfig{})
+	assert.ErrorIs(t, err, native.ErrRuntimeTerminated, "NewInstance after termination (valid config) = %v, want errors.Is native.ErrRuntimeTerminated", err)
+	_, err = runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, badCfg)
+	assert.ErrorIs(t, err, native.ErrInvalidInput, "NewInstance after termination (invalid config) = %v, want errors.Is native.ErrInvalidInput", err)
+	assert.Equal(t, 0, rig.creator.count("createEx"), "CreateEx count after termination = %d, want 0", rig.creator.count("createEx"))
 }

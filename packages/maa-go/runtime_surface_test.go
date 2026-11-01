@@ -4,6 +4,7 @@
 package maa
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -11,6 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // receiverBaseName 返回方法接收者的基类型名;无接收者或无法识别的
@@ -31,13 +35,9 @@ func receiverBaseName(recv *ast.FieldList) string {
 
 func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("os.Getwd failed, cannot locate the public package directory: %v", err)
-	}
+	require.NoError(t, err, "os.Getwd failed, cannot locate the public package directory: %v", err)
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("failed to read the public package directory %s: %v", dir, err)
-	}
+	require.NoError(t, err, "failed to read the public package directory %s: %v", dir, err)
 
 	runtimeMethods := map[string]bool{}
 	instanceMethods := map[string]bool{}
@@ -55,9 +55,7 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(dir, name)
 			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-			if err != nil {
-				t.Fatalf("failed to parse %s: %v", path, err)
-			}
+			require.NoError(t, err, "failed to parse %s: %v", path, err)
 			for _, decl := range file.Decls {
 				fd, ok := decl.(*ast.FuncDecl)
 				if !ok {
@@ -68,9 +66,8 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 						continue
 					}
 					packageFuncs[fd.Name.Name] = true
-					if fd.Name.Name == "NewInstance" || fd.Name.Name == "Close" {
-						t.Errorf("package-level exported function %q belongs to the instance lifecycle entries and may only exist as a type method", fd.Name.Name)
-					}
+					assert.False(t, fd.Name.Name == "NewInstance" || fd.Name.Name == "Close",
+						"package-level exported function %q belongs to the instance lifecycle entries and may only exist as a type method", fd.Name.Name)
 					continue
 				}
 				recv := receiverBaseName(fd.Recv)
@@ -99,35 +96,25 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 						recv == "Runtime" && fd.Name.Name == "Close":
 						//  交付的三个生命周期入口。
 					default:
-						t.Errorf("exported method %q of type %s is not in the frozen lifecycle entry set", recv, fd.Name.Name)
+						assert.Fail(t, fmt.Sprintf("exported method %q of type %s is not in the frozen lifecycle entry set", recv, fd.Name.Name))
 					}
 				}
 			}
 		})
 	}
 
-	if !seenRuntime {
-		t.Fatal("no method declarations found for the Runtime type")
-	}
-	if !seenInstance {
-		t.Fatal("no method declarations found for the Instance type")
-	}
-	if !seenOperation {
-		t.Fatal("no method declarations found for the Operation type")
-	}
+	require.True(t, seenRuntime, "no method declarations found for the Runtime type")
+	require.True(t, seenInstance, "no method declarations found for the Instance type")
+	require.True(t, seenOperation, "no method declarations found for the Operation type")
 
 	// *Runtime 的导出方法集恰为冻结集合(加入 Close 与两个实验查询)。
 	want := map[string]bool{"Version": true, "Capabilities": true, "NullSize": true, "Log": true,
 		"MapLevelKey": true, "ItemName": true, "NewInstance": true, "Close": true}
 	for m := range want {
-		if !runtimeMethods[m] {
-			t.Errorf("*Runtime is missing the frozen exported method %s", m)
-		}
+		assert.True(t, runtimeMethods[m], "*Runtime is missing the frozen exported method %s", m)
 	}
 	for m := range runtimeMethods {
-		if !want[m] {
-			t.Errorf("*Runtime has an exported method outside the frozen set: %s", m)
-		}
+		assert.True(t, want[m], "*Runtime has an exported method outside the frozen set: %s", m)
 	}
 
 	// *Instance 的导出方法集恰为 {Close} + 同步方法 +
@@ -157,39 +144,27 @@ func TestPublicRuntimeSurfaceIsFrozen(t *testing.T) {
 		"Diagnostics":   true,
 	}
 	for m := range wantInstance {
-		if !instanceMethods[m] {
-			t.Errorf("*Instance is missing the frozen exported method %s", m)
-		}
+		assert.True(t, instanceMethods[m], "*Instance is missing the frozen exported method %s", m)
 	}
 	for m := range instanceMethods {
-		if !wantInstance[m] {
-			t.Errorf("*Instance has an exported method outside the frozen set: %s", m)
-		}
+		assert.True(t, wantInstance[m], "*Instance has an exported method outside the frozen set: %s", m)
 	}
 
 	// *Operation 的导出方法集恰为 {ID, Wait}()。
 	wantOperation := map[string]bool{"ID": true, "Wait": true}
 	for m := range wantOperation {
-		if !operationMethods[m] {
-			t.Errorf("*Operation is missing the frozen exported method %s", m)
-		}
+		assert.True(t, operationMethods[m], "*Operation is missing the frozen exported method %s", m)
 	}
 	for m := range operationMethods {
-		if !wantOperation[m] {
-			t.Errorf("*Operation has an exported method outside the frozen set: %s", m)
-		}
+		assert.True(t, wantOperation[m], "*Operation has an exported method outside the frozen set: %s", m)
 	}
 
 	// 包级导出函数恰为 {Open}:唯一的进程初始化入口。
 	wantFuncs := map[string]bool{"Open": true}
 	for f := range wantFuncs {
-		if !packageFuncs[f] {
-			t.Errorf("the package level is missing the exported function %s", f)
-		}
+		assert.True(t, packageFuncs[f], "the package level is missing the exported function %s", f)
 	}
 	for f := range packageFuncs {
-		if !wantFuncs[f] {
-			t.Errorf("the package level has an exported function outside the frozen set: %s", f)
-		}
+		assert.True(t, wantFuncs[f], "the package level has an exported function outside the frozen set: %s", f)
 	}
 }

@@ -19,17 +19,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPublicPackageExportsNoRawFuncVariables(t *testing.T) {
 	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("os.Getwd failed, cannot locate the public package directory: %v", err)
-	}
+	require.NoError(t, err, "os.Getwd failed, cannot locate the public package directory")
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("failed to read the public package directory %s: %v", dir, err)
-	}
+	require.NoError(t, err, "failed to read the public package directory %s", dir)
 	var names []string
 	for _, entry := range entries {
 		name := entry.Name()
@@ -38,17 +37,13 @@ func TestPublicPackageExportsNoRawFuncVariables(t *testing.T) {
 		}
 		names = append(names, name)
 	}
-	if len(names) == 0 {
-		t.Fatal("no non-test Go source files found in the public package directory")
-	}
+	require.NotEmpty(t, names, "no non-test Go source files found in the public package directory")
 
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(dir, name)
 			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-			if err != nil {
-				t.Fatalf("failed to parse %s: %v", path, err)
-			}
+			require.NoError(t, err, "failed to parse %s", path)
 			for _, decl := range file.Decls {
 				switch d := decl.(type) {
 				case *ast.GenDecl:
@@ -67,9 +62,7 @@ func TestPublicPackageExportsNoRawFuncVariables(t *testing.T) {
 								kind = "const"
 							}
 							for _, id := range vs.Names {
-								if ast.IsExported(id.Name) {
-									t.Errorf("exported package-level %s %q has an explicit function type; the public package must not export copyable raw function variables", kind, id.Name)
-								}
+								assert.False(t, ast.IsExported(id.Name), "exported package-level %s %q has an explicit function type; the public package must not export copyable raw function variables", kind, id.Name)
 							}
 						}
 					case token.TYPE:
@@ -84,9 +77,7 @@ func TestPublicPackageExportsNoRawFuncVariables(t *testing.T) {
 									continue
 								}
 								for _, id := range field.Names {
-									if ast.IsExported(id.Name) {
-										t.Errorf("exported field %q of exported struct %s has a function type; copyable raw functions must not be exported", ts.Name.Name, id.Name)
-									}
+									assert.False(t, ast.IsExported(id.Name), "exported field %q of exported struct %s has a function type; copyable raw functions must not be exported", ts.Name.Name, id.Name)
 								}
 							}
 						}
@@ -97,7 +88,7 @@ func TestPublicPackageExportsNoRawFuncVariables(t *testing.T) {
 					}
 					for _, result := range d.Type.Results.List {
 						if _, isFunc := result.Type.(*ast.FuncType); isFunc {
-							t.Errorf("exported function/method %q has a function result type; copyable raw functions must not be exported", d.Name.Name)
+							assert.Failf(t, "copyable raw functions must not be exported", "exported function/method %q has a function result type", d.Name.Name)
 						}
 					}
 				}

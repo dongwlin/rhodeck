@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
 )
 
@@ -35,18 +38,10 @@ func TestInstanceConfigValidationRejectsInvalidContent(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			snap, err := snapshotInstanceConfig(InstanceConfig{Options: tc.options}, defaultLimits())
-			if len(snap.options) != 0 {
-				t.Fatalf("a failed validation must not return a snapshot, got %+v", snap)
-			}
-			if err == nil {
-				t.Fatal("a failed validation must return an error")
-			}
-			if !errors.Is(err, ErrInvalidInput) {
-				t.Errorf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
-			}
-			if !strings.Contains(err.Error(), tc.wantField) {
-				t.Errorf("error text %q does not contain field path %q", err.Error(), tc.wantField)
-			}
+			require.Empty(t, snap.options, "a failed validation must not return a snapshot, got %+v", snap)
+			require.Error(t, err, "a failed validation must return an error")
+			assert.ErrorIs(t, err, ErrInvalidInput, "errors.Is(err, ErrInvalidInput) = false; err = %v", err)
+			assert.Contains(t, err.Error(), tc.wantField, "error text %q does not contain field path %q", err.Error(), tc.wantField)
 		})
 	}
 
@@ -56,9 +51,7 @@ func TestInstanceConfigValidationRejectsInvalidContent(t *testing.T) {
 			options[i] = InstanceOption{Key: int32(i + 1), Value: "v"}
 		}
 		_, err := snapshotInstanceConfig(InstanceConfig{Options: options}, defaultLimits())
-		if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "ConfigEntries") {
-			t.Fatalf("an entry count over ConfigEntries must be rejected: %v", err)
-		}
+		require.True(t, errors.Is(err, ErrInvalidInput) && strings.Contains(err.Error(), "ConfigEntries"), "an entry count over ConfigEntries must be rejected: %v", err)
 	})
 
 	t.Run("value total exceeds ConfigBytes", func(t *testing.T) {
@@ -69,9 +62,7 @@ func TestInstanceConfigValidationRejectsInvalidContent(t *testing.T) {
 			options[i] = InstanceOption{Key: int32(i + 1), Value: strings.Repeat("a", 65_536)}
 		}
 		_, err := snapshotInstanceConfig(InstanceConfig{Options: options}, defaultLimits())
-		if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "ConfigBytes") {
-			t.Fatalf("a text total over ConfigBytes must be rejected: %v", err)
-		}
+		require.True(t, errors.Is(err, ErrInvalidInput) && strings.Contains(err.Error(), "ConfigBytes"), "a text total over ConfigBytes must be rejected: %v", err)
 	})
 }
 
@@ -86,20 +77,15 @@ func TestInstanceConfigAcceptsUnknownKeysAndEmptyValues(t *testing.T) {
 		{Key: math.MaxInt32, Value: ""},
 	}}
 	snap, err := snapshotInstanceConfig(cfg, defaultLimits())
-	if err != nil {
-		t.Fatalf("unknown non-zero keys and empty values should be accepted: %v", err)
-	}
-	if len(snap.options) != len(cfg.Options) || snap.options[1] != cfg.Options[1] {
-		t.Errorf("instance option snapshot mismatch: %+v", snap.options)
-	}
+	require.NoError(t, err, "unknown non-zero keys and empty values should be accepted: %v", err)
+	assert.True(t, len(snap.options) == len(cfg.Options) && snap.options[1] == cfg.Options[1], "instance option snapshot mismatch: %+v", snap.options)
 
 	options := make([]InstanceOption, defaultLimits().ConfigEntries)
 	for i := range options {
 		options[i] = InstanceOption{Key: int32(i + 1), Value: "v"}
 	}
-	if _, err := snapshotInstanceConfig(InstanceConfig{Options: options}, defaultLimits()); err != nil {
-		t.Fatalf("an entry count of exactly ConfigEntries should be accepted: %v", err)
-	}
+	_, err = snapshotInstanceConfig(InstanceConfig{Options: options}, defaultLimits())
+	require.NoError(t, err, "an entry count of exactly ConfigEntries should be accepted: %v", err)
 }
 
 // TestInstanceConfigSnapshotIsDeepCopy 验证:快照返回后修改原
@@ -108,17 +94,13 @@ func TestInstanceConfigSnapshotIsDeepCopy(t *testing.T) {
 	cfg := InstanceConfig{Options: []InstanceOption{{Key: 3, Value: "orig"}}}
 
 	snap, err := snapshotInstanceConfig(cfg, defaultLimits())
-	if err != nil {
-		t.Fatalf("a valid configuration must not fail validation: %v", err)
-	}
+	require.NoError(t, err, "a valid configuration must not fail validation: %v", err)
 
 	cfg.Options[0].Value = "tampered"
 	cfg.Options[0].Key = 4
 	cfg.Options = append(cfg.Options, InstanceOption{Key: 9, Value: "extra"})
 
-	if len(snap.options) != 1 || snap.options[0] != (InstanceOption{Key: 3, Value: "orig"}) {
-		t.Errorf("instance option snapshot was tampered with: %+v", snap.options)
-	}
+	assert.True(t, len(snap.options) == 1 && snap.options[0] == (InstanceOption{Key: 3, Value: "orig"}), "instance option snapshot was tampered with: %+v", snap.options)
 }
 
 // TestConnectConfigValidationRejectsInvalidInput 逐类验证连接输入
@@ -145,15 +127,9 @@ func TestConnectConfigValidationRejectsInvalidInput(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := snapshotConnectInput(tc.cfg, defaultLimits())
-			if err == nil {
-				t.Fatal("a failed validation must return an error")
-			}
-			if !errors.Is(err, ErrInvalidInput) {
-				t.Errorf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
-			}
-			if !strings.Contains(err.Error(), tc.wantField) {
-				t.Errorf("error text %q does not contain field path %q", err.Error(), tc.wantField)
-			}
+			require.Error(t, err, "a failed validation must return an error")
+			assert.ErrorIs(t, err, ErrInvalidInput, "errors.Is(err, ErrInvalidInput) = false; err = %v", err)
+			assert.Contains(t, err.Error(), tc.wantField, "error text %q does not contain field path %q", err.Error(), tc.wantField)
 		})
 	}
 }
@@ -164,12 +140,8 @@ func TestConnectConfigValidationRejectsInvalidInput(t *testing.T) {
 func TestConnectConfigAcceptsEmptyConfigAndBudget(t *testing.T) {
 	cfg := ConnectConfig{ADBPath: testAbsolutePath("adb"), Address: "127.0.0.1:5555", Config: ""}
 	snap, err := snapshotConnectInput(cfg, defaultLimits())
-	if err != nil {
-		t.Fatalf("an empty Config should be accepted: %v", err)
-	}
-	if snap.adbPath != cfg.ADBPath || snap.address != cfg.Address || snap.config != "" {
-		t.Errorf("connect input snapshot mismatch: %+v", snap)
-	}
+	require.NoError(t, err, "an empty Config should be accepted: %v", err)
+	assert.True(t, snap.adbPath == cfg.ADBPath && snap.address == cfg.Address && snap.config == "", "connect input snapshot mismatch: %+v", snap)
 
 	// 三串各 40 字节(不超单串预算),合计 120 超过收窄后的
 	// ConfigBytes 100。收窄后的整套限制仍满足全部交叉校验。
@@ -179,16 +151,12 @@ func TestConnectConfigAcceptsEmptyConfigAndBudget(t *testing.T) {
 	limits.ConfigBytes = 100
 	full := ConnectConfig{ADBPath: testAbsolutePathWithLength(40), Address: strings.Repeat("b", 40), Config: strings.Repeat("c", 40)}
 	_, err = snapshotConnectInput(full, limits)
-	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "connect input text bytes total") {
-		t.Fatalf("a connect input text total over ConfigBytes must be rejected: %v", err)
-	}
+	require.True(t, errors.Is(err, ErrInvalidInput) && strings.Contains(err.Error(), "connect input text bytes total"), "a connect input text total over ConfigBytes must be rejected: %v", err)
 
 	// 单串预算独立执行:恰达 65,537 字节的 ADBPath 超默认
 	// InputStringBytes。
 	_, err = snapshotConnectInput(ConnectConfig{ADBPath: testAbsolutePathWithLength(65_537), Address: "x"}, defaultLimits())
-	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "InputStringBytes") {
-		t.Fatalf("an ADBPath over the single-string budget must be rejected: %v", err)
-	}
+	require.True(t, errors.Is(err, ErrInvalidInput) && strings.Contains(err.Error(), "InputStringBytes"), "an ADBPath over the single-string budget must be rejected: %v", err)
 }
 
 // TestTaskInputRejectsInvalidInputDistinguishably 验证任务输入校验:
@@ -224,15 +192,9 @@ func TestTaskInputRejectsInvalidInputDistinguishably(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateTaskInput(tc.taskType, tc.params, defaultLimits())
-			if err == nil {
-				t.Fatal("a failed validation must return an error")
-			}
-			if !errors.Is(err, ErrInvalidInput) {
-				t.Errorf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
-			}
-			if !strings.Contains(err.Error(), tc.wantSubstr) {
-				t.Errorf("error text %q does not contain the distinguishable diagnostic %q", err.Error(), tc.wantSubstr)
-			}
+			require.Error(t, err, "a failed validation must return an error")
+			assert.ErrorIs(t, err, ErrInvalidInput, "errors.Is(err, ErrInvalidInput) = false; err = %v", err)
+			assert.Contains(t, err.Error(), tc.wantSubstr, "error text %q does not contain the distinguishable diagnostic %q", err.Error(), tc.wantSubstr)
 			// 收集三个代表性失败,验证诊断彼此可区分。
 			switch tc.name {
 			case "taskType embedded NUL":
@@ -247,13 +209,10 @@ func TestTaskInputRejectsInvalidInputDistinguishably(t *testing.T) {
 			}
 		})
 	}
-	if seen != 3 {
-		t.Fatalf("representative cases incompletely collected: %d", seen)
-	}
-	if representative[0] == representative[1] || representative[1] == representative[2] || representative[0] == representative[2] {
-		t.Errorf("diagnostics for embedded NUL and invalid JSON must be distinguishable: %q / %q / %q",
-			representative[0], representative[1], representative[2])
-	}
+	require.Equal(t, 3, seen, "representative cases incompletely collected: %d", seen)
+	assert.True(t, representative[0] != representative[1] && representative[1] != representative[2] && representative[0] != representative[2],
+		"diagnostics for embedded NUL and invalid JSON must be distinguishable: %q / %q / %q",
+		representative[0], representative[1], representative[2])
 }
 
 // TestTaskInputPreservesUnknownAndBigIntegerVerbatim 验证前向兼容:
@@ -263,27 +222,17 @@ func TestTaskInputPreservesUnknownAndBigIntegerVerbatim(t *testing.T) {
 	taskType := "FutureTask@Unknown-Scheme"
 	raw := json.RawMessage(`{"unknown_field":{"nested":[1,{"x":9007199254740993}]},"esc":"\u0000","big":12345678901234567890}`)
 
-	if err := validateTaskInput(taskType, raw, defaultLimits()); err != nil {
-		t.Fatalf("unknown task types and big-integer params should be accepted: %v", err)
-	}
+	err := validateTaskInput(taskType, raw, defaultLimits())
+	require.NoError(t, err, "unknown task types and big-integer params should be accepted: %v", err)
 	snap, err := snapshotTaskInput(taskType, raw, defaultLimits())
-	if err != nil {
-		t.Fatalf("snapshot must not fail: %v", err)
-	}
-	if snap.taskType != taskType {
-		t.Errorf("taskType was rewritten: %q", snap.taskType)
-	}
-	if string(snap.params) != string(raw) {
-		t.Errorf("params raw JSON was rewritten:\n got %q\nwant %q", string(snap.params), string(raw))
-	}
+	require.NoError(t, err, "snapshot must not fail: %v", err)
+	assert.Equal(t, taskType, snap.taskType, "taskType was rewritten: %q", snap.taskType)
+	assert.Equal(t, string(raw), string(snap.params), "params raw JSON was rewritten:\n got %q\nwant %q", string(snap.params), string(raw))
 
 	// 重复校验与快照不改变原输入。
-	if err := validateTaskInput(taskType, raw, defaultLimits()); err != nil {
-		t.Errorf("repeated validation must not fail: %v", err)
-	}
-	if string(raw) != `{"unknown_field":{"nested":[1,{"x":9007199254740993}]},"esc":"\u0000","big":12345678901234567890}` {
-		t.Errorf("the original input was rewritten: %q", string(raw))
-	}
+	err = validateTaskInput(taskType, raw, defaultLimits())
+	assert.NoError(t, err, "repeated validation must not fail: %v", err)
+	assert.Equal(t, `{"unknown_field":{"nested":[1,{"x":9007199254740993}]},"esc":"\u0000","big":12345678901234567890}`, string(raw), "the original input was rewritten: %q", string(raw))
 }
 
 // TestTaskInputSnapshotIsDeepCopyAndBudget 验证:快照返回后原地
@@ -292,16 +241,12 @@ func TestTaskInputPreservesUnknownAndBigIntegerVerbatim(t *testing.T) {
 func TestTaskInputSnapshotIsDeepCopyAndBudget(t *testing.T) {
 	raw := json.RawMessage(`{"orig":9007199254740993}`)
 	snap, err := snapshotTaskInput("Fighting", raw, defaultLimits())
-	if err != nil {
-		t.Fatalf("valid input must not fail: %v", err)
-	}
+	require.NoError(t, err, "valid input must not fail: %v", err)
 
 	for i := range raw {
 		raw[i] = 'X'
 	}
-	if string(snap.params) != `{"orig":9007199254740993}` {
-		t.Errorf("task input snapshot was tampered with: %q", string(snap.params))
-	}
+	assert.Equal(t, `{"orig":9007199254740993}`, string(snap.params), "task input snapshot was tampered with: %q", string(snap.params))
 
 	// 60 + 60 = 120 字节(各自不超收窄后的单串/单份预算 64),
 	// 合计超过收窄后的 ConfigBytes 100。
@@ -310,9 +255,7 @@ func TestTaskInputSnapshotIsDeepCopyAndBudget(t *testing.T) {
 	limits.InputJSONBytes = 64
 	limits.ConfigBytes = 100
 	err = validateTaskInput(strings.Repeat("a", 60), json.RawMessage(`{"b":"`+strings.Repeat("c", 52)+`"}`), limits)
-	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "task input text bytes total") {
-		t.Fatalf("a task input text total over ConfigBytes must be rejected: %v", err)
-	}
+	require.True(t, errors.Is(err, ErrInvalidInput) && strings.Contains(err.Error(), "task input text bytes total"), "a task input text total over ConfigBytes must be rejected: %v", err)
 }
 
 // 编译期锁定:任务输入校验失败的哨兵必须与公开错误面同一错误值。

@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func coreInputEnv(values map[string]string) func(string) string {
@@ -22,10 +24,10 @@ func writeCoreInputFile(t *testing.T, root, name, data string) string {
 	t.Helper()
 	path := filepath.Join(root, name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 	return path
 }
@@ -35,30 +37,22 @@ func TestCoreInputInstalledAndOptionalDigests(t *testing.T) {
 	lib := writeCoreInputFile(t, root, coreSOName, "explicit library input")
 	version := writeCoreInputFile(t, root, versionRelPath, `{"version":"rolling"}`)
 	libSHA, err := sha256File(lib)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	versionSHA, err := sha256File(version)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	values := map[string]string{libPathEnv: lib, resourceRootEnv: root, expectedLibrarySHAEnv: strings.ToUpper(libSHA), expectedVersionSHAEnv: versionSHA}
 	r, err := prepareCoreResources(coreInputEnv(values))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.root != root || r.libPath != lib || r.cleanupRoot != "" || r.librarySHA != libSHA || r.versionSHA != versionSHA || r.tarballSHA != "" {
-		t.Fatalf("prepared installation = %+v", r)
-	}
+	require.NoError(t, err)
+	require.True(t, r.root == root && r.libPath == lib && r.cleanupRoot == "" && r.librarySHA == libSHA && r.versionSHA == versionSHA && r.tarballSHA == "", "prepared installation = %+v", r)
 	values[expectedLibrarySHAEnv] = strings.Repeat("0", 64)
-	if _, err := prepareCoreResources(coreInputEnv(values)); err == nil || !strings.Contains(err.Error(), "SHA256") {
-		t.Fatalf("library mismatch = %v", err)
-	}
+	_, err = prepareCoreResources(coreInputEnv(values))
+	require.Error(t, err, "library mismatch = %v", err)
+	require.Contains(t, err.Error(), "SHA256", "library mismatch = %v", err)
 	values[expectedLibrarySHAEnv] = libSHA
 	values[expectedVersionSHAEnv] = strings.Repeat("0", 64)
-	if _, err := prepareCoreResources(coreInputEnv(values)); err == nil || !strings.Contains(err.Error(), "SHA256") {
-		t.Fatalf("version file mismatch = %v", err)
-	}
+	_, err = prepareCoreResources(coreInputEnv(values))
+	require.Error(t, err, "version file mismatch = %v", err)
+	require.Contains(t, err.Error(), "SHA256", "version file mismatch = %v", err)
 }
 
 func TestCoreInputMissingAndInvalid(t *testing.T) {
@@ -84,9 +78,7 @@ func TestCoreInputMissingAndInvalid(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := prepareCoreResources(coreInputEnv(tc.env))
-			if err == nil || errors.Is(err, errCoreInputMissing) != tc.missing {
-				t.Fatalf("preparation error = %v, missing = %v", err, tc.missing)
-			}
+			require.True(t, err != nil && errors.Is(err, errCoreInputMissing) == tc.missing, "preparation error = %v, missing = %v", err, tc.missing)
 		})
 	}
 }
@@ -101,7 +93,7 @@ func writeCoreInputArchive(t *testing.T, members []coreArchiveMember) string {
 	path := filepath.Join(t.TempDir(), "core.tar.gz")
 	f, err := os.Create(path)
 	if err != nil {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 	gz := gzip.NewWriter(f)
 	tw := tar.NewWriter(gz)
@@ -115,15 +107,15 @@ func writeCoreInputArchive(t *testing.T, members []coreArchiveMember) string {
 			hdr.Size = int64(len(m.data))
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
-			t.Fatal(err)
+			require.NoError(t, err)
 		}
 		if _, err := tw.Write([]byte(m.data)); err != nil {
-			t.Fatal(err)
+			require.NoError(t, err)
 		}
 	}
 	for _, close := range []func() error{tw.Close, gz.Close, f.Close} {
 		if err := close(); err != nil {
-			t.Fatal(err)
+			require.NoError(t, err)
 		}
 	}
 	return path
@@ -140,28 +132,19 @@ func TestCoreInputExplicitArchive(t *testing.T) {
 		{name: "AsstCaller.h", data: "ignored"},
 	})
 	digest, err := sha256File(archive)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	values := map[string]string{tarballOverrideEv: archive, expectedTarballSHAEnv: digest}
 	r, err := prepareCoreResources(coreInputEnv(values))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer os.RemoveAll(r.cleanupRoot)
-	if r.cleanupRoot == "" || r.tarballSHA != digest || r.libPath != filepath.Join(r.root, coreSOName) {
-		t.Fatalf("prepared archive = %+v", r)
-	}
-	if got, err := os.ReadFile(filepath.Join(r.root, "libDependency.so")); err != nil || string(got) != "dependency" {
-		t.Fatalf("dependency symlink = %q, %v", got, err)
-	}
-	if _, err := os.Stat(filepath.Join(r.root, "AsstCaller.h")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("unselected member error = %v", err)
-	}
+	require.True(t, r.cleanupRoot != "" && r.tarballSHA == digest && r.libPath == filepath.Join(r.root, coreSOName), "prepared archive = %+v", r)
+	got, err := os.ReadFile(filepath.Join(r.root, "libDependency.so"))
+	require.True(t, err == nil && string(got) == "dependency", "dependency symlink = %q, %v", got, err)
+	_, err = os.Stat(filepath.Join(r.root, "AsstCaller.h"))
+	require.ErrorIs(t, err, os.ErrNotExist, "unselected member error = %v", err)
 	values[expectedTarballSHAEnv] = strings.Repeat("0", 64)
-	if _, err := prepareCoreResources(coreInputEnv(values)); err == nil {
-		t.Fatal("archive digest mismatch accepted")
-	}
+	_, err = prepareCoreResources(coreInputEnv(values))
+	require.Error(t, err, "archive digest mismatch accepted")
 }
 
 func TestCoreInputRejectsUnsafeOrIncompleteArchive(t *testing.T) {
@@ -184,12 +167,11 @@ func TestCoreInputRejectsUnsafeOrIncompleteArchive(t *testing.T) {
 			r, err := prepareCoreResources(coreInputEnv(map[string]string{tarballOverrideEv: archive}))
 			if err == nil {
 				defer os.RemoveAll(r.cleanupRoot)
-				t.Fatal("invalid archive accepted")
+				require.Fail(t, "invalid archive accepted")
 			}
 			if r.cleanupRoot != "" {
-				if _, statErr := os.Stat(r.cleanupRoot); !errors.Is(statErr, os.ErrNotExist) {
-					t.Fatalf("failed extraction was not removed: %v", statErr)
-				}
+				_, statErr := os.Stat(r.cleanupRoot)
+				require.ErrorIs(t, statErr, os.ErrNotExist, "failed extraction was not removed: %v", statErr)
 			}
 		})
 	}
@@ -198,19 +180,11 @@ func TestCoreInputRejectsUnsafeOrIncompleteArchive(t *testing.T) {
 func TestCoreMetadataRollingVersionAndABISentinel(t *testing.T) {
 	t.Setenv(expectedVersionEnv, "")
 	good := fmt.Sprintf("%s version=v99.0.0 nullSize=%d\n", successMarker, uint64(math.MaxUint64))
-	if err := verifySuccessChildMetadata(good); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyCoreVersion("v99.0.0", "v99.0.0"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, verifySuccessChildMetadata(good))
+	require.NoError(t, verifyCoreVersion("v99.0.0", "v99.0.0"))
 	for _, stdout := range []string{"", strings.Replace(good, "version=v99.0.0", "version=", 1), strings.Replace(good, fmt.Sprint(uint64(math.MaxUint64)), "0", 1)} {
-		if err := verifySuccessChildMetadata(stdout); err == nil {
-			t.Fatalf("invalid metadata accepted: %q", stdout)
-		}
+		require.Error(t, verifySuccessChildMetadata(stdout), "invalid metadata accepted: %q", stdout)
 	}
 	t.Setenv(expectedVersionEnv, "v100.0.0")
-	if err := verifySuccessChildMetadata(good); err == nil {
-		t.Fatal("explicit version mismatch accepted")
-	}
+	require.Error(t, verifySuccessChildMetadata(good), "explicit version mismatch accepted")
 }

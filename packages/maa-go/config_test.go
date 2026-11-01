@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
 )
 
@@ -158,18 +161,11 @@ func TestConfigValidationRejectsInvalidContent(t *testing.T) {
 			cfg := validRuntimeConfig()
 			tc.mutate(&cfg)
 			snap, err := snapshotConfig(cfg)
-			if len(snap.staticOptions) != 0 || len(snap.resourceRoots) != 0 || len(snap.connectionExtras) != 0 || snap.limits != (Limits{}) {
-				t.Fatalf("a failed validation must not return a snapshot, got %+v", snap)
-			}
-			if err == nil {
-				t.Fatal("a failed validation must return an error")
-			}
-			if !errors.Is(err, ErrInvalidInput) {
-				t.Errorf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
-			}
-			if !strings.Contains(err.Error(), tc.wantField) {
-				t.Errorf("error text %q does not contain field path %q", err.Error(), tc.wantField)
-			}
+			require.True(t, len(snap.staticOptions) == 0 && len(snap.resourceRoots) == 0 && len(snap.connectionExtras) == 0 && snap.limits == (Limits{}),
+				"a failed validation must not return a snapshot, got %+v", snap)
+			require.Error(t, err, "a failed validation must return an error")
+			assert.ErrorIs(t, err, ErrInvalidInput, "errors.Is(err, ErrInvalidInput) = false; err = %v", err)
+			assert.Contains(t, err.Error(), tc.wantField, "error text %q does not contain field path %q", err.Error(), tc.wantField)
 		})
 	}
 }
@@ -228,15 +224,9 @@ func TestLimitsValidationRejectsOutOfRange(t *testing.T) {
 			l := validLimits()
 			tc.mutate(&l)
 			err := validateLimits(l)
-			if err == nil {
-				t.Fatal("an out-of-range configuration must return an error")
-			}
-			if !errors.Is(err, ErrInvalidInput) {
-				t.Errorf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
-			}
-			if !strings.Contains(err.Error(), tc.wantField) {
-				t.Errorf("error text %q does not contain field path %q", err.Error(), tc.wantField)
-			}
+			require.Error(t, err, "an out-of-range configuration must return an error")
+			assert.ErrorIs(t, err, ErrInvalidInput, "errors.Is(err, ErrInvalidInput) = false; err = %v", err)
+			assert.Contains(t, err.Error(), tc.wantField, "error text %q does not contain field path %q", err.Error(), tc.wantField)
 		})
 	}
 }
@@ -284,15 +274,9 @@ func TestLimitsValidationRejectsCrossFieldConflicts(t *testing.T) {
 			l := validLimits()
 			tc.mutate(&l)
 			err := validateLimits(l)
-			if err == nil {
-				t.Fatal("a cross-field contradictory configuration must return an error")
-			}
-			if !errors.Is(err, ErrInvalidInput) {
-				t.Errorf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
-			}
-			if !strings.Contains(err.Error(), tc.wantSubstr) {
-				t.Errorf("error text %q does not contain %q", err.Error(), tc.wantSubstr)
-			}
+			require.Error(t, err, "a cross-field contradictory configuration must return an error")
+			assert.ErrorIs(t, err, ErrInvalidInput, "errors.Is(err, ErrInvalidInput) = false; err = %v", err)
+			assert.Contains(t, err.Error(), tc.wantSubstr, "error text %q does not contain %q", err.Error(), tc.wantSubstr)
 		})
 	}
 }
@@ -318,9 +302,8 @@ func TestLimitsValidationAcceptsBoundaries(t *testing.T) {
 		EarlyResults:      1,
 		EarlyBytes:        1 << 24,
 	}
-	if err := validateLimits(l); err != nil {
-		t.Fatalf("boundary values must be allowed: %v", err)
-	}
+	err := validateLimits(l)
+	require.NoError(t, err, "boundary values must be allowed: %v", err)
 }
 
 // TestConfigEntriesExactUpperBoundAccepted 验证配置项数的上界:
@@ -335,18 +318,13 @@ func TestConfigEntriesExactUpperBoundAccepted(t *testing.T) {
 		cfg.ResourceRoots[i] = testAbsolutePath("resource")
 	}
 	snap, err := snapshotConfig(cfg)
-	if err != nil {
-		t.Fatalf("a configuration with an entry count of exactly ConfigEntries should be accepted: %v", err)
-	}
-	if len(snap.resourceRoots) != len(cfg.ResourceRoots) {
-		t.Fatalf("snapshot resource root count = %d, want %d", len(snap.resourceRoots), len(cfg.ResourceRoots))
-	}
+	require.NoError(t, err, "a configuration with an entry count of exactly ConfigEntries should be accepted: %v", err)
+	require.Len(t, snap.resourceRoots, len(cfg.ResourceRoots), "snapshot resource root count = %d, want %d", len(snap.resourceRoots), len(cfg.ResourceRoots))
 
 	// 多一项即拒绝,与恰达上界构成边界对。
 	cfg.ResourceRoots = append(cfg.ResourceRoots, testAbsolutePath("resource"))
-	if _, err := snapshotConfig(cfg); !errors.Is(err, ErrInvalidInput) {
-		t.Errorf("an entry count one over ConfigEntries must be rejected, got %v", err)
-	}
+	_, err = snapshotConfig(cfg)
+	assert.ErrorIs(t, err, ErrInvalidInput, "an entry count one over ConfigEntries must be rejected, got %v", err)
 }
 
 // TestConfigBytesExactUpperBoundAccepted 验证配置总字节数的上界:
@@ -371,24 +349,17 @@ func TestConfigBytesExactUpperBoundAccepted(t *testing.T) {
 	for _, root := range cfg.ResourceRoots {
 		total += uint64(len(root))
 	}
-	if total != defaultLimits().ConfigBytes {
-		t.Fatalf("test construction is off: text total %d, want exactly %d", total, defaultLimits().ConfigBytes)
-	}
+	require.Equal(t, defaultLimits().ConfigBytes, total, "test construction is off: text total %d, want exactly %d", total, defaultLimits().ConfigBytes)
 
 	snap, err := snapshotConfig(cfg)
-	if err != nil {
-		t.Fatalf("a configuration with a text total of exactly ConfigBytes should be accepted: %v", err)
-	}
-	if len(snap.resourceRoots) != len(cfg.ResourceRoots) {
-		t.Fatalf("snapshot resource root count = %d, want %d", len(snap.resourceRoots), len(cfg.ResourceRoots))
-	}
+	require.NoError(t, err, "a configuration with a text total of exactly ConfigBytes should be accepted: %v", err)
+	require.Len(t, snap.resourceRoots, len(cfg.ResourceRoots), "snapshot resource root count = %d, want %d", len(snap.resourceRoots), len(cfg.ResourceRoots))
 
 	// 末根再多 1 字节仍在 InputStringBytes 之内,被拒的只是总预算。
 	last := len(cfg.ResourceRoots) - 1
 	cfg.ResourceRoots[last] += "x"
-	if _, err := snapshotConfig(cfg); !errors.Is(err, ErrInvalidInput) {
-		t.Errorf("a text total one byte over ConfigBytes must be rejected, got %v", err)
-	}
+	_, err = snapshotConfig(cfg)
+	assert.ErrorIs(t, err, ErrInvalidInput, "a text total one byte over ConfigBytes must be rejected, got %v", err)
 }
 
 // TestConnectionExtraJSONAcceptsObjectForms 验证合法 extras JSON 被
@@ -405,12 +376,8 @@ func TestConnectionExtraJSONAcceptsObjectForms(t *testing.T) {
 		cfg := validRuntimeConfig()
 		cfg.ConnectionExtras = []ConnectionExtra{{Name: "sink", JSON: json.RawMessage(raw)}}
 		snap, err := snapshotConfig(cfg)
-		if err != nil {
-			t.Fatalf("extras %q should be accepted: %v", raw, err)
-		}
-		if got := string(snap.connectionExtras[0].JSON); got != raw {
-			t.Errorf("extras raw JSON was rewritten: got %q, want %q", got, raw)
-		}
+		require.NoError(t, err, "extras %q should be accepted: %v", raw, err)
+		assert.Equal(t, raw, string(snap.connectionExtras[0].JSON), "extras raw JSON was rewritten: got %q, want %q", string(snap.connectionExtras[0].JSON), raw)
 	}
 }
 
@@ -420,12 +387,8 @@ func TestStaticOptionValueMayBeEmpty(t *testing.T) {
 	cfg := validRuntimeConfig()
 	cfg.StaticOptions = []StaticOption{{Key: 1, Value: ""}, {Key: 2, Value: "x"}}
 	snap, err := snapshotConfig(cfg)
-	if err != nil {
-		t.Fatalf("an empty option value should be accepted: %v", err)
-	}
-	if snap.staticOptions[0].Value != "" || snap.staticOptions[1].Value != "x" {
-		t.Errorf("static option snapshot mismatch: %+v", snap.staticOptions)
-	}
+	require.NoError(t, err, "an empty option value should be accepted: %v", err)
+	assert.True(t, snap.staticOptions[0].Value == "" && snap.staticOptions[1].Value == "x", "static option snapshot mismatch: %+v", snap.staticOptions)
 }
 
 // TestStaticOptionZeroKeyRejected 验证 option key 为 0 时被拒绝:
@@ -438,33 +401,22 @@ func TestStaticOptionZeroKeyRejected(t *testing.T) {
 	cfg.StaticOptions = []StaticOption{{Key: 1, Value: "ok"}, {Key: 0, Value: "invalid"}}
 
 	snap, err := snapshotConfig(cfg)
-	if err == nil {
-		t.Fatal("an option key of 0 must return an error")
-	}
-	if len(snap.staticOptions) != 0 || len(snap.resourceRoots) != 0 || len(snap.connectionExtras) != 0 || snap.limits != (Limits{}) {
-		t.Fatalf("a failed validation must not return a snapshot, got %+v", snap)
-	}
-	if !errors.Is(err, ErrInvalidInput) {
-		t.Errorf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
-	}
-	if !strings.Contains(err.Error(), "StaticOptions[1].Key") {
-		t.Errorf("error text %q does not contain field path StaticOptions[1].Key", err.Error())
-	}
+	require.Error(t, err, "an option key of 0 must return an error")
+	require.True(t, len(snap.staticOptions) == 0 && len(snap.resourceRoots) == 0 && len(snap.connectionExtras) == 0 && snap.limits == (Limits{}),
+		"a failed validation must not return a snapshot, got %+v", snap)
+	assert.ErrorIs(t, err, ErrInvalidInput, "errors.Is(err, ErrInvalidInput) = false; err = %v", err)
+	assert.Contains(t, err.Error(), "StaticOptions[1].Key", "error text %q does not contain field path StaticOptions[1].Key", err.Error())
 
 	// 经注入边界的 open 复核拒绝路径:原生调用计数为 0,
 	// 校验失败不消耗进程生命周期。
 	env := &fakeEnv{session: newValidFakeSession()}
 	gate := &lifecycleGate{}
 	rt, err := open(cfg, env, gate)
-	if rt != nil || !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("open must fail at the validation stage: rt=%v err=%v", rt, err)
-	}
-	if n := env.loadCount(); n != 0 {
-		t.Errorf("loadLibrary called %d times, want 0 (the native call count must be 0)", n)
-	}
-	if _, err := open(validRuntimeConfig(), env, gate); err != nil {
-		t.Fatalf("the same gate must still Open successfully after a failed validation: %v", err)
-	}
+	require.True(t, rt == nil && errors.Is(err, ErrInvalidInput), "open must fail at the validation stage: rt=%v err=%v", rt, err)
+	n := env.loadCount()
+	assert.Equal(t, 0, n, "loadLibrary called %d times, want 0 (the native call count must be 0)", n)
+	_, err = open(validRuntimeConfig(), env, gate)
+	require.NoError(t, err, "the same gate must still Open successfully after a failed validation: %v", err)
 }
 
 // TestSnapshotDeepCopiesConfig 验证快照深拷贝:snapshotConfig 返回
@@ -483,9 +435,7 @@ func TestSnapshotDeepCopiesConfig(t *testing.T) {
 	wantLimits := explicit
 
 	snap, err := snapshotConfig(cfg)
-	if err != nil {
-		t.Fatalf("a valid configuration must not fail validation: %v", err)
-	}
+	require.NoError(t, err, "a valid configuration must not fail validation: %v", err)
 
 	// Open 返回后修改原配置的一切可变内容。
 	cfg.StaticOptions[0].Value = "tampered"
@@ -497,44 +447,28 @@ func TestSnapshotDeepCopiesConfig(t *testing.T) {
 	cfg.ConnectionExtras = append(cfg.ConnectionExtras, ConnectionExtra{Name: "t2", JSON: json.RawMessage(`{}`)})
 	cfg.Limits.InputStringBytes = 1
 
-	if snap.staticOptions[0].Value != "orig" || len(snap.staticOptions) != 1 {
-		t.Errorf("static option snapshot was tampered with: %+v", snap.staticOptions)
-	}
-	if snap.resourceRoots[0] != testAbsolutePath("resource") || len(snap.resourceRoots) != 1 {
-		t.Errorf("resource root snapshot was tampered with: %v", snap.resourceRoots)
-	}
-	if snap.connectionExtras[0].Name != "sink" || len(snap.connectionExtras) != 1 {
-		t.Fatalf("extras snapshot was tampered with: %+v", snap.connectionExtras)
-	}
-	if got := string(snap.connectionExtras[0].JSON); got != `{"orig":1}` {
-		t.Errorf("extras JSON snapshot was tampered with: %q", got)
-	}
-	if snap.limits != wantLimits || snap.limits.InputStringBytes != 12_345 {
-		t.Errorf("Limits snapshot was tampered with: got %+v, want %+v", snap.limits, wantLimits)
-	}
+	assert.True(t, snap.staticOptions[0].Value == "orig" && len(snap.staticOptions) == 1, "static option snapshot was tampered with: %+v", snap.staticOptions)
+	assert.True(t, snap.resourceRoots[0] == testAbsolutePath("resource") && len(snap.resourceRoots) == 1, "resource root snapshot was tampered with: %v", snap.resourceRoots)
+	require.True(t, snap.connectionExtras[0].Name == "sink" && len(snap.connectionExtras) == 1, "extras snapshot was tampered with: %+v", snap.connectionExtras)
+	assert.Equal(t, `{"orig":1}`, string(snap.connectionExtras[0].JSON), "extras JSON snapshot was tampered with: %q", string(snap.connectionExtras[0].JSON))
+	assert.True(t, snap.limits == wantLimits && snap.limits.InputStringBytes == 12_345, "Limits snapshot was tampered with: got %+v, want %+v", snap.limits, wantLimits)
 }
 
 // TestAddCheckedDetectsOverflow 直接验证检查溢出的加法:普通加法
 // 正确,溢出返回 false 且不产出伪造的部分和。
 func TestAddCheckedDetectsOverflow(t *testing.T) {
-	if got, ok := addChecked(1, 2); !ok || got != 3 {
-		t.Errorf("addChecked(1, 2) = (%d, %v), want (3, true)", got, ok)
-	}
-	if got, ok := addChecked(0, math.MaxUint64); !ok || got != math.MaxUint64 {
-		t.Errorf("addChecked(0, MaxUint64) = (%d, %v), want (MaxUint64, true)", got, ok)
-	}
-	if got, ok := addChecked(math.MaxUint64, 0); !ok || got != math.MaxUint64 {
-		t.Errorf("addChecked(MaxUint64, 0) = (%d, %v), want (MaxUint64, true)", got, ok)
-	}
-	if _, ok := addChecked(math.MaxUint64, 1); ok {
-		t.Error("addChecked(MaxUint64, 1) must detect overflow")
-	}
-	if _, ok := addChecked(1, math.MaxUint64); ok {
-		t.Error("addChecked(1, MaxUint64) must detect overflow")
-	}
-	if got, ok := addChecked(math.MaxUint64, math.MaxUint64); ok || got != 0 {
-		t.Errorf("addChecked(MaxUint64, MaxUint64) = (%d, %v), want (0, false)", got, ok)
-	}
+	got, ok := addChecked(1, 2)
+	assert.True(t, ok && got == 3, "addChecked(1, 2) = (%d, %v), want (3, true)", got, ok)
+	got, ok = addChecked(0, math.MaxUint64)
+	assert.True(t, ok && got == math.MaxUint64, "addChecked(0, MaxUint64) = (%d, %v), want (MaxUint64, true)", got, ok)
+	got, ok = addChecked(math.MaxUint64, 0)
+	assert.True(t, ok && got == math.MaxUint64, "addChecked(MaxUint64, 0) = (%d, %v), want (MaxUint64, true)", got, ok)
+	_, ok = addChecked(math.MaxUint64, 1)
+	assert.False(t, ok, "addChecked(MaxUint64, 1) must detect overflow")
+	_, ok = addChecked(1, math.MaxUint64)
+	assert.False(t, ok, "addChecked(1, MaxUint64) must detect overflow")
+	got, ok = addChecked(math.MaxUint64, math.MaxUint64)
+	assert.True(t, !ok && got == 0, "addChecked(MaxUint64, MaxUint64) = (%d, %v), want (0, false)", got, ok)
 }
 
 // 编译期锁定:配置校验失败的哨兵必须与公开错误面同一错误值。

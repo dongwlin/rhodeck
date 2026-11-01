@@ -9,12 +9,12 @@ package ffitest_test
 import (
 	"fmt"
 	"os"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/ffitest"
+	"github.com/stretchr/testify/require"
 )
 
 // modeSignal 与 signalMarker 是信号死亡模式的注册键与 stdout 标记。
@@ -44,19 +44,9 @@ func runSignalChild() int {
 // ExitCode 为 -1,且已产出的标记保留——原生崩溃必须成为可见失败。
 func TestRunSignalDeath(t *testing.T) {
 	out := ffitest.Run(t, ffitest.Options{Mode: modeSignal, Timeout: childTimeout})
-	if out.Err == nil {
-		t.Fatalf("SIGKILL death must be reported as a failure:\n%s", out.Diagnostics())
-	}
-	if !out.Signaled {
-		t.Fatalf("signal death must be reported via Signaled (Signaled=false, err=%v):\n%s", out.Err, out.Diagnostics())
-	}
-	if out.ExitCode != -1 {
-		t.Fatalf("ExitCode = %d when killed by signal, want -1:\n%s", out.ExitCode, out.Diagnostics())
-	}
-	if out.TimedOut {
-		t.Fatalf("signal death must not be misreported as a timeout:\n%s", out.Diagnostics())
-	}
-	if !strings.Contains(out.Stdout, signalMarker) {
-		t.Fatalf("signal death output must preserve the marker already produced:\n%s", out.Diagnostics())
-	}
+	require.Error(t, out.Err, "SIGKILL death must be reported as a failure:\n%s", out.Diagnostics())
+	require.True(t, out.Signaled, "signal death must be reported via Signaled (Signaled=false, err=%v):\n%s", out.Err, out.Diagnostics())
+	require.Equal(t, -1, out.ExitCode, "ExitCode = %d when killed by signal, want -1:\n%s", out.ExitCode, out.Diagnostics())
+	require.False(t, out.TimedOut, "signal death must not be misreported as a timeout:\n%s", out.Diagnostics())
+	require.Contains(t, out.Stdout, signalMarker, "signal death output must preserve the marker already produced:\n%s", out.Diagnostics())
 }

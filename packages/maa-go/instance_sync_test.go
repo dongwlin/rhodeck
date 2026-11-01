@@ -6,7 +6,6 @@ package maa
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -14,6 +13,8 @@ import (
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newSyncRig 构造带 fake caller 的受控实例:实例经 runNewInstance 的
@@ -24,9 +25,7 @@ func newSyncRig(t *testing.T, handle uintptr) (*Instance, *createRig) {
 	t.Helper()
 	rig := newCreateRig(t, handle)
 	inst, err := runNewInstance(t, rig.rt, rig.creator, rig.closer, rig.caller, InstanceConfig{})
-	if err != nil {
-		t.Fatalf("NewInstance = %v, want nil", err)
-	}
+	require.NoError(t, err, "NewInstance = %v, want nil", err)
 	rig.track(inst)
 	return inst, rig
 }
@@ -45,46 +44,24 @@ func TestAppendTaskPassesUnknownTypeAndJSONVerbatim(t *testing.T) {
 	raw := json.RawMessage(`{"unknown_field":1,"big":9007199254740993,"nested":{"note":"a\u0000b"}}`)
 	rig.caller.appendRet = 123
 	id, err := inst.AppendTask(taskType, raw)
-	if err != nil {
-		t.Fatalf("AppendTask = %v, want nil", err)
-	}
-	if id != TaskID(123) {
-		t.Errorf("AppendTask id = %d, want 123", id)
-	}
-	if got := rig.caller.count("appendTask"); got != 1 {
-		t.Fatalf("AppendTask call count = %d, want 1", got)
-	}
+	require.NoError(t, err, "AppendTask = %v, want nil", err)
+	assert.Equal(t, TaskID(123), id, "AppendTask id = %d, want 123", id)
+	require.Equal(t, 1, rig.caller.count("appendTask"), "AppendTask call count = %d, want 1", rig.caller.count("appendTask"))
 	rec := rig.caller.appendRecord(0)
-	if rec.handle != handle {
-		t.Errorf("AppendTask received handle %#x, want %#x (the unique gated handle of the instance)", rec.handle, handle)
-	}
-	if rec.taskType != taskType {
-		t.Errorf("AppendTask taskType = %q, want %q (unknown task type passed through as-is)", rec.taskType, taskType)
-	}
-	if rec.params != string(raw) {
-		t.Errorf("AppendTask params byte-for-byte passthrough broken:\n got %q\nwant %q", rec.params, string(raw))
-	}
+	assert.Equal(t, handle, rec.handle, "AppendTask received handle %#x, want %#x (the unique gated handle of the instance)", rec.handle, handle)
+	assert.Equal(t, taskType, rec.taskType, "AppendTask taskType = %q, want %q (unknown task type passed through as-is)", rec.taskType, taskType)
+	assert.Equal(t, string(raw), rec.params, "AppendTask params byte-for-byte passthrough broken:\n got %q\nwant %q", rec.params, string(raw))
 	for _, want := range []string{"unknown_field", "9007199254740993", `a\u0000b`} {
-		if !strings.Contains(rec.params, want) {
-			t.Errorf("AppendTask params should preserve %q:\n%s", want, rec.params)
-		}
+		assert.Contains(t, rec.params, want, "AppendTask params should preserve %q:\n%s", want, rec.params)
 	}
 
 	// 原生返回 0:TaskID 0 明确表示提交失败,错误包装 ErrNativeRejected。
 	rig.caller.appendRet = 0
 	id, err = inst.AppendTask(taskType, json.RawMessage(`{}`))
-	if id != 0 {
-		t.Errorf("id on submission failure = %d, want 0", id)
-	}
-	if !errors.Is(err, native.ErrNativeRejected) {
-		t.Errorf("submission failure err = %v, want errors.Is native.ErrNativeRejected", err)
-	}
-	if !strings.Contains(err.Error(), "AsstAppendTask") {
-		t.Errorf("the error should name the interface:\n%s", err.Error())
-	}
-	if got := rig.caller.count("appendTask"); got != 2 {
-		t.Errorf("AppendTask call count = %d, want 2", got)
-	}
+	assert.Equal(t, TaskID(0), id, "id on submission failure = %d, want 0", id)
+	assert.ErrorIs(t, err, native.ErrNativeRejected, "submission failure err = %v, want errors.Is native.ErrNativeRejected", err)
+	assert.Contains(t, err.Error(), "AsstAppendTask", "the error should name the interface:\n%s", err.Error())
+	assert.Equal(t, 2, rig.caller.count("appendTask"), "AppendTask call count = %d, want 2", rig.caller.count("appendTask"))
 }
 
 // TestAcceptedRequestsAreNotTaskCompletion 验证「SetTaskParams
@@ -98,23 +75,18 @@ func TestAcceptedRequestsAreNotTaskCompletion(t *testing.T) {
 	params := json.RawMessage(`{"stage":"1-7"}`)
 
 	t.Run("SetTaskParams accepts as exactly nil, rejects with ErrNativeRejected", func(t *testing.T) {
-		if err := inst.SetTaskParams(7, params); err != nil {
-			t.Fatalf("SetTaskParams = %v, want exactly nil (accepted != completed)", err)
-		}
+		setRet := inst.SetTaskParams(7, params)
+		require.NoError(t, setRet, "SetTaskParams = %v, want exactly nil (accepted != completed)", setRet)
 		rec := rig.caller.setParamsRecord(0)
-		if rec.handle != handle || rec.id != 7 || rec.params != string(params) {
-			t.Errorf("SetTaskParams call record = %+v, want handle %#x, id 7, params passed through byte-for-byte", rec, handle)
-		}
-		if err := inst.SetTaskParams(-5, params); err != nil {
-			t.Fatalf("SetTaskParams(-5) = %v, want exactly nil", err)
-		}
-		if got := rig.caller.setParamsRecord(1).id; got != -5 {
-			t.Errorf("SetTaskParams id = %d, want -5 (int32 sign bit preserved)", got)
-		}
+		assert.Equal(t, handle, rec.handle, "SetTaskParams call record = %+v, want handle %#x, id 7, params passed through byte-for-byte", rec, handle)
+		assert.Equal(t, int32(7), rec.id, "SetTaskParams call record = %+v, want handle %#x, id 7, params passed through byte-for-byte", rec, handle)
+		assert.Equal(t, string(params), rec.params, "SetTaskParams call record = %+v, want handle %#x, id 7, params passed through byte-for-byte", rec, handle)
+		negRet := inst.SetTaskParams(-5, params)
+		require.NoError(t, negRet, "SetTaskParams(-5) = %v, want exactly nil", negRet)
+		assert.Equal(t, int32(-5), rig.caller.setParamsRecord(1).id, "SetTaskParams id = %d, want -5 (int32 sign bit preserved)", rig.caller.setParamsRecord(1).id)
 		rig.caller.setParamsRet = 0
-		if err := inst.SetTaskParams(7, params); !errors.Is(err, native.ErrNativeRejected) {
-			t.Errorf("rejected SetTaskParams = %v, want errors.Is native.ErrNativeRejected", err)
-		}
+		rejected := inst.SetTaskParams(7, params)
+		assert.ErrorIs(t, rejected, native.ErrNativeRejected, "rejected SetTaskParams = %v, want errors.Is native.ErrNativeRejected", rejected)
 	})
 	t.Run("Start/Stop/BackToHome accept as exactly nil, reject with ErrNativeRejected", func(t *testing.T) {
 		type entry struct {
@@ -128,15 +100,11 @@ func TestAcceptedRequestsAreNotTaskCompletion(t *testing.T) {
 			{"BackToHome", inst.BackToHome, func() int { return rig.caller.count("backToHome") }},
 		}
 		for i, e := range entries {
-			if err := e.call(); err != nil {
-				t.Fatalf("%s = %v, want exactly nil (accepted != task completed)", e.name, err)
-			}
-			if got := e.calls(); got != 1 {
-				t.Errorf("%s call count = %d, want 1", e.name, got)
-			}
-			if rec := rig.caller.boolRecord(i); rec.handle != handle {
-				t.Errorf("%s received handle %#x, want %#x", e.name, rec.handle, handle)
-			}
+			callErr := e.call()
+			require.NoError(t, callErr, "%s = %v, want exactly nil (accepted != task completed)", e.name, callErr)
+			assert.Equal(t, 1, e.calls(), "%s call count = %d, want 1", e.name, e.calls())
+			rec := rig.caller.boolRecord(i)
+			assert.Equal(t, handle, rec.handle, "%s received handle %#x, want %#x", e.name, rec.handle, handle)
 		}
 		for _, name := range []string{"start", "stop", "backToHome"} {
 			rig.caller.boolRets = map[string]uint8{name: 0}
@@ -149,9 +117,7 @@ func TestAcceptedRequestsAreNotTaskCompletion(t *testing.T) {
 			case "backToHome":
 				err = inst.BackToHome()
 			}
-			if !errors.Is(err, native.ErrNativeRejected) {
-				t.Errorf("rejected %s = %v, want errors.Is native.ErrNativeRejected", name, err)
-			}
+			assert.ErrorIs(t, err, native.ErrNativeRejected, "rejected %s = %v, want errors.Is native.ErrNativeRejected", name, err)
 		}
 		delete(rig.caller.boolRets, "start")
 		delete(rig.caller.boolRets, "stop")
@@ -178,18 +144,17 @@ func TestRunningConnectedFalseIsNotAnError(t *testing.T) {
 	for _, tc := range cases {
 		rig.caller.boolRets = map[string]uint8{"running": tc.ret}
 		got, err := inst.Running()
-		if got != tc.wantRunning || (err != nil) != tc.wantErr {
-			t.Errorf("Running(%s) = (%v, %v), want (%v, nil)", tc.what, got, err, tc.wantRunning)
-		}
+		assert.Equal(t, tc.wantRunning, got, "Running(%s) = (%v, %v), want (%v, nil)", tc.what, got, err, tc.wantRunning)
+		assert.Equal(t, tc.wantErr, err != nil, "Running(%s) = (%v, %v), want (%v, nil)", tc.what, got, err, tc.wantRunning)
 	}
 	rig.caller.boolRets = map[string]uint8{"connected": 0}
-	if got, err := inst.Connected(); got || err != nil {
-		t.Errorf("Connected(false) = (%v, %v), want (false, nil)", got, err)
-	}
+	got, err := inst.Connected()
+	assert.False(t, got, "Connected(false) = (%v, %v), want (false, nil)", got, err)
+	assert.NoError(t, err, "Connected(false) = (%v, %v), want (false, nil)", got, err)
 	rig.caller.boolRets = map[string]uint8{"connected": 1}
-	if got, err := inst.Connected(); !got || err != nil {
-		t.Errorf("Connected(true) = (%v, %v), want (true, nil)", got, err)
-	}
+	got, err = inst.Connected()
+	assert.True(t, got, "Connected(true) = (%v, %v), want (true, nil)", got, err)
+	assert.NoError(t, err, "Connected(true) = (%v, %v), want (true, nil)", got, err)
 }
 
 // TestSyncEntriesRejectByLifecycle 验证后半「生命周期失败仍
@@ -213,34 +178,25 @@ func TestSyncEntriesRejectByLifecycle(t *testing.T) {
 
 	t.Run("closed phase rejects all entries with no native side effects", func(t *testing.T) {
 		inst, rig := newSyncRig(t, 0xE220)
-		if err := inst.Close(); err != nil {
-			t.Fatalf("Close = %v, want nil", err)
-		}
+		closeRet := inst.Close()
+		require.NoError(t, closeRet, "Close = %v, want nil", closeRet)
 		for i, err := range allEntries(inst) {
-			if !errors.Is(err, native.ErrClosed) {
-				t.Errorf("entry %d = %v, want errors.Is native.ErrClosed", i, err)
-			}
+			assert.ErrorIs(t, err, native.ErrClosed, "entry %d = %v, want errors.Is native.ErrClosed", i, err)
 		}
-		if got := rig.caller.total(); got != 0 {
-			t.Errorf("business call count after closed = %d, want 0 (does not bypass the state calls)", got)
-		}
+		assert.Equal(t, 0, rig.caller.total(), "business call count after closed = %d, want 0 (does not bypass the state calls)", rig.caller.total())
 	})
 	t.Run("faulted phase rejects all entries with the first cause reachable along the chain", func(t *testing.T) {
 		inst, rig := newSyncRig(t, 0xE221)
 		cause := fmt.Errorf("fake: first fault: %w", native.ErrProtocol)
 		inst.inst.state.recordFault(cause)
 		for i, err := range allEntries(inst) {
-			if !errors.Is(err, cause) || !errors.Is(err, native.ErrProtocol) {
-				t.Errorf("entry %d = %v, want the first cause and native.ErrProtocol reachable along the error chain", i, err)
-			}
+			assert.ErrorIs(t, err, cause, "entry %d = %v, want the first cause and native.ErrProtocol reachable along the error chain", i, err)
+			assert.ErrorIs(t, err, native.ErrProtocol, "entry %d = %v, want the first cause and native.ErrProtocol reachable along the error chain", i, err)
 		}
-		if got := rig.caller.total(); got != 0 {
-			t.Errorf("business call count after faulted = %d, want 0 (does not bypass the state calls)", got)
-		}
+		assert.Equal(t, 0, rig.caller.total(), "business call count after faulted = %d, want 0 (does not bypass the state calls)", rig.caller.total())
 		// faulted 后关闭仍可完成(异常路径进入 faulted 后关闭)。
-		if err := inst.Close(); !errors.Is(err, cause) {
-			t.Errorf("Close after faulted = %v, want the first cause", err)
-		}
+		closeErr := inst.Close()
+		assert.ErrorIs(t, closeErr, cause, "Close after faulted = %v, want the first cause", closeErr)
 	})
 	t.Run("closing phase rejects all entries", func(t *testing.T) {
 		inst, rig := newSyncRig(t, 0xE222)
@@ -255,21 +211,15 @@ func TestSyncEntriesRejectByLifecycle(t *testing.T) {
 		// 关闭所有者已进入一次 Stop(closing 已生效、在途调用已清零)。
 		<-entered
 		for i, err := range allEntries(inst) {
-			if !errors.Is(err, native.ErrClosing) {
-				t.Errorf("entry %d during closing = %v, want errors.Is native.ErrClosing", i, err)
-			}
+			assert.ErrorIs(t, err, native.ErrClosing, "entry %d during closing = %v, want errors.Is native.ErrClosing", i, err)
 		}
-		if got := rig.caller.total(); got != 0 {
-			t.Errorf("business call count during closing = %d, want 0 (does not bypass the state calls)", got)
-		}
+		assert.Equal(t, 0, rig.caller.total(), "business call count during closing = %d, want 0 (does not bypass the state calls)", rig.caller.total())
 		close(release)
 		select {
 		case err := <-closeErr:
-			if err != nil {
-				t.Fatalf("Close = %v, want nil", err)
-			}
+			require.NoError(t, err, "Close = %v, want nil", err)
 		case <-time.After(hangGuard):
-			t.Fatal("Close did not complete within the hang-guard deadline")
+			require.Fail(t, "Close did not complete within the hang-guard deadline")
 		}
 	})
 }
@@ -307,28 +257,21 @@ func TestInvalidInputFailsBeforeNative(t *testing.T) {
 		}
 		for _, tc := range badTypes {
 			_, err := inst.AppendTask(tc.typ, json.RawMessage(`{}`))
-			if !errors.Is(err, native.ErrInvalidInput) {
-				t.Errorf("%s: err = %v, want errors.Is native.ErrInvalidInput", tc.what, err)
-			}
+			assert.ErrorIs(t, err, native.ErrInvalidInput, "%s: err = %v, want errors.Is native.ErrInvalidInput", tc.what, err)
 		}
 		for _, tc := range badParams {
 			_, err := inst.AppendTask("Fighting", tc.raw)
-			if !errors.Is(err, native.ErrInvalidInput) {
-				t.Errorf("params %s: err = %v, want errors.Is native.ErrInvalidInput", tc.what, err)
-			}
+			assert.ErrorIs(t, err, native.ErrInvalidInput, "params %s: err = %v, want errors.Is native.ErrInvalidInput", tc.what, err)
 		}
 	})
 	t.Run("SetTaskParams", func(t *testing.T) {
 		for _, tc := range badParams {
-			if err := inst.SetTaskParams(1, tc.raw); !errors.Is(err, native.ErrInvalidInput) {
-				t.Errorf("params %s: err = %v, want errors.Is native.ErrInvalidInput", tc.what, err)
-			}
+			setErr := inst.SetTaskParams(1, tc.raw)
+			assert.ErrorIs(t, setErr, native.ErrInvalidInput, "params %s: err = %v, want errors.Is native.ErrInvalidInput", tc.what, setErr)
 		}
 	})
 	// 全部非法输入(含正确输入的对照组之外)都未触达任何原生业务调用。
-	if got := rig.caller.total(); got != 0 {
-		t.Errorf("business call count with invalid input = %d, want 0 (fails before raw)", got)
-	}
+	assert.Equal(t, 0, rig.caller.total(), "business call count with invalid input = %d, want 0 (fails before raw)", rig.caller.total())
 }
 
 // TestLogReturnsOnlyInputOrLifecycleErrors 验证「Log 等 void
@@ -342,34 +285,25 @@ func TestLogReturnsOnlyInputOrLifecycleErrors(t *testing.T) {
 	logger := newFakeRuntimeLogger()
 	rt := &Runtime{limits: defaultLimits(), gate: gate, logger: logger}
 
-	if err := rt.Log("info", "hello binding"); err != nil {
-		t.Fatalf("Log = %v, want nil (no input/lifecycle error means no error)", err)
-	}
+	logErr := rt.Log("info", "hello binding")
+	require.NoError(t, logErr, "Log = %v, want nil (no input/lifecycle error means no error)", logErr)
 	rec := logger.record(0)
-	if rec.level != "info" || rec.message != "hello binding" {
-		t.Errorf("Log record = %+v, want level/message passed through byte-for-byte", rec)
-	}
+	assert.Equal(t, "info", rec.level, "Log record = %+v, want level/message passed through byte-for-byte", rec)
+	assert.Equal(t, "hello binding", rec.message, "Log record = %+v, want level/message passed through byte-for-byte", rec)
 	// 空串允许,由 Core 解释。
-	if err := rt.Log("", ""); err != nil {
-		t.Errorf("Log(empty string) = %v, want nil", err)
-	}
-	if rec := logger.record(1); rec.level != "" || rec.message != "" {
-		t.Errorf("Log empty-string record = %+v, want empty-string passthrough", rec)
-	}
+	emptyErr := rt.Log("", "")
+	assert.NoError(t, emptyErr, "Log(empty string) = %v, want nil", emptyErr)
+	rec = logger.record(1)
+	assert.Equal(t, "", rec.level, "Log empty-string record = %+v, want empty-string passthrough", rec)
+	assert.Equal(t, "", rec.message, "Log empty-string record = %+v, want empty-string passthrough", rec)
 
 	// 生命周期终止后:错误包装 ErrRuntimeTerminated,native 不再触达。
 	cause := fmt.Errorf("fake: terminated cause: %w", native.ErrProtocol)
 	gate.terminate(cause)
 	err := rt.Log("info", "after termination")
-	if !errors.Is(err, native.ErrRuntimeTerminated) {
-		t.Errorf("Log after termination = %v, want errors.Is native.ErrRuntimeTerminated", err)
-	}
-	if !strings.Contains(err.Error(), "terminated cause") {
-		t.Errorf("termination diagnostics should attach the first failure cause text:\n%s", err.Error())
-	}
-	if got := logger.count(); got != 2 {
-		t.Errorf("Log call count after termination = %d, want still 2 (fails before the lifecycle)", got)
-	}
+	assert.ErrorIs(t, err, native.ErrRuntimeTerminated, "Log after termination = %v, want errors.Is native.ErrRuntimeTerminated", err)
+	assert.Contains(t, err.Error(), "terminated cause", "termination diagnostics should attach the first failure cause text:\n%s", err.Error())
+	assert.Equal(t, 2, logger.count(), "Log call count after termination = %d, want still 2 (fails before the lifecycle)", logger.count())
 }
 
 // TestLogInputFailsBeforeNative 钉住 Log 的输入预算:单字符串预算、
@@ -393,12 +327,9 @@ func TestLogInputFailsBeforeNative(t *testing.T) {
 		{"total exceeds ConfigBytes", "ab", strings.Repeat("b", 19)},
 	}
 	for _, tc := range cases {
-		if err := rt.Log(tc.level, tc.message); !errors.Is(err, native.ErrInvalidInput) {
-			t.Errorf("%s: err = %v, want errors.Is native.ErrInvalidInput", tc.what, err)
-		}
-		if got := logger.count(); got != 0 {
-			t.Fatalf("%s: Log call count = %d, want 0 (fails before raw)", tc.what, got)
-		}
+		logErr := rt.Log(tc.level, tc.message)
+		assert.ErrorIs(t, logErr, native.ErrInvalidInput, "%s: err = %v, want errors.Is native.ErrInvalidInput", tc.what, logErr)
+		require.Equal(t, 0, logger.count(), "%s: Log call count = %d, want 0 (fails before raw)", tc.what, logger.count())
 	}
 }
 
@@ -464,9 +395,7 @@ func TestSyncEntriesShareSingleRawGate(t *testing.T) {
 	}()
 	waitUntil(t, "AppendTask admitted and queued before the gate", func() bool { return inFlightCalls(inst.inst.state) == 2 })
 	<-time.After(notWithin)
-	if got := rig.caller.count("appendTask"); got != 0 {
-		t.Fatalf("AppendTask entered native %d times while the same raw gate is held by Start", got)
-	}
+	require.Equal(t, 0, rig.caller.count("appendTask"), "AppendTask entered native %d times while the same raw gate is held by Start", rig.caller.count("appendTask"))
 
 	close(release)
 	for _, wait := range []struct {
@@ -478,19 +407,13 @@ func TestSyncEntriesShareSingleRawGate(t *testing.T) {
 	} {
 		select {
 		case err := <-wait.ch:
-			if err != nil {
-				t.Fatalf("%s = %v, want nil", wait.what, err)
-			}
+			require.NoError(t, err, "%s = %v, want nil", wait.what, err)
 		case <-time.After(hangGuard):
-			t.Fatalf("%s did not complete within the hang-guard deadline", wait.what)
+			require.Fail(t, wait.what+" did not complete within the hang-guard deadline")
 		}
 	}
-	if got := rig.caller.count("appendTask"); got != 1 {
-		t.Errorf("AppendTask call count after release = %d, want 1", got)
-	}
-	if got := rig.caller.count("start"); got != 1 {
-		t.Errorf("Start call count after release = %d, want 1", got)
-	}
+	assert.Equal(t, 1, rig.caller.count("appendTask"), "AppendTask call count after release = %d, want 1", rig.caller.count("appendTask"))
+	assert.Equal(t, 1, rig.caller.count("start"), "Start call count after release = %d, want 1", rig.caller.count("start"))
 }
 
 // TestCloseWaitsQueuedSyncEntries 验证「closing/faulted 后不
@@ -525,44 +448,33 @@ func TestCloseWaitsQueuedSyncEntries(t *testing.T) {
 	go func() { closeErr <- inst.Close() }()
 	waitUntil(t, "close won the election and transitioned to closing", func() bool { return inst.inst.state.currentPhase() == phaseClosing })
 	<-time.After(notWithin)
-	if got := rig.closer.count("stop"); got != 0 {
-		t.Fatalf("Stop called %d times while in-flight sync calls have not exited", got)
-	}
-	if got := rig.closer.count("destroy"); got != 0 {
-		t.Fatalf("Destroy called %d times while in-flight sync calls have not exited", got)
-	}
+	require.Equal(t, 0, rig.closer.count("stop"), "Stop called %d times while in-flight sync calls have not exited", rig.closer.count("stop"))
+	require.Equal(t, 0, rig.closer.count("destroy"), "Destroy called %d times while in-flight sync calls have not exited", rig.closer.count("destroy"))
 
 	// 放行 Start:排队中的 AppendTask 转入门禁段照常完成(先于关闭
 	// 准入的调用不被撤销),随后关闭前进。
 	close(release)
 	select {
 	case err := <-errStart:
-		if err != nil {
-			t.Fatalf("Start = %v, want nil", err)
-		}
+		require.NoError(t, err, "Start = %v, want nil", err)
 	case <-time.After(hangGuard):
-		t.Fatal("Start did not complete within the hang-guard deadline")
+		require.Fail(t, "Start did not complete within the hang-guard deadline")
 	}
 	select {
 	case err := <-errAppend:
-		if err != nil {
-			t.Fatalf("queued AppendTask = %v, want nil (admitted calls are not revoked by close)", err)
-		}
+		require.NoError(t, err, "queued AppendTask = %v, want nil (admitted calls are not revoked by close)", err)
 	case <-time.After(hangGuard):
-		t.Fatal("AppendTask did not complete within the hang-guard deadline")
+		require.Fail(t, "AppendTask did not complete within the hang-guard deadline")
 	}
 	select {
 	case err := <-closeErr:
-		if err != nil {
-			t.Fatalf("Close = %v, want nil", err)
-		}
+		require.NoError(t, err, "Close = %v, want nil", err)
 	case <-time.After(hangGuard):
-		t.Fatal("Close did not complete within the hang-guard deadline")
+		require.Fail(t, "Close did not complete within the hang-guard deadline")
 	}
-	if seq := rig.closer.calls(); len(seq) != 2 || seq[0] != "stop" || seq[1] != "destroy" {
-		t.Fatalf("native call sequence = %v, want [stop destroy]", seq)
-	}
-	if got := rig.closer.destroyHandles[0]; got != handle {
-		t.Errorf("Destroy received handle %#x, want %#x", got, handle)
-	}
+	seq := rig.closer.calls()
+	require.Len(t, seq, 2, "native call sequence = %v, want [stop destroy]", seq)
+	require.Equal(t, "stop", seq[0], "native call sequence = %v, want [stop destroy]", seq)
+	require.Equal(t, "destroy", seq[1], "native call sequence = %v, want [stop destroy]", seq)
+	assert.Equal(t, handle, rig.closer.destroyHandles[0], "Destroy received handle %#x, want %#x", rig.closer.destroyHandles[0], handle)
 }

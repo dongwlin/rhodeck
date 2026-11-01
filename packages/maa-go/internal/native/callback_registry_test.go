@@ -4,11 +4,13 @@
 package native
 
 import (
-	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // hangGuard 是防挂死兜底上限:仅用于「操作必须完成」的正向断言的等
@@ -32,9 +34,7 @@ const (
 func assertPanics(t *testing.T, what string, f func()) {
 	t.Helper()
 	defer func() {
-		if recover() == nil {
-			t.Errorf("%s must panic as required by the contract", what)
-		}
+		assert.True(t, recover() != nil, "%s must panic as required by the contract", what)
 	}()
 	f()
 }
@@ -99,12 +99,8 @@ func (r *cbDeliveryRecorder) snapshot() []cbDeliveryRecord {
 func mustRegister(t *testing.T, deliver CallbackDelivery) uintptr {
 	t.Helper()
 	token, err := RegisterCallbackTarget(deliver)
-	if err != nil {
-		t.Fatalf("RegisterCallbackTarget must not fail: %v", err)
-	}
-	if token == 0 {
-		t.Fatalf("registered token = 0, want non-zero (token 0 is never accepted)")
-	}
+	require.NoError(t, err, "RegisterCallbackTarget must not fail: %v", err)
+	require.NotEqual(t, uintptr(0), token, "registered token = 0, want non-zero (token 0 is never accepted)")
 	return token
 }
 
@@ -141,20 +137,18 @@ func TestTokenMonotonicNeverReused(t *testing.T) {
 	first := register()
 	second := register()
 	third := register()
-	if !(first < second && second < third) {
-		t.Fatalf("consecutively registered tokens must strictly increase: %d, %d, %d",
-			uint64(first), uint64(second), uint64(third))
-	}
+	require.True(t, first < second && second < third,
+		"consecutively registered tokens must strictly increase: %d, %d, %d",
+		uint64(first), uint64(second), uint64(third))
 
 	// 注销中间 token 后再注册:新 token 必须仍大于之前全部(永不复用),
 	// 而不是回收已注销的值。
 	UnregisterCallbackTarget(second)
 	removed[second] = true
 	again := register()
-	if again <= third || again <= second || again <= first {
-		t.Fatalf("token registered after unregistration = %d, must be greater than all previous (%d, %d, %d): tokens must not be reused",
-			uint64(again), uint64(first), uint64(second), uint64(third))
-	}
+	require.True(t, again > third && again > second && again > first,
+		"token registered after unregistration = %d, must be greater than all previous (%d, %d, %d): tokens must not be reused",
+		uint64(again), uint64(first), uint64(second), uint64(third))
 }
 
 // TestTokenExhaustionRefusedAtWrapBoundary 白盒验证「回绕及耗
@@ -182,29 +176,19 @@ func TestTokenExhaustionRefusedAtWrapBoundary(t *testing.T) {
 	before := registryEntryCount()
 
 	token, err := RegisterCallbackTarget(noop)
-	if err == nil {
-		t.Fatalf("registration at the counter wrap boundary must be rejected, got token %d", uint64(token))
-	}
-	if !errors.Is(err, ErrProtocol) {
-		t.Errorf("errors.Is(err, ErrProtocol) = false; err = %v", err)
-	}
-	if errors.Is(err, ErrInvalidInput) {
-		t.Errorf("exhaustion rejection must not be mislabeled as ErrInvalidInput: %v", err)
-	}
-	if token != 0 {
-		t.Errorf("rejected registration token = %d, want 0", uint64(token))
-	}
-	if after := registryEntryCount(); after != before {
-		t.Errorf("a rejected registration must not modify the registry: entry count %d -> %d", before, after)
-	}
+	require.Error(t, err, "registration at the counter wrap boundary must be rejected, got token %d", uint64(token))
+	assert.ErrorIs(t, err, ErrProtocol, "errors.Is(err, ErrProtocol) = false; err = %v", err)
+	assert.NotErrorIs(t, err, ErrInvalidInput, "exhaustion rejection must not be mislabeled as ErrInvalidInput: %v", err)
+	assert.Equal(t, uintptr(0), token, "rejected registration token = %d, want 0", uint64(token))
+	after := registryEntryCount()
+	assert.Equal(t, before, after, "a rejected registration must not modify the registry: entry count %d -> %d", before, after)
 
 	// 恢复计数器后注册表照常可用:正常铸造、查表命中。
 	restore()
 	okToken := mustRegister(t, noop)
 	t.Cleanup(func() { UnregisterCallbackTarget(okToken) })
-	if lookupCallbackTarget(okToken) == nil {
-		t.Fatalf("token %d registered after restoring the counter must be found in the registry", uint64(okToken))
-	}
+	require.NotNil(t, lookupCallbackTarget(okToken),
+		"token %d registered after restoring the counter must be found in the registry", uint64(okToken))
 }
 
 // TestTokenNotConsumedByNilDelivery 钉住「nil deliver 拒绝且不消耗
@@ -218,25 +202,16 @@ func TestTokenNotConsumedByNilDelivery(t *testing.T) {
 	t.Cleanup(func() { UnregisterCallbackTarget(first) })
 
 	bad, err := RegisterCallbackTarget(nil)
-	if err == nil {
-		t.Fatalf("registration with a nil deliver must be rejected, got token %d", uint64(bad))
-	}
-	if !errors.Is(err, ErrInvalidInput) {
-		t.Errorf("errors.Is(err, ErrInvalidInput) = false; err = %v", err)
-	}
-	if errors.Is(err, ErrProtocol) {
-		t.Errorf("nil deliver rejection must not be mislabeled as ErrProtocol: %v", err)
-	}
-	if bad != 0 {
-		t.Errorf("rejected registration token = %d, want 0", uint64(bad))
-	}
+	require.Error(t, err, "registration with a nil deliver must be rejected, got token %d", uint64(bad))
+	assert.ErrorIs(t, err, ErrInvalidInput, "errors.Is(err, ErrInvalidInput) = false; err = %v", err)
+	assert.NotErrorIs(t, err, ErrProtocol, "nil deliver rejection must not be mislabeled as ErrProtocol: %v", err)
+	assert.Equal(t, uintptr(0), bad, "rejected registration token = %d, want 0", uint64(bad))
 
 	next := mustRegister(t, noop)
 	t.Cleanup(func() { UnregisterCallbackTarget(next) })
-	if next != first+1 {
-		t.Fatalf("next token after the nil rejection = %d, want %d (contiguous with the previous; a nil registration consumes no token)",
-			uint64(next), uint64(first+1))
-	}
+	require.Equal(t, first+1, next,
+		"next token after the nil rejection = %d, want %d (contiguous with the previous; a nil registration consumes no token)",
+		uint64(next), uint64(first+1))
 }
 
 // TestDispatchCallbackDeliveryOrder 钉住分发序的固定三步(不允许
@@ -251,21 +226,13 @@ func TestDispatchCallbackDeliveryOrder(t *testing.T) {
 		dispatchCallback(7, cbTestCBytes(`{"t":0}`), 0)
 
 		f := lastCallbackFault.Load()
-		if f == nil {
-			t.Fatal("token 0 must leave a visible boundary fault; silent drops are not allowed")
-		}
-		if f.Kind != callbackFaultTokenZero {
-			t.Errorf("fault kind = %q, want %q", f.Kind, callbackFaultTokenZero)
-		}
-		if f.Msg != 7 || f.Token != 0 {
-			t.Errorf("fault msg = %d, want 7; token = %d, want 0", f.Msg, uint64(f.Token))
-		}
-		if f.Detail == "" {
-			t.Error("the fault detail must not be empty")
-		}
-		if got := rec.snapshot(); len(got) != 0 {
-			t.Errorf("token 0's message was delivered %d times, want 0 (details pointer must not be read)", len(got))
-		}
+		require.NotNil(t, f, "token 0 must leave a visible boundary fault; silent drops are not allowed")
+		assert.Equal(t, callbackFaultTokenZero, f.Kind, "fault kind = %q, want %q", f.Kind, callbackFaultTokenZero)
+		assert.True(t, f.Msg == 7 && f.Token == 0,
+			"fault msg = %d, want 7; token = %d, want 0", f.Msg, uint64(f.Token))
+		assert.NotEmpty(t, f.Detail, "the fault detail must not be empty")
+		got := rec.snapshot()
+		assert.Empty(t, got, "token 0's message was delivered %d times, want 0 (details pointer must not be read)", len(got))
 	})
 
 	t.Run("unregistered token records unknown-token fault, no delivery", func(t *testing.T) {
@@ -274,19 +241,13 @@ func TestDispatchCallbackDeliveryOrder(t *testing.T) {
 		dispatchCallback(-3, cbTestCBytes(`{}`), registryTestGhostToken)
 
 		f := lastCallbackFault.Load()
-		if f == nil {
-			t.Fatal("an unregistered token must leave a visible boundary fault; silent drops are not allowed")
-		}
-		if f.Kind != callbackFaultUnknownToken {
-			t.Errorf("fault kind = %q, want %q", f.Kind, callbackFaultUnknownToken)
-		}
-		if f.Msg != -3 || f.Token != registryTestGhostToken {
-			t.Errorf("fault msg = %d, want -3; token = %d, want %d",
-				f.Msg, uint64(f.Token), uint64(registryTestGhostToken))
-		}
-		if got := rec.snapshot(); len(got) != 0 {
-			t.Errorf("the unregistered token's message was delivered %d times, want 0", len(got))
-		}
+		require.NotNil(t, f, "an unregistered token must leave a visible boundary fault; silent drops are not allowed")
+		assert.Equal(t, callbackFaultUnknownToken, f.Kind, "fault kind = %q, want %q", f.Kind, callbackFaultUnknownToken)
+		assert.True(t, f.Msg == -3 && f.Token == registryTestGhostToken,
+			"fault msg = %d, want -3; token = %d, want %d",
+			f.Msg, uint64(f.Token), uint64(registryTestGhostToken))
+		got := rec.snapshot()
+		assert.Empty(t, got, "the unregistered token's message was delivered %d times, want 0", len(got))
 	})
 
 	t.Run("hit delivers msg and details pointer exactly", func(t *testing.T) {
@@ -303,17 +264,12 @@ func TestDispatchCallbackDeliveryOrder(t *testing.T) {
 		dispatchCallback(msg, p, token)
 
 		got := rec.snapshot()
-		if len(got) != 1 {
-			t.Fatalf("hit delivery count = %d, want 1", len(got))
-		}
-		if got[0].msg != msg {
-			t.Errorf("delivered msg = %d, want %d", got[0].msg, msg)
-		}
-		if got[0].ptr != p {
-			t.Errorf("delivered details pointer = %p, want pass-through %p (pointers pass by value; the dispatch order neither copies nor rewrites)", got[0].ptr, p)
-		}
+		require.Len(t, got, 1, "hit delivery count = %d, want 1", len(got))
+		assert.Equal(t, msg, got[0].msg, "delivered msg = %d, want %d", got[0].msg, msg)
+		assert.Same(t, p, got[0].ptr,
+			"delivered details pointer = %p, want pass-through %p (pointers pass by value; the dispatch order neither copies nor rewrites)", got[0].ptr, p)
 		if f := lastCallbackFault.Load(); f != nil {
-			t.Errorf("a hit delivery must not record a boundary fault, got kind=%s", f.Kind)
+			assert.Nil(t, f, "a hit delivery must not record a boundary fault, got kind=%s", f.Kind)
 		}
 	})
 }
@@ -331,13 +287,10 @@ func TestCallbackRegistryLockNotHeldAcrossDelivery(t *testing.T) {
 	reentrant := func(msg int32, detailsJSON *byte) {
 		defer close(done)
 		// 重入查表:读锁必须可用。
-		if lookupCallbackTarget(token) == nil {
-			t.Errorf("reentrant lookup inside delivery missed token %d", uint64(token))
-		}
+		assert.NotNil(t, lookupCallbackTarget(token), "reentrant lookup inside delivery missed token %d", uint64(token))
 		// 重入登记/移除:写锁必须可用(读锁未跨投递持有)。
 		inner, err := RegisterCallbackTarget(noop)
-		if err != nil {
-			t.Errorf("reentrant registration inside delivery must not fail: %v", err)
+		if !assert.NoError(t, err, "reentrant registration inside delivery must not fail: %v", err) {
 			return
 		}
 		UnregisterCallbackTarget(inner)
@@ -350,7 +303,7 @@ func TestCallbackRegistryLockNotHeldAcrossDelivery(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(hangGuard):
-		t.Fatal("registry reentrancy inside delivery did not finish within the hang guard: the implementation appears to hold the registry lock during delivery (self-deadlock)")
+		require.Fail(t, "registry reentrancy inside delivery did not finish within the hang guard: the implementation appears to hold the registry lock during delivery (self-deadlock)")
 	}
 }
 
@@ -398,23 +351,20 @@ func TestCallbackRegistryInFlightDeliverySurvivesUnregister(t *testing.T) {
 	select {
 	case <-removed:
 	case <-time.After(hangGuard):
-		t.Fatal("UnregisterCallbackTarget did not return within the hang guard: remove appears to be waiting for in-flight deliveries")
+		require.Fail(t, "UnregisterCallbackTarget did not return within the hang guard: remove appears to be waiting for in-flight deliveries")
 	}
-	if lookupCallbackTarget(token) != nil {
-		t.Fatal("the token is still found in the registry after unregistration")
-	}
+	require.Nil(t, lookupCallbackTarget(token), "the token is still found in the registry after unregistration")
 
 	// 放行:已开始的投递不因注销失败,捕获状态在投递期间保持可达。
 	close(release)
 	select {
 	case <-completed:
 	case <-time.After(hangGuard):
-		t.Fatal("released after unregistration, the in-flight delivery did not finish within the hang guard")
+		require.Fail(t, "released after unregistration, the in-flight delivery did not finish within the hang guard")
 	}
-	if gotMsg != msg || gotPtr != details {
-		t.Errorf("in-flight delivery captured msg = %d, want %d; pointer = %p, want %p (strong references keep the arguments intact)",
-			gotMsg, msg, gotPtr, details)
-	}
+	assert.True(t, gotMsg == msg && gotPtr == details,
+		"in-flight delivery captured msg = %d, want %d; pointer = %p, want %p (strong references keep the arguments intact)",
+		gotMsg, msg, gotPtr, details)
 }
 
 // TestCallbackRegistryPauseSeamBetweenLookupAndDeliver 验证测试暂停缝
@@ -464,9 +414,7 @@ func TestCallbackRegistryPauseSeamBetweenLookupAndDeliver(t *testing.T) {
 
 	// hook 触发:此刻查表已命中、投递尚未开始。
 	<-entered
-	if !hookMatched.Load() {
-		t.Fatal("the pause seam was called without the matched token")
-	}
+	require.True(t, hookMatched.Load(), "the pause seam was called without the matched token")
 	// 暂停窗口内并发注销同 token:remove 不被暂停的投递阻塞(注册表
 	// 锁不在查表之后持有)。
 	removed := make(chan struct{})
@@ -477,28 +425,24 @@ func TestCallbackRegistryPauseSeamBetweenLookupAndDeliver(t *testing.T) {
 	select {
 	case <-removed:
 	case <-time.After(hangGuard):
-		t.Fatal("unregistration inside the pause window did not return within the hang guard: the registry lock appears to be held across lookup and delivery")
+		require.Fail(t, "unregistration inside the pause window did not return within the hang guard: the registry lock appears to be held across lookup and delivery")
 	}
-	if lookupCallbackTarget(token) != nil {
-		t.Fatal("unregistration inside the pause window did not take effect")
-	}
+	require.Nil(t, lookupCallbackTarget(token), "unregistration inside the pause window did not take effect")
 	reject.Store(true)
 	close(release)
 
 	deadline := time.Now().Add(hangGuard)
 	for !invoked.Load() {
 		if time.Now().After(deadline) {
-			t.Fatal("after release the delivery did not reach the fake within the hang guard: the pause seam appears to sit outside lookup and delivery")
+			require.Fail(t, "after release the delivery did not reach the fake within the hang guard: the pause seam appears to sit outside lookup and delivery")
 		}
 		time.Sleep(time.Millisecond)
 	}
 	// 分发序照常调用已命中的 fake(不复查注册表),但拒绝标志使其未
 	// 读取 details——证明 hook 恰位于查表与投递之间。
-	if readDetails.Load() {
-		t.Error("the reject flag is set; the fake must not read details")
-	}
+	assert.False(t, readDetails.Load(), "the reject flag is set; the fake must not read details")
 	if f := lastCallbackFault.Load(); f != nil {
-		t.Errorf("a matched delivery must not record a boundary fault, got kind=%s", f.Kind)
+		assert.Nil(t, f, "a matched delivery must not record a boundary fault, got kind=%s", f.Kind)
 	}
 }
 
@@ -535,40 +479,39 @@ func TestCallbackRegistryInstallRemovePanics(t *testing.T) {
 // 理):整段无 NUL 返回 (0, false),不投递截断 JSON 的决定归调用方。
 func TestCallbackDetailsLengthBounds(t *testing.T) {
 	t.Run("nil buffer returns not found", func(t *testing.T) {
-		if length, found := CallbackDetailsLength(nil, 1024); found || length != 0 {
-			t.Fatalf("CallbackDetailsLength(nil, 1024) = (%d, %v), want (0, false)", length, found)
-		}
+		length, found := CallbackDetailsLength(nil, 1024)
+		require.True(t, !found && length == 0,
+			"CallbackDetailsLength(nil, 1024) = (%d, %v), want (0, false)", length, found)
 	})
 
 	t.Run("mid-buffer NUL returns its index", func(t *testing.T) {
-		if length, found := CallbackDetailsLength(cbTestCBytes("abc"), 1024); !found || length != 3 {
-			t.Fatalf("CallbackDetailsLength = (%d, %v), want (3, true)", length, found)
-		}
+		length, found := CallbackDetailsLength(cbTestCBytes("abc"), 1024)
+		require.True(t, found && length == 3,
+			"CallbackDetailsLength = (%d, %v), want (3, true)", length, found)
 	})
 
 	t.Run("NUL exactly at the maxBytes index is valid", func(t *testing.T) {
 		//  冻结边界:扫描范围含端点 maxBytes,恰好 CallbackBytes
 		// 字节后是 NUL 合法(9 字节缓冲、maxBytes=8)。
-		if length, found := CallbackDetailsLength(cbTestCBytes("12345678"), 8); !found || length != 8 {
-			t.Fatalf("CallbackDetailsLength = (%d, %v), want (8, true)", length, found)
-		}
+		length, found := CallbackDetailsLength(cbTestCBytes("12345678"), 8)
+		require.True(t, found && length == 8,
+			"CallbackDetailsLength = (%d, %v), want (8, true)", length, found)
 	})
 
 	t.Run("no NUL within maxBytes returns not found", func(t *testing.T) {
 		// 9 字节全非 NUL、maxBytes=8:扫描 0..8 无 NUL(唯一的 NUL 在
 		// 下标 9,界外)→ (0, false)。
-		if length, found := CallbackDetailsLength(cbTestRawBytes("123456789"), 8); found || length != 0 {
-			t.Fatalf("CallbackDetailsLength = (%d, %v), want (0, false)", length, found)
-		}
+		length, found := CallbackDetailsLength(cbTestRawBytes("123456789"), 8)
+		require.True(t, !found && length == 0,
+			"CallbackDetailsLength = (%d, %v), want (0, false)", length, found)
 	})
 
 	t.Run("maxBytes 0 only inspects the first byte", func(t *testing.T) {
-		if length, found := CallbackDetailsLength(cbTestCBytes(""), 0); !found || length != 0 {
-			t.Fatalf("first byte is NUL: CallbackDetailsLength = (%d, %v), want (0, true)", length, found)
-		}
-		if _, found := CallbackDetailsLength(cbTestRawBytes("x"), 0); found {
-			t.Fatalf("first byte is not NUL: found = true, want false (no scan room when maxBytes=0)")
-		}
+		length, found := CallbackDetailsLength(cbTestCBytes(""), 0)
+		require.True(t, found && length == 0,
+			"first byte is NUL: CallbackDetailsLength = (%d, %v), want (0, true)", length, found)
+		_, found = CallbackDetailsLength(cbTestRawBytes("x"), 0)
+		require.False(t, found, "first byte is not NUL: found = true, want false (no scan room when maxBytes=0)")
 	})
 }
 
@@ -580,20 +523,17 @@ func TestCallbackDetailsCopySemantics(t *testing.T) {
 	t.Run("copies exactly length bytes", func(t *testing.T) {
 		src := cbTestCBytes(`{"k":9007199254740993}`)
 		got := CopyCallbackDetails(src, len(`{"k":9007199254740993}`))
-		if string(got) != `{"k":9007199254740993}` {
-			t.Fatalf("copy = %q, want the exact payload (without NUL)", got)
-		}
+		require.Equal(t, `{"k":9007199254740993}`, string(got),
+			"copy = %q, want the exact payload (without NUL)", got)
 	})
 
 	t.Run("length 0 reads no source buffer", func(t *testing.T) {
 		// 空消息(下标 0 即 NUL)与 nil 指针都必须安全返回空字节串:
 		// length 0 时不发生任何原生字节读取。
-		if got := CopyCallbackDetails(cbTestCBytes(""), 0); len(got) != 0 {
-			t.Fatalf("copy length at length 0 = %d, want 0", len(got))
-		}
-		if got := CopyCallbackDetails(nil, 0); len(got) != 0 {
-			t.Fatalf("copy length with a nil source and length 0 = %d, want 0", len(got))
-		}
+		got := CopyCallbackDetails(cbTestCBytes(""), 0)
+		require.Empty(t, got, "copy length at length 0 = %d, want 0", len(got))
+		got = CopyCallbackDetails(nil, 0)
+		require.Empty(t, got, "copy length with a nil source and length 0 = %d, want 0", len(got))
 	})
 
 	t.Run("negative length panics", func(t *testing.T) {
@@ -612,8 +552,7 @@ func TestCallbackDetailsCopySemantics(t *testing.T) {
 		for i := range buf[:len(payload)] {
 			buf[i] = 'X'
 		}
-		if string(got) != payload {
-			t.Fatalf("copy after rewriting the source = %q, want unchanged %q (copy and source do not share the underlying buffer)", got, payload)
-		}
+		require.Equal(t, payload, string(got),
+			"copy after rewriting the source = %q, want unchanged %q (copy and source do not share the underlying buffer)", got, payload)
 	})
 }
