@@ -117,11 +117,45 @@ var (
 //
 // Compilation keeps only the fields and values the input actually provides; no
 // Core default is injected and number literals never round-trip through
-// float64. The compiled theme, mode and objective-relevant switches stay in a
-// package structure reserved for later mode-objective interpretation. This
-// version is input-only: it returns PreparedTask with ObjectiveNone, no
-// targets and no reducer, produces no typed facts and makes no
-// business-objective claim.
+// float64. The compiled theme, mode and objective-relevant switches select the
+// result interpretation. Mode 0 declares one target per run,
+// roguelike:run:1..N from an explicit starts_count of 1-128, with policy any
+// for several runs and all for a single run, and only while nothing can end
+// the chain before the declared runs settle: stop_at_final_boss or
+// stop_at_max_level stops after the current run, and a reachable investment
+// limit or full callback (an explicit positive investments_count, or
+// stop_when_investment_full=true with a nonzero count, while investment
+// stays enabled) stops mid-runs the same way. The BlackFlow theme collects its
+// strategy runs per floor before any settlement screen. Those configurations
+// stay input-only. Mode 1 declares roguelike:investment with policy all only
+// when the limit or full callback is reachable at all: an explicit
+// investment_enabled=false disables Core's investment system, a zero
+// investments_count keeps its investment plugin from engaging, Core's defaults
+// (INT_MAX and false) leave the limit unreachable, and the BlackFlow theme
+// runs its own investment strategy profile instead, so those configurations
+// stay input-only. Mode 6 and mode 7 declare
+// roguelike:monthly_squad and roguelike:deep_exploration with policy all only
+// when monthly_squad_auto_iterate or deep_exploration_auto_iterate is true,
+// since Core never emits the rotation callbacks otherwise. Mode 20001 declares
+// roguelike:jie_garden_target and mode 30003 declares roguelike:start_run,
+// both with policy all. Every other combination stays input-only with
+// ObjectiveNone, no targets and no reducer.
+//
+// Facts come only from callbacks of the accepted Core task with
+// taskchain=Roguelike. The settlement nodes GamePass (achieved, game_pass) and
+// MissionFailedFlag2 (failed, mission_failed) count runs in arrival order, one
+// target per run; settlements beyond the declared run count are ignored. The
+// extra-info facts RoguelikeInvestmentReachLimit (achieved,
+// investment_limit_reached), RoguelikeInvestmentReachFull (achieved,
+// investment_full), MonthlySquadCompleted and DeepExplorationCompleted
+// (achieved, rotation_completed), RoguelikeJieGardenTargetFound (achieved,
+// target_found, exposing only an optional bounded target_subtype) and
+// BlackFlowStartRun status completed (achieved, start_run_completed) or a
+// chain-terminal reward_page_missing, reward_recognition_failed or
+// reward_unrecognized (failed, that status) are interpreted exactly. Chain
+// completion, stops, running statuses, reward_missed and unknown statuses
+// never create facts, and missing evidence stays unobserved. The BlackFlow
+// port's internal callbacks (taskid 0) are environmental and create no facts.
 //
 // Preparation is deterministic and side-effect free: it creates no directory,
 // takes no lock, launches no worker, loads no native code and connects no
@@ -140,14 +174,15 @@ func (roguelikeAdapter) Prepare(task Task) (PreparedTask, error) {
 	if task.Type != roguelikeTaskType {
 		return PreparedTask{}, roguelikeReject("adapter requires Core type %q", roguelikeTaskType)
 	}
-	// Mode-objective interpretation is not part of this input-only version: the
-	// compiled switches stay reserved for it and no target or reducer is
-	// declared yet.
-	params, _, err := compileRoguelike(task.Params)
+	params, cfg, err := compileRoguelike(task.Params)
 	if err != nil {
 		return PreparedTask{}, err
 	}
-	return PreparedTask{Params: params, Policy: ObjectiveNone}, nil
+	policy, targets, reducer := roguelikeObjective(cfg)
+	if policy == ObjectiveNone {
+		return PreparedTask{Params: params, Policy: ObjectiveNone}, nil
+	}
+	return PreparedTask{Params: params, Policy: policy, Targets: targets, Reducer: reducer}, nil
 }
 
 // roguelikeReject wraps every input rejection with ErrInvalidPlan so callers
@@ -156,11 +191,10 @@ func roguelikeReject(format string, args ...any) error {
 	return fmt.Errorf("%w: roguelike: %s", ErrInvalidPlan, fmt.Sprintf(format, args...))
 }
 
-// roguelikeConfig is the compiled input structure this adapter version keeps
-// in package scope. Objective interpretation is not part of this input-only
-// version: no target or reducer is derived from it yet. Effective values
-// reflect the Core defaults of omitted switches so later interpretation can
-// rely on them; they are never injected into the compiled Core params.
+// roguelikeConfig is the compiled input structure this adapter keeps in
+// package scope for objective interpretation. Effective values reflect the
+// Core defaults of omitted switches so interpretation can rely on them; they
+// are never injected into the compiled Core params.
 type roguelikeConfig struct {
 	Theme string
 	Mode  int
@@ -170,6 +204,16 @@ type roguelikeConfig struct {
 	DeepExplorationAutoIterate bool
 	// FindPlayTimeTarget is 1-3 for the JieGarden playtime mode and 0 otherwise.
 	FindPlayTimeTarget int
+	// StartsCount and InvestmentsCount are -1 when the field is absent,
+	// otherwise the validated non-negative value. StopAtFinalBoss,
+	// StopAtMaxLevel and StopWhenInvestmentFull keep the submitted switch
+	// state with Core's false default. The experience, investment and
+	// early-stop values select the mode 0 and mode 1 interpretations.
+	StartsCount            int
+	InvestmentsCount       int
+	StopAtFinalBoss        bool
+	StopAtMaxLevel         bool
+	StopWhenInvestmentFull bool
 	// BlackFlow profile switches. Core derives the start-run profile from the
 	// animal count and the investment flag, so both keep their effective
 	// values: InvestmentEnabled defaults to true and BlackFlowStartAnimals is
@@ -235,6 +279,8 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 		Theme:                 theme,
 		Mode:                  mode,
 		InvestmentEnabled:     true, // Core default
+		StartsCount:           -1,
+		InvestmentsCount:      -1,
 		BlackFlowStartAnimals: -1,
 	}
 	// startRewards keeps the validated blackflow_start_rewards value, or -1
@@ -266,6 +312,12 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 				cfg.DeepExplorationAutoIterate = flag
 			case "blackflow_start_utopia":
 				cfg.BlackFlowUtopia = flag
+			case "stop_at_final_boss":
+				cfg.StopAtFinalBoss = flag
+			case "stop_at_max_level":
+				cfg.StopAtMaxLevel = flag
+			case "stop_when_investment_full":
+				cfg.StopWhenInvestmentFull = flag
 			}
 		case "difficulty":
 			n, err := roguelikeIntField(value, name)
@@ -284,6 +336,11 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 			}
 			if n < 0 {
 				return nil, roguelikeConfig{}, roguelikeReject("%s must not be negative", name)
+			}
+			if name == "starts_count" {
+				cfg.StartsCount = n
+			} else {
+				cfg.InvestmentsCount = n
 			}
 		case "squad", "roles", "core_char", "collectible_mode_squad", "collectible_mode_roles",
 			"first_floor_foldartal", "start_with_seed":

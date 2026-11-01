@@ -49,8 +49,17 @@ func TestRoguelikePrepareAcceptsStrictInputs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if prepared.Policy != ObjectiveNone || len(prepared.Targets) != 0 || prepared.Reducer != nil {
-				t.Fatalf("input-only preparation = %+v", prepared)
+			switch prepared.Policy {
+			case ObjectiveNone:
+				if len(prepared.Targets) != 0 || prepared.Reducer != nil {
+					t.Fatalf("input-only preparation = %+v", prepared)
+				}
+			case ObjectiveAll, ObjectiveAny:
+				if len(prepared.Targets) == 0 || prepared.Reducer == nil {
+					t.Fatalf("interpreted preparation = %+v", prepared)
+				}
+			default:
+				t.Fatalf("unexpected objective policy %q", prepared.Policy)
 			}
 			if !validObject(prepared.Params, MaxAdapterParamsBytes) {
 				t.Fatalf("compiled params are invalid: %s", prepared.Params)
