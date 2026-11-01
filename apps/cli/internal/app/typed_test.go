@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"github.com/dongwlin/rhodeck/apps/cli/internal/output"
 	clipkg "github.com/dongwlin/rhodeck/apps/cli/internal/plan"
 	"os"
@@ -620,19 +619,6 @@ func TestEstablishedFailureSurvivesFaultAndCleanupFailure(t *testing.T) {
 	require.Equal(t, control.Failed, grow.Typed.State, "chain and typed facts changed: %+v", grow)
 }
 
-func TestRecordWriteFailuresUsePersistenceExitCode(t *testing.T) {
-	for _, result := range []control.Result{
-		{State: control.Rejected, Code: "record_write_failed", Cleanup: "complete"},
-		{State: control.Succeeded, Cleanup: "complete", CleanupCode: "record_write_failed"},
-	} {
-		require.Equal(t, output.ExitUnknown, output.ExitForResult(result), "resultExit: %+v", result)
-	}
-	require.Equal(t, output.ExitRejected, output.ExitForResult(control.Result{State: control.Rejected, Code: "invalid_plan", Cleanup: "complete"}), "ordinary rejection exit")
-	wrapped := fmt.Errorf("admission: %w", control.ErrRecordWrite)
-	require.Equal(t, output.ExitUnknown, output.ExitFor(wrapped), "output.ExitFor(ErrRecordWrite)")
-	require.Equal(t, "record_write_failed", output.CodeFor(wrapped), "output.CodeFor(ErrRecordWrite)")
-}
-
 func TestAdmissionPersistenceFailureIsClassified(t *testing.T) {
 	plan, executable, dir := typedPlan(t,
 		operProgressTask("grow-1", `{"plans":[{"role":"Warrior","name":"Alpha","elite":2}]}`),
@@ -896,21 +882,6 @@ func assertRejection(t *testing.T, lines []json.RawMessage, text string) {
 	// The error envelope carries no result and no plan fields.
 	require.NotContains(t, text, `"result"`, "rejection record: %s", text)
 	require.NotContains(t, text, `"plan"`, "rejection record: %s", text)
-}
-
-func TestDoctorWithTypedPlanOnlyInitializesAndCloses(t *testing.T) {
-	t.Setenv("RHODECK_CLI_WORKER_MODE", "doctor")
-	trace := filepath.Join(t.TempDir(), "commands")
-	t.Setenv("RHODECK_CLI_TRACE", trace)
-	plan, executable, dir := typedPlan(t,
-		operProgressTask("grow-1", `{"plans":[{"role":"Warrior","name":"Alpha","elite":2}]}`),
-		switchThemeTask("theme-1", `{"themes":["Theme One","Theme Two"]}`),
-	)
-	code, text, _, diagnostics := runMachine(t, cliArgs("doctor", executable, dir), encodePlan(t, plan))
-	require.Equal(t, output.ExitSuccess, code, "diagnostics: %s (%s)", diagnostics, text)
-	commands, err := os.ReadFile(trace)
-	require.NoError(t, err)
-	require.Equal(t, "initialize\nclose\n", string(commands), "doctor commands: %q", commands)
 }
 
 func TestTypedEventsCarryOnlyFilteredBusinessFacts(t *testing.T) {

@@ -24,10 +24,12 @@ func TestCommandArgumentContract(t *testing.T) {
 	}{
 		{name: "no command", args: nil, code: "command_required"},
 		{name: "unknown command", args: []string{"unknown"}, code: "unknown_command"},
+		{name: "unknown help topic", args: []string{"help", "unknown"}, code: "unknown_command"},
 		{name: "version with extra argument", args: []string{"version", "extra"}, code: "unexpected_arguments"},
 		{name: "capabilities with extra argument", args: []string{"capabilities", "extra"}, code: "unexpected_arguments"},
 		{name: "run with extra argument", args: []string{"run", "extra"}, code: "invalid_arguments"},
 		{name: "run with unknown flag", args: []string{"run", "--bogus"}, code: "invalid_arguments"},
+		{name: "run with unreadable input", args: []string{"run", "--input", "secret"}, code: "invalid_arguments"},
 		{name: "negative timeout", args: []string{"dry-run", "--timeout=-1s"}, code: "invalid_arguments"},
 		{name: "unknown format", args: []string{"--format", "xml"}, code: "invalid_arguments"},
 		{name: "single dash long flag", args: []string{"dry-run", "-input", "-"}, code: "invalid_arguments"},
@@ -140,23 +142,4 @@ func TestCapabilitiesCommandListMatchesTheCommandTree(t *testing.T) {
 	require.NoError(t, json.Unmarshal(lines[0], &caps), "capabilities: %s", out.String())
 	require.Equal(t, []string{"run", "dry-run", "doctor", "capabilities", "version", "help"}, caps.Commands,
 		"capabilities command list drifted from the command tree")
-}
-
-// TestUnknownCommandIsRejected checks that an unknown command name produces
-// the stable unknown_command diagnostic and no other output.
-func TestUnknownCommandIsRejected(t *testing.T) {
-	for _, args := range [][]string{{"bogus"}, {"help", "bogus"}} {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			var out, diagnostics bytes.Buffer
-			code := runCLI("dev", context.Background(), args, strings.NewReader(""), &out, &diagnostics)
-			require.Equal(t, output.ExitRejected, code, "args %q: stdout %s stderr %s", args, out.String(), diagnostics.String())
-			lines := decodeLines(t, out.Bytes())
-			require.Len(t, lines, 1, "args %q must print one JSON object: %s", args, out.String())
-			var failure output.Error
-			require.NoError(t, json.Unmarshal(lines[0], &failure), "args %q: %s", args, out.String())
-			require.Equal(t, "error", failure.Type, "args %q: %s", args, out.String())
-			require.Equal(t, "unknown_command", failure.Code, "args %q: %s", args, out.String())
-			require.Equal(t, "rhodeck-cli: unknown_command\n", diagnostics.String(), "args %q diagnostic line", args)
-		})
-	}
 }

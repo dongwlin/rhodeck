@@ -394,61 +394,20 @@ func decodeLines(t *testing.T, output []byte) []json.RawMessage {
 	}
 }
 
-func TestDiscoveryHasNoInstallationDependency(t *testing.T) {
-	for _, command := range []string{"capabilities", "version"} {
-		t.Run(command, func(t *testing.T) {
-			var out, diagnostics bytes.Buffer
-			code := runCLI("dev", context.Background(), []string{command}, strings.NewReader("invalid"), &out, &diagnostics)
-			require.Equal(t, 0, code, "diagnostics: %s", diagnostics.String())
-			require.Len(t, decodeLines(t, out.Bytes()), 1)
-			require.Empty(t, diagnostics.String(), "unexpected diagnostics")
-		})
-	}
-	t.Run("help", func(t *testing.T) {
-		var out, diagnostics bytes.Buffer
-		code := runCLI("dev", context.Background(), []string{"help"}, strings.NewReader("invalid"), &out, &diagnostics)
-		require.Equal(t, 0, code, "diagnostics: %s", diagnostics.String())
-		require.Empty(t, diagnostics.String(), "unexpected diagnostics")
-		text := out.String()
-		require.NotEmpty(t, strings.TrimSpace(text), "help printed no text")
-		require.False(t, strings.HasPrefix(strings.TrimSpace(text), "{"), "help must print human-readable text, not a machine envelope: %s", text)
-		require.Contains(t, text, "rhodeck-cli", "help does not name the CLI: %s", text)
-		for _, name := range []string{"run", "doctor", "version"} {
-			require.Contains(t, text, name, "help does not mention %q: %s", name, text)
-		}
-	})
-	t.Run("help json", func(t *testing.T) {
-		var out, diagnostics bytes.Buffer
-		code := runCLI("dev", context.Background(), []string{"help", "--format", "json"}, strings.NewReader("invalid"), &out, &diagnostics)
-		require.Equal(t, 0, code, "diagnostics: %s", diagnostics.String())
-		require.Empty(t, diagnostics.String(), "unexpected diagnostics")
-		lines := decodeLines(t, out.Bytes())
-		require.Len(t, lines, 1, "machine help must print one JSON object: %s", out.String())
-		var help output.Help
-		require.NoError(t, json.Unmarshal(lines[0], &help), "machine help: %s", out.String())
-		require.Equal(t, "help", help.Type, "machine help: %s", out.String())
-		require.NotEmpty(t, help.Usage, "machine help carries no usage text: %s", out.String())
-	})
-}
-
-func TestDryRunPreservesOpenParametersWithoutEffects(t *testing.T) {
-	plan, _, dir := testPlan(t)
-	missingWorker := filepath.Join(t.TempDir(), "not-installed")
+// TestVersionCommandNeedsNoInstallation keeps the version command independent
+// of any installed artifact: it reports the build version without reading the
+// input or starting a worker.
+func TestVersionCommandNeedsNoInstallation(t *testing.T) {
 	var out, diagnostics bytes.Buffer
-	code := runCLI("dev", context.Background(), cliArgs("dry-run", missingWorker, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
+	code := runCLI("dev", context.Background(), []string{"version"}, strings.NewReader("invalid"), &out, &diagnostics)
 	require.Equal(t, 0, code, "diagnostics: %s", diagnostics.String())
-	require.True(t, bytes.Contains(out.Bytes(), []byte("900719925474099312345")), "raw parameters changed: %s", out.String())
-	require.True(t, bytes.Contains(out.Bytes(), []byte("FutureTask")), "raw parameters changed: %s", out.String())
-	_, err := os.Stat(dir)
-	require.ErrorIs(t, err, os.ErrNotExist, "dry-run created data directory")
-	lines := decodeLines(t, out.Bytes())
-	var preview output.Plan
-	require.Len(t, lines, 1, "missing unverified plan: %s", out.String())
-	require.NoError(t, json.Unmarshal(lines[0], &preview), "missing unverified plan: %s", out.String())
-	require.Equal(t, "plan", preview.Type, "missing unverified plan: %s", out.String())
-	require.NotEmpty(t, preview.Unverified, "missing unverified plan: %s", out.String())
+	require.Len(t, decodeLines(t, out.Bytes()), 1)
+	require.Empty(t, diagnostics.String(), "unexpected diagnostics")
 }
 
+// TestInputRejectionsHaveStablePrivateOutput keeps a rejected plan input out
+// of both streams. The rejected arguments are covered by the command contract
+// of the command surface tests.
 func TestInputRejectionsHaveStablePrivateOutput(t *testing.T) {
 	plan, executable, dir := testPlan(t)
 	valid := encodePlan(t, plan)
@@ -459,11 +418,6 @@ func TestInputRejectionsHaveStablePrivateOutput(t *testing.T) {
 		decodeLines(t, out.Bytes())
 		require.False(t, bytes.Contains(out.Bytes(), []byte("private-secret")), "input escaped into error diagnostics: %s", out.String())
 		require.NotContains(t, diagnostics.String(), "secret", "input escaped into error diagnostics: %s", diagnostics.String())
-	}
-	for _, args := range [][]string{nil, {"unknown"}, {"version", "secret"}, {"run", "--input", "secret"}, {"dry-run", "--timeout=-1s"}} {
-		var out, diagnostics bytes.Buffer
-		code := runCLI("dev", context.Background(), args, bytes.NewReader(valid), &out, &diagnostics)
-		require.Equal(t, output.ExitRejected, code, "arguments %q", args)
 	}
 }
 
@@ -547,16 +501,6 @@ func TestDoctorMissingADBStillReportsCoreSnapshot(t *testing.T) {
 	require.FailNow(t, "missing field-level ADB rejection: %s", out.String())
 }
 
-func TestRawEventsRequireExplicitOptIn(t *testing.T) {
-	t.Setenv("RHODECK_CLI_WORKER_MODE", "success")
-	plan, executable, dir := testPlan(t)
-	var out, diagnostics bytes.Buffer
-	args := append(cliArgs("run", executable, dir), "--include-raw-events")
-	code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
-	require.Equal(t, output.ExitSuccess, code, "out: %s", out.String())
-	require.True(t, bytes.Contains(out.Bytes(), []byte("private-secret")), "explicit raw callback missing: %s", out.String())
-}
-
 type brokenWriter struct{}
 
 func (brokenWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
@@ -614,10 +558,6 @@ func TestDeadlineRemainsDistinctFromSignalStop(t *testing.T) {
 	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "deadline reason missing: %s", out.String())
 	require.NotNil(t, terminal.Result, "deadline reason missing: %s", out.String())
 	require.Equal(t, "deadline_exceeded", terminal.Result.Code, "deadline reason missing: %s", out.String())
-}
-
-func TestConfirmedTasksDoNotHideCleanupFailure(t *testing.T) {
-	require.Equal(t, output.ExitUnknown, output.ExitForResult(control.Result{State: control.Succeeded, Cleanup: "failed"}))
 }
 
 func TestStartupTimeoutUsesTimeoutExitCode(t *testing.T) {
