@@ -65,7 +65,8 @@ type TaskReducer interface {
 
 // UnassociatedObservationClassifier optionally recognizes exact non-factual
 // progress callbacks emitted before Core assigns a task ID. The runtime calls
-// it only for unambiguous callbacks with an explicit taskid of zero. Returning
+// it serially outside the result lock, with detached JSON, and only for
+// unambiguous callbacks with an explicit taskid of zero. Returning
 // true permits that observation without creating target facts or changing the
 // association requirements for execution callbacks. Implementations must be
 // side-effect free and must not change their reducer's active execution scope.

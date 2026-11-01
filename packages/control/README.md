@@ -31,15 +31,35 @@ preconditions remain unverified until the selected installation is used.
 
 Explicit [typed adapters](typed-adapters.md) extend the same schema with an
 optional selection and a runtime-local registry. `PreparePlan` provides a pure compiled preview; task
-names alone never enable an adapter. The package bundles the strict `oper_progress`
-(`NewOperProgressAdapter`), `switch_theme` (`NewSwitchThemeAdapter`), `copilot`
-(`NewCopilotAdapter`) and `roguelike` (`NewRoguelikeAdapter`) adapters, which
-callers must register explicitly. The
+names alone never enable an adapter. The strict adapters live in separate packages:
+[`operprogress.New`](adapters/operprogress/input.go),
+[`switchtheme.New`](adapters/switchtheme/input.go),
+[`copilot.New`](adapters/copilot/input.go) and
+[`roguelike.New`](adapters/roguelike/input.go). Callers import the selected packages
+and register their instances in `Config.Adapters` or pass them to `PreparePlan`.
+The root package depends only on the adapter contracts, without importing any
+concrete adapter or maintaining a global registry. The
 standalone CLI registers all four for `run` and
 `dry-run`; a task still selects one only through `Task.Adapter`. Adapter inputs and
 results are locally implemented and
 tested without authorized device acceptance, so capability output does not claim
 they work on a device.
+
+## Package boundaries
+
+The root `control` package owns the public plan/result/event contracts, adapter
+interfaces, preparation and objective rules, and the `Runtime`/`Run` lifecycle.
+Worker observation, stopping and persistence ordering share that one state owner.
+Each `adapters/` child package owns one task's strict input compilation, target
+selection and callback reducer; adapters return facts while the runtime validates,
+merges, persists and publishes them.
+
+`internal/strictjson` provides JSON primitives that preserve integer literals and
+reject ambiguous fields. `internal/recordfs` owns directory locking and bounded
+atomic file operations without interpreting records. Record validation and
+interrupted-run recovery remain application rules in the root package.
+[`worker`](worker/README.md) supervises the process and transport, and
+`worker/protocol` defines the wire contract. None of these packages loads MaaCore.
 
 ## Results and stopping
 

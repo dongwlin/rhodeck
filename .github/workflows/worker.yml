@@ -130,3 +130,9 @@ jobs:
           go test -c -o "$RUNNER_TEMP/worker-tests/control.test" ./packages/control
           go test -c -o "$RUNNER_TEMP/worker-tests/worker-client.test" ./packages/control/worker
           go test -c -o "$RUNNER_TEMP/worker-tests/protocol.test" ./packages/control/worker/protocol
+          go test -c -o "$RUNNER_TEMP/worker-tests/operprogress.test" ./packages/control/adapters/operprogress
+          go test -c -o "$RUNNER_TEMP/worker-tests/switchtheme.test" ./packages/control/adapters/switchtheme
+          go test -c -o "$RUNNER_TEMP/worker-tests/copilot.test" ./packages/control/adapters/copilot
+          go test -c -o "$RUNNER_TEMP/worker-tests/roguelike.test" ./packages/control/adapters/roguelike
+          go test -c -o "$RUNNER_TEMP/worker-tests/strictjson.test" ./packages/control/internal/strictjson
+          go test -c -o "$RUNNER_TEMP/worker-tests/recordfs.test" ./packages/control/internal/recordfs

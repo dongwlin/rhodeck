@@ -12,10 +12,12 @@ launch workers, load native code or connect devices. Each adapter must implement
 deterministic preparation without side effects, reject incompatible task types,
 and create a fresh reducer for each task with interpreted targets. Input-only
 adapters return no reducer. Adapters may be prepared concurrently.
-The package bundles four strict adapters: `NewOperProgressAdapter`
-(`oper_progress`, version 1), `NewSwitchThemeAdapter` (`switch_theme`,
-version 1), `NewCopilotAdapter` (`copilot`, version 1) and
-`NewRoguelikeAdapter` (`roguelike`, version 1). The
+Four child packages provide strict adapters: [`operprogress.New`](adapters/operprogress/input.go)
+(`oper_progress`, version 1), [`switchtheme.New`](adapters/switchtheme/input.go)
+(`switch_theme`, version 1), [`copilot.New`](adapters/copilot/input.go)
+(`copilot`, version 1) and [`roguelike.New`](adapters/roguelike/input.go)
+(`roguelike`, version 1). They implement the root package's `TaskAdapter` contract;
+the root package never imports their implementations. The
 [standalone CLI](../../apps/cli/README.md) registers all four explicitly for
 `run` and `dry-run`; a task still selects one only through `Task.Adapter`.
 These adapters have no authorized device acceptance. The CLI
@@ -37,7 +39,7 @@ integers, exactly one nonzero slot in 1-3):
 contain no NUL and not be all whitespace; names are never trimmed or
 translated. Unknown fields, explicit nulls, duplicate keys at any depth,
 unpaired UTF-16 surrogate escapes and duplicate `(role, name)` entries are
-rejected with `ErrInvalidPlan`. See `ExampleNewOperProgressAdapter` for a
+rejected with `ErrInvalidPlan`. See the [OperProgress example](adapters/operprogress/input_test.go) for a
 deterministic preview of compiled params and target IDs.
 
 The SwitchTheme input accepts only an exact, case-sensitive `themes` array of
@@ -61,7 +63,7 @@ selections remain incomplete. Details contain only the associated theme name,
 and confirmation never implies an actual change or a verified final state.
 Unknown fields, explicit nulls, duplicate keys at any depth, unpaired UTF-16
 surrogate escapes and duplicate candidates are rejected with `ErrInvalidPlan`.
-See `ExampleNewSwitchThemeAdapter` for a deterministic preview.
+See the [SwitchTheme example](adapters/switchtheme/adapter_test.go) for a deterministic preview.
 
 ## Copilot input and stage results
 
@@ -266,6 +268,15 @@ Reducers should ignore unrelated message kinds, require sufficient task and
 target association, and retain bounded scratch state. They must select business
 fields for `Details` and `Summary`; unfiltered native payloads, OCR geometry,
 private paths and diagnostic logs do not belong in normal typed events.
+
+A reducer may additionally implement `UnassociatedObservationClassifier` to
+recognize exact non-factual progress emitted without an allocated Core task ID.
+The runtime calls `IsUnassociatedProgress` serially outside the result lock, with
+detached JSON, only for unambiguous observations with an explicit `taskid=0`.
+The classifier must be side-effect free: it cannot create
+facts, change the active execution scope, or relax association requirements for
+other observations. Copilot preparation diagnostics and Roguelike's BlackFlow
+internal progress use this optional contract.
 
 A `TypedUpdate` may confirm a subset of the prepared target IDs and one summary
 object. An unobserved target may receive its first fact. Repeating an identical

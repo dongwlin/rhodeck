@@ -12,13 +12,15 @@ Rhodeck 当前是一个 Go module，提供 MaaCore 动态绑定、独立 Core wo
 | `apps/core-worker/` | 可执行程序；入口只有 `main.go`，实现位于 `internal/worker`，在子进程内持有绑定，把命令和观察转换为 JSONL |
 | `apps/cli/` | 独立 `rhodeck-cli`；调用 control 服务，提供通用任务、dry-run 和无设备诊断 |
 | `packages/control/` | 应用运行时；运行身份、任务结果、停止、目录互斥与最小执行记录 |
+| `packages/control/adapters/` | 按任务分包的显式类型适配器；严格输入编译、目标选择与回调结果解释 |
+| `packages/control/internal/` | 严格 JSON 辅助与文件存储机制；业务记录校验和恢复规则仍由 control 持有 |
 | `packages/control/worker/` | 父进程客户端；启动、请求关联、期限、诊断和进程回收 |
 | `packages/control/worker/protocol/` | 纯协议 DTO、编解码和有界队列 |
 | `tools/check-maa-api/` | 显式来源化 C 头与 Go raw 声明的静态一致性检查 |
 | `tools/maa-go-check/` | 分层验证入口，分别报告各层执行结果 |
 | `tools/api-coverage/` | 完整 worker 的 API 覆盖清单与漂移门禁：扫描 maa-go 公开面并与冻结清单、五段映射对账 |
 
-依赖方向为 CLI → control → 监管客户端 → protocol、core-worker → protocol 与 maa、maa → internal/native。control 和监管客户端不加载原生库；protocol 不依赖绑定、进程管理或应用服务。不要将规划中的产品模块当作已实现能力。
+依赖方向为 CLI → control 与显式 adapters、adapters → control 契约、control → 监管客户端 → protocol、core-worker → protocol 与 maa、maa → internal/native。control 不导入具体 adapter；control 和监管客户端不加载原生库；protocol 不依赖绑定、进程管理或应用服务。不要将规划中的产品模块当作已实现能力。
 
 ## 全局开发约定
 
