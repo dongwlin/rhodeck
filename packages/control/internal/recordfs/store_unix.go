@@ -1,6 +1,6 @@
 //go:build linux || darwin
 
-package control
+package recordfs
 
 import (
 	"errors"
