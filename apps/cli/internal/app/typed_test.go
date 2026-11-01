@@ -169,7 +169,7 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 
 	out.Reset()
 	diagnostics.Reset()
-	code = runCLI("dev", context.Background(), []string{"help"}, strings.NewReader(""), &out, &diagnostics)
+	code = runCLI("dev", context.Background(), []string{"help", "--format", "json"}, strings.NewReader(""), &out, &diagnostics)
 	require.Equal(t, exitSuccess, code, "help exit")
 	var help envelope
 	require.NoError(t, json.Unmarshal(out.Bytes(), &help))

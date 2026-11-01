@@ -394,7 +394,7 @@ func decodeLines(t *testing.T, output []byte) []json.RawMessage {
 }
 
 func TestDiscoveryHasNoInstallationDependency(t *testing.T) {
-	for _, command := range []string{"capabilities", "version", "help"} {
+	for _, command := range []string{"capabilities", "version"} {
 		t.Run(command, func(t *testing.T) {
 			var out, diagnostics bytes.Buffer
 			code := runCLI("dev", context.Background(), []string{command}, strings.NewReader("invalid"), &out, &diagnostics)
@@ -403,6 +403,31 @@ func TestDiscoveryHasNoInstallationDependency(t *testing.T) {
 			require.Empty(t, diagnostics.String(), "unexpected diagnostics")
 		})
 	}
+	t.Run("help", func(t *testing.T) {
+		var out, diagnostics bytes.Buffer
+		code := runCLI("dev", context.Background(), []string{"help"}, strings.NewReader("invalid"), &out, &diagnostics)
+		require.Equal(t, 0, code, "diagnostics: %s", diagnostics.String())
+		require.Empty(t, diagnostics.String(), "unexpected diagnostics")
+		text := out.String()
+		require.NotEmpty(t, strings.TrimSpace(text), "help printed no text")
+		require.False(t, strings.HasPrefix(strings.TrimSpace(text), "{"), "help must print human-readable text, not a machine envelope: %s", text)
+		require.Contains(t, text, "rhodeck-cli", "help does not name the CLI: %s", text)
+		for _, name := range []string{"run", "doctor", "version"} {
+			require.Contains(t, text, name, "help does not mention %q: %s", name, text)
+		}
+	})
+	t.Run("help json", func(t *testing.T) {
+		var out, diagnostics bytes.Buffer
+		code := runCLI("dev", context.Background(), []string{"help", "--format", "json"}, strings.NewReader("invalid"), &out, &diagnostics)
+		require.Equal(t, 0, code, "diagnostics: %s", diagnostics.String())
+		require.Empty(t, diagnostics.String(), "unexpected diagnostics")
+		lines := decodeLines(t, out.Bytes())
+		require.Len(t, lines, 1, "machine help must print one JSON object: %s", out.String())
+		var help envelope
+		require.NoError(t, json.Unmarshal(lines[0], &help), "machine help: %s", out.String())
+		require.Equal(t, "help", help.Type, "machine help: %s", out.String())
+		require.NotEmpty(t, help.Usage, "machine help carries no usage text: %s", out.String())
+	})
 }
 
 func TestDryRunPreservesOpenParametersWithoutEffects(t *testing.T) {
