@@ -135,7 +135,26 @@ jobs:
           cache: true
       - name: Compile packages
         run: go build ./...
+      # `go test -c -o dir/ ./...` rejects duplicate test binary names, and the
+      # module has packages sharing a basename (the two internal/app packages),
+      # so each package gets an explicit output file instead.
       - name: Compile test binaries without running them
         run: |
           mkdir -p "$RUNNER_TEMP/maa-go-tests"
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/" ./...
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/maa.test" ./packages/maa-go
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/native.test" ./packages/maa-go/internal/native
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/ffitest.test" ./packages/maa-go/internal/ffitest
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/cli.test" ./apps/cli/internal/app
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/core-worker.test" ./apps/core-worker/internal/app
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/control.test" ./packages/control
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/worker-client.test" ./packages/control/worker
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/protocol.test" ./packages/control/worker/protocol
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/adapters-copilot.test" ./packages/control/adapters/copilot
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/adapters-operprogress.test" ./packages/control/adapters/operprogress
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/adapters-roguelike.test" ./packages/control/adapters/roguelike
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/adapters-switchtheme.test" ./packages/control/adapters/switchtheme
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/recordfs.test" ./packages/control/internal/recordfs
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/strictjson.test" ./packages/control/internal/strictjson
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/api-coverage.test" ./tools/api-coverage
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/check-maa-api.test" ./tools/check-maa-api
+          go test -c -o "$RUNNER_TEMP/maa-go-tests/maa-go-check.test" ./tools/maa-go-check
