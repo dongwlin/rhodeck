@@ -23,9 +23,8 @@
 
 - Go 状态与故障注入用例复用已有 fake 环境、局部生命周期门和调用接口；不要为方便测试重置生产进程级状态或打开逃逸配置。
 - 真实 FFI 用例使用 `internal/ffitest` 的新子进程和外部超时。loader fixture 的空导出仅用于装载/注册，绝不能调用；ABI 与 callback 行为使用各自签名正确的 C 夹具。
-- 签名、符号策略或 checker 修改先跑 `static`，再按影响选 `loader`、`abi`、`callback`；这些均是 `go run ./tools/maa-go-check --layers <layer>` 的层名。增加验证用例时确认对应层确实选中它们。
-- 并发修改追加 `go run ./tools/maa-go-check --layers race`；需要 C 工具链和 cgo race 运行时，该层排除真实 Core。
-- 升级 Core 时先用显式头文件核对 raw 声明、独立期望表与夹具；更新仓库头快照时同步 `inputs.json` 的来源与摘要。再以显式库 + 资源根或 tarball 运行 `go run ./tools/maa-go-check --layers core`。保留完整原生依赖，记录实际版本与摘要；调用方显式期望不匹配必须失败，缺少输入保持 UNVERIFIED。
+- 分层工具的 `static` 用于签名、符号策略与 checker；按影响追加 `loader`、`abi`、`callback`，并发修改追加 `race`。后者使用 cgo race 运行时且排除真实 Core。增加验证用例时确认对应层确实选中它们；层选择与命令见延伸阅读。
+- 升级 Core 时先用显式头文件核对 raw 声明、独立期望表与夹具；更新仓库头快照时同步 `inputs.json` 的来源与摘要。再以显式库 + 资源根或 tarball 执行 `core` 层，保留完整原生依赖、记录实际版本与摘要；调用方显式期望不匹配必须失败。
 - 分层工具二进制退出 1 表示 FAIL、2 表示 UNVERIFIED；需要区分时先构建工具再执行，`go run` 不保留这两种 shell 退出码的区别。
 
 ## 延伸阅读
