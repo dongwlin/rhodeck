@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/dongwlin/rhodeck/apps/cli/internal/output"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,7 @@ import (
 )
 
 type typedTerminal struct {
-	envelope
+	output.Terminal
 	lines []json.RawMessage
 	text  string
 }
@@ -24,12 +25,12 @@ type typedTerminal struct {
 func runTypedTerminal(t *testing.T, args []string, input []byte) (int, typedTerminal, string) {
 	t.Helper()
 	code, text, lines, diagnostics := runMachine(t, args, input)
-	var terminal envelope
+	var terminal output.Terminal
 	require.NotEmpty(t, lines, "missing terminal record: exit=%d %s (%s)", code, text, diagnostics)
 	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal record: exit=%d %s (%s)", code, text, diagnostics)
 	require.Equal(t, "terminal", terminal.Type, "missing terminal record: exit=%d %s (%s)", code, text, diagnostics)
 	require.NotNil(t, terminal.Result, "missing terminal record: exit=%d %s (%s)", code, text, diagnostics)
-	return code, typedTerminal{envelope: terminal, lines: lines, text: text}, diagnostics
+	return code, typedTerminal{Terminal: terminal, lines: lines, text: text}, diagnostics
 }
 
 // Two tasks of the same Core type in one batch must stay separated by their
@@ -44,7 +45,7 @@ func TestTypedSameTypeTasksStayIsolatedAcrossWorker(t *testing.T) {
 		switchThemeTask("theme-b", `{"themes":["Theme Three"]}`),
 	)
 	code, terminal, diagnostics := runTypedTerminal(t, cliArgs("run", executable, dir), encodePlan(t, plan))
-	require.Equal(t, exitSuccess, code, "%s (%s)", terminal.text, diagnostics)
+	require.Equal(t, output.ExitSuccess, code, "%s (%s)", terminal.text, diagnostics)
 	result := terminal.Result
 	require.Equal(t, control.Succeeded, result.State, "result: %+v", result)
 	require.Equal(t, "complete", result.Cleanup, "result: %+v", result)
@@ -118,7 +119,7 @@ func TestTypedPartialObservationRemainsIncomplete(t *testing.T) {
 		operProgressTask("grow-1", `{"plans":[{"role":"Warrior","name":"Alpha","elite":2},{"role":"Caster","name":"Beta","skill_level":7}]}`),
 	)
 	code, terminal, diagnostics := runTypedTerminal(t, cliArgs("run", executable, dir), encodePlan(t, plan))
-	require.Equal(t, exitUnknown, code, "%s (%s)", terminal.text, diagnostics)
+	require.Equal(t, output.ExitUnknown, code, "%s (%s)", terminal.text, diagnostics)
 	result := terminal.Result
 	require.Equal(t, control.Unknown, result.State, "result: %+v", result)
 	require.Equal(t, "typed_incomplete", result.Code, "result: %+v", result)
@@ -148,7 +149,7 @@ func TestTypedMasteryCompletionReportsStartupOnly(t *testing.T) {
 		operProgressTask("grow-1", `{"plans":[{"role":"Warrior","name":"Alpha","elite":2},{"role":"Caster","name":"Beta","skill_mastery":[0,0,3]}]}`),
 	)
 	code, terminal, diagnostics := runTypedTerminal(t, cliArgs("run", executable, dir), encodePlan(t, plan))
-	require.Equal(t, exitUnknown, code, "%s (%s)", terminal.text, diagnostics)
+	require.Equal(t, output.ExitUnknown, code, "%s (%s)", terminal.text, diagnostics)
 	result := terminal.Result
 	require.Equal(t, control.Unknown, result.State, "result: %+v", result)
 	require.Equal(t, "typed_incomplete", result.Code, "result: %+v", result)
@@ -177,7 +178,7 @@ func TestTypedCoreRejectionDoesNotBecomeTypedSuccess(t *testing.T) {
 		operProgressTask("grow-1", `{"plans":[{"role":"Warrior","name":"Alpha","elite":2}]}`),
 	)
 	code, terminal, diagnostics := runTypedTerminal(t, cliArgs("run", executable, dir), encodePlan(t, plan))
-	require.Equal(t, exitRejected, code, "%s (%s)", terminal.text, diagnostics)
+	require.Equal(t, output.ExitRejected, code, "%s (%s)", terminal.text, diagnostics)
 	result := terminal.Result
 	require.Equal(t, control.Rejected, result.State, "rejection result: %+v", result)
 	require.Equal(t, "native_rejected", result.Code, "rejection result: %+v", result)
@@ -207,7 +208,7 @@ func TestTypedDeadlineKeepsConfirmedFacts(t *testing.T) {
 	)
 	args := append(cliArgs("run", executable, dir), "--timeout", "3s")
 	code, terminal, diagnostics := runTypedTerminal(t, args, encodePlan(t, plan))
-	require.Equal(t, exitUnknown, code, "%s (%s)", terminal.text, diagnostics)
+	require.Equal(t, output.ExitUnknown, code, "%s (%s)", terminal.text, diagnostics)
 	result := terminal.Result
 	require.Equal(t, control.Stopped, result.State, "deadline result: %+v", result)
 	require.Equal(t, "deadline_exceeded", result.Code, "deadline result: %+v", result)
@@ -242,9 +243,9 @@ func TestTypedWorkerCrashKeepsConfirmedFacts(t *testing.T) {
 	var diagnostics bytes.Buffer
 	args := append(cliArgs("run", executable, dir), "--timeout", "20s")
 	code := runCLI("dev", ctx, args, bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
-	require.Equal(t, exitUnknown, code, "diagnostics: %s", diagnostics.String())
+	require.Equal(t, output.ExitUnknown, code, "diagnostics: %s", diagnostics.String())
 	lines := decodeLines(t, out.Bytes())
-	var terminal envelope
+	var terminal output.Terminal
 	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal record")
 	require.NotNil(t, terminal.Result, "missing terminal record")
 	result := terminal.Result
@@ -285,9 +286,9 @@ func TestTypedCancellationKeepsConfirmedFacts(t *testing.T) {
 	out := &markerCancelWriter{cancel: cancel, marker: []byte(`"type":"typed"`)}
 	var diagnostics bytes.Buffer
 	code := runCLI("dev", ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
-	require.Equal(t, exitStopped, code, "diagnostics: %s", diagnostics.String())
+	require.Equal(t, output.ExitStopped, code, "diagnostics: %s", diagnostics.String())
 	lines := decodeLines(t, out.Bytes())
-	var terminal envelope
+	var terminal output.Terminal
 	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal record")
 	require.NotNil(t, terminal.Result, "missing terminal record")
 	result := terminal.Result
@@ -327,7 +328,7 @@ func TestTypedBlockedTerminalOutputKeepsRecordFacts(t *testing.T) {
 	}
 	select {
 	case code := <-finished:
-		require.Equal(t, exitUnknown, code, "blocked output exit")
+		require.Equal(t, output.ExitUnknown, code, "blocked output exit")
 	case <-time.After(10 * time.Second):
 		require.FailNow(t, "blocked output retained the CLI beyond its cleanup deadline")
 	}
@@ -364,7 +365,7 @@ func TestTypedDiagnosticsOptInIsBusinessNeutral(t *testing.T) {
 	)
 	input := encodePlan(t, plan)
 	code, plain, diagnostics := runTypedTerminal(t, cliArgs("run", executable, dir), input)
-	require.Equal(t, exitSuccess, code, "default run: %s (%s)", plain.text, diagnostics)
+	require.Equal(t, output.ExitSuccess, code, "default run: %s (%s)", plain.text, diagnostics)
 	for _, forbidden := range []string{"private-secret", `"rect"`, `"score"`} {
 		require.NotContains(t, plain.text, forbidden, "default output disclosed %q", forbidden)
 	}
@@ -378,7 +379,7 @@ func TestTypedDiagnosticsOptInIsBusinessNeutral(t *testing.T) {
 
 	rawArgs := append(cliArgs("run", executable, filepath.Join(dir, "raw")), "--include-raw-events")
 	code, withRaw, diagnostics := runTypedTerminal(t, rawArgs, input)
-	require.Equal(t, exitSuccess, code, "raw run: %s (%s)", withRaw.text, diagnostics)
+	require.Equal(t, output.ExitSuccess, code, "raw run: %s (%s)", withRaw.text, diagnostics)
 	require.Contains(t, withRaw.text, "private-secret", "explicit raw callback missing: %s", withRaw.text)
 	require.Equal(t, plain.Result.Tasks, withRaw.Result.Tasks, "raw diagnostics changed task results: %+v vs %+v", withRaw.Result.Tasks, plain.Result.Tasks)
 

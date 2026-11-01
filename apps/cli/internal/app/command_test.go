@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/dongwlin/rhodeck/apps/cli/internal/output"
 	"strings"
 	"testing"
 
@@ -34,10 +35,10 @@ func TestCommandArgumentContract(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var out, diagnostics bytes.Buffer
 			code := runCLI("dev", context.Background(), tc.args, strings.NewReader(""), &out, &diagnostics)
-			require.Equal(t, exitRejected, code, "args %q: stdout %s stderr %s", tc.args, out.String(), diagnostics.String())
+			require.Equal(t, output.ExitRejected, code, "args %q: stdout %s stderr %s", tc.args, out.String(), diagnostics.String())
 			lines := decodeLines(t, out.Bytes())
 			require.Len(t, lines, 1, "args %q must print one JSON object: %s", tc.args, out.String())
-			var failure envelope
+			var failure output.Error
 			require.NoError(t, json.Unmarshal(lines[0], &failure), "args %q: %s", tc.args, out.String())
 			assert.Equal(t, "error", failure.Type, "args %q: %s", tc.args, out.String())
 			assert.Equal(t, tc.code, failure.Code, "args %q: %s", tc.args, out.String())
@@ -64,7 +65,7 @@ func TestCommandArgumentContract(t *testing.T) {
 func TestHelpRenderingMatchesTheRequestedFormat(t *testing.T) {
 	var textOut, textDiagnostics bytes.Buffer
 	code := runCLI("dev", context.Background(), []string{"help"}, strings.NewReader(""), &textOut, &textDiagnostics)
-	require.Equal(t, exitSuccess, code, "stderr: %s", textDiagnostics.String())
+	require.Equal(t, output.ExitSuccess, code, "stderr: %s", textDiagnostics.String())
 	require.Empty(t, textDiagnostics.String(), "unexpected diagnostics")
 	text := textOut.String()
 	require.NotEmpty(t, strings.TrimSpace(text), "text help printed nothing")
@@ -72,11 +73,11 @@ func TestHelpRenderingMatchesTheRequestedFormat(t *testing.T) {
 
 	var machineOut, machineDiagnostics bytes.Buffer
 	code = runCLI("dev", context.Background(), []string{"help", "--format", "json"}, strings.NewReader(""), &machineOut, &machineDiagnostics)
-	require.Equal(t, exitSuccess, code, "stderr: %s", machineDiagnostics.String())
+	require.Equal(t, output.ExitSuccess, code, "stderr: %s", machineDiagnostics.String())
 	require.Empty(t, machineDiagnostics.String(), "unexpected diagnostics")
 	lines := decodeLines(t, machineOut.Bytes())
 	require.Len(t, lines, 1, "machine help must print one JSON object: %s", machineOut.String())
-	var machine envelope
+	var machine output.Help
 	require.NoError(t, json.Unmarshal(lines[0], &machine), "machine help: %s", machineOut.String())
 	require.Equal(t, "help", machine.Type, "machine help: %s", machineOut.String())
 	require.NotEmpty(t, machine.Usage, "machine help carries no usage text: %s", machineOut.String())
@@ -95,7 +96,7 @@ func TestHelpRenderingMatchesTheRequestedFormat(t *testing.T) {
 	// --dry-run flag.
 	var runOut, runDiagnostics bytes.Buffer
 	code = runCLI("dev", context.Background(), []string{"run", "--help"}, strings.NewReader(""), &runOut, &runDiagnostics)
-	require.Equal(t, exitSuccess, code, "stderr: %s", runDiagnostics.String())
+	require.Equal(t, output.ExitSuccess, code, "stderr: %s", runDiagnostics.String())
 	require.Empty(t, runDiagnostics.String(), "unexpected diagnostics")
 	runText := runOut.String()
 	require.NotEmpty(t, strings.TrimSpace(runText), "run help printed nothing")
@@ -106,7 +107,7 @@ func TestHelpRenderingMatchesTheRequestedFormat(t *testing.T) {
 	// The dry-run command does not offer the run-only --dry-run flag.
 	var dryOut, dryDiagnostics bytes.Buffer
 	code = runCLI("dev", context.Background(), []string{"dry-run", "--help"}, strings.NewReader(""), &dryOut, &dryDiagnostics)
-	require.Equal(t, exitSuccess, code, "stderr: %s", dryDiagnostics.String())
+	require.Equal(t, output.ExitSuccess, code, "stderr: %s", dryDiagnostics.String())
 	require.Empty(t, dryDiagnostics.String(), "unexpected diagnostics")
 	require.NotContains(t, dryOut.String(), "--dry-run", "dry-run help offers the run-only flag: %s", dryOut.String())
 
@@ -114,11 +115,11 @@ func TestHelpRenderingMatchesTheRequestedFormat(t *testing.T) {
 	for _, args := range [][]string{{"help", "run", "--format", "json"}, {"run", "--help", "--format", "json"}} {
 		var out, diagnostics bytes.Buffer
 		code := runCLI("dev", context.Background(), args, strings.NewReader(""), &out, &diagnostics)
-		require.Equal(t, exitSuccess, code, "args %q: stderr %s", args, diagnostics.String())
+		require.Equal(t, output.ExitSuccess, code, "args %q: stderr %s", args, diagnostics.String())
 		require.Empty(t, diagnostics.String(), "args %q: unexpected diagnostics", args)
 		lines := decodeLines(t, out.Bytes())
 		require.Len(t, lines, 1, "args %q must print one JSON object: %s", args, out.String())
-		var help envelope
+		var help output.Help
 		require.NoError(t, json.Unmarshal(lines[0], &help), "args %q: %s", args, out.String())
 		require.Equal(t, "help", help.Type, "args %q: %s", args, out.String())
 		require.NotEmpty(t, help.Usage, "args %q carries no usage text: %s", args, out.String())
@@ -131,11 +132,11 @@ func TestHelpRenderingMatchesTheRequestedFormat(t *testing.T) {
 func TestCapabilitiesCommandListMatchesTheCommandTree(t *testing.T) {
 	var out, diagnostics bytes.Buffer
 	code := runCLI("dev", context.Background(), []string{"capabilities"}, strings.NewReader(""), &out, &diagnostics)
-	require.Equal(t, exitSuccess, code, "stderr: %s", diagnostics.String())
+	require.Equal(t, output.ExitSuccess, code, "stderr: %s", diagnostics.String())
 	require.Empty(t, diagnostics.String(), "unexpected diagnostics")
 	lines := decodeLines(t, out.Bytes())
 	require.Len(t, lines, 1, "capabilities must print one JSON object: %s", out.String())
-	var caps capabilities
+	var caps output.Capabilities
 	require.NoError(t, json.Unmarshal(lines[0], &caps), "capabilities: %s", out.String())
 	require.Equal(t, []string{"run", "dry-run", "doctor", "capabilities", "version", "help"}, caps.Commands,
 		"capabilities command list drifted from the command tree")
@@ -148,10 +149,10 @@ func TestUnknownCommandIsRejected(t *testing.T) {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			var out, diagnostics bytes.Buffer
 			code := runCLI("dev", context.Background(), args, strings.NewReader(""), &out, &diagnostics)
-			require.Equal(t, exitRejected, code, "args %q: stdout %s stderr %s", args, out.String(), diagnostics.String())
+			require.Equal(t, output.ExitRejected, code, "args %q: stdout %s stderr %s", args, out.String(), diagnostics.String())
 			lines := decodeLines(t, out.Bytes())
 			require.Len(t, lines, 1, "args %q must print one JSON object: %s", args, out.String())
-			var failure envelope
+			var failure output.Error
 			require.NoError(t, json.Unmarshal(lines[0], &failure), "args %q: %s", args, out.String())
 			require.Equal(t, "error", failure.Type, "args %q: %s", args, out.String())
 			require.Equal(t, "unknown_command", failure.Code, "args %q: %s", args, out.String())

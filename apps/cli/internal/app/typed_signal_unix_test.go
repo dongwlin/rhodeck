@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/dongwlin/rhodeck/apps/cli/internal/output"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,7 +73,7 @@ func TestTypedSignalStopKeepsConfirmedFacts(t *testing.T) {
 				}
 			})
 			sent := false
-			var terminal envelope
+			var terminal output.Terminal
 		loop:
 			for {
 				select {
@@ -99,7 +100,7 @@ func TestTypedSignalStopKeepsConfirmedFacts(t *testing.T) {
 			exit := cmd.ProcessState.ExitCode()
 			require.True(t, sent, "signal result: sent=%t exit=%d terminal=%+v err=%v diagnostics=%s",
 				sent, exit, terminal.Result, err, diagnostics.String())
-			require.Equal(t, exitStopped, exit, "signal result: exit=%d terminal=%+v err=%v diagnostics=%s",
+			require.Equal(t, output.ExitStopped, exit, "signal result: exit=%d terminal=%+v err=%v diagnostics=%s",
 				exit, terminal.Result, err, diagnostics.String())
 			require.NotNil(t, terminal.Result, "signal result: terminal=%+v err=%v diagnostics=%s",
 				terminal.Result, err, diagnostics.String())

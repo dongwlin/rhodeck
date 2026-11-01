@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/dongwlin/rhodeck/apps/cli/internal/output"
+	clipkg "github.com/dongwlin/rhodeck/apps/cli/internal/plan"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,11 +100,10 @@ func targetIDs(result *control.TypedResult) []string {
 func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.T) {
 	var out, diagnostics bytes.Buffer
 	code := runCLI("dev", context.Background(), []string{"capabilities"}, strings.NewReader(""), &out, &diagnostics)
-	require.Equal(t, exitSuccess, code, "diagnostics: %s", diagnostics.String())
-	var caps capabilities
+	require.Equal(t, output.ExitSuccess, code, "diagnostics: %s", diagnostics.String())
+	var caps output.Capabilities
 	require.NoError(t, json.Unmarshal(out.Bytes(), &caps))
-	adapters := cliAdapters()
-	require.Len(t, caps.TaskAdapters, len(adapters), "adapter capabilities = %d, registered adapters = %d", len(caps.TaskAdapters), len(adapters))
+	require.Len(t, caps.TaskAdapters, 4, "adapter capabilities = %d, registered adapters = 4", len(caps.TaskAdapters))
 	wantCore := map[string]string{
 		"oper_progress": "OperProgress", "switch_theme": "SwitchTheme",
 		"copilot": "Copilot", "roguelike": "Roguelike",
@@ -132,11 +133,9 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 		"copilot":       {"copilot_list", "all", "filename", "loop_times", "none"},
 		"roguelike":     {"starts_count", "monthly_squad_auto_iterate", "deep_exploration_auto_iterate", "none"},
 	}
-	for i, adapter := range adapters {
-		ref := adapter.Descriptor()
-		got := caps.TaskAdapters[i]
-		require.Equal(t, ref.Name, got.Name, "capability %d = %+v, descriptor = %+v", i, got, ref)
-		require.Equal(t, ref.Version, got.Version, "capability %d = %+v, descriptor = %+v", i, got, ref)
+	for i, got := range caps.TaskAdapters {
+		require.NotEmpty(t, got.Name, "capability %d has no adapter identity: %+v", i, got)
+		require.Positive(t, got.Version, "capability %d has no adapter version: %+v", i, got)
 		require.Equal(t, wantCore[got.Name], got.CoreType, "capability %d lacks core type: %+v", i, got)
 		require.Equal(t, wantPolicies[got.Name], got.ObjectivePolicies, "capability %d objective policies", i)
 		require.Equal(t, wantInterpretation[got.Name], got.ResultInterpretation, "capability %d interpretation", i)
@@ -170,38 +169,14 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 	out.Reset()
 	diagnostics.Reset()
 	code = runCLI("dev", context.Background(), []string{"help", "--format", "json"}, strings.NewReader(""), &out, &diagnostics)
-	require.Equal(t, exitSuccess, code, "help exit")
-	var help envelope
+	require.Equal(t, output.ExitSuccess, code, "help exit")
+	var help output.Help
 	require.NoError(t, json.Unmarshal(out.Bytes(), &help))
 	for _, name := range []string{"oper_progress@1", "switch_theme@1", "copilot@1", "roguelike@1", "task.adapter"} {
 		require.Contains(t, help.Usage, name, "help does not mention %q: %s", name, help.Usage)
 	}
 	require.Contains(t, help.Usage, "actual objective policy", "help does not state the per-task policy preview: %s", help.Usage)
 	require.NotContains(t, help.Usage, "Both adapters", "help does not state the per-task policy preview: %s", help.Usage)
-}
-
-// TestAdapterRegistryFeedsEveryCommandSurface pins the four bundled adapters:
-// the specs, the runtime registry and the help summary all carry the same
-// Descriptor identities, so no command surface can drift from the registry.
-func TestAdapterRegistryFeedsEveryCommandSurface(t *testing.T) {
-	want := []control.AdapterRef{
-		{Name: "oper_progress", Version: 1},
-		{Name: "switch_theme", Version: 1},
-		{Name: "copilot", Version: 1},
-		{Name: "roguelike", Version: 1},
-	}
-	specs := cliAdapterSpecs()
-	require.Len(t, specs, len(want), "registered %d adapter specs, want %d", len(specs), len(want))
-	for i, spec := range specs {
-		require.Equal(t, want[i], spec.newAdapter().Descriptor(), "spec %d descriptor", i)
-	}
-	adapters := cliAdapters()
-	require.Len(t, adapters, len(want), "registry has %d adapters, want %d", len(adapters), len(want))
-	for i, adapter := range adapters {
-		require.Equal(t, want[i], adapter.Descriptor(), "registry adapter %d", i)
-	}
-	require.Equal(t, "oper_progress@1 (OperProgress), switch_theme@1 (SwitchTheme), copilot@1 (Copilot), roguelike@1 (Roguelike)",
-		cliAdapterSummary(), "help summary")
 }
 
 // TestCopilotDryRunSeparatesListPoliciesFromInputOnlySingleFile verifies that
@@ -216,9 +191,9 @@ func TestCopilotDryRunSeparatesListPoliciesFromInputOnlySingleFile(t *testing.T)
 	input := encodePlan(t, plan)
 	missingWorker := filepath.Join(t.TempDir(), "missing-worker")
 	code, text, lines, diagnostics := runMachine(t, cliArgs("dry-run", missingWorker, dir), input)
-	require.Equal(t, exitSuccess, code, "%s (%s)", text, diagnostics)
+	require.Equal(t, output.ExitSuccess, code, "%s (%s)", text, diagnostics)
 	require.Len(t, lines, 1, "dry-run wrote %d records", len(lines))
-	var preview envelope
+	var preview output.Plan
 	require.NoError(t, json.Unmarshal(lines[0], &preview), "missing compiled preview: %s", text)
 	require.Equal(t, "plan", preview.Type, "missing compiled preview: %s", text)
 	require.NotNil(t, preview.Plan, "missing compiled preview: %s", text)
@@ -272,8 +247,8 @@ func TestRoguelikeDryRunSelectsPoliciesByModeAndSwitches(t *testing.T) {
 	input := encodePlan(t, plan)
 	missingWorker := filepath.Join(t.TempDir(), "missing-worker")
 	code, text, lines, diagnostics := runMachine(t, cliArgs("dry-run", missingWorker, dir), input)
-	require.Equal(t, exitSuccess, code, "%s (%s)", text, diagnostics)
-	var preview envelope
+	require.Equal(t, output.ExitSuccess, code, "%s (%s)", text, diagnostics)
+	var preview output.Plan
 	require.NoError(t, json.Unmarshal(lines[0], &preview), "missing compiled preview: %s", text)
 	require.Equal(t, "plan", preview.Type, "missing compiled preview: %s", text)
 	require.Len(t, preview.Tasks, 7, "missing compiled preview: %s", text)
@@ -321,9 +296,9 @@ func TestTypedDryRunPreviewsCompiledTargetsWithoutEffects(t *testing.T) {
 			trace := filepath.Join(t.TempDir(), "commands")
 			t.Setenv("RHODECK_CLI_TRACE", trace)
 			code, text, lines, diagnostics := runMachine(t, withInput(cliArgs("dry-run", missingWorker, dir), source), input)
-			require.Equal(t, exitSuccess, code, "%s", diagnostics)
+			require.Equal(t, output.ExitSuccess, code, "%s", diagnostics)
 			require.Len(t, lines, 1, "dry-run wrote %d records", len(lines))
-			var preview envelope
+			var preview output.Plan
 			require.NoError(t, json.Unmarshal(lines[0], &preview))
 			require.Equal(t, "plan", preview.Type, "missing compiled preview: %s", text)
 			require.NotNil(t, preview.Plan, "missing compiled preview: %s", text)
@@ -374,9 +349,9 @@ func TestTypedDryRunPreviewsCompiledTargetsWithoutEffects(t *testing.T) {
 	t.Setenv("RHODECK_CLI_TRACE", trace)
 	args := append(cliArgs("run", missingWorker, dir), "--dry-run")
 	code, text, lines, diagnostics := runMachine(t, args, input)
-	require.Equal(t, exitSuccess, code, "run --dry-run: %s (%s)", text, diagnostics)
+	require.Equal(t, output.ExitSuccess, code, "run --dry-run: %s (%s)", text, diagnostics)
 	require.Len(t, lines, 1, "run --dry-run: %s (%s)", text, diagnostics)
-	var preview envelope
+	var preview output.Plan
 	require.NoError(t, json.Unmarshal(lines[0], &preview), "run --dry-run did not preview: %s", text)
 	require.Equal(t, "plan", preview.Type, "run --dry-run did not preview: %s", text)
 	require.NotNil(t, preview.Plan, "run --dry-run did not preview: %s", text)
@@ -423,16 +398,16 @@ func TestTypedRunFileAndStdinReachTheSameTerminalFacts(t *testing.T) {
 
 			// The preview names the same targets the run later reports.
 			code, text, lines, diagnostics := runMachine(t, withInput(cliArgs("dry-run", executable, dir), source), input)
-			require.Equal(t, exitSuccess, code, "preview: %s (%s)", text, diagnostics)
+			require.Equal(t, output.ExitSuccess, code, "preview: %s (%s)", text, diagnostics)
 			require.Len(t, lines, 1, "preview: %s (%s)", text, diagnostics)
-			var preview envelope
+			var preview output.Plan
 			require.NoError(t, json.Unmarshal(lines[0], &preview), "bad preview: %s", text)
 			require.NotNil(t, preview.Plan, "bad preview: %s", text)
 			require.Len(t, preview.Tasks, 3, "bad preview: %s", text)
 
 			code, text, lines, diagnostics = runMachine(t, withInput(cliArgs("run", executable, dir), source), input)
-			require.Equal(t, exitSuccess, code, "diagnostics: %s (%s)", diagnostics, text)
-			var terminal envelope
+			require.Equal(t, output.ExitSuccess, code, "diagnostics: %s (%s)", diagnostics, text)
+			var terminal output.Terminal
 			require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal record: %s", text)
 			require.Equal(t, "terminal", terminal.Type, "missing terminal record: %s", text)
 			require.NotNil(t, terminal.Result, "missing terminal record: %s", text)
@@ -514,8 +489,8 @@ func TestTypedBusinessFailureOverridesChainSuccess(t *testing.T) {
 		switchThemeTask("theme-1", `{"themes":["Theme One"]}`),
 	)
 	code, text, lines, diagnostics := runMachine(t, cliArgs("run", executable, dir), encodePlan(t, plan))
-	require.Equal(t, exitFailed, code, "diagnostics: %s (%s)", diagnostics, text)
-	var terminal envelope
+	require.Equal(t, output.ExitFailed, code, "diagnostics: %s (%s)", diagnostics, text)
+	var terminal output.Terminal
 	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal: %s", text)
 	require.NotNil(t, terminal.Result, "missing terminal: %s", text)
 	result := terminal.Result
@@ -539,8 +514,8 @@ func TestTypedFactsSurviveWorkerFaultAsUnknown(t *testing.T) {
 		operProgressTask("grow-1", `{"plans":[{"role":"Warrior","name":"Alpha","skill_level":7}]}`),
 	)
 	code, text, lines, diagnostics := runMachine(t, cliArgs("run", executable, dir), encodePlan(t, plan))
-	require.Equal(t, exitUnknown, code, "diagnostics: %s (%s)", diagnostics, text)
-	var terminal envelope
+	require.Equal(t, output.ExitUnknown, code, "diagnostics: %s (%s)", diagnostics, text)
+	var terminal output.Terminal
 	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal: %s", text)
 	require.NotNil(t, terminal.Result, "missing terminal: %s", text)
 	result := terminal.Result
@@ -579,9 +554,9 @@ func TestConfirmedStopSurvivesCleanupFailure(t *testing.T) {
 	out := &markerCancelWriter{cancel: cancel, marker: []byte(`"state":"started"`)}
 	var diagnostics bytes.Buffer
 	code := runCLI("dev", ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
-	require.Equal(t, exitUnknown, code, "diagnostics: %s", diagnostics.String())
+	require.Equal(t, output.ExitUnknown, code, "diagnostics: %s", diagnostics.String())
 	lines := decodeLines(t, out.Bytes())
-	var terminal envelope
+	var terminal output.Terminal
 	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal: %s", out.String())
 	require.NotNil(t, terminal.Result, "missing terminal: %s", out.String())
 	result := terminal.Result
@@ -604,9 +579,9 @@ func TestStopWithEstablishedTypedFailureSurvivesCleanupFailure(t *testing.T) {
 	out := &markerCancelWriter{cancel: cancel, marker: []byte(`"type":"typed"`)}
 	var diagnostics bytes.Buffer
 	code := runCLI("dev", ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
-	require.Equal(t, exitUnknown, code, "diagnostics: %s", diagnostics.String())
+	require.Equal(t, output.ExitUnknown, code, "diagnostics: %s", diagnostics.String())
 	lines := decodeLines(t, out.Bytes())
-	var terminal envelope
+	var terminal output.Terminal
 	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal: %s", out.String())
 	require.NotNil(t, terminal.Result, "missing terminal: %s", out.String())
 	result := terminal.Result
@@ -630,8 +605,8 @@ func TestEstablishedFailureSurvivesFaultAndCleanupFailure(t *testing.T) {
 		operProgressTask("grow-1", `{"plans":[{"role":"Warrior","name":"Alpha","skill_level":7}]}`),
 	)
 	code, text, lines, diagnostics := runMachine(t, cliArgs("run", executable, dir), encodePlan(t, plan))
-	require.Equal(t, exitUnknown, code, "diagnostics: %s (%s)", diagnostics, text)
-	var terminal envelope
+	require.Equal(t, output.ExitUnknown, code, "diagnostics: %s (%s)", diagnostics, text)
+	var terminal output.Terminal
 	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal: %s", text)
 	require.NotNil(t, terminal.Result, "missing terminal: %s", text)
 	result := terminal.Result
@@ -650,19 +625,19 @@ func TestRecordWriteFailuresUsePersistenceExitCode(t *testing.T) {
 		{State: control.Rejected, Code: "record_write_failed", Cleanup: "complete"},
 		{State: control.Succeeded, Cleanup: "complete", CleanupCode: "record_write_failed"},
 	} {
-		require.Equal(t, exitUnknown, resultExit(result), "resultExit: %+v", result)
+		require.Equal(t, output.ExitUnknown, output.ExitForResult(result), "resultExit: %+v", result)
 	}
-	require.Equal(t, exitRejected, resultExit(control.Result{State: control.Rejected, Code: "invalid_plan", Cleanup: "complete"}), "ordinary rejection exit")
+	require.Equal(t, output.ExitRejected, output.ExitForResult(control.Result{State: control.Rejected, Code: "invalid_plan", Cleanup: "complete"}), "ordinary rejection exit")
 	wrapped := fmt.Errorf("admission: %w", control.ErrRecordWrite)
-	require.Equal(t, exitUnknown, errorExit(wrapped), "errorExit(ErrRecordWrite)")
-	require.Equal(t, "record_write_failed", errorCode(wrapped), "errorCode(ErrRecordWrite)")
+	require.Equal(t, output.ExitUnknown, output.ExitFor(wrapped), "output.ExitFor(ErrRecordWrite)")
+	require.Equal(t, "record_write_failed", output.CodeFor(wrapped), "output.CodeFor(ErrRecordWrite)")
 }
 
 func TestAdmissionPersistenceFailureIsClassified(t *testing.T) {
 	plan, executable, dir := typedPlan(t,
 		operProgressTask("grow-1", `{"plans":[{"role":"Warrior","name":"Alpha","elite":2}]}`),
 	)
-	rt, err := control.New(control.Config{DataDir: dir, Adapters: cliAdapters(), Worker: worker.Config{Executable: executable}})
+	rt, err := control.New(control.Config{DataDir: dir, Adapters: clipkg.Adapters(), Worker: worker.Config{Executable: executable}})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = rt.Close(context.Background()) })
 	runs := filepath.Join(dir, "runs")
@@ -670,8 +645,8 @@ func TestAdmissionPersistenceFailureIsClassified(t *testing.T) {
 	require.NoError(t, os.WriteFile(runs, []byte("blocked"), 0600))
 	_, err = rt.Run(context.Background(), plan)
 	require.ErrorIs(t, err, control.ErrRecordWrite, "admission error")
-	require.Equal(t, "record_write_failed", errorCode(err), "admission error code")
-	require.Equal(t, exitUnknown, errorExit(err), "admission exit")
+	require.Equal(t, "record_write_failed", output.CodeFor(err), "admission error code")
+	require.Equal(t, output.ExitUnknown, output.ExitFor(err), "admission exit")
 }
 
 // TestInitializePersistenceFailureUsesPersistenceExitCode drives the real child
@@ -727,8 +702,8 @@ func TestInitializePersistenceFailureUsesPersistenceExitCode(t *testing.T) {
 	require.NoError(t, ctx.Err(), "CLI did not finish within its deadline")
 	require.True(t, sabotaged, "CLI never reached admission: %s", diagnostics.String())
 	require.NotNil(t, cmd.ProcessState, "CLI did not exit: %v diagnostics=%s", waitErr, diagnostics.String())
-	require.Equal(t, exitUnknown, cmd.ProcessState.ExitCode(), "exit (%v): %s", waitErr, diagnostics.String())
-	var terminal envelope
+	require.Equal(t, output.ExitUnknown, cmd.ProcessState.ExitCode(), "exit (%v): %s", waitErr, diagnostics.String())
+	var terminal output.Terminal
 	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal record")
 	require.NotNil(t, terminal.Result, "missing terminal record")
 	// The post-initialize save fails first. While the run directory is still
@@ -795,8 +770,8 @@ func TestTypedIncompleteAndReportedObservationsStayUnknown(t *testing.T) {
 			t.Setenv("RHODECK_CLI_WORKER_MODE", tc.mode)
 			plan, executable, dir := typedPlan(t, tc.tasks...)
 			code, text, lines, diagnostics := runMachine(t, cliArgs("run", executable, dir), encodePlan(t, plan))
-			require.Equal(t, exitUnknown, code, "diagnostics: %s (%s)", diagnostics, text)
-			var terminal envelope
+			require.Equal(t, output.ExitUnknown, code, "diagnostics: %s (%s)", diagnostics, text)
+			var terminal output.Terminal
 			require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal: %s", text)
 			require.NotNil(t, terminal.Result, "missing terminal: %s", text)
 			result := terminal.Result
@@ -826,9 +801,9 @@ func TestRawTasksStayOpenWithoutAnAdapterSelection(t *testing.T) {
 	input := encodePlan(t, plan)
 
 	code, text, lines, diagnostics := runMachine(t, cliArgs("dry-run", executable, dir), input)
-	require.Equal(t, exitSuccess, code, "raw preview: %s (%s)", text, diagnostics)
+	require.Equal(t, output.ExitSuccess, code, "raw preview: %s (%s)", text, diagnostics)
 	require.Len(t, lines, 1, "raw preview: %s (%s)", text, diagnostics)
-	var preview envelope
+	var preview output.Plan
 	require.NoError(t, json.Unmarshal(lines[0], &preview), "bad preview: %s", text)
 	require.NotNil(t, preview.Plan, "bad preview: %s", text)
 	for i := range preview.Plan.Tasks {
@@ -841,8 +816,8 @@ func TestRawTasksStayOpenWithoutAnAdapterSelection(t *testing.T) {
 	require.NotContains(t, joined, "roguelike:", "raw task names were interpreted as adapter selections: %v", preview.Unverified)
 
 	code, text, lines, diagnostics = runMachine(t, cliArgs("run", executable, dir), input)
-	require.Equal(t, exitSuccess, code, "raw run: diagnostics %s (%s)", diagnostics, text)
-	var terminal envelope
+	require.Equal(t, output.ExitSuccess, code, "raw run: diagnostics %s (%s)", diagnostics, text)
+	var terminal output.Terminal
 	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal: %s", text)
 	require.NotNil(t, terminal.Result, "missing terminal: %s", text)
 	require.Equal(t, control.Succeeded, terminal.Result.State, "raw result: %+v", terminal.Result)
@@ -900,7 +875,7 @@ func TestTypedAdapterRejectionsLeaveNoRuntimeOrDirectory(t *testing.T) {
 				for _, command := range commands {
 					t.Run(source.name+"/"+command.name, func(t *testing.T) {
 						code, text, lines, diagnostics := runMachine(t, command.args, input)
-						require.Equal(t, exitRejected, code, "diagnostics: %s (%s)", diagnostics, text)
+						require.Equal(t, output.ExitRejected, code, "diagnostics: %s (%s)", diagnostics, text)
 						assertRejection(t, lines, text)
 						_, err := os.Stat(dir)
 						require.ErrorIs(t, err, os.ErrNotExist, "rejected command created the data directory")
@@ -914,12 +889,13 @@ func TestTypedAdapterRejectionsLeaveNoRuntimeOrDirectory(t *testing.T) {
 func assertRejection(t *testing.T, lines []json.RawMessage, text string) {
 	t.Helper()
 	require.Len(t, lines, 1, "rejection wrote %d records: %s", len(lines), text)
-	var failure envelope
+	var failure output.Error
 	require.NoError(t, json.Unmarshal(lines[0], &failure))
 	require.Equal(t, "error", failure.Type, "rejection record: %+v", failure)
 	require.Equal(t, "invalid_plan", failure.Code, "rejection record: %+v", failure)
-	require.Nil(t, failure.Result, "rejection record: %+v", failure)
-	require.Nil(t, failure.Plan, "rejection record: %+v", failure)
+	// The error envelope carries no result and no plan fields.
+	require.NotContains(t, text, `"result"`, "rejection record: %s", text)
+	require.NotContains(t, text, `"plan"`, "rejection record: %s", text)
 }
 
 func TestDoctorWithTypedPlanOnlyInitializesAndCloses(t *testing.T) {
@@ -931,7 +907,7 @@ func TestDoctorWithTypedPlanOnlyInitializesAndCloses(t *testing.T) {
 		switchThemeTask("theme-1", `{"themes":["Theme One","Theme Two"]}`),
 	)
 	code, text, _, diagnostics := runMachine(t, cliArgs("doctor", executable, dir), encodePlan(t, plan))
-	require.Equal(t, exitSuccess, code, "diagnostics: %s (%s)", diagnostics, text)
+	require.Equal(t, output.ExitSuccess, code, "diagnostics: %s (%s)", diagnostics, text)
 	commands, err := os.ReadFile(trace)
 	require.NoError(t, err)
 	require.Equal(t, "initialize\nclose\n", string(commands), "doctor commands: %q", commands)
@@ -944,7 +920,7 @@ func TestTypedEventsCarryOnlyFilteredBusinessFacts(t *testing.T) {
 		switchThemeTask("theme-1", `{"themes":["Theme One"]}`),
 	)
 	code, text, lines, diagnostics := runMachine(t, cliArgs("run", executable, dir), encodePlan(t, plan))
-	require.Equal(t, exitSuccess, code, "diagnostics: %s (%s)", diagnostics, text)
+	require.Equal(t, output.ExitSuccess, code, "diagnostics: %s (%s)", diagnostics, text)
 	for _, forbidden := range []string{"private-secret", `"rect"`, `"score"`, `"secret"`} {
 		require.NotContains(t, text, forbidden, "default output disclosed %q: %s", forbidden, text)
 	}

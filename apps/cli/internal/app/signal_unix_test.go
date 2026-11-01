@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/dongwlin/rhodeck/apps/cli/internal/output"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,7 +67,7 @@ func TestSignalsConfirmStopAndReapWorker(t *testing.T) {
 				}
 			})
 			sent := false
-			var terminal envelope
+			var terminal output.Terminal
 		loop:
 			for {
 				select {
@@ -92,7 +93,7 @@ func TestSignalsConfirmStopAndReapWorker(t *testing.T) {
 			require.NotNil(t, cmd.ProcessState, "CLI did not exit: %v diagnostics=%s", err, diagnostics.String())
 			exit := cmd.ProcessState.ExitCode()
 			require.True(t, sent, "signal result: sent=%t exit=%d terminal=%+v err=%v diagnostics=%s", sent, exit, terminal.Result, err, diagnostics.String())
-			require.Equal(t, exitStopped, exit, "signal result: exit=%d terminal=%+v err=%v diagnostics=%s", exit, terminal.Result, err, diagnostics.String())
+			require.Equal(t, output.ExitStopped, exit, "signal result: exit=%d terminal=%+v err=%v diagnostics=%s", exit, terminal.Result, err, diagnostics.String())
 			require.NotNil(t, terminal.Result, "signal result: terminal=%+v err=%v diagnostics=%s", terminal.Result, err, diagnostics.String())
 			require.Equal(t, control.Stopped, terminal.Result.State, "signal result: terminal=%+v err=%v diagnostics=%s", terminal.Result, err, diagnostics.String())
 			require.Equal(t, "complete", terminal.Result.Cleanup, "signal result: terminal=%+v err=%v diagnostics=%s", terminal.Result, err, diagnostics.String())

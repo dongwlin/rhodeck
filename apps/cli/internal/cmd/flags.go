@@ -1,19 +1,18 @@
-package app
+package cmd
 
 import (
 	"errors"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
 
-	"github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/apps/cli/internal/plan"
 	"github.com/spf13/cobra"
 )
 
-type options struct {
+// Options are the plan-facing flags shared by run, dry-run and doctor.
+type Options struct {
 	input           string
 	worker          string
 	dataDir         string
@@ -29,7 +28,7 @@ type options struct {
 
 // register binds the shared plan flags to one command. The names, defaults
 // and usage strings are the accepted CLI contract.
-func (o *options) register(cmd *cobra.Command) {
+func (o *Options) register(cmd *cobra.Command) {
 	flags := cmd.Flags()
 	flags.StringVar(&o.input, "input", "", "plan JSON file, or - for stdin")
 	flags.StringVar(&o.worker, "worker", "", "absolute Core worker executable path")
@@ -44,14 +43,14 @@ func (o *options) register(cmd *cobra.Command) {
 }
 
 // registerDryRun binds the preview switch that only run accepts.
-func (o *options) registerDryRun(cmd *cobra.Command) {
+func (o *Options) registerDryRun(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "validate and preview without native or device actions")
 }
 
 // validate rejects unusable options. It runs before the plan is read, so an
 // unusable invocation never reports a plan problem. A zero timeout is legal
 // and disables the deadline; every other deadline must be positive.
-func (o *options) validate() error {
+func (o *Options) validate() error {
 	if o.input == "" || !validAbsolutePath(o.worker) || !validAbsolutePath(o.dataDir) ||
 		o.timeout < 0 || o.startupTimeout <= 0 || o.requestTimeout <= 0 || o.stopTimeout <= 0 ||
 		o.shutdownTimeout <= 0 || o.outputTimeout <= 0 {
@@ -64,14 +63,18 @@ func validAbsolutePath(path string) bool {
 	return filepath.IsAbs(path) && utf8.ValidString(path) && !strings.ContainsRune(path, 0)
 }
 
-func readPlan(path string, stdin io.Reader) (control.Plan, error) {
-	if path == "-" {
-		return control.DecodePlan(stdin)
+// planOptions returns the validated options the plan layer needs.
+func (o *Options) planOptions() plan.Options {
+	return plan.Options{
+		Input:           o.input,
+		Worker:          o.worker,
+		DataDir:         o.dataDir,
+		Timeout:         o.timeout,
+		StartupTimeout:  o.startupTimeout,
+		RequestTimeout:  o.requestTimeout,
+		StopTimeout:     o.stopTimeout,
+		ShutdownTimeout: o.shutdownTimeout,
+		OutputTimeout:   o.outputTimeout,
+		IncludeRaw:      o.includeRaw,
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return control.Plan{}, err
-	}
-	defer f.Close()
-	return control.DecodePlan(f)
 }

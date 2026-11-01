@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/dongwlin/rhodeck/apps/cli/internal/output"
 	"io"
 	"math"
 	"os"
@@ -423,7 +424,7 @@ func TestDiscoveryHasNoInstallationDependency(t *testing.T) {
 		require.Empty(t, diagnostics.String(), "unexpected diagnostics")
 		lines := decodeLines(t, out.Bytes())
 		require.Len(t, lines, 1, "machine help must print one JSON object: %s", out.String())
-		var help envelope
+		var help output.Help
 		require.NoError(t, json.Unmarshal(lines[0], &help), "machine help: %s", out.String())
 		require.Equal(t, "help", help.Type, "machine help: %s", out.String())
 		require.NotEmpty(t, help.Usage, "machine help carries no usage text: %s", out.String())
@@ -441,7 +442,7 @@ func TestDryRunPreservesOpenParametersWithoutEffects(t *testing.T) {
 	_, err := os.Stat(dir)
 	require.ErrorIs(t, err, os.ErrNotExist, "dry-run created data directory")
 	lines := decodeLines(t, out.Bytes())
-	var preview envelope
+	var preview output.Plan
 	require.Len(t, lines, 1, "missing unverified plan: %s", out.String())
 	require.NoError(t, json.Unmarshal(lines[0], &preview), "missing unverified plan: %s", out.String())
 	require.Equal(t, "plan", preview.Type, "missing unverified plan: %s", out.String())
@@ -454,7 +455,7 @@ func TestInputRejectionsHaveStablePrivateOutput(t *testing.T) {
 	for _, input := range [][]byte{[]byte(`{"private-secret":true}`), append(bytes.Clone(valid), []byte(` {"secret":1}`)...)} {
 		var out, diagnostics bytes.Buffer
 		code := runCLI("dev", context.Background(), cliArgs("dry-run", executable, dir), bytes.NewReader(input), &out, &diagnostics)
-		require.Equal(t, exitRejected, code)
+		require.Equal(t, output.ExitRejected, code)
 		decodeLines(t, out.Bytes())
 		require.False(t, bytes.Contains(out.Bytes(), []byte("private-secret")), "input escaped into error diagnostics: %s", out.String())
 		require.NotContains(t, diagnostics.String(), "secret", "input escaped into error diagnostics: %s", diagnostics.String())
@@ -462,7 +463,7 @@ func TestInputRejectionsHaveStablePrivateOutput(t *testing.T) {
 	for _, args := range [][]string{nil, {"unknown"}, {"version", "secret"}, {"run", "--input", "secret"}, {"dry-run", "--timeout=-1s"}} {
 		var out, diagnostics bytes.Buffer
 		code := runCLI("dev", context.Background(), args, bytes.NewReader(valid), &out, &diagnostics)
-		require.Equal(t, exitRejected, code, "arguments %q", args)
+		require.Equal(t, output.ExitRejected, code, "arguments %q", args)
 	}
 }
 
@@ -472,8 +473,8 @@ func TestRunMachineTerminalAndExitCodes(t *testing.T) {
 		code  int
 		state control.State
 	}{
-		{"success", exitSuccess, control.Succeeded}, {"failure", exitFailed, control.Failed},
-		{"reject", exitRejected, control.Rejected}, {"crash", exitUnknown, control.Unknown},
+		{"success", output.ExitSuccess, control.Succeeded}, {"failure", output.ExitFailed, control.Failed},
+		{"reject", output.ExitRejected, control.Rejected}, {"crash", output.ExitUnknown, control.Unknown},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			t.Setenv("RHODECK_CLI_WORKER_MODE", tc.mode)
@@ -482,7 +483,7 @@ func TestRunMachineTerminalAndExitCodes(t *testing.T) {
 			code := runCLI("dev", context.Background(), cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
 			require.Equal(t, tc.code, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
 			lines := decodeLines(t, out.Bytes())
-			var last envelope
+			var last output.Terminal
 			require.NotEmpty(t, lines, "missing authoritative terminal: %s", out.String())
 			require.NoError(t, json.Unmarshal(lines[len(lines)-1], &last), "missing authoritative terminal: %s", out.String())
 			require.Equal(t, "terminal", last.Type, "missing authoritative terminal: %s", out.String())
@@ -505,12 +506,12 @@ func TestDoctorDoesNotSubmitDeviceActions(t *testing.T) {
 	plan, executable, dir := testPlan(t)
 	var out, diagnostics bytes.Buffer
 	code := runCLI("dev", context.Background(), cliArgs("doctor", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
-	require.Equal(t, exitSuccess, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
+	require.Equal(t, output.ExitSuccess, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
 	commands, err := os.ReadFile(trace)
 	require.NoError(t, err)
 	require.Equal(t, "initialize\nclose\n", string(commands), "doctor commands: %s", commands)
 	decodeLines(t, out.Bytes())
-	var report envelope
+	var report output.Doctor
 	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
 	checkInstallationMetadata(t, report.RuntimeInfo, plan)
 }
@@ -534,8 +535,8 @@ func TestDoctorMissingADBStillReportsCoreSnapshot(t *testing.T) {
 	plan.Connection.ADBPath = filepath.Join(t.TempDir(), "missing-adb")
 	var out, diagnostics bytes.Buffer
 	code := runCLI("dev", context.Background(), cliArgs("doctor", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
-	require.Equal(t, exitRejected, code, "out: %s", out.String())
-	var report envelope
+	require.Equal(t, output.ExitRejected, code, "out: %s", out.String())
+	var report output.Doctor
 	require.NoError(t, json.Unmarshal(out.Bytes(), &report), "missing native snapshot: %s", out.String())
 	require.NotNil(t, report.RuntimeInfo, "missing native snapshot: %s", out.String())
 	for _, check := range report.Checks {
@@ -552,7 +553,7 @@ func TestRawEventsRequireExplicitOptIn(t *testing.T) {
 	var out, diagnostics bytes.Buffer
 	args := append(cliArgs("run", executable, dir), "--include-raw-events")
 	code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
-	require.Equal(t, exitSuccess, code, "out: %s", out.String())
+	require.Equal(t, output.ExitSuccess, code, "out: %s", out.String())
 	require.True(t, bytes.Contains(out.Bytes(), []byte("private-secret")), "explicit raw callback missing: %s", out.String())
 }
 
@@ -565,7 +566,7 @@ func TestBrokenOutputStillClosesRuntime(t *testing.T) {
 	plan, executable, dir := testPlan(t)
 	var diagnostics bytes.Buffer
 	code := runCLI("dev", context.Background(), cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), brokenWriter{}, &diagnostics)
-	require.Equal(t, exitUnknown, code)
+	require.Equal(t, output.ExitUnknown, code)
 	rt, err := control.New(control.Config{DataDir: dir, Worker: worker.Config{Executable: executable}})
 	require.NoError(t, err, "data directory was not released after output failure")
 	require.NoError(t, rt.Close(context.Background()))
@@ -594,7 +595,7 @@ func TestCancellationUsesControlStopAndCleanup(t *testing.T) {
 	out := &stopWriter{cancel: cancel}
 	var diagnostics bytes.Buffer
 	code := runCLI("dev", ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
-	require.Equal(t, exitStopped, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
+	require.Equal(t, output.ExitStopped, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
 	commands, err := os.ReadFile(trace)
 	require.NoError(t, err, "stop/cleanup missing")
 	require.True(t, bytes.Contains(commands, []byte("stop\n")), "stop/cleanup missing: %s", commands)
@@ -607,16 +608,16 @@ func TestDeadlineRemainsDistinctFromSignalStop(t *testing.T) {
 	var out, diagnostics bytes.Buffer
 	args := append(cliArgs("run", executable, dir), "--timeout", "1s")
 	code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
-	require.Equal(t, exitUnknown, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
+	require.Equal(t, output.ExitUnknown, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
 	lines := decodeLines(t, out.Bytes())
-	var terminal envelope
+	var terminal output.Terminal
 	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "deadline reason missing: %s", out.String())
 	require.NotNil(t, terminal.Result, "deadline reason missing: %s", out.String())
 	require.Equal(t, "deadline_exceeded", terminal.Result.Code, "deadline reason missing: %s", out.String())
 }
 
 func TestConfirmedTasksDoNotHideCleanupFailure(t *testing.T) {
-	require.Equal(t, exitUnknown, resultExit(control.Result{State: control.Succeeded, Cleanup: "failed"}))
+	require.Equal(t, output.ExitUnknown, output.ExitForResult(control.Result{State: control.Succeeded, Cleanup: "failed"}))
 }
 
 func TestStartupTimeoutUsesTimeoutExitCode(t *testing.T) {
@@ -625,9 +626,9 @@ func TestStartupTimeoutUsesTimeoutExitCode(t *testing.T) {
 	var out, diagnostics bytes.Buffer
 	args := append(cliArgs("run", executable, dir), "--startup-timeout", "50ms")
 	code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
-	require.Equal(t, exitUnknown, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
+	require.Equal(t, output.ExitUnknown, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
 	lines := decodeLines(t, out.Bytes())
-	var terminal envelope
+	var terminal output.Terminal
 	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "startup timeout reason missing: %s", out.String())
 	require.NotNil(t, terminal.Result, "startup timeout reason missing: %s", out.String())
 	require.Equal(t, control.Rejected, terminal.Result.State, "startup timeout reason missing: %s", out.String())
@@ -693,7 +694,7 @@ func TestBlockedOutputReleasesRuntimeAfterCancellationOrCompletion(t *testing.T)
 			}
 			select {
 			case code := <-finished:
-				require.Equal(t, exitUnknown, code, "blocked output exit")
+				require.Equal(t, output.ExitUnknown, code, "blocked output exit")
 			case <-time.After(10 * time.Second):
 				require.FailNow(t, "blocked output retained the CLI beyond its cleanup deadlines")
 			}
