@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/worker"
@@ -858,7 +859,10 @@ func TestInitializePersistenceFailureUsesPersistenceExitCode(t *testing.T) {
 	)
 	release := filepath.Join(t.TempDir(), "release")
 	trace := filepath.Join(t.TempDir(), "commands")
-	cmd := exec.Command(executable, cliArgs("run", executable, dir)...)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, cliArgs("run", executable, dir)...)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = append(filteredCLIEnv(), "RHODECK_CLI_PROCESS=1", "RHODECK_CLI_WORKER_MODE=initslow",
 		"RHODECK_CLI_INIT_RELEASE="+release, "RHODECK_CLI_TRACE="+trace)
 	cmd.Stdin = bytes.NewReader(encodePlan(t, plan))
@@ -868,10 +872,17 @@ func TestInitializePersistenceFailureUsesPersistenceExitCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stopRead := context.AfterFunc(ctx, func() { _ = stdout.Close() })
+	defer stopRead()
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
 
 	scanner := bufio.NewScanner(stdout)
 	var lines []json.RawMessage
@@ -898,8 +909,14 @@ func TestInitializePersistenceFailureUsesPersistenceExitCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		t.Fatalf("CLI did not finish within its deadline: %v", ctx.Err())
+	}
 	if !sabotaged {
 		t.Fatalf("CLI never reached admission: %s", diagnostics.String())
+	}
+	if cmd.ProcessState == nil {
+		t.Fatalf("CLI did not exit: %v diagnostics=%s", waitErr, diagnostics.String())
 	}
 	if code := cmd.ProcessState.ExitCode(); code != exitUnknown {
 		t.Fatalf("exit = %d (%v): %s", code, waitErr, diagnostics.String())
