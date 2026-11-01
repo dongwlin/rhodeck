@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	. "github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/adapters/copilot"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
@@ -142,38 +144,26 @@ func TestCopilotPreparationCallbacksBeforeAppendResponse(t *testing.T) {
 			cfg.Adapters = []TaskAdapter{copilot.New()}
 			rt := newRuntime(t, cfg)
 			run, err := rt.Run(context.Background(), copilotRuntimePlan(t, params))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			events, result := waitRuntimeRun(t, run)
-			if result.State != Succeeded || result.Cleanup != "complete" {
-				t.Fatalf("preparation callbacks prevented accepted work: %+v", result)
-			}
+			require.False(t, result.State != Succeeded || result.Cleanup != "complete", "preparation callbacks prevented accepted work: %+v", result)
 			prechecks, typed := 0, 0
 			for _, event := range events {
 				if event.Type == "core" && event.MessageID == 20003 && event.CoreTaskID == 0 {
 					prechecks++
-					if event.TaskID != "" {
-						t.Fatalf("preparation observation gained a task association: %+v", event)
-					}
+					require.Empty(t, event.TaskID, "preparation observation gained a task association: %+v", event)
 				}
 				if event.Type == "typed" {
 					typed++
-					if event.MessageID != 20001 || event.CoreTaskID != 101 || event.Typed.Targets[0].Outcome != TargetAchieved {
-						t.Fatalf("preparation observation became a business fact: %+v", event)
-					}
+					require.False(t, event.MessageID != 20001 || event.CoreTaskID != 101 || event.Typed.Targets[0].Outcome != TargetAchieved, "preparation observation became a business fact: %+v", event)
 				}
 			}
 			wantTyped := 1
 			if strings.Contains(params, `"filename":"same.json","formation"`) {
 				wantTyped = 0
-				if result.Tasks[0].Typed != nil || result.Tasks[0].Policy != ObjectiveNone {
-					t.Fatalf("single-file preparation gained objectives: %+v", result.Tasks[0])
-				}
+				require.False(t, result.Tasks[0].Typed != nil || result.Tasks[0].Policy != ObjectiveNone, "single-file preparation gained objectives: %+v", result.Tasks[0])
 			}
-			if prechecks != 3 || typed != wantTyped {
-				t.Fatalf("preparation/typed events = %d/%d, want 3/%d", prechecks, typed, wantTyped)
-			}
+			require.False(t, prechecks != 3 || typed != wantTyped, "preparation/typed events = %d/%d, want 3/%d", prechecks, typed, wantTyped)
 		})
 	}
 }
@@ -186,17 +176,11 @@ func TestCopilotPreparationErrorsLeaveAppendResponseAuthoritative(t *testing.T) 
 			cfg.Adapters = []TaskAdapter{copilot.New()}
 			rt := newRuntime(t, cfg)
 			run, err := rt.Run(context.Background(), copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"}]}`))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			events, result := waitRuntimeRun(t, run)
-			if result.State != Rejected || result.Cleanup != "complete" || result.Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved {
-				t.Fatalf("preparation error replaced append rejection: %+v", result)
-			}
+			require.False(t, result.State != Rejected || result.Cleanup != "complete" || result.Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved, "preparation error replaced append rejection: %+v", result)
 			for _, event := range events {
-				if event.Type == "typed" || event.Typed != nil {
-					t.Fatalf("preparation error manufactured a target failure: %+v", event)
-				}
+				require.False(t, event.Type == "typed" || event.Typed != nil, "preparation error manufactured a target failure: %+v", event)
 			}
 		})
 	}
@@ -211,17 +195,11 @@ func TestCopilotPreparationErrorsInMixedInputOnlyTask(t *testing.T) {
 			rt := newRuntime(t, cfg)
 			plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"}]}`, `{"filename":"same.json"}`)
 			run, err := rt.Run(context.Background(), plan)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			events, result := waitRuntimeRun(t, run)
-			if result.State != Rejected || result.Cleanup != "complete" || result.Tasks[0].CoreTaskID != 101 || result.Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved || result.Tasks[1].Policy != ObjectiveNone || result.Tasks[1].Typed != nil {
-				t.Fatalf("input-only preparation error polluted typed task routing: %+v", result)
-			}
+			require.False(t, result.State != Rejected || result.Cleanup != "complete" || result.Tasks[0].CoreTaskID != 101 || result.Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved || result.Tasks[1].Policy != ObjectiveNone || result.Tasks[1].Typed != nil, "input-only preparation error polluted typed task routing: %+v", result)
 			for _, event := range events {
-				if event.Type == "typed" || event.Typed != nil {
-					t.Fatalf("input-only rejection created a target fact: %+v", event)
-				}
+				require.False(t, event.Type == "typed" || event.Typed != nil, "input-only rejection created a target fact: %+v", event)
 			}
 		})
 	}
@@ -238,13 +216,9 @@ func TestCopilotPreparationLateProgressPreservesActiveEntryScope(t *testing.T) {
 	} {
 		sendTypedCallback(t, run, 20003, callback)
 	}
-	if InspectRunForTest(run).Fatal != "" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved || len(typedEventsIn(run)) != 0 {
-		t.Fatalf("late preparation progress became a target fact: fatal=%s, result=%+v", InspectRunForTest(run).Fatal, run.Snapshot())
-	}
+	require.False(t, InspectRunForTest(run).Fatal != "" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved || len(typedEventsIn(run)) != 0, "late preparation progress became a target fact: fatal=%s, result=%+v", InspectRunForTest(run).Fatal, run.Snapshot())
 	sendTypedCallback(t, run, 20001, copilotRuntimeNode(101, "StageDrops-Stars-3"))
-	if InspectRunForTest(run).Fatal != "" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || len(typedEventsIn(run)) != 1 {
-		t.Fatalf("late preparation progress cleared entry scope: fatal=%s, result=%+v", InspectRunForTest(run).Fatal, run.Snapshot())
-	}
+	require.False(t, InspectRunForTest(run).Fatal != "" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || len(typedEventsIn(run)) != 1, "late preparation progress cleared entry scope: fatal=%s, result=%+v", InspectRunForTest(run).Fatal, run.Snapshot())
 }
 
 func TestCopilotPreparationExceptionRejectsUnassociatedEvidence(t *testing.T) {
@@ -271,9 +245,7 @@ func TestCopilotPreparationExceptionRejectsUnassociatedEvidence(t *testing.T) {
 			plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"}]}`)
 			run := newPreparedTypedHarness(t, plan, []int32{101}, false, copilot.New())
 			sendTypedCallback(t, run, test.messageID, test.raw)
-			if InspectRunForTest(run).Fatal != "typed_invalid_event" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved || len(typedEventsIn(run)) != 0 {
-				t.Fatalf("invalid pre-acceptance evidence was admitted: fatal=%s, result=%+v", InspectRunForTest(run).Fatal, run.Snapshot())
-			}
+			require.False(t, InspectRunForTest(run).Fatal != "typed_invalid_event" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved || len(typedEventsIn(run)) != 0, "invalid pre-acceptance evidence was admitted: fatal=%s, result=%+v", InspectRunForTest(run).Fatal, run.Snapshot())
 		})
 	}
 }

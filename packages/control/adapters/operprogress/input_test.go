@@ -3,13 +3,13 @@ package operprogress
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/dongwlin/rhodeck/packages/control"
+
+	"github.com/stretchr/testify/require"
 )
 
 func operProgressTask(params string) control.Task {
@@ -27,40 +27,28 @@ func operProgressPlansJSON(n int) string {
 func TestOperProgressAdapterDescriptor(t *testing.T) {
 	adapter := New()
 	want := control.AdapterRef{Name: "oper_progress", Version: 1}
-	if got := adapter.Descriptor(); got != want {
-		t.Fatalf("descriptor = %+v, want %+v", got, want)
-	}
+	got := adapter.Descriptor()
+	require.Equal(t, want, got, "descriptor = %+v", got)
 }
 
 func TestOperProgressPrepareCompilesParamsAndTargets(t *testing.T) {
 	adapter := New()
 	prepared, err := adapter.Prepare(operProgressTask(`{"plans":[{"role":"Warrior","name":"Alpha","elite":2},{"role":"Caster","name":"Beta","skill_level":7},{"role":"Medic","name":"Gamma","skill_mastery":[0,2,0]}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	const wantParams = `{"plans":[{"role":"Warrior","name":"Alpha","elite":2},{"role":"Caster","name":"Beta","skill_level":7},{"role":"Medic","name":"Gamma","skill_mastery":[0,2,0]}]}`
-	if string(prepared.Params) != wantParams {
-		t.Fatalf("compiled params = %s, want %s", prepared.Params, wantParams)
-	}
+	require.Equal(t, wantParams, string(prepared.Params), "compiled params = %s, want %s", prepared.Params, wantParams)
 	wantTargets := []string{"op-0001", "op-0002", "op-0003"}
-	if !reflect.DeepEqual(prepared.Targets, wantTargets) {
-		t.Fatalf("targets = %v, want %v", prepared.Targets, wantTargets)
-	}
+	require.Equal(t, wantTargets, prepared.Targets, "targets = %v, want %v", prepared.Targets, wantTargets)
 	reducer, ok := prepared.Reducer.(*operProgressReducer)
-	if !ok || reducer == nil {
-		t.Fatalf("reducer has type %T, want fresh *operProgressReducer", prepared.Reducer)
-	}
+	require.False(t, !ok || reducer == nil, "reducer has type %T, want fresh *operProgressReducer", prepared.Reducer)
 	wantMapping := []operProgressTarget{
 		{ID: "op-0001", SourceIndex: 0, Role: "Warrior", Name: "Alpha", Action: operProgressActionElite, Expected: 2, MasterySlot: 0},
 		{ID: "op-0002", SourceIndex: 1, Role: "Caster", Name: "Beta", Action: operProgressActionSkillLevel, Expected: 7, MasterySlot: 0},
 		{ID: "op-0003", SourceIndex: 2, Role: "Medic", Name: "Gamma", Action: operProgressActionSkillMastery, Expected: 2, MasterySlot: 2},
 	}
-	if !reflect.DeepEqual(reducer.targets, wantMapping) {
-		t.Fatalf("target mapping = %+v, want %+v", reducer.targets, wantMapping)
-	}
-	if update, err := reducer.Observe(control.Observation{MessageID: 20003}); err != nil || len(update.Targets) != 0 || len(update.Summary) != 0 {
-		t.Fatalf("placeholder reducer invented a fact: %+v, %v", update, err)
-	}
+	require.Equal(t, wantMapping, reducer.targets, "target mapping = %+v, want %+v", reducer.targets, wantMapping)
+	update, err := reducer.Observe(control.Observation{MessageID: 20003})
+	require.False(t, err != nil || len(update.Targets) != 0 || len(update.Summary) != 0, "placeholder reducer invented a fact: %+v, %v", update, err)
 }
 
 func TestOperProgressPrepareAcceptsActionBoundaries(t *testing.T) {
@@ -89,18 +77,10 @@ func TestOperProgressPrepareAcceptsActionBoundaries(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			prepared, err := adapter.Prepare(operProgressTask(tc.params))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(prepared.Params) != tc.params {
-				t.Fatalf("compiled params = %s, want %s", prepared.Params, tc.params)
-			}
-			if len(prepared.Targets) != tc.targets {
-				t.Fatalf("got %d targets, want %d", len(prepared.Targets), tc.targets)
-			}
-			if prepared.Reducer == nil {
-				t.Fatal("adapter returned a nil reducer")
-			}
+			require.NoError(t, err)
+			require.Equal(t, tc.params, string(prepared.Params), "compiled params = %s, want %s", prepared.Params, tc.params)
+			require.Len(t, prepared.Targets, tc.targets, "got %d targets, want %d", len(prepared.Targets), tc.targets)
+			require.NotNil(t, prepared.Reducer, "adapter returned a nil reducer")
 		})
 	}
 }
@@ -187,9 +167,8 @@ func TestOperProgressPrepareRejectsInvalidInput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := adapter.Prepare(operProgressTask(tc.params)); !errors.Is(err, control.ErrInvalidPlan) {
-				t.Fatalf("invalid input accepted: %v", err)
-			}
+			_, err := adapter.Prepare(operProgressTask(tc.params))
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "invalid input accepted: %v", err)
 		})
 	}
 }
@@ -199,9 +178,8 @@ func TestOperProgressPrepareRejectsWrongCoreType(t *testing.T) {
 	// The params are otherwise acceptable so only the Core type check can reject.
 	params := json.RawMessage(`{"plans":[{"role":"Warrior","name":"A","elite":1}]}`)
 	for _, taskType := range []string{"SwitchTheme", "oper_progress", "OperProgress ", ""} {
-		if _, err := adapter.Prepare(control.Task{ID: "grow", Type: taskType, Params: params}); !errors.Is(err, control.ErrInvalidPlan) {
-			t.Fatalf("Core type %q accepted: %v", taskType, err)
-		}
+		_, err := adapter.Prepare(control.Task{ID: "grow", Type: taskType, Params: params})
+		require.ErrorIs(t, err, control.ErrInvalidPlan, "Core type %q accepted: %v", taskType, err)
 	}
 }
 
@@ -223,9 +201,8 @@ func TestOperProgressRejectsCaseVariantFields(t *testing.T) {
 		"upper role beside valid fields": `{"plans":[{"ROLE":"Warrior","name":"A","elite":1}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := adapter.Prepare(operProgressTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
-				t.Fatalf("case-variant field accepted: %v", err)
-			}
+			_, err := adapter.Prepare(operProgressTask(params))
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "case-variant field accepted: %v", err)
 		})
 	}
 }
@@ -241,9 +218,8 @@ func TestOperProgressRejectsUnpairedSurrogateNames(t *testing.T) {
 		"high surrogate in plan key": `{"plans":[{"role":"Warrior","name":"A","\ud800":1}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := adapter.Prepare(operProgressTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
-				t.Fatalf("unpaired surrogate accepted: %v", err)
-			}
+			_, err := adapter.Prepare(operProgressTask(params))
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "unpaired surrogate accepted: %v", err)
 		})
 	}
 	// A correctly paired surrogate escape and a literal replacement-character
@@ -253,27 +229,18 @@ func TestOperProgressRejectsUnpairedSurrogateNames(t *testing.T) {
 		{`{"plans":[{"role":"Warrior","name":"\ufffd","elite":1}]}`, `{"plans":[{"role":"Warrior","name":"�","elite":1}]}`},
 	} {
 		prepared, err := adapter.Prepare(operProgressTask(tc.in))
-		if err != nil {
-			t.Fatalf("valid surrogate escape %s rejected: %v", tc.in, err)
-		}
-		if string(prepared.Params) != tc.want {
-			t.Fatalf("decoded name = %s, want %s", prepared.Params, tc.want)
-		}
+		require.NoError(t, err, "valid surrogate escape %s rejected: %v", tc.in, err)
+		require.Equal(t, tc.want, string(prepared.Params), "decoded name = %s, want %s", prepared.Params, tc.want)
 	}
 }
 
 func TestOperProgressPreparePlanCountBoundary(t *testing.T) {
 	adapter := New()
 	prepared, err := adapter.Prepare(operProgressTask(operProgressPlansJSON(operProgressMaxPlans)))
-	if err != nil {
-		t.Fatalf("maximum plan count rejected: %v", err)
-	}
-	if len(prepared.Targets) != operProgressMaxPlans || prepared.Targets[0] != "op-0001" || prepared.Targets[operProgressMaxPlans-1] != "op-0128" {
-		t.Fatalf("unexpected target sequence at the count boundary: %d targets", len(prepared.Targets))
-	}
-	if _, err := adapter.Prepare(operProgressTask(operProgressPlansJSON(operProgressMaxPlans + 1))); !errors.Is(err, control.ErrInvalidPlan) {
-		t.Fatalf("plan count over the limit accepted: %v", err)
-	}
+	require.NoError(t, err, "maximum plan count rejected: %v", err)
+	require.False(t, len(prepared.Targets) != operProgressMaxPlans || prepared.Targets[0] != "op-0001" || prepared.Targets[operProgressMaxPlans-1] != "op-0128", "unexpected target sequence at the count boundary: %d targets", len(prepared.Targets))
+	_, err = adapter.Prepare(operProgressTask(operProgressPlansJSON(operProgressMaxPlans + 1)))
+	require.ErrorIs(t, err, control.ErrInvalidPlan, "plan count over the limit accepted: %v", err)
 }
 
 func TestOperProgressPrepareParamsByteBoundary(t *testing.T) {
@@ -282,11 +249,11 @@ func TestOperProgressPrepareParamsByteBoundary(t *testing.T) {
 	for _, size := range []int{control.MaxAdapterParamsBytes, control.MaxAdapterParamsBytes + 1} {
 		params := base + strings.Repeat(" ", size-len(base))
 		_, err := adapter.Prepare(operProgressTask(params))
-		if size == control.MaxAdapterParamsBytes && err != nil {
-			t.Fatalf("params at the byte limit rejected: %v", err)
+		if size == control.MaxAdapterParamsBytes {
+			require.NoError(t, err, "params at the byte limit rejected: %v", err)
 		}
-		if size > control.MaxAdapterParamsBytes && !errors.Is(err, control.ErrInvalidPlan) {
-			t.Fatalf("params over the byte limit accepted: %v", err)
+		if size > control.MaxAdapterParamsBytes {
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "params over the byte limit accepted: %v", err)
 		}
 	}
 }
@@ -301,9 +268,8 @@ func TestOperProgressPrepareRejectsCompiledParamsOverBudget(t *testing.T) {
 	}
 	params := `{"plans":[` + strings.Join(plans, ",") + `]}`
 	adapter := New()
-	if _, err := adapter.Prepare(operProgressTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
-		t.Fatalf("compiled params over the byte limit accepted: %v", err)
-	}
+	_, err := adapter.Prepare(operProgressTask(params))
+	require.ErrorIs(t, err, control.ErrInvalidPlan, "compiled params over the byte limit accepted: %v", err)
 }
 
 func TestOperProgressPrepareIsDetachedAndFreshPerTask(t *testing.T) {
@@ -312,32 +278,20 @@ func TestOperProgressPrepareIsDetachedAndFreshPerTask(t *testing.T) {
 	const wantParams = `{"plans":[{"role":"Warrior","name":"Alpha","elite":2}]}`
 	input := []byte(source)
 	prepared, err := adapter.Prepare(control.Task{ID: "grow-1", Type: operProgressTaskType, Params: json.RawMessage(input)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(input) != source {
-		t.Fatal("Prepare mutated the caller's params")
-	}
+	require.NoError(t, err)
+	require.Equal(t, source, string(input), "Prepare mutated the caller's params")
 	reducer := prepared.Reducer.(*operProgressReducer)
 	input[2] = 'X'
-	if string(prepared.Params) != wantParams || prepared.Targets[0] != "op-0001" || reducer.targets[0].Name != "Alpha" {
-		t.Fatal("prepared output aliases the caller's params")
-	}
+	require.False(t, string(prepared.Params) != wantParams || prepared.Targets[0] != "op-0001" || reducer.targets[0].Name != "Alpha", "prepared output aliases the caller's params")
 
 	second, err := adapter.Prepare(operProgressTask(source))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	secondReducer := second.Reducer.(*operProgressReducer)
-	if secondReducer == reducer || &secondReducer.targets[0] == &reducer.targets[0] {
-		t.Fatal("reducer was reused across preparations")
-	}
+	require.False(t, secondReducer == reducer || &secondReducer.targets[0] == &reducer.targets[0], "reducer was reused across preparations")
 	prepared.Targets[0] = "mutated"
 	prepared.Params[2] = 'Y'
 	reducer.targets[0].Name = "mutated"
-	if second.Targets[0] != "op-0001" || string(second.Params) != wantParams || secondReducer.targets[0].Name != "Alpha" {
-		t.Fatal("preparations share mutable slices or JSON buffers")
-	}
+	require.False(t, second.Targets[0] != "op-0001" || string(second.Params) != wantParams || secondReducer.targets[0].Name != "Alpha", "preparations share mutable slices or JSON buffers")
 }
 
 func TestOperProgressRawPlanRemainsOpen(t *testing.T) {
@@ -349,22 +303,12 @@ func TestOperProgressRawPlanRemainsOpen(t *testing.T) {
 		{ID: "strict", Type: "OperProgress", Adapter: &ref, Params: json.RawMessage(`{"plans":[{"role":"Caster","name":"B","skill_level":3}]}`)},
 	}
 	prepared, err := control.PreparePlan(plan, New())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if prepared.Tasks[0].Typed != nil {
-		t.Fatal("raw task was routed through the adapter")
-	}
-	if !bytes.Contains(prepared.Plan.Tasks[0].Params, []byte("9007199254740993")) || !bytes.Contains(prepared.Plan.Tasks[0].Params, []byte(`"future"`)) {
-		t.Fatalf("raw params lost unknown fields or integer literals: %s", prepared.Plan.Tasks[0].Params)
-	}
+	require.NoError(t, err)
+	require.Nil(t, prepared.Tasks[0].Typed, "raw task was routed through the adapter")
+	require.True(t, bytes.Contains(prepared.Plan.Tasks[0].Params, []byte("9007199254740993")) && bytes.Contains(prepared.Plan.Tasks[0].Params, []byte(`"future"`)), "raw params lost unknown fields or integer literals: %s", prepared.Plan.Tasks[0].Params)
 	typed := prepared.Tasks[1].Typed
-	if typed == nil || len(typed.Targets) != 1 || typed.Targets[0].ID != "op-0001" || typed.Targets[0].Outcome != control.TargetUnobserved {
-		t.Fatalf("strict task was not prepared: %+v", typed)
-	}
-	if !bytes.Contains(prepared.Plan.Tasks[1].Params, []byte(`"skill_level":3`)) {
-		t.Fatalf("strict task kept uncompiled params: %s", prepared.Plan.Tasks[1].Params)
-	}
+	require.False(t, typed == nil || len(typed.Targets) != 1 || typed.Targets[0].ID != "op-0001" || typed.Targets[0].Outcome != control.TargetUnobserved, "strict task was not prepared: %+v", typed)
+	require.True(t, bytes.Contains(prepared.Plan.Tasks[1].Params, []byte(`"skill_level":3`)), "strict task kept uncompiled params: %s", prepared.Plan.Tasks[1].Params)
 }
 
 func ExampleNew() {

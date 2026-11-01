@@ -3,7 +3,6 @@ package roguelike
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,6 +10,8 @@ import (
 
 	"github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/internal/strictjson"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func roguelikeTask(params string) control.Task {
@@ -49,24 +50,16 @@ func TestRoguelikePrepareAcceptsStrictInputs(t *testing.T) {
 	} {
 		t.Run(params, func(t *testing.T) {
 			prepared, err := New().Prepare(roguelikeTask(params))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			switch prepared.Policy {
 			case control.ObjectiveNone:
-				if len(prepared.Targets) != 0 || prepared.Reducer != nil {
-					t.Fatalf("input-only preparation = %+v", prepared)
-				}
+				require.True(t, len(prepared.Targets) == 0 && prepared.Reducer == nil, "input-only preparation = %+v", prepared)
 			case control.ObjectiveAll, control.ObjectiveAny:
-				if len(prepared.Targets) == 0 || prepared.Reducer == nil {
-					t.Fatalf("interpreted preparation = %+v", prepared)
-				}
+				require.True(t, len(prepared.Targets) != 0 && prepared.Reducer != nil, "interpreted preparation = %+v", prepared)
 			default:
-				t.Fatalf("unexpected objective policy %q", prepared.Policy)
+				require.FailNow(t, fmt.Sprintf("unexpected objective policy %q", prepared.Policy), "")
 			}
-			if !strictjson.ValidObject(prepared.Params, control.MaxAdapterParamsBytes) {
-				t.Fatalf("compiled params are invalid: %s", prepared.Params)
-			}
+			require.True(t, strictjson.ValidObject(prepared.Params, control.MaxAdapterParamsBytes), "compiled params are invalid: %s", prepared.Params)
 		})
 	}
 }
@@ -208,9 +201,8 @@ func TestRoguelikePrepareRejectsInvalidInputs(t *testing.T) {
 		"invalid utf8":              "{\"theme\":\"Phantom\",\"mode\":0,\"squad\":\"\xff\"}",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := New().Prepare(roguelikeTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
-				t.Fatalf("invalid input accepted: %v", err)
-			}
+			_, err := New().Prepare(roguelikeTask(params))
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "invalid input accepted: %v", err)
 		})
 	}
 	for _, field := range []string{"theme", "mode", "squad", "core_char_list", "start_with_elite_two", "blackflow_strategy", "blackflow_start_animals", "blackflow_start_rewards"} {
@@ -228,9 +220,8 @@ func TestRoguelikePrepareRejectsInvalidInputs(t *testing.T) {
 			default:
 				params = `{"theme":"Phantom","mode":0,"` + field + `":null}`
 			}
-			if _, err := New().Prepare(roguelikeTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
-				t.Fatalf("null input accepted: %v", err)
-			}
+			_, err := New().Prepare(roguelikeTask(params))
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "null input accepted: %v", err)
 		})
 	}
 }
@@ -256,14 +247,10 @@ func TestRoguelikeModeMatrix(t *testing.T) {
 			params := fmt.Sprintf(`{"theme":%q,"mode":%d%s}`, theme, mode, requires[mode])
 			_, err := adapter.Prepare(roguelikeTask(params))
 			if valid[theme][mode] {
-				if err != nil {
-					t.Fatalf("theme %s mode %d rejected: %v", theme, mode, err)
-				}
+				require.NoError(t, err, "theme %s mode %d rejected: %v", theme, mode, err)
 				continue
 			}
-			if !errors.Is(err, control.ErrInvalidPlan) {
-				t.Fatalf("theme %s mode %d accepted: %v", theme, mode, err)
-			}
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "theme %s mode %d accepted: %v", theme, mode, err)
 		}
 	}
 }
@@ -271,79 +258,41 @@ func TestRoguelikeModeMatrix(t *testing.T) {
 func TestRoguelikeCompilePreservesProvidedFields(t *testing.T) {
 	const input = `{"theme":"Sarkaz","mode":4,"difficulty":20,"squad":"蓝图测绘分队","roles":"Caster","core_char":"Exusiai","core_char_list":[{"name":"Exusiai","use_support":true}],"use_support":false,"use_nonfriend_support":true,"starts_count":3,"stop_at_final_boss":true,"stop_at_max_level":false,"investment_enabled":false,"investments_count":9007199254740993,"investment_with_more_score":true,"stop_when_investment_full":true,"start_with_elite_two":true,"only_start_with_elite_two":true,"collectible_mode_shopping":true,"collectible_mode_squad":"指挥分队","collectible_mode_start_list":{"ideas":true}}`
 	params, cfg, err := compileRoguelike(json.RawMessage(input))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(params, []byte("9007199254740993")) {
-		t.Fatalf("integer literal did not survive compilation: %s", params)
-	}
+	require.NoError(t, err)
+	require.True(t, bytes.Contains(params, []byte("9007199254740993")), "integer literal did not survive compilation: %s", params)
 	var source, compiled map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(input), &source); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(params, &compiled); err != nil {
-		t.Fatal(err)
-	}
-	if len(compiled) != len(source) {
-		t.Fatalf("compiled params injected or dropped fields: %s", params)
-	}
+	require.NoError(t, json.Unmarshal([]byte(input), &source))
+	require.NoError(t, json.Unmarshal(params, &compiled))
+	require.Len(t, compiled, len(source), "compiled params injected or dropped fields: %s", params)
 	for field, want := range source {
-		if !bytes.Equal(compiled[field], want) {
-			t.Fatalf("field %s changed: %s, want %s", field, compiled[field], want)
-		}
+		require.True(t, bytes.Equal(compiled[field], want), "field %s changed: %s, want %s", field, compiled[field], want)
 	}
-	if cfg.Theme != "Sarkaz" || cfg.Mode != 4 {
-		t.Fatalf("compiled config lost theme or mode: %+v", cfg)
-	}
+	require.True(t, cfg.Theme == "Sarkaz" && cfg.Mode == 4, "compiled config lost theme or mode: %+v", cfg)
 	for range 5 {
 		again, againCfg, err := compileRoguelike(json.RawMessage(input))
-		if err != nil || !bytes.Equal(again, params) || againCfg != cfg {
-			t.Fatalf("compilation was not deterministic: %s, %+v, %v", again, againCfg, err)
-		}
+		require.True(t, err == nil && bytes.Equal(again, params) && againCfg == cfg, "compilation was not deterministic: %s, %+v, %v", again, againCfg, err)
 	}
 }
 
 func TestRoguelikeCompileCapturesObjectiveSwitches(t *testing.T) {
 	_, cfg, err := compileRoguelike(json.RawMessage(`{"theme":"Phantom","mode":6,"monthly_squad_auto_iterate":true}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.MonthlySquadAutoIterate || cfg.DeepExplorationAutoIterate || cfg.FindPlayTimeTarget != 0 {
-		t.Fatalf("mode 6 switches = %+v", cfg)
-	}
+	require.NoError(t, err)
+	require.True(t, cfg.MonthlySquadAutoIterate && !cfg.DeepExplorationAutoIterate && cfg.FindPlayTimeTarget == 0, "mode 6 switches = %+v", cfg)
 	_, cfg, err = compileRoguelike(json.RawMessage(`{"theme":"JieGarden","mode":20001,"find_playTime_target":2}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.FindPlayTimeTarget != 2 || cfg.MonthlySquadAutoIterate || cfg.DeepExplorationAutoIterate {
-		t.Fatalf("mode 20001 switches = %+v", cfg)
-	}
+	require.NoError(t, err)
+	require.True(t, cfg.FindPlayTimeTarget == 2 && !cfg.MonthlySquadAutoIterate && !cfg.DeepExplorationAutoIterate, "mode 20001 switches = %+v", cfg)
 	_, cfg, err = compileRoguelike(json.RawMessage(`{"theme":"Phantom","mode":7,"deep_exploration_auto_iterate":true}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.DeepExplorationAutoIterate {
-		t.Fatalf("mode 7 switches = %+v", cfg)
-	}
+	require.NoError(t, err)
+	require.True(t, cfg.DeepExplorationAutoIterate, "mode 7 switches = %+v", cfg)
 	// Omitted switches keep the effective Core defaults for later
 	// interpretation, while the compiled params stay free of injected values.
 	params, cfg, err := compileRoguelike(json.RawMessage(`{"theme":"BlackFlow","mode":30003,"blackflow_start_animals":["swaddled_cat"],"blackflow_start_rewards":1}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.InvestmentEnabled || cfg.BlackFlowStartAnimals != 1 || cfg.BlackFlowUtopia || cfg.BlackFlowStartSerpent {
-		t.Fatalf("start-run switches = %+v", cfg)
-	}
-	if bytes.Contains(params, []byte("investment_enabled")) {
-		t.Fatalf("compiled params injected a default: %s", params)
-	}
+	require.NoError(t, err)
+	require.True(t, cfg.InvestmentEnabled && cfg.BlackFlowStartAnimals == 1 && !cfg.BlackFlowUtopia && !cfg.BlackFlowStartSerpent, "start-run switches = %+v", cfg)
+	require.False(t, bytes.Contains(params, []byte("investment_enabled")), "compiled params injected a default: %s", params)
 	_, cfg, err = compileRoguelike(json.RawMessage(`{"theme":"BlackFlow","mode":30003,"blackflow_start_animals":["swaddled_feathered_serpent"],"blackflow_start_rewards":4095}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.BlackFlowStartSerpent {
-		t.Fatalf("start-run serpent switch = %+v", cfg)
-	}
+	require.NoError(t, err)
+	require.True(t, cfg.BlackFlowStartSerpent, "start-run serpent switch = %+v", cfg)
 }
 
 func TestRoguelikePrepareBudgets(t *testing.T) {
@@ -352,9 +301,8 @@ func TestRoguelikePrepareBudgets(t *testing.T) {
 		"compiled bytes": `{"theme":"Phantom","mode":0,"squad":"` + strings.Repeat("<", control.MaxAdapterParamsBytes/6) + `"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := New().Prepare(roguelikeTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
-				t.Fatalf("over-budget input accepted: %v", err)
-			}
+			_, err := New().Prepare(roguelikeTask(params))
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "over-budget input accepted: %v", err)
 		})
 	}
 }
@@ -362,33 +310,25 @@ func TestRoguelikePrepareBudgets(t *testing.T) {
 func TestRoguelikePrepareIsDetachedAndConcurrent(t *testing.T) {
 	const input = `{"theme":"Sami","mode":4,"start_foldartal_list":["远见"]}`
 	adapter := New()
-	if got := adapter.Descriptor(); got != (control.AdapterRef{Name: "roguelike", Version: 1}) {
-		t.Fatalf("descriptor = %+v", got)
-	}
+	got := adapter.Descriptor()
+	require.Equal(t, control.AdapterRef{Name: "roguelike", Version: 1}, got, "descriptor = %+v", got)
 	task := roguelikeTask(input)
 	first, err := adapter.Prepare(task)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	task.Params[2] = 'X'
-	if bytes.Contains(first.Params, []byte("X")) {
-		t.Fatal("compiled params alias input")
-	}
+	require.False(t, bytes.Contains(first.Params, []byte("X")), "compiled params alias input")
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			prepared, err := adapter.Prepare(roguelikeTask(input))
-			if err != nil || !bytes.Equal(prepared.Params, first.Params) {
-				t.Errorf("concurrent preparation changed output: %s, %v", prepared.Params, err)
-			}
+			assert.False(t, err != nil || !bytes.Equal(prepared.Params, first.Params), "concurrent preparation changed output: %s, %v", prepared.Params, err)
 		}()
 	}
 	wg.Wait()
-	if _, err := adapter.Prepare(control.Task{Type: "RoguelikeSpoils", Params: json.RawMessage(input)}); !errors.Is(err, control.ErrInvalidPlan) {
-		t.Fatalf("wrong Core task type accepted: %v", err)
-	}
+	_, err = adapter.Prepare(control.Task{Type: "RoguelikeSpoils", Params: json.RawMessage(input)})
+	require.ErrorIs(t, err, control.ErrInvalidPlan, "wrong Core task type accepted: %v", err)
 }
 
 func TestRoguelikeRawPlanRemainsOpen(t *testing.T) {
@@ -400,15 +340,9 @@ func TestRoguelikeRawPlanRemainsOpen(t *testing.T) {
 		{ID: "strict", Type: "Roguelike", Adapter: &ref, Params: json.RawMessage(`{"theme":"Phantom","mode":0}`)},
 	}
 	prepared, err := control.PreparePlan(plan, New())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(prepared.Plan.Tasks[0].Params) != raw || prepared.Tasks[0].Policy != "" || prepared.Tasks[0].Typed != nil {
-		t.Fatalf("raw task changed: %+v", prepared.Tasks[0])
-	}
-	if prepared.Tasks[1].Policy != control.ObjectiveNone || prepared.Tasks[1].Typed != nil {
-		t.Fatalf("input-only preview = %+v", prepared.Tasks[1])
-	}
+	require.NoError(t, err)
+	require.True(t, string(prepared.Plan.Tasks[0].Params) == raw && prepared.Tasks[0].Policy == "" && prepared.Tasks[0].Typed == nil, "raw task changed: %+v", prepared.Tasks[0])
+	require.True(t, prepared.Tasks[1].Policy == control.ObjectiveNone && prepared.Tasks[1].Typed == nil, "input-only preview = %+v", prepared.Tasks[1])
 }
 
 func ExampleNew() {

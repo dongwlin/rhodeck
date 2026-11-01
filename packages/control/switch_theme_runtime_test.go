@@ -9,6 +9,7 @@ import (
 
 	. "github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/adapters/switchtheme"
+	"github.com/stretchr/testify/require"
 )
 
 func switchThemeRuntimePlan(t *testing.T, params ...string) Plan {
@@ -59,80 +60,55 @@ func TestSwitchThemeRuntimeSameTypeTasksStayIsolated(t *testing.T) {
 
 	result := r.Snapshot()
 	first, second := result.Tasks[0].Typed, result.Tasks[1].Typed
-	if first == nil || second == nil {
-		t.Fatalf("typed results missing: %+v", result.Tasks)
-	}
-	if first.Targets[0].Outcome != TargetAlreadySet || first.Targets[0].Code != switchThemeCodeAlreadySet ||
-		!bytes.Equal(first.Targets[0].Details, json.RawMessage(`{"theme":"Beta"}`)) {
-		t.Fatalf("first task typed = %+v", first)
-	}
-	if second.Targets[0].Outcome != TargetLocked || second.Targets[0].Code != switchThemeCodeLocked ||
-		!bytes.Equal(second.Targets[0].Details, json.RawMessage(`{"theme":"Gamma"}`)) {
-		t.Fatalf("second task typed = %+v", second)
-	}
+	require.True(t, first != nil && second != nil, "typed results missing: %+v", result.Tasks)
+	require.True(t, first.Targets[0].Outcome == TargetAlreadySet && first.Targets[0].Code == switchThemeCodeAlreadySet &&
+		bytes.Equal(first.Targets[0].Details, json.RawMessage(`{"theme":"Beta"}`)), "first task typed = %+v", first)
+	require.True(t, second.Targets[0].Outcome == TargetLocked && second.Targets[0].Code == switchThemeCodeLocked &&
+		bytes.Equal(second.Targets[0].Details, json.RawMessage(`{"theme":"Gamma"}`)), "second task typed = %+v", second)
 	// The second task's selection must not leak into the first reducer.
-	if !bytes.Contains(first.Targets[0].Details, []byte("Beta")) || bytes.Contains(first.Targets[0].Details, []byte("Gamma")) {
-		t.Fatalf("cross-task selection pollution: %s", first.Targets[0].Details)
-	}
+	require.True(t, bytes.Contains(first.Targets[0].Details, []byte("Beta")) && !bytes.Contains(first.Targets[0].Details, []byte("Gamma")),
+		"cross-task selection pollution: %s", first.Targets[0].Details)
 
 	typedEvents := 0
 	for _, e := range switchThemeDrainEvents(r) {
-		if len(e.Details) != 0 {
-			t.Fatalf("default event disclosed the raw callback: %+v", e)
-		}
+		require.Empty(t, e.Details, "default event disclosed the raw callback: %+v", e)
 		if e.Type != "typed" {
 			continue
 		}
 		typedEvents++
-		if e.Typed == nil || len(e.Typed.Targets) != 1 {
-			t.Fatalf("typed event = %+v", e)
-		}
+		require.True(t, e.Typed != nil && len(e.Typed.Targets) == 1, "typed event = %+v", e)
 		wantTask, wantCore := "theme-0", int32(101)
 		if typedEvents == 2 {
 			wantTask, wantCore = "theme-1", 202
 		}
-		if e.TaskID != wantTask || e.CoreTaskID != wantCore {
-			t.Fatalf("typed event association = %+v", e)
-		}
+		require.True(t, e.TaskID == wantTask && e.CoreTaskID == wantCore, "typed event association = %+v", e)
 		details := e.Typed.Targets[0].Details
-		if bytes.Contains(details, []byte("rect")) || bytes.Contains(details, []byte("score")) {
-			t.Fatalf("typed event retained OCR geometry: %s", details)
-		}
+		require.True(t, !bytes.Contains(details, []byte("rect")) && !bytes.Contains(details, []byte("score")),
+			"typed event retained OCR geometry: %s", details)
 		e.Typed.Targets[0].Outcome = TargetAmbiguous
 		e.Typed.Targets[0].Details[0] = '['
 	}
-	if typedEvents != 2 {
-		t.Fatalf("typed event count = %d, want 2", typedEvents)
-	}
+	require.Equal(t, 2, typedEvents, "typed event count = %d, want 2", typedEvents)
 	snapshot := r.Snapshot()
-	if snapshot.Tasks[0].Typed.Targets[0].Outcome != TargetAlreadySet || snapshot.Tasks[1].Typed.Targets[0].Outcome != TargetLocked {
-		t.Fatal("typed events alias snapshot facts")
-	}
+	require.True(t, snapshot.Tasks[0].Typed.Targets[0].Outcome == TargetAlreadySet && snapshot.Tasks[1].Typed.Targets[0].Outcome == TargetLocked,
+		"typed events alias snapshot facts")
 
 	record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(r)), result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Result.Tasks[0].Typed.Targets[0].Outcome != TargetAlreadySet ||
-		record.Result.Tasks[1].Typed.Targets[0].Outcome != TargetLocked {
-		t.Fatalf("record lost typed facts: %+v", record.Result.Tasks)
-	}
-	if !bytes.Contains(record.Plan.Tasks[0].Params, []byte(`"themes":["Alpha","Beta"]`)) ||
-		!bytes.Contains(record.Plan.Tasks[1].Params, []byte(`"themes":["Gamma"]`)) {
-		t.Fatalf("record lost the original caller plan: %+v", record.Plan.Tasks)
-	}
+	require.NoError(t, err)
+	require.True(t, record.Result.Tasks[0].Typed.Targets[0].Outcome == TargetAlreadySet &&
+		record.Result.Tasks[1].Typed.Targets[0].Outcome == TargetLocked, "record lost typed facts: %+v", record.Result.Tasks)
+	require.True(t, bytes.Contains(record.Plan.Tasks[0].Params, []byte(`"themes":["Alpha","Beta"]`)) &&
+		bytes.Contains(record.Plan.Tasks[1].Params, []byte(`"themes":["Gamma"]`)),
+		"record lost the original caller plan: %+v", record.Plan.Tasks)
 
 	// Chain success cannot turn the locked task into a successful batch.
 	sendTypedCallback(t, r, 10002, `{"taskchain":"SwitchTheme","taskid":101}`)
 	sendTypedCallback(t, r, 10002, `{"taskchain":"SwitchTheme","taskid":202}`)
 	sendTypedCallback(t, r, 3, `{"finished_tasks":[101,202]}`)
 	result = r.Snapshot()
-	if result.Tasks[0].State != Succeeded || result.Tasks[1].State != Succeeded {
-		t.Fatalf("native chain facts = %+v", result.Tasks)
-	}
-	if InspectRunForTest(r).Proof != Failed || InspectRunForTest(r).ProofCode != "typed_failed" || InspectRunForTest(r).Fatal != "" {
-		t.Fatalf("batch proof = %s/%s fatal=%s", InspectRunForTest(r).Proof, InspectRunForTest(r).ProofCode, InspectRunForTest(r).Fatal)
-	}
+	require.True(t, result.Tasks[0].State == Succeeded && result.Tasks[1].State == Succeeded, "native chain facts = %+v", result.Tasks)
+	require.True(t, InspectRunForTest(r).Proof == Failed && InspectRunForTest(r).ProofCode == "typed_failed" && InspectRunForTest(r).Fatal == "",
+		"batch proof = %s/%s fatal=%s", InspectRunForTest(r).Proof, InspectRunForTest(r).ProofCode, InspectRunForTest(r).Fatal)
 }
 
 func TestSwitchThemeRuntimeLockedSurvivesChainCompletion(t *testing.T) {
@@ -144,29 +120,22 @@ func TestSwitchThemeRuntimeLockedSurvivesChainCompletion(t *testing.T) {
 	sendTypedCallback(t, r, 3, `{"finished_tasks":[101]}`)
 
 	result := r.Snapshot()
-	if result.Tasks[0].State != Succeeded {
-		t.Fatalf("native chain fact = %s", result.Tasks[0].State)
-	}
-	if result.Tasks[0].Typed.State != Failed || result.Tasks[0].Typed.Code != "typed_failed" {
-		t.Fatalf("typed aggregate = %+v", result.Tasks[0].Typed)
-	}
+	require.Equal(t, Succeeded, result.Tasks[0].State, "native chain fact = %s", result.Tasks[0].State)
+	require.True(t, result.Tasks[0].Typed.State == Failed && result.Tasks[0].Typed.Code == "typed_failed",
+		"typed aggregate = %+v", result.Tasks[0].Typed)
 	got := result.Tasks[0].Typed.Targets[0]
-	if got.Outcome != TargetLocked || got.Code != switchThemeCodeLocked || !bytes.Equal(got.Details, json.RawMessage(`{"theme":"Alpha"}`)) {
-		t.Fatalf("locked fact = %+v", got)
-	}
-	if InspectRunForTest(r).Proof != Failed || InspectRunForTest(r).ProofCode != "typed_failed" || InspectRunForTest(r).Fatal != "" {
-		t.Fatalf("batch proof = %s/%s fatal=%s", InspectRunForTest(r).Proof, InspectRunForTest(r).ProofCode, InspectRunForTest(r).Fatal)
-	}
+	require.True(t, got.Outcome == TargetLocked && got.Code == switchThemeCodeLocked && bytes.Equal(got.Details, json.RawMessage(`{"theme":"Alpha"}`)),
+		"locked fact = %+v", got)
+	require.True(t, InspectRunForTest(r).Proof == Failed && InspectRunForTest(r).ProofCode == "typed_failed" && InspectRunForTest(r).Fatal == "",
+		"batch proof = %s/%s fatal=%s", InspectRunForTest(r).Proof, InspectRunForTest(r).ProofCode, InspectRunForTest(r).Fatal)
 
 	// A late confirm after the settled chain must not replace the lock.
 	switchThemeDrainEvents(r)
 	sendTypedCallback(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeConfirm))
-	if InspectRunForTest(r).Fatal != "" || len(switchThemeDrainEvents(r)) != 0 {
-		t.Fatalf("late confirm changed the settled run: fatal=%s", InspectRunForTest(r).Fatal)
-	}
-	if got := r.Snapshot().Tasks[0].Typed.Targets[0]; got.Outcome != TargetLocked {
-		t.Fatalf("late confirm replaced the lock: %+v", got)
-	}
+	require.True(t, InspectRunForTest(r).Fatal == "" && len(switchThemeDrainEvents(r)) == 0,
+		"late confirm changed the settled run: fatal=%s", InspectRunForTest(r).Fatal)
+	got = r.Snapshot().Tasks[0].Typed.Targets[0]
+	require.Equal(t, TargetLocked, got.Outcome, "late confirm replaced the lock: %+v", got)
 }
 
 func TestSwitchThemeRuntimeConfirmationRemainsIncomplete(t *testing.T) {
@@ -178,30 +147,19 @@ func TestSwitchThemeRuntimeConfirmationRemainsIncomplete(t *testing.T) {
 	sendTypedCallback(t, r, 3, `{"finished_tasks":[101]}`)
 
 	result := r.Snapshot()
-	if result.Tasks[0].State != Succeeded {
-		t.Fatalf("native chain fact = %s", result.Tasks[0].State)
-	}
+	require.Equal(t, Succeeded, result.Tasks[0].State, "native chain fact = %s", result.Tasks[0].State)
 	typed := result.Tasks[0].Typed
-	if typed.State != Unknown || typed.Code != "typed_incomplete" {
-		t.Fatalf("confirmation aggregate = %+v", typed)
-	}
+	require.True(t, typed.State == Unknown && typed.Code == "typed_incomplete", "confirmation aggregate = %+v", typed)
 	got := typed.Targets[0]
-	if got.Outcome != TargetConfirmationObserved || got.Code != switchThemeCodeConfirmationObserved {
-		t.Fatalf("confirmation fact = %+v", got)
-	}
-	if !bytes.Equal(got.Details, json.RawMessage(`{"theme":"Alpha"}`)) {
-		t.Fatalf("confirmation details = %s", got.Details)
-	}
-	if InspectRunForTest(r).Proof != Unknown || InspectRunForTest(r).ProofCode != "typed_incomplete" || InspectRunForTest(r).Fatal != "" {
-		t.Fatalf("batch proof = %s/%s fatal=%s", InspectRunForTest(r).Proof, InspectRunForTest(r).ProofCode, InspectRunForTest(r).Fatal)
-	}
+	require.True(t, got.Outcome == TargetConfirmationObserved && got.Code == switchThemeCodeConfirmationObserved,
+		"confirmation fact = %+v", got)
+	require.True(t, bytes.Equal(got.Details, json.RawMessage(`{"theme":"Alpha"}`)), "confirmation details = %s", got.Details)
+	require.True(t, InspectRunForTest(r).Proof == Unknown && InspectRunForTest(r).ProofCode == "typed_incomplete" && InspectRunForTest(r).Fatal == "",
+		"batch proof = %s/%s fatal=%s", InspectRunForTest(r).Proof, InspectRunForTest(r).ProofCode, InspectRunForTest(r).Fatal)
 	record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(r)), result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Result.Tasks[0].Typed.Targets[0].Outcome != TargetConfirmationObserved || record.Result.State != Started {
-		t.Fatalf("record lost confirmation evidence: %+v", record.Result)
-	}
+	require.NoError(t, err)
+	require.True(t, record.Result.Tasks[0].Typed.Targets[0].Outcome == TargetConfirmationObserved && record.Result.State == Started,
+		"record lost confirmation evidence: %+v", record.Result)
 }
 
 func TestSwitchThemeRuntimeChainCompletionIsNotThemeSuccess(t *testing.T) {
@@ -213,19 +171,13 @@ func TestSwitchThemeRuntimeChainCompletionIsNotThemeSuccess(t *testing.T) {
 	sendTypedCallback(t, r, 3, `{"finished_tasks":[101]}`)
 
 	result := r.Snapshot()
-	if result.Tasks[0].State != Succeeded {
-		t.Fatalf("native chain fact = %s", result.Tasks[0].State)
-	}
+	require.Equal(t, Succeeded, result.Tasks[0].State, "native chain fact = %s", result.Tasks[0].State)
 	typed := result.Tasks[0].Typed
-	if typed.State != Unknown || typed.Code != "typed_incomplete" {
-		t.Fatalf("chain completion fabricated typed success: %+v", typed)
-	}
-	if got := typed.Targets[0]; got.Outcome != TargetUnobserved || got.Code != "" || len(got.Details) != 0 {
-		t.Fatalf("unobserved target = %+v", got)
-	}
-	if InspectRunForTest(r).Proof != Unknown || InspectRunForTest(r).ProofCode != "typed_incomplete" || InspectRunForTest(r).Fatal != "" {
-		t.Fatalf("batch proof = %s/%s fatal=%s", InspectRunForTest(r).Proof, InspectRunForTest(r).ProofCode, InspectRunForTest(r).Fatal)
-	}
+	require.True(t, typed.State == Unknown && typed.Code == "typed_incomplete", "chain completion fabricated typed success: %+v", typed)
+	got := typed.Targets[0]
+	require.True(t, got.Outcome == TargetUnobserved && got.Code == "" && len(got.Details) == 0, "unobserved target = %+v", got)
+	require.True(t, InspectRunForTest(r).Proof == Unknown && InspectRunForTest(r).ProofCode == "typed_incomplete" && InspectRunForTest(r).Fatal == "",
+		"batch proof = %s/%s fatal=%s", InspectRunForTest(r).Proof, InspectRunForTest(r).ProofCode, InspectRunForTest(r).Fatal)
 }
 
 func TestSwitchThemeRuntimeMalformedCallbackStopsWithoutFact(t *testing.T) {
@@ -233,17 +185,11 @@ func TestSwitchThemeRuntimeMalformedCallbackStopsWithoutFact(t *testing.T) {
 	r := newSwitchThemeRuntimeHarness(t, plan, []int32{101})
 	sendTypedCallback(t, r, switchThemeMessageSubTaskCompleted,
 		`{"taskchain":"SwitchTheme","taskid":101,"details":{"task":"SwitchThemeByNameSelectTheme","result":{"text":"Alpha","text":"Beta"}}}`)
-	if InspectRunForTest(r).Fatal != "typed_invalid_event" {
-		t.Fatalf("malformed callback = %s", InspectRunForTest(r).Fatal)
-	}
+	require.Equal(t, "typed_invalid_event", InspectRunForTest(r).Fatal, "malformed callback = %s", InspectRunForTest(r).Fatal)
 	for _, e := range switchThemeDrainEvents(r) {
-		if e.Type == "typed" {
-			t.Fatalf("rejected callback published a typed event: %+v", e)
-		}
+		require.NotEqual(t, "typed", e.Type, "rejected callback published a typed event: %+v", e)
 	}
 	for _, target := range r.Snapshot().Tasks[0].Typed.Targets {
-		if target.Outcome != TargetUnobserved {
-			t.Fatalf("malformed callback created a fact: %+v", target)
-		}
+		require.Equal(t, TargetUnobserved, target.Outcome, "malformed callback created a fact: %+v", target)
 	}
 }

@@ -3,7 +3,6 @@ package control
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -15,6 +14,8 @@ import (
 
 	"github.com/dongwlin/rhodeck/packages/control/worker"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // The helper is a real child, so deadlines, broken pipes, pending operations,
@@ -235,9 +236,7 @@ func runtimePlan(t *testing.T) Plan {
 func runtimeConfig(t *testing.T, mode string) Config {
 	t.Helper()
 	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return Config{DataDir: t.TempDir(), StopTimeout: 300 * time.Millisecond,
 		Worker: worker.Config{Executable: executable, Env: []string{"RHODECK_TEST_CONTROL_WORKER=" + mode, "GORACE=atexit_sleep_ms=0"},
 			StartupTimeout: time.Second, RequestTimeout: 300 * time.Millisecond, ShutdownTimeout: 300 * time.Millisecond}}
@@ -246,15 +245,11 @@ func runtimeConfig(t *testing.T, mode string) Config {
 func newRuntime(t *testing.T, cfg Config) *Runtime {
 	t.Helper()
 	rt, err := New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if err := rt.Close(ctx); err != nil {
-			t.Error(err)
-		}
+		assert.NoError(t, rt.Close(ctx))
 	})
 	return rt
 }
@@ -274,7 +269,7 @@ func waitRuntimeRun(t *testing.T, r *Run) ([]Event, Result) {
 				return events, r.Snapshot()
 			}
 		case <-timer.C:
-			t.Fatal("run did not terminate")
+			require.FailNow(t, "run did not terminate")
 		}
 	}
 }
@@ -287,13 +282,13 @@ func waitStarted(t *testing.T, r *Run) {
 		select {
 		case e, ok := <-r.Events():
 			if !ok {
-				t.Fatalf("run terminated before start: %+v", r.Snapshot())
+				require.FailNow(t, fmt.Sprintf("run terminated before start: %+v", r.Snapshot()))
 			}
 			if e.Type == "state" && e.State == Started {
 				return
 			}
 		case <-timer.C:
-			t.Fatal("run did not start")
+			require.FailNow(t, "run did not start")
 		}
 	}
 }
@@ -317,33 +312,27 @@ func TestRuntimeOutcomes(t *testing.T) {
 			cfg := runtimeConfig(t, tc.mode)
 			rt := newRuntime(t, cfg)
 			r, err := rt.Run(context.Background(), runtimePlan(t))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			events, result := waitRuntimeRun(t, r)
-			if result.State != tc.state || result.Cleanup != tc.clean {
-				t.Fatalf("result = %+v, want %s/%s", result, tc.state, tc.clean)
-			}
+			require.True(t, result.State == tc.state && result.Cleanup == tc.clean, "result = %+v, want %s/%s", result, tc.state, tc.clean)
 			for i, e := range events {
-				if e.Sequence != uint64(i+1) || e.RunID != result.RunID || e.HostRunID != "host-run" || e.SchemaVersion != SchemaVersion {
-					t.Fatalf("invalid event correlation: %+v", e)
-				}
+				require.True(t, e.Sequence == uint64(i+1) && e.RunID == result.RunID && e.HostRunID == "host-run" && e.SchemaVersion == SchemaVersion,
+					"invalid event correlation: %+v", e)
 			}
 			record, err := ReadRecord(cfg.DataDir, result.RunID)
-			if err != nil || record.Result.State != result.State || record.Result.Cleanup != result.Cleanup {
-				t.Fatalf("record = %+v, %v", record.Result, err)
+			require.True(t, err == nil && record.Result.State == result.State && record.Result.Cleanup == result.Cleanup,
+				"record = %+v, %v", record.Result, err)
+			if tc.mode == "failure" {
+				require.True(t, result.Tasks[0].State == Failed && result.Tasks[1].State == Succeeded, "partial task facts lost: %+v", result.Tasks)
 			}
-			if tc.mode == "failure" && (result.Tasks[0].State != Failed || result.Tasks[1].State != Succeeded) {
-				t.Fatalf("partial task facts lost: %+v", result.Tasks)
+			if tc.mode == "errorstopped" {
+				require.True(t, result.Tasks[0].State == Failed && result.Tasks[1].State == Unknown, "error followed by stop lost task facts: %+v", result.Tasks)
 			}
-			if tc.mode == "errorstopped" && (result.Tasks[0].State != Failed || result.Tasks[1].State != Unknown) {
-				t.Fatalf("error followed by stop lost task facts: %+v", result.Tasks)
+			if tc.mode == "completedstopped" {
+				require.True(t, result.Tasks[0].State == Succeeded && result.Tasks[1].State == Stopped, "completion followed by stop lost task facts: %+v", result.Tasks)
 			}
-			if tc.mode == "completedstopped" && (result.Tasks[0].State != Succeeded || result.Tasks[1].State != Stopped) {
-				t.Fatalf("completion followed by stop lost task facts: %+v", result.Tasks)
-			}
-			if tc.mode == "closehang" && result.Tasks[0].State != Succeeded {
-				t.Fatalf("cleanup rewrote task facts: %+v", result.Tasks)
+			if tc.mode == "closehang" {
+				require.Equal(t, Succeeded, result.Tasks[0].State, "cleanup rewrote task facts: %+v", result.Tasks)
 			}
 		})
 	}
@@ -355,9 +344,7 @@ func TestRuntimeStopAndLifetimeCancellation(t *testing.T) {
 			rt := newRuntime(t, runtimeConfig(t, mode))
 			ctx, cancel := context.WithCancel(context.Background())
 			r, err := rt.Run(ctx, runtimePlan(t))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			waitStarted(t, r)
 			cancel()
 			_, result := waitRuntimeRun(t, r)
@@ -365,9 +352,7 @@ func TestRuntimeStopAndLifetimeCancellation(t *testing.T) {
 			if mode == "stopstuck" {
 				want = Unknown
 			}
-			if result.State != want {
-				t.Fatalf("result = %+v, want %s", result, want)
-			}
+			require.Equal(t, want, result.State, "result = %+v, want %s", result, want)
 		})
 	}
 }
@@ -379,9 +364,7 @@ func TestRuntimeSlowConsumerDoesNotBlockCleanup(t *testing.T) {
 			cfg.IncludeRawEvents = true
 			rt := newRuntime(t, cfg)
 			r, err := rt.Run(context.Background(), runtimePlan(t))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			// The byte-overflow fixture delivers six 3 MiB callbacks, so decoding
 			// them dominates wall time under the race detector; cleanup itself
 			// finishes within milliseconds. This bound only has to distinguish
@@ -389,18 +372,15 @@ func TestRuntimeSlowConsumerDoesNotBlockCleanup(t *testing.T) {
 			select {
 			case <-r.Done():
 			case <-time.After(60 * time.Second):
-				t.Fatal("cleanup depended on event consumer")
+				require.FailNow(t, "cleanup depended on event consumer")
 			}
-			if result := r.Snapshot(); result.State != Unknown || result.Code != "event_overflow" {
-				t.Fatalf("result = %+v", result)
-			}
+			result := r.Snapshot()
+			require.True(t, result.State == Unknown && result.Code == "event_overflow", "result = %+v", result)
 			count := 0
 			for range r.Events() {
 				count++
 			}
-			if count > runEventMessages || count == 0 {
-				t.Fatalf("retained events = %d", count)
-			}
+			require.True(t, count <= runEventMessages && count > 0, "retained events = %d", count)
 		})
 	}
 }
@@ -410,41 +390,29 @@ func TestRuntimeConcurrentStopCloseAndAdmission(t *testing.T) {
 	rt := newRuntime(t, cfg)
 	plan := runtimePlan(t)
 	r, err := rt.Run(context.Background(), plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Run(context.Background(), plan); !errors.Is(err, ErrBusy) {
-		t.Fatalf("concurrent run = %v", err)
-	}
-	if _, err := New(cfg); !errors.Is(err, ErrBusy) {
-		t.Fatalf("concurrent directory owner = %v", err)
-	}
+	require.NoError(t, err)
+	_, err = rt.Run(context.Background(), plan)
+	require.ErrorIs(t, err, ErrBusy, "concurrent run = %v", err)
+	_, err = New(cfg)
+	require.ErrorIs(t, err, ErrBusy, "concurrent directory owner = %v", err)
 	waitStarted(t, r)
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Go(func() {
-			if err := r.Stop(context.Background()); err != nil {
-				t.Error(err)
-			}
+			assert.NoError(t, r.Stop(context.Background()))
 		})
 		wg.Go(func() {
-			if err := rt.Close(context.Background()); err != nil {
-				t.Error(err)
-			}
+			assert.NoError(t, rt.Close(context.Background()))
 		})
 	}
 	wg.Wait()
-	if result := r.Snapshot(); result.State != Stopped || result.Cleanup != "complete" {
-		t.Fatalf("result = %+v", result)
-	}
-	if _, err := rt.Run(context.Background(), plan); !errors.Is(err, ErrClosed) {
-		t.Fatalf("closed runtime admission = %v", err)
-	}
-	if next, err := New(cfg); err != nil {
-		t.Fatalf("directory was not released: %v", err)
-	} else {
-		_ = next.Close(context.Background())
-	}
+	result := r.Snapshot()
+	require.True(t, result.State == Stopped && result.Cleanup == "complete", "result = %+v", result)
+	_, err = rt.Run(context.Background(), plan)
+	require.ErrorIs(t, err, ErrClosed, "closed runtime admission = %v", err)
+	next, err := New(cfg)
+	require.NoError(t, err, "directory was not released: %v", err)
+	_ = next.Close(context.Background())
 }
 
 func TestRuntimeUnknownCallbackAndSnapshotOwnership(t *testing.T) {
@@ -455,9 +423,7 @@ func TestRuntimeUnknownCallbackAndSnapshotOwnership(t *testing.T) {
 			rt := newRuntime(t, cfg)
 			plan := runtimePlan(t)
 			r, err := rt.Run(context.Background(), plan)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			plan.Tasks[0].Params[0] = '['
 			plan.Initialize.ResourceRoots[0] = "mutated"
 			events, result := waitRuntimeRun(t, r)
@@ -467,20 +433,16 @@ func TestRuntimeUnknownCallbackAndSnapshotOwnership(t *testing.T) {
 					continue
 				}
 				found = true
-				if raw != (len(e.Details) != 0) || (raw && !strings.Contains(string(e.Details), "9007199254740993")) {
-					t.Fatalf("raw event policy lost: %+v", e)
-				}
+				require.True(t, raw == (len(e.Details) != 0) && (!raw || strings.Contains(string(e.Details), "9007199254740993")),
+					"raw event policy lost: %+v", e)
 			}
-			if !found || result.State != Succeeded {
-				t.Fatalf("result = %+v, unknown callback present = %t", result, found)
-			}
+			require.True(t, found && result.State == Succeeded, "result = %+v, unknown callback present = %t", result, found)
 			result.Tasks[0].State = Failed
 			result.RuntimeInfo.Resources[0].Root = "mutated"
 			result.RuntimeInfo.Limits.InputJSONBytes = 1
 			next := r.Snapshot()
-			if next.Tasks[0].State != Succeeded || next.RuntimeInfo.Resources[0].Root == "mutated" || next.RuntimeInfo.Limits.InputJSONBytes == 1 {
-				t.Fatalf("mutable snapshot alias: %+v", next)
-			}
+			require.True(t, next.Tasks[0].State == Succeeded && next.RuntimeInfo.Resources[0].Root != "mutated" && next.RuntimeInfo.Limits.InputJSONBytes != 1,
+				"mutable snapshot alias: %+v", next)
 		})
 	}
 }
@@ -489,44 +451,31 @@ func TestRuntimeCancelledCloseKeepsOwnershipUntilCleanup(t *testing.T) {
 	cfg := runtimeConfig(t, "stopwait")
 	rt := newRuntime(t, cfg)
 	r, err := rt.Run(context.Background(), runtimePlan(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	waitStarted(t, r)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := rt.Close(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		t.Fatal(err)
+	if err := rt.Close(ctx); err != nil {
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if err := rt.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if result := r.Snapshot(); result.State != Stopped || result.Cleanup != "complete" {
-		t.Fatalf("background cleanup = %+v", result)
-	}
+	require.NoError(t, rt.Close(context.Background()))
+	result := r.Snapshot()
+	require.True(t, result.State == Stopped && result.Cleanup == "complete", "background cleanup = %+v", result)
 }
 
 func TestRuntimeFinalRecordWriteFailureIsVisible(t *testing.T) {
 	cfg := runtimeConfig(t, "finalwritefail")
 	rt := newRuntime(t, cfg)
 	r, err := rt.Run(context.Background(), runtimePlan(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	waitStarted(t, r)
 	runs := filepath.Join(cfg.DataDir, "runs")
-	if err := os.RemoveAll(runs); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(runs, []byte("blocked"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Stop(context.Background()); err == nil {
-		t.Fatal("record failure was reported as confirmed cleanup")
-	}
-	if result := r.Snapshot(); result.State != Unknown || result.CleanupCode != "record_write_failed" {
-		t.Fatalf("result = %+v", result)
-	}
+	require.NoError(t, os.RemoveAll(runs))
+	require.NoError(t, os.WriteFile(runs, []byte("blocked"), 0600))
+	err = r.Stop(context.Background())
+	require.Error(t, err, "record failure was reported as confirmed cleanup")
+	result := r.Snapshot()
+	require.True(t, result.State == Unknown && result.CleanupCode == "record_write_failed", "result = %+v", result)
 }
 
 func TestRuntimeStopAndShutdownHaveIndependentBudgets(t *testing.T) {
@@ -535,16 +484,12 @@ func TestRuntimeStopAndShutdownHaveIndependentBudgets(t *testing.T) {
 	cfg.Worker.ShutdownTimeout = time.Second
 	rt := newRuntime(t, cfg)
 	r, err := rt.Run(context.Background(), runtimePlan(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	waitStarted(t, r)
-	if err := r.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if result := r.Snapshot(); result.State != Stopped || result.Cleanup != "complete" || result.Code == "stop_timeout" {
-		t.Fatalf("shutdown inherited stop budget: %+v", result)
-	}
+	require.NoError(t, r.Stop(context.Background()))
+	result := r.Snapshot()
+	require.True(t, result.State == Stopped && result.Cleanup == "complete" && result.Code != "stop_timeout",
+		"shutdown inherited stop budget: %+v", result)
 }
 
 func TestRuntimeDeadlineReasonSurvivesConfirmedStop(t *testing.T) {
@@ -552,29 +497,24 @@ func TestRuntimeDeadlineReasonSurvivesConfirmedStop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	r, err := rt.Run(ctx, runtimePlan(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	_, result := waitRuntimeRun(t, r)
-	if result.State != Stopped || result.Code != "deadline_exceeded" || result.Cleanup != "complete" {
-		t.Fatalf("deadline reason = %+v", result)
-	}
+	require.True(t, result.State == Stopped && result.Code == "deadline_exceeded" && result.Cleanup == "complete",
+		"deadline reason = %+v", result)
 }
 
 func TestRuntimePersistsSettledTasksBeforeBatchEnd(t *testing.T) {
 	cfg := runtimeConfig(t, "partialhold")
 	rt := newRuntime(t, cfg)
 	r, err := rt.Run(context.Background(), runtimePlan(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	timer := time.NewTimer(3 * time.Second)
 	defer timer.Stop()
 	for {
 		select {
 		case e, ok := <-r.Events():
 			if !ok {
-				t.Fatalf("batch terminated before checkpoint: %+v", r.Snapshot())
+				require.FailNow(t, fmt.Sprintf("batch terminated before checkpoint: %+v", r.Snapshot()))
 			}
 			// The monitor processes this event after the preceding task's
 			// terminal callback and its synchronous journal update.
@@ -582,40 +522,28 @@ func TestRuntimePersistsSettledTasksBeforeBatchEnd(t *testing.T) {
 				goto persisted
 			}
 		case <-timer.C:
-			t.Fatal("terminal task was not persisted")
+			require.FailNow(t, "terminal task was not persisted")
 		}
 	}
 persisted:
 	record, err := ReadRecord(cfg.DataDir, r.Snapshot().RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if terminal(record.Result.State) || record.Result.Tasks[0].State != Succeeded || record.Result.Tasks[1].State != Submitted {
-		t.Fatalf("in-flight record lost confirmed task: %+v", record.Result)
-	}
+	require.NoError(t, err)
+	require.True(t, !terminal(record.Result.State) && record.Result.Tasks[0].State == Succeeded && record.Result.Tasks[1].State == Submitted,
+		"in-flight record lost confirmed task: %+v", record.Result)
 	// Reopen an isolated copy of the crash-time disk snapshot. Recovery must
 	// retain confirmed task facts while marking the unfinished batch unknown;
 	// opening the runtime itself must not launch or replay the worker.
 	recoveryCfg := runtimeConfig(t, "crash")
 	s, err := openStore(recoveryCfg.DataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.save(record); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, s.save(record))
+	require.NoError(t, s.close())
 	_ = newRuntime(t, recoveryCfg)
 	recovered, err := ReadRecord(recoveryCfg.DataDir, record.Result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if recovered.Result.State != Unknown || recovered.Result.Code != "host_interrupted" ||
-		recovered.Result.Tasks[0].State != Succeeded || recovered.Result.Tasks[1].State != Unknown {
-		t.Fatalf("recovery erased settled task: %+v", recovered.Result)
-	}
+	require.NoError(t, err)
+	require.True(t, recovered.Result.State == Unknown && recovered.Result.Code == "host_interrupted" &&
+		recovered.Result.Tasks[0].State == Succeeded && recovered.Result.Tasks[1].State == Unknown,
+		"recovery erased settled task: %+v", recovered.Result)
 }
 
 func TestRuntimeSettledTaskRecordFailureStopsRun(t *testing.T) {
@@ -624,22 +552,13 @@ func TestRuntimeSettledTaskRecordFailureStopsRun(t *testing.T) {
 	cfg.Worker.Env = append(cfg.Worker.Env, "RHODECK_TEST_CONTROL_RELEASE="+release)
 	rt := newRuntime(t, cfg)
 	r, err := rt.Run(context.Background(), runtimePlan(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	waitStarted(t, r)
 	runs := filepath.Join(cfg.DataDir, "runs")
-	if err := os.RemoveAll(runs); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(runs, []byte("blocked"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(release, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.RemoveAll(runs))
+	require.NoError(t, os.WriteFile(runs, []byte("blocked"), 0600))
+	require.NoError(t, os.WriteFile(release, nil, 0600))
 	_, result := waitRuntimeRun(t, r)
-	if result.State != Unknown || result.Code != "record_write_failed" || result.CleanupCode != "record_write_failed" || result.Tasks[0].State != Succeeded {
-		t.Fatalf("terminal journal failure was not observed: %+v", result)
-	}
+	require.True(t, result.State == Unknown && result.Code == "record_write_failed" && result.CleanupCode == "record_write_failed" && result.Tasks[0].State == Succeeded,
+		"terminal journal failure was not observed: %+v", result)
 }

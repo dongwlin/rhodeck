@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/dongwlin/rhodeck/packages/control/worker"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
@@ -27,13 +29,11 @@ func TestRealCoreDoctorNoDevice(t *testing.T) {
 	}
 	build := exec.Command("go", "build", "-o", executable, "../../apps/core-worker")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build worker: %v: %s", err, output)
-	}
+	output, err := build.CombinedOutput()
+	require.NoError(t, err, "build worker: %s", output)
 	userDir := filepath.Join(dir, "core-user")
-	if err := os.Mkdir(userDir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	err = os.Mkdir(userDir, 0700)
+	require.NoError(t, err)
 	dataDir := filepath.Join(dir, "control")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -41,22 +41,12 @@ func TestRealCoreDoctorNoDevice(t *testing.T) {
 		SnapshotID: "explicit-no-device-doctor", LibraryPath: library, UserDir: userDir, ResourceRoots: []string{root},
 		ExpectedCoreVersion: os.Getenv("RHODECK_WORKER_CORE_VERSION"), ExpectedLibrarySHA256: os.Getenv("RHODECK_WORKER_LIBRARY_SHA256"),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.CoreVersion == "" || info.LibrarySHA256 == "" || len(info.Resources) != 1 || info.Limits == nil {
-		t.Fatal("missing installation snapshot")
-	}
+	require.NoError(t, err)
+	require.False(t, info.CoreVersion == "" || info.LibrarySHA256 == "" || len(info.Resources) != 1 || info.Limits == nil, "missing installation snapshot")
 	entries, err := os.ReadDir(filepath.Join(dataDir, "runs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatal("doctor created a business run record")
-	}
+	require.NoError(t, err)
+	require.Empty(t, entries, "doctor created a business run record")
 	s, err := openStore(dataDir)
-	if err != nil {
-		t.Fatalf("doctor retained ownership: %v", err)
-	}
+	require.NoError(t, err, "doctor retained ownership")
 	_ = s.close()
 }

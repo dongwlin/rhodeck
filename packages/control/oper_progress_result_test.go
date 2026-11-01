@@ -3,10 +3,11 @@ package control_test
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	. "github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/adapters/operprogress"
@@ -23,13 +24,9 @@ type operProgressHarness struct {
 func newOperProgressHarness(t *testing.T, params string) *operProgressHarness {
 	t.Helper()
 	prepared, err := operprogress.New().Prepare(operProgressTask(params))
-	if err != nil {
-		t.Fatalf("prepare %s: %v", params, err)
-	}
+	require.NoError(t, err, "prepare %s", params)
 	reducer := prepared.Reducer
-	if reducer == nil {
-		t.Fatal("interpreted preparation has no reducer")
-	}
+	require.NotNil(t, reducer, "interpreted preparation has no reducer")
 	typed := &TypedResult{SchemaVersion: SchemaVersion, Adapter: AdapterRef{Name: operProgressAdapterName, Version: operProgressVersion}, Policy: ObjectiveAll}
 	for _, id := range prepared.Targets {
 		typed.Targets = append(typed.Targets, TargetResult{ID: id, Outcome: TargetUnobserved})
@@ -41,18 +38,14 @@ func newOperProgressHarness(t *testing.T, params string) *operProgressHarness {
 func (h *operProgressHarness) observe(messageID int32, raw string) TypedUpdate {
 	h.t.Helper()
 	update, err := h.reducer.Observe(Observation{MessageID: messageID, JSON: json.RawMessage(raw)})
-	if err != nil {
-		h.t.Fatalf("Observe(%d, %s): %v", messageID, raw, err)
-	}
+	require.NoError(h.t, err, "Observe(%d, %s)", messageID, raw)
 	return update
 }
 
 func (h *operProgressHarness) apply(messageID int32, raw string) bool {
 	h.t.Helper()
 	next, changed, err := applyTypedUpdate(h.typed, h.observe(messageID, raw))
-	if err != nil {
-		h.t.Fatalf("apply %s: %v", raw, err)
-	}
+	require.NoError(h.t, err, "apply %s", raw)
 	h.typed = next
 	return changed
 }
@@ -72,9 +65,7 @@ func operProgressSummaryCallback(details string) string {
 func checkOperProgressTarget(t *testing.T, typed *TypedResult, index int, want TargetResult) {
 	t.Helper()
 	got := typed.Targets[index]
-	if got.ID != want.ID || got.Outcome != want.Outcome || got.Code != want.Code || !bytes.Equal(got.Details, want.Details) {
-		t.Fatalf("target %d = %+v, want %+v", index, got, want)
-	}
+	require.False(t, got.ID != want.ID || got.Outcome != want.Outcome || got.Code != want.Code || !bytes.Equal(got.Details, want.Details), "target %d = %+v, want %+v", index, got, want)
 }
 
 func TestOperProgressResultEliteAndSkillFacts(t *testing.T) {
@@ -183,9 +174,7 @@ func TestOperProgressResultEliteAndSkillFacts(t *testing.T) {
 			h := newOperProgressHarness(t, tc.params)
 			h.apply(operProgressMessageSubTaskExtraInfo, operProgressDetailCallback(tc.details))
 			checkOperProgressTarget(t, h.typed, 0, tc.want)
-			if len(h.typed.Targets) != 1 || h.typed.State != tc.wantState || h.typed.Code != tc.wantCode {
-				t.Fatalf("aggregate = %s/%s, want %s/%s", h.typed.State, h.typed.Code, tc.wantState, tc.wantCode)
-			}
+			require.False(t, len(h.typed.Targets) != 1 || h.typed.State != tc.wantState || h.typed.Code != tc.wantCode, "aggregate = %s/%s, want %s/%s", h.typed.State, h.typed.Code, tc.wantState, tc.wantCode)
 		})
 	}
 }
@@ -279,13 +268,9 @@ func TestOperProgressResultMasteryFacts(t *testing.T) {
 			switch tc.want.Outcome {
 			case TargetReportedTrainingStarted, TargetReportedPrerequisiteStarted:
 				// Reported startup is incomplete achievement evidence.
-				if h.typed.State != Unknown || h.typed.Code != "typed_incomplete" {
-					t.Fatalf("startup report became %s/%s", h.typed.State, h.typed.Code)
-				}
+				require.False(t, h.typed.State != Unknown || h.typed.Code != "typed_incomplete", "startup report became %s/%s", h.typed.State, h.typed.Code)
 			case TargetAchieved:
-				if h.typed.State != Succeeded {
-					t.Fatalf("achieved target aggregate = %s/%s", h.typed.State, h.typed.Code)
-				}
+				require.Equal(t, Succeeded, h.typed.State, "achieved target aggregate = %s/%s", h.typed.State, h.typed.Code)
 			}
 		})
 	}
@@ -350,13 +335,9 @@ func TestOperProgressResultFailureFacts(t *testing.T) {
 			checkOperProgressTarget(t, h.typed, 0, tc.want)
 			switch tc.want.Outcome {
 			case TargetFailed:
-				if h.typed.State != Failed || h.typed.Code != "typed_failed" {
-					t.Fatalf("failure aggregate = %s/%s", h.typed.State, h.typed.Code)
-				}
+				require.False(t, h.typed.State != Failed || h.typed.Code != "typed_failed", "failure aggregate = %s/%s", h.typed.State, h.typed.Code)
 			default:
-				if h.typed.State != Unknown || h.typed.Code != "typed_incomplete" {
-					t.Fatalf("ambiguous aggregate = %s/%s", h.typed.State, h.typed.Code)
-				}
+				require.False(t, h.typed.State != Unknown || h.typed.Code != "typed_incomplete", "ambiguous aggregate = %s/%s", h.typed.State, h.typed.Code)
 			}
 		})
 	}
@@ -365,19 +346,13 @@ func TestOperProgressResultFailureFacts(t *testing.T) {
 func TestOperProgressResultSkippedOnlyEntersSummary(t *testing.T) {
 	h := newOperProgressHarness(t, `{"plans":[{"role":"Caster","name":"静默干员","skill_mastery":[0,0,3]}]}`)
 	skip := operProgressDetailCallback(`{"role":"Caster","name":"静默干员","result":"Skipped","result_detail":"TrainingRoomBusy"}`)
-	if changed := h.apply(operProgressMessageSubTaskExtraInfo, skip); changed {
-		t.Fatal("a skipped training-room attempt created a target fact")
-	}
+	require.False(t, h.apply(operProgressMessageSubTaskExtraInfo, skip), "a skipped training-room attempt created a target fact")
 	h.apply(operProgressMessageSubTaskExtraInfo, skip)
 	checkOperProgressTarget(t, h.typed, 0, TargetResult{ID: "op-0001", Outcome: TargetUnobserved})
 	h.apply(operProgressMessageSubTaskExtraInfo, operProgressSummaryCallback(`{"finished":[],"success":0,"failed":0,"skipped":1}`))
 	const want = `{"targets":1,"observed":0,"unobserved":1,"achieved":0,"reported_target_training_started":0,"reported_prerequisite_training_started":0,"failed":0,"ambiguous":0,"skipped_training_room_busy":1}`
-	if string(h.typed.Summary) != want {
-		t.Fatalf("summary = %s, want %s", h.typed.Summary, want)
-	}
-	if h.typed.State != Unknown || h.typed.Code != "typed_incomplete" {
-		t.Fatalf("skip became success: %s/%s", h.typed.State, h.typed.Code)
-	}
+	require.Equal(t, want, string(h.typed.Summary), "summary = %s, want %s", h.typed.Summary, want)
+	require.False(t, h.typed.State != Unknown || h.typed.Code != "typed_incomplete", "skip became success: %s/%s", h.typed.State, h.typed.Code)
 }
 
 func TestOperProgressResultAssociationAmbiguity(t *testing.T) {
@@ -421,9 +396,7 @@ func TestOperProgressResultAssociationAmbiguity(t *testing.T) {
 			`{"role":"Warrior","name":"","result":"Failed","result_detail":"ResourceInsufficient"}`,
 			`{"role":"warrior","name":"甲","result":"Failed","result_detail":"ResourceInsufficient"}`,
 		} {
-			if changed := h.apply(operProgressMessageSubTaskExtraInfo, operProgressDetailCallback(details)); changed {
-				t.Fatalf("malformed identity %s changed a target", details)
-			}
+			require.False(t, h.apply(operProgressMessageSubTaskExtraInfo, operProgressDetailCallback(details)), "malformed identity %s changed a target", details)
 		}
 	})
 }
@@ -447,9 +420,7 @@ func TestOperProgressResultIgnoresUnrelatedCallbacks(t *testing.T) {
 		{20003, `{"taskchain":"OperProgress","taskid":41,"what":"OperProgressDetail","details":{"role":7,"name":true,"result":"Success","result_detail":"Completed","elite":2}}`},
 	}
 	for _, tc := range callbacks {
-		if changed := h.apply(tc.messageID, tc.raw); changed {
-			t.Fatalf("unrelated callback %s created a target fact", tc.raw)
-		}
+		require.False(t, h.apply(tc.messageID, tc.raw), "unrelated callback %s created a target fact", tc.raw)
 	}
 	checkOperProgressTarget(t, h.typed, 0, TargetResult{ID: "op-0001", Outcome: TargetUnobserved})
 	// Unknown future fields do not prevent a well-formed detail from being
@@ -464,13 +435,9 @@ func TestOperProgressResultDetailFiltersNativePayload(t *testing.T) {
 		`"rect":[1,2,3,4],"score":0.99,"path":"/private/work","raw":{"full":"payload"},"future":{"n":9007199254740993}}`)
 	h.apply(operProgressMessageSubTaskExtraInfo, raw)
 	const want = `{"action":"elite","expected":2,"reported":2}`
-	if string(h.typed.Targets[0].Details) != want {
-		t.Fatalf("retained detail = %s, want %s", h.typed.Targets[0].Details, want)
-	}
+	require.Equal(t, want, string(h.typed.Targets[0].Details), "retained detail = %s, want %s", h.typed.Targets[0].Details, want)
 	for _, forbidden := range []string{"rect", "score", "path", "raw", "future", "9007199254740993"} {
-		if strings.Contains(string(h.typed.Targets[0].Details), forbidden) {
-			t.Fatalf("retained detail disclosed %q", forbidden)
-		}
+		require.False(t, strings.Contains(string(h.typed.Targets[0].Details), forbidden), "retained detail disclosed %q", forbidden)
 	}
 }
 
@@ -481,13 +448,9 @@ func TestOperProgressResultSummaryCountsConfirmedFactsOnly(t *testing.T) {
 	// target into success.
 	h.apply(operProgressMessageSubTaskExtraInfo, operProgressSummaryCallback(`{"finished":[{"role":"Warrior","name":"甲","elite":2},{"role":"Caster","name":"乙","skill_mastery":[0,0,3]}],"success":2,"failed":0,"skipped":0}`))
 	const want = `{"targets":2,"observed":1,"unobserved":1,"achieved":1,"reported_target_training_started":0,"reported_prerequisite_training_started":0,"failed":0,"ambiguous":0,"skipped_training_room_busy":0}`
-	if string(h.typed.Summary) != want {
-		t.Fatalf("summary = %s, want %s", h.typed.Summary, want)
-	}
+	require.Equal(t, want, string(h.typed.Summary), "summary = %s, want %s", h.typed.Summary, want)
 	checkOperProgressTarget(t, h.typed, 1, TargetResult{ID: "op-0002", Outcome: TargetUnobserved})
-	if h.typed.State != Unknown || h.typed.Code != "typed_incomplete" {
-		t.Fatalf("summary fabricated success: %s/%s", h.typed.State, h.typed.Code)
-	}
+	require.False(t, h.typed.State != Unknown || h.typed.Code != "typed_incomplete", "summary fabricated success: %s/%s", h.typed.State, h.typed.Code)
 }
 
 func TestOperProgressResultSummaryCountsFailuresAndSkips(t *testing.T) {
@@ -497,9 +460,7 @@ func TestOperProgressResultSummaryCountsFailuresAndSkips(t *testing.T) {
 	h.apply(operProgressMessageSubTaskExtraInfo, operProgressDetailCallback(`{"role":"Caster","name":"丙","result":"Skipped","result_detail":"TrainingRoomBusy"}`))
 	h.apply(operProgressMessageSubTaskExtraInfo, operProgressSummaryCallback(`{"finished":[{"role":"Warrior","name":"甲","elite":2}],"success":1,"failed":1,"skipped":1}`))
 	const want = `{"targets":3,"observed":2,"unobserved":1,"achieved":1,"reported_target_training_started":0,"reported_prerequisite_training_started":0,"failed":1,"ambiguous":0,"skipped_training_room_busy":1}`
-	if string(h.typed.Summary) != want {
-		t.Fatalf("summary = %s, want %s", h.typed.Summary, want)
-	}
+	require.Equal(t, want, string(h.typed.Summary), "summary = %s, want %s", h.typed.Summary, want)
 }
 
 func TestOperProgressResultSummaryIsGeneratedOnce(t *testing.T) {
@@ -507,20 +468,12 @@ func TestOperProgressResultSummaryIsGeneratedOnce(t *testing.T) {
 	h.apply(operProgressMessageSubTaskExtraInfo, operProgressDetailCallback(`{"role":"Warrior","name":"甲","result":"Success","result_detail":"Completed","elite":2}`))
 	h.apply(operProgressMessageSubTaskExtraInfo, operProgressSummaryCallback(`{}`))
 	first := string(h.typed.Summary)
-	if !strings.Contains(first, `"observed":1`) {
-		t.Fatalf("first summary = %s", first)
-	}
+	require.Contains(t, first, `"observed":1`, "first summary = %s", first)
 	// A later fact and a second summary must not replace the first summary.
 	h.apply(operProgressMessageSubTaskExtraInfo, operProgressDetailCallback(`{"role":"Warrior","name":"乙","result":"Success","result_detail":"Completed","elite":2}`))
-	if changed := h.apply(operProgressMessageSubTaskExtraInfo, operProgressSummaryCallback(`{}`)); changed {
-		t.Fatal("second summary replaced the first")
-	}
-	if string(h.typed.Summary) != first {
-		t.Fatalf("summary changed to %s", h.typed.Summary)
-	}
-	if h.typed.State != Succeeded {
-		t.Fatalf("all achieved after summary = %s", h.typed.State)
-	}
+	require.False(t, h.apply(operProgressMessageSubTaskExtraInfo, operProgressSummaryCallback(`{}`)), "second summary replaced the first")
+	require.Equal(t, first, string(h.typed.Summary), "summary changed to %s", h.typed.Summary)
+	require.Equal(t, Succeeded, h.typed.State, "all achieved after summary = %s", h.typed.State)
 }
 
 func TestOperProgressResultSummaryRequiresAnObjectWhenPresent(t *testing.T) {
@@ -530,19 +483,13 @@ func TestOperProgressResultSummaryRequiresAnObjectWhenPresent(t *testing.T) {
 		operProgressCallback(operProgressWhatSummary, `null`),
 		operProgressCallback(operProgressWhatSummary, `"future"`),
 	} {
-		if changed := h.apply(operProgressMessageSubTaskExtraInfo, raw); changed {
-			t.Fatalf("malformed summary %s was admitted", raw)
-		}
+		require.False(t, h.apply(operProgressMessageSubTaskExtraInfo, raw), "malformed summary %s was admitted", raw)
 	}
-	if len(h.typed.Summary) != 0 {
-		t.Fatalf("malformed summary was retained: %s", h.typed.Summary)
-	}
+	require.Empty(t, h.typed.Summary, "malformed summary was retained: %s", h.typed.Summary)
 	// A summary without a details object still derives counts from confirmed
 	// facts only.
 	h.apply(operProgressMessageSubTaskExtraInfo, `{"taskchain":"OperProgress","taskid":41,"what":"OperProgressSummary"}`)
-	if !strings.Contains(string(h.typed.Summary), `"unobserved":1`) {
-		t.Fatalf("summary without details = %s", h.typed.Summary)
-	}
+	require.Contains(t, string(h.typed.Summary), `"unobserved":1`, "summary without details = %s", h.typed.Summary)
 }
 
 func TestOperProgressResultMalformedCallback(t *testing.T) {
@@ -555,9 +502,8 @@ func TestOperProgressResultMalformedCallback(t *testing.T) {
 		`{"taskchain":"OperProgress","taskchain":"Other","what":"OperProgressDetail"}`,
 		`{"taskchain":"OperProgress","what":"OperProgressDetail","details":{"role":"Warrior","name":"甲","result":"Success","result_detail":"Completed","result_detail":"AlreadySatisfied","elite":2}}`,
 	} {
-		if _, err := h.reducer.Observe(Observation{MessageID: operProgressMessageSubTaskExtraInfo, JSON: json.RawMessage(raw)}); !errors.Is(err, ErrTypedResult) {
-			t.Fatalf("malformed callback %s: %v", raw, err)
-		}
+		_, err := h.reducer.Observe(Observation{MessageID: operProgressMessageSubTaskExtraInfo, JSON: json.RawMessage(raw)})
+		require.ErrorIs(t, err, ErrTypedResult, "malformed callback %s", raw)
 	}
 	checkOperProgressTarget(t, h.typed, 0, TargetResult{ID: "op-0001", Outcome: TargetUnobserved})
 	// An empty observation is ignored so callers can probe the reducer.
@@ -567,19 +513,14 @@ func TestOperProgressResultMalformedCallback(t *testing.T) {
 func TestOperProgressResultDuplicateAndLateFacts(t *testing.T) {
 	h := newOperProgressHarness(t, `{"plans":[{"role":"Warrior","name":"甲","elite":2}]}`)
 	raw := operProgressDetailCallback(`{"role":"Warrior","name":"甲","result":"Success","result_detail":"Completed","elite":2}`)
-	if changed := h.apply(operProgressMessageSubTaskExtraInfo, raw); !changed {
-		t.Fatal("first fact was not admitted")
-	}
-	if changed := h.apply(operProgressMessageSubTaskExtraInfo, raw); changed {
-		t.Fatal("identical repeat changed the result")
-	}
+	require.True(t, h.apply(operProgressMessageSubTaskExtraInfo, raw), "first fact was not admitted")
+	require.False(t, h.apply(operProgressMessageSubTaskExtraInfo, raw), "identical repeat changed the result")
 	// The runtime reports typed_conflict for a different later fact; the
 	// reducer must surface it rather than silently rewriting the original.
 	update := h.observe(operProgressMessageSubTaskExtraInfo, operProgressDetailCallback(`{"role":"Warrior","name":"甲","result":"Failed","result_detail":"RecognitionFailed"}`))
 	next, _, err := applyTypedUpdate(h.typed, update)
-	if !errors.Is(err, ErrTypedConflict) || next != nil {
-		t.Fatalf("conflicting fact = %+v, %v", next, err)
-	}
+	require.ErrorIs(t, err, ErrTypedConflict, "conflicting fact = %+v", next)
+	require.Nil(t, next, "conflicting fact = %+v, %v", next, err)
 	checkOperProgressTarget(t, h.typed, 0, TargetResult{ID: "op-0001", Outcome: TargetAchieved, Code: "completed", Details: json.RawMessage(`{"action":"elite","expected":2,"reported":2}`)})
 }
 
@@ -587,23 +528,15 @@ func TestOperProgressResultBudgetAtTargetLimit(t *testing.T) {
 	h := newOperProgressHarness(t, operProgressPlansJSON(operProgressMaxPlans))
 	for i := 0; i < operProgressMaxPlans; i++ {
 		details := fmt.Sprintf(`{"role":"Warrior","name":"operator-%03d","result":"Success","result_detail":"Completed","elite":1}`, i)
-		if changed := h.apply(operProgressMessageSubTaskExtraInfo, operProgressDetailCallback(details)); !changed {
-			t.Fatalf("target %d was not admitted", i)
-		}
+		require.True(t, h.apply(operProgressMessageSubTaskExtraInfo, operProgressDetailCallback(details)), "target %d was not admitted", i)
 	}
-	if err := validateTypedResult(h.typed); err != nil {
-		t.Fatalf("bounded task result rejected: %v", err)
-	}
+	err := validateTypedResult(h.typed)
+	require.NoError(t, err, "bounded task result rejected")
 	h.apply(operProgressMessageSubTaskExtraInfo, operProgressSummaryCallback(`{"success":128}`))
-	if len(h.typed.Summary) > MaxTypedSummaryBytes {
-		t.Fatalf("summary is %d bytes", len(h.typed.Summary))
-	}
-	if err := validateTypedResult(h.typed); err != nil {
-		t.Fatalf("result with summary rejected: %v", err)
-	}
-	if h.typed.State != Succeeded || !strings.Contains(string(h.typed.Summary), `"achieved":128`) {
-		t.Fatalf("aggregate = %s, summary = %s", h.typed.State, h.typed.Summary)
-	}
+	require.LessOrEqual(t, len(h.typed.Summary), MaxTypedSummaryBytes, "summary is %d bytes", len(h.typed.Summary))
+	err = validateTypedResult(h.typed)
+	require.NoError(t, err, "result with summary rejected")
+	require.False(t, h.typed.State != Succeeded || !strings.Contains(string(h.typed.Summary), `"achieved":128`), "aggregate = %s, summary = %s", h.typed.State, h.typed.Summary)
 }
 
 func TestOperProgressResultIgnoresOversizedFutureFields(t *testing.T) {
@@ -612,10 +545,6 @@ func TestOperProgressResultIgnoresOversizedFutureFields(t *testing.T) {
 	raw := operProgressDetailCallback(`{"role":"Warrior","name":"甲","result":"Success","result_detail":"Completed","elite":2,"future":"` + future + `"}`)
 	h.apply(operProgressMessageSubTaskExtraInfo, raw)
 	const want = `{"action":"elite","expected":2,"reported":2}`
-	if string(h.typed.Targets[0].Details) != want {
-		t.Fatalf("future field leaked into details: %s", h.typed.Targets[0].Details)
-	}
-	if err := validateTypedResult(h.typed); err != nil {
-		t.Fatal(err)
-	}
+	require.Equal(t, want, string(h.typed.Targets[0].Details), "future field leaked into details: %s", h.typed.Targets[0].Details)
+	require.NoError(t, validateTypedResult(h.typed))
 }

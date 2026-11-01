@@ -3,12 +3,11 @@ package copilot
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"reflect"
 	"testing"
 
 	"github.com/dongwlin/rhodeck/packages/control"
+	"github.com/stretchr/testify/require"
 )
 
 func copilotResultEntries() []copilotEntry {
@@ -30,34 +29,26 @@ func copilotResultNode(node string) string {
 func observeCopilotResult(t *testing.T, reducer control.TaskReducer, messageID int32, raw string) control.TypedUpdate {
 	t.Helper()
 	update, err := reducer.Observe(control.Observation{MessageID: messageID, JSON: json.RawMessage(raw)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return update
 }
 
 func requireNoCopilotFacts(t *testing.T, update control.TypedUpdate) {
 	t.Helper()
-	if len(update.Targets) != 0 || len(update.Summary) != 0 {
-		t.Fatalf("callback manufactured business facts: %+v", update)
-	}
+	require.False(t, len(update.Targets) != 0 || len(update.Summary) != 0, "callback manufactured business facts: %+v", update)
 }
 
 func mutateCopilotResultField(t *testing.T, source, field, value string) string {
 	t.Helper()
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(source), &fields); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, json.Unmarshal([]byte(source), &fields))
 	if value == "" {
 		delete(fields, field)
 	} else {
 		fields[field] = json.RawMessage(value)
 	}
 	raw, err := json.Marshal(fields)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return string(raw)
 }
 
@@ -77,15 +68,10 @@ func TestCopilotReducerInterpretsOnlyAssociatedStageFacts(t *testing.T) {
 			raw := copilotResultNode(test.node)
 			update := observeCopilotResult(t, reducer, 20001, raw)
 			want := control.TypedUpdate{Targets: []control.TargetResult{{ID: "copilot:7", Outcome: test.outcome, Code: test.code, Details: json.RawMessage(`{"entry_id":7,"entry_index":1,"is_raid":true}`)}}}
-			if !reflect.DeepEqual(update, want) {
-				t.Fatalf("associated stage fact = %+v, want %+v", update, want)
-			}
-			if duplicate := observeCopilotResult(t, reducer, 20001, raw); !reflect.DeepEqual(duplicate, update) {
-				t.Fatalf("duplicate changed business fact: %+v, want %+v", duplicate, update)
-			}
-			if bytes.Contains(update.Targets[0].Details, []byte("same.json")) {
-				t.Fatal("public target details contain a private source path")
-			}
+			require.Equal(t, want, update, "associated stage fact = %+v, want %+v", update, want)
+			duplicate := observeCopilotResult(t, reducer, 20001, raw)
+			require.Equal(t, update, duplicate, "duplicate changed business fact: %+v, want %+v", duplicate, update)
+			require.False(t, bytes.Contains(update.Targets[0].Details, []byte("same.json")), "public target details contain a private source path")
 		})
 	}
 }
@@ -103,9 +89,7 @@ func TestCopilotReducerSeparatesRepeatedFilesAndRaids(t *testing.T) {
 	} {
 		requireNoCopilotFacts(t, observeCopilotResult(t, reducer, 20003, copilotResultLoad(test.id, test.filename)))
 		update := observeCopilotResult(t, reducer, 20001, copilotResultNode("StageDrops-Stars-3"))
-		if len(update.Targets) != 1 || update.Targets[0].ID != test.target {
-			t.Fatalf("entry %d changed another target: %+v", test.id, update)
-		}
+		require.False(t, len(update.Targets) != 1 || update.Targets[0].ID != test.target, "entry %d changed another target: %+v", test.id, update)
 	}
 	// A replayed older entry cannot reopen its scope after another entry began.
 	requireNoCopilotFacts(t, observeCopilotResult(t, reducer, 20003, copilotResultLoad(0, "same.json")))
@@ -147,9 +131,8 @@ func TestCopilotReducerRequiresCompleteLoadIdentity(t *testing.T) {
 	for _, details := range []string{validDetails, `{"id":7,"file_name":"same.json","future":{"n":9007199254740993}}`} {
 		reducer := newCopilotReducer(copilotResultEntries())
 		observeCopilotResult(t, reducer, 20003, mutateCopilotResultField(t, copilotResultLoad(7, "same.json"), "details", details))
-		if update := observeCopilotResult(t, reducer, 20001, copilotResultNode("StageDrops-Stars-3")); len(update.Targets) != 1 || update.Targets[0].ID != "copilot:7" {
-			t.Fatalf("valid loaded entry was not associated: %+v", update)
-		}
+		update := observeCopilotResult(t, reducer, 20001, copilotResultNode("StageDrops-Stars-3"))
+		require.False(t, len(update.Targets) != 1 || update.Targets[0].ID != "copilot:7", "valid loaded entry was not associated: %+v", update)
 	}
 }
 
@@ -193,9 +176,7 @@ func TestCopilotReducerClearsScopeOnNextEntryStart(t *testing.T) {
 	requireNoCopilotFacts(t, observeCopilotResult(t, reducer, 20001, copilotResultNode("StageDrops-Stars-3")))
 	observeCopilotResult(t, reducer, 20003, copilotResultLoad(7, "same.json"))
 	update := observeCopilotResult(t, reducer, 20001, copilotResultNode("StageDrops-Stars-3"))
-	if len(update.Targets) != 1 || update.Targets[0].ID != "copilot:7" {
-		t.Fatalf("next distinct entry did not establish scope: %+v", update)
-	}
+	require.False(t, len(update.Targets) != 1 || update.Targets[0].ID != "copilot:7", "next distinct entry did not establish scope: %+v", update)
 }
 
 func TestCopilotReducerRequiresMatchingCoreIdentity(t *testing.T) {
@@ -219,9 +200,7 @@ func TestCopilotReducerRequiresMatchingCoreIdentity(t *testing.T) {
 	foreign := mutateCopilotResultField(t, copilotResultLoad(0, "same.json"), "taskid", "102")
 	requireNoCopilotFacts(t, observeCopilotResult(t, reducer, 20003, foreign))
 	update := observeCopilotResult(t, reducer, 20001, copilotResultNode("StageDrops-Stars-3"))
-	if len(update.Targets) != 1 || update.Targets[0].ID != "copilot:7" {
-		t.Fatalf("foreign task changed active entry: %+v", update)
-	}
+	require.False(t, len(update.Targets) != 1 || update.Targets[0].ID != "copilot:7", "foreign task changed active entry: %+v", update)
 }
 
 func TestCopilotReducerIgnoresNonEvidence(t *testing.T) {
@@ -262,9 +241,7 @@ func TestCopilotReducerRejectsMalformedAndDuplicateCallbacks(t *testing.T) {
 			t.Run(fmt.Sprint(messageID)+raw, func(t *testing.T) {
 				reducer := newCopilotReducer(copilotResultEntries())
 				update, err := reducer.Observe(control.Observation{MessageID: messageID, JSON: json.RawMessage(raw)})
-				if !errors.Is(err, control.ErrTypedResult) {
-					t.Fatalf("malformed callback error = %v", err)
-				}
+				require.ErrorIs(t, err, control.ErrTypedResult, "malformed callback error = %v", err)
 				requireNoCopilotFacts(t, update)
 			})
 		}
@@ -283,9 +260,7 @@ func TestCopilotReducerMappingIsDetached(t *testing.T) {
 		raw[i] = 'x'
 	}
 	update := observeCopilotResult(t, reducer, 20001, copilotResultNode("StageDrops-Stars-3"))
-	if len(update.Targets) != 1 || update.Targets[0].ID != "copilot:0" || string(update.Targets[0].Details) != `{"entry_id":0,"entry_index":0,"is_raid":false}` {
-		t.Fatalf("caller mutation changed entry identity: %+v", update)
-	}
+	require.False(t, len(update.Targets) != 1 || update.Targets[0].ID != "copilot:0" || string(update.Targets[0].Details) != `{"entry_id":0,"entry_index":0,"is_raid":false}`, "caller mutation changed entry identity: %+v", update)
 }
 
 func TestCopilotCallbackFilenameUsesPlatformRendering(t *testing.T) {
@@ -300,8 +275,7 @@ func TestCopilotCallbackFilenameUsesPlatformRendering(t *testing.T) {
 		{`relative\job.json`, false, `relative\job.json`},
 		{"./jobs/../job.json", false, "./jobs/../job.json"},
 	} {
-		if got := copilotCallbackFilename(test.filename, test.windows); got != test.want {
-			t.Fatalf("callback filename for %q, windows=%v = %q, want %q", test.filename, test.windows, got, test.want)
-		}
+		got := copilotCallbackFilename(test.filename, test.windows)
+		require.Equal(t, test.want, got, "callback filename for %q, windows=%v = %q, want %q", test.filename, test.windows, got, test.want)
 	}
 }

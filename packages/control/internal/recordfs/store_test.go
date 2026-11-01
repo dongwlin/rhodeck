@@ -1,7 +1,6 @@
 package recordfs
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,84 +10,58 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestOwnershipAndClose(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 	if second, err := Open(dir); !errors.Is(err, ErrBusy) {
 		if second != nil {
 			_ = second.Close()
 		}
-		t.Fatalf("second ownership = %v, want ErrBusy", err)
+		require.ErrorIs(t, err, ErrBusy, "second ownership want ErrBusy")
 	}
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("repeated close: %v", err)
-	}
-	if err := s.Write("run.json", []byte("{}"), 2); !errors.Is(err, ErrClosed) {
-		t.Fatalf("write after close = %v, want ErrClosed", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "runtime.lock")); err != nil {
-		t.Fatalf("lock inode was removed: %v", err)
-	}
+	require.NoError(t, s.Close())
+	require.NoError(t, s.Close(), "repeated close")
+	require.ErrorIs(t, s.Write("run.json", []byte("{}"), 2), ErrClosed, "write after close want ErrClosed")
+	_, err = os.Stat(filepath.Join(dir, "runtime.lock"))
+	require.NoError(t, err, "lock inode was removed")
 	second, err := Open(dir)
-	if err != nil {
-		t.Fatalf("ownership after close: %v", err)
-	}
+	require.NoError(t, err, "ownership after close")
 	activeTemp := filepath.Join(dir, "runs", ".record-current-owner")
-	if err := os.WriteFile(activeTemp, []byte("partial"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Scan(func(fs.DirEntry) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(activeTemp); err != nil {
-		t.Fatalf("closed store removed another owner's temporary file: %v", err)
-	}
-	if err := second.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(activeTemp, []byte("partial"), 0600))
+	require.NoError(t, s.Scan(func(fs.DirEntry) error { return nil }))
+	_, err = os.Stat(activeTemp)
+	require.NoError(t, err, "closed store removed another owner's temporary file")
+	require.NoError(t, second.Close())
 }
 
 func TestReplacementAndBoundedRead(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "private", "data")
 	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer s.Close()
 	for _, raw := range [][]byte{[]byte("original"), []byte("new")} {
-		if err := s.Write("run.json", raw, 8); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, s.Write("run.json", raw, 8))
 		got, err := Read(dir, "run.json", len(raw))
-		if err != nil || !bytes.Equal(got, raw) {
-			t.Fatalf("read replacement = %q, %v; want %q", got, err, raw)
-		}
+		require.NoError(t, err, "read replacement")
+		require.Equal(t, raw, got, "read replacement")
 	}
-	if _, err := Read(dir, "run.json", 2); !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("bounded read = %v, want ErrTooLarge", err)
-	}
-	if err := s.Write("run.json", []byte("oversized"), 8); !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("bounded write = %v, want ErrTooLarge", err)
-	}
+	_, err = Read(dir, "run.json", 2)
+	require.ErrorIs(t, err, ErrTooLarge, "bounded read want ErrTooLarge")
+	require.ErrorIs(t, s.Write("run.json", []byte("oversized"), 8), ErrTooLarge, "bounded write want ErrTooLarge")
 	got, err := Read(dir, "run.json", 8)
-	if err != nil || string(got) != "new" {
-		t.Fatalf("failed write changed record = %q, %v", got, err)
-	}
+	require.NoError(t, err, "failed write changed record")
+	require.Equal(t, "new", string(got), "failed write changed record")
 	if runtime.GOOS != "windows" {
 		for name, mode := range map[string]fs.FileMode{"runs": 0700, "runs/run.json": 0600, "runtime.lock": 0600} {
 			info, err := os.Stat(filepath.Join(dir, name))
-			if err != nil || info.Mode().Perm() != mode {
-				t.Fatalf("permissions for %s = %v, %v; want %v", name, info, err, mode)
-			}
+			require.NoError(t, err, "permissions for %s", name)
+			require.Equal(t, mode, info.Mode().Perm(), "permissions for %s", name)
 		}
 	}
 }
@@ -96,78 +69,52 @@ func TestReplacementAndBoundedRead(t *testing.T) {
 func TestFailedReplacementCleansTemporaryFile(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer s.Close()
-	if err := os.Mkdir(filepath.Join(dir, "runs", "blocked.json"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Write("blocked.json", []byte("{}"), 2); err == nil {
-		t.Fatal("replaced a directory with a record")
-	}
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "runs", "blocked.json"), 0700))
+	require.Error(t, s.Write("blocked.json", []byte("{}"), 2), "replaced a directory with a record")
 	entries, err := os.ReadDir(filepath.Join(dir, "runs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].Name() != "blocked.json" || !entries[0].IsDir() {
-		t.Fatalf("failed replacement left temporary files: %v", entries)
-	}
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "failed replacement left temporary files")
+	require.Equal(t, "blocked.json", entries[0].Name())
+	require.True(t, entries[0].IsDir())
 }
 
 func TestScanBatchesAndCleansAbandonedWrites(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer s.Close()
 	for i := range 130 {
-		if err := s.Write(fmt.Sprintf("%03d.json", i), []byte("{}"), 2); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, s.Write(fmt.Sprintf("%03d.json", i), []byte("{}"), 2))
 	}
-	if err := os.WriteFile(filepath.Join(dir, "runs", ".record-abandoned"), []byte("partial"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "runs", ".record-abandoned"), []byte("partial"), 0600))
 	seen := make(map[string]bool)
-	if err := s.Scan(func(entry fs.DirEntry) error {
+	require.NoError(t, s.Scan(func(entry fs.DirEntry) error {
 		if seen[entry.Name()] || strings.HasPrefix(entry.Name(), ".record-") {
 			return fmt.Errorf("unexpected entry %q", entry.Name())
 		}
 		seen[entry.Name()] = true
 		// Recovery may replace the same record inside the scan visitor.
 		return s.Write(entry.Name(), []byte("[]"), 2)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if len(seen) != 130 {
-		t.Fatalf("scanned %d records, want 130", len(seen))
-	}
-	if _, err := os.Stat(filepath.Join(dir, "runs", ".record-abandoned")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("abandoned temporary file survived: %v", err)
-	}
+	}))
+	require.Equal(t, 130, len(seen), "scanned %d records", len(seen))
+	_, err = os.Stat(filepath.Join(dir, "runs", ".record-abandoned"))
+	require.ErrorIs(t, err, os.ErrNotExist, "abandoned temporary file survived")
 	visitorErr := errors.New("visitor failed")
-	if err := s.Scan(func(fs.DirEntry) error { return visitorErr }); !errors.Is(err, visitorErr) {
-		t.Fatalf("visitor error = %v, want %v", err, visitorErr)
-	}
+	require.ErrorIs(t, s.Scan(func(fs.DirEntry) error { return visitorErr }), visitorErr, "visitor error")
 }
 
 func TestRejectsUnsafeNamesAndInvalidLimits(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer s.Close()
 	for _, name := range []string{"", ".", "..", "../escape", `..\escape`, "/absolute", `C:escape`, "name:stream", "name\x00", string([]byte{0xff}), ".record-reserved"} {
 		t.Run(fmt.Sprintf("name_%q", name), func(t *testing.T) {
-			if err := s.Write(name, nil, 1); err == nil {
-				t.Fatal("accepted unsafe write name")
-			}
-			if _, err := Read(dir, name, 1); err == nil {
-				t.Fatal("accepted unsafe read name")
-			}
+			require.Error(t, s.Write(name, nil, 1), "accepted unsafe write name")
+			_, err := Read(dir, name, 1)
+			require.Error(t, err, "accepted unsafe read name")
 		})
 	}
 	limits := []int{-1, 0}
@@ -175,17 +122,11 @@ func TestRejectsUnsafeNamesAndInvalidLimits(t *testing.T) {
 		limits = append(limits, maxInt)
 	}
 	for _, limit := range limits {
-		if err := s.Write("run.json", nil, limit); err == nil {
-			t.Fatalf("accepted write limit %d", limit)
-		}
-		if _, err := Read(dir, "run.json", limit); err == nil {
-			t.Fatalf("accepted read limit %d", limit)
-		}
+		require.Error(t, s.Write("run.json", nil, limit), "accepted write limit %d", limit)
+		_, err := Read(dir, "run.json", limit)
+		require.Error(t, err, "accepted read limit %d", limit)
 	}
-	if _, err := Open("relative"); err == nil {
-		t.Fatal("accepted relative directory")
-	}
-	if err := s.Scan(nil); err == nil {
-		t.Fatal("accepted missing visitor")
-	}
+	_, err = Open("relative")
+	require.Error(t, err, "accepted relative directory")
+	require.Error(t, s.Scan(nil), "accepted missing visitor")
 }

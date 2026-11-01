@@ -2,7 +2,6 @@ package control_test
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -10,6 +9,7 @@ import (
 
 	. "github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/adapters/roguelike"
+	"github.com/stretchr/testify/require"
 )
 
 func roguelikeSettlement(taskid int32, node string) string {
@@ -26,35 +26,27 @@ func roguelikeExtra(taskid int32, what, details string) string {
 func roguelikeObserve(t *testing.T, reducer TaskReducer, messageID int32, sequence uint64, raw string) TypedUpdate {
 	t.Helper()
 	update, err := reducer.Observe(Observation{MessageID: messageID, CoreSequence: sequence, JSON: json.RawMessage(raw)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return update
 }
 
 func requireNoRoguelikeFacts(t *testing.T, update TypedUpdate) {
 	t.Helper()
-	if len(update.Targets) != 0 || len(update.Summary) != 0 {
-		t.Fatalf("callback manufactured business facts: %+v", update)
-	}
+	require.True(t, len(update.Targets) == 0 && len(update.Summary) == 0, "callback manufactured business facts: %+v", update)
 }
 
 // roguelikeMutateField replaces or deletes one top-level field of a callback.
 func roguelikeMutateField(t *testing.T, source, field, value string) string {
 	t.Helper()
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(source), &fields); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, json.Unmarshal([]byte(source), &fields))
 	if value == "" {
 		delete(fields, field)
 	} else {
 		fields[field] = json.RawMessage(value)
 	}
 	raw, err := json.Marshal(fields)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return string(raw)
 }
 
@@ -72,12 +64,8 @@ func roguelikePreparedPlan(t *testing.T, params string) roguelikePreparedPreview
 	plan.Tasks = []Task{{ID: "roguelike-task", Type: "Roguelike", Adapter: &ref, Params: json.RawMessage(params)}}
 	preview, err := PreparePlan(plan, roguelike.New())
 	prepared := roguelikePreparedPreview{PreparedPlan: preview, reducers: PreparedReducersForTest(preview)}
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(prepared.reducers) != 1 || prepared.reducers[0] == nil {
-		t.Fatalf("interpreted preparation has no reducer: %+v", prepared.Tasks)
-	}
+	require.NoError(t, err)
+	require.True(t, len(prepared.reducers) == 1 && prepared.reducers[0] != nil, "interpreted preparation has no reducer: %+v", prepared.Tasks)
 	return prepared
 }
 
@@ -85,9 +73,7 @@ func roguelikeApplyUpdates(t *testing.T, typed *TypedResult, updates ...TypedUpd
 	t.Helper()
 	for _, update := range updates {
 		next, _, err := applyTypedUpdate(typed, update)
-		if err != nil {
-			t.Fatalf("shared typed update rejected a roguelike fact: %v", err)
-		}
+		require.NoError(t, err, "shared typed update rejected a roguelike fact: %v", err)
 		typed = next
 	}
 	return typed
@@ -144,25 +130,17 @@ func TestRoguelikeObjectivePolicyMatrix(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			prepared, err := roguelike.New().Prepare(roguelikeTask(test.params))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if prepared.Policy != test.policy {
-				t.Fatalf("policy = %q, want %q", prepared.Policy, test.policy)
-			}
+			require.NoError(t, err)
+			require.Equal(t, test.policy, prepared.Policy, "policy = %q, want %q", prepared.Policy, test.policy)
 			if test.policy == ObjectiveNone {
-				if len(prepared.Targets) != 0 || prepared.Reducer != nil {
-					t.Fatalf("input-only preparation = %+v", prepared)
-				}
+				require.True(t, len(prepared.Targets) == 0 && prepared.Reducer == nil, "input-only preparation = %+v", prepared)
 				return
 			}
-			if !reflect.DeepEqual(prepared.Targets, test.targets) || prepared.Reducer == nil {
-				t.Fatalf("targets = %v, want %v with a reducer", prepared.Targets, test.targets)
-			}
+			require.True(t, reflect.DeepEqual(prepared.Targets, test.targets) && prepared.Reducer != nil,
+				"targets = %v, want %v with a reducer", prepared.Targets, test.targets)
 			again, err := roguelike.New().Prepare(roguelikeTask(test.params))
-			if err != nil || again.Policy != prepared.Policy || !reflect.DeepEqual(again.Targets, prepared.Targets) {
-				t.Fatalf("preparation was not deterministic: %+v, %v", again, err)
-			}
+			require.True(t, err == nil && again.Policy == prepared.Policy && reflect.DeepEqual(again.Targets, prepared.Targets),
+				"preparation was not deterministic: %+v, %v", again, err)
 		})
 	}
 }
@@ -175,18 +153,14 @@ func TestRoguelikeObjectiveSelectionIsVisibleInPreview(t *testing.T) {
 		{ID: "plain", Type: "Roguelike", Adapter: &ref, Params: json.RawMessage(`{"theme":"Phantom","mode":4}`)},
 	}
 	prepared, err := PreparePlan(plan, roguelike.New())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	runs := prepared.Tasks[0].Typed.Targets
-	if prepared.Tasks[0].Policy != ObjectiveAny || len(runs) != 2 ||
-		runs[0].ID != "roguelike:run:1" || runs[0].Outcome != TargetUnobserved ||
-		runs[1].ID != "roguelike:run:2" || runs[1].Outcome != TargetUnobserved {
-		t.Fatalf("dry-run target preview = %+v", prepared.Tasks[0])
-	}
-	if prepared.Tasks[1].Policy != ObjectiveNone || prepared.Tasks[1].Typed != nil {
-		t.Fatalf("input-only preview = %+v", prepared.Tasks[1])
-	}
+	require.True(t, prepared.Tasks[0].Policy == ObjectiveAny && len(runs) == 2 &&
+		runs[0].ID == "roguelike:run:1" && runs[0].Outcome == TargetUnobserved &&
+		runs[1].ID == "roguelike:run:2" && runs[1].Outcome == TargetUnobserved,
+		"dry-run target preview = %+v", prepared.Tasks[0])
+	require.True(t, prepared.Tasks[1].Policy == ObjectiveNone && prepared.Tasks[1].Typed == nil,
+		"input-only preview = %+v", prepared.Tasks[1])
 }
 
 func TestRoguelikeReducerPairsSettlementsWithRuns(t *testing.T) {
@@ -202,14 +176,11 @@ func TestRoguelikeReducerPairsSettlementsWithRuns(t *testing.T) {
 		{ID: "roguelike:run:3", Outcome: TargetAchieved, Code: roguelikeCodeGamePass},
 	}
 	for i, update := range updates {
-		if len(update.Targets) != 1 || !sameTarget(update.Targets[0], want[i]) {
-			t.Fatalf("settlement %d = %+v, want %+v", i, update.Targets, want[i])
-		}
+		require.True(t, len(update.Targets) == 1 && sameTarget(update.Targets[0], want[i]),
+			"settlement %d = %+v, want %+v", i, update.Targets, want[i])
 	}
 	typed := roguelikeApplyUpdates(t, prepared.Tasks[0].Typed, updates...)
-	if typed.State != Succeeded || typed.Code != "" {
-		t.Fatalf("two wins under any = %s/%s", typed.State, typed.Code)
-	}
+	require.True(t, typed.State == Succeeded && typed.Code == "", "two wins under any = %s/%s", typed.State, typed.Code)
 }
 
 func TestRoguelikeRunFactsAggregateUnderAny(t *testing.T) {
@@ -232,9 +203,8 @@ func TestRoguelikeRunFactsAggregateUnderAny(t *testing.T) {
 				updates = append(updates, roguelikeObserve(t, reducer, 20001, uint64(i+1), roguelikeSettlement(101, node)))
 			}
 			typed := roguelikeApplyUpdates(t, prepared.Tasks[0].Typed, updates...)
-			if typed.State != test.wantState || typed.Code != test.wantCode {
-				t.Fatalf("aggregate = %s/%s, want %s/%s; targets %+v", typed.State, typed.Code, test.wantState, test.wantCode, typed.Targets)
-			}
+			require.True(t, typed.State == test.wantState && typed.Code == test.wantCode,
+				"aggregate = %s/%s, want %s/%s; targets %+v", typed.State, typed.Code, test.wantState, test.wantCode, typed.Targets)
 		})
 	}
 }
@@ -242,14 +212,12 @@ func TestRoguelikeRunFactsAggregateUnderAny(t *testing.T) {
 func TestRoguelikeReducerIgnoresExtraAndRepeatedSettlements(t *testing.T) {
 	prepared := roguelikePreparedPlan(t, `{"theme":"Phantom","mode":0,"starts_count":2}`)
 	reducer := prepared.reducers[0]
-	if update := roguelikeObserve(t, reducer, 20001, 7, roguelikeSettlement(101, "GamePass")); update.Targets[0].ID != "roguelike:run:1" {
-		t.Fatalf("first settlement = %+v", update)
-	}
+	update := roguelikeObserve(t, reducer, 20001, 7, roguelikeSettlement(101, "GamePass"))
+	require.Equal(t, "roguelike:run:1", update.Targets[0].ID, "first settlement = %+v", update)
 	// The same callback delivered again is one settlement, not a second run.
 	requireNoRoguelikeFacts(t, roguelikeObserve(t, reducer, 20001, 7, roguelikeSettlement(101, "GamePass")))
-	if update := roguelikeObserve(t, reducer, 20001, 8, roguelikeSettlement(101, "GamePass")); update.Targets[0].ID != "roguelike:run:2" {
-		t.Fatalf("second settlement = %+v", update)
-	}
+	update = roguelikeObserve(t, reducer, 20001, 8, roguelikeSettlement(101, "GamePass"))
+	require.Equal(t, "roguelike:run:2", update.Targets[0].ID, "second settlement = %+v", update)
 	// Core kept going past the declared run count; that cannot name a target.
 	requireNoRoguelikeFacts(t, roguelikeObserve(t, reducer, 20001, 9, roguelikeSettlement(101, "GamePass")))
 }
@@ -257,16 +225,14 @@ func TestRoguelikeReducerIgnoresExtraAndRepeatedSettlements(t *testing.T) {
 func TestRoguelikeReducerRequiresSameAcceptedTaskID(t *testing.T) {
 	prepared := roguelikePreparedPlan(t, `{"theme":"Phantom","mode":0,"starts_count":2}`)
 	reducer := prepared.reducers[0]
-	if update := roguelikeObserve(t, reducer, 20001, 1, roguelikeSettlement(101, "GamePass")); update.Targets[0].ID != "roguelike:run:1" {
-		t.Fatalf("accepted task settlement = %+v", update)
-	}
+	update := roguelikeObserve(t, reducer, 20001, 1, roguelikeSettlement(101, "GamePass"))
+	require.Equal(t, "roguelike:run:1", update.Targets[0].ID, "accepted task settlement = %+v", update)
 	for _, taskid := range []int32{102, 0, -1} {
 		requireNoRoguelikeFacts(t, roguelikeObserve(t, reducer, 20001, 2, roguelikeSettlement(taskid, "GamePass")))
 	}
 	// The fixed association still accepts its own task.
-	if update := roguelikeObserve(t, reducer, 20001, 3, roguelikeSettlement(101, "MissionFailedFlag2")); update.Targets[0].ID != "roguelike:run:2" {
-		t.Fatalf("own task settlement after foreign events = %+v", update)
-	}
+	update = roguelikeObserve(t, reducer, 20001, 3, roguelikeSettlement(101, "MissionFailedFlag2"))
+	require.Equal(t, "roguelike:run:2", update.Targets[0].ID, "own task settlement after foreign events = %+v", update)
 	startRun := roguelikePreparedPlan(t, `{"theme":"BlackFlow","mode":30003,"blackflow_start_animals":["swaddled_cat"],"blackflow_start_rewards":1}`)
 	for _, taskid := range []int32{0, -5} {
 		requireNoRoguelikeFacts(t, roguelikeObserve(t, startRun.reducers[0], 20003, 4, roguelikeExtra(taskid, roguelikeWhatStartRun, `{"status":"completed"}`)))
@@ -345,18 +311,13 @@ func TestRoguelikeReducerSingleTargetFacts(t *testing.T) {
 			prepared := roguelikePreparedPlan(t, test.params)
 			reducer := prepared.reducers[0]
 			first := roguelikeObserve(t, reducer, 20003, 1, roguelikeExtra(101, test.what, test.details))
-			if len(first.Targets) != 1 || !sameTarget(first.Targets[0], test.want) {
-				t.Fatalf("fact = %+v, want %+v", first.Targets, test.want)
-			}
+			require.True(t, len(first.Targets) == 1 && sameTarget(first.Targets[0], test.want),
+				"fact = %+v, want %+v", first.Targets, test.want)
 			// The identical fact is idempotent through the shared update.
 			repeat := roguelikeObserve(t, reducer, 20003, 2, roguelikeExtra(101, test.what, test.details))
-			if !reflect.DeepEqual(repeat, first) {
-				t.Fatalf("repeated fact changed: %+v, want %+v", repeat, first)
-			}
+			require.True(t, reflect.DeepEqual(repeat, first), "repeated fact changed: %+v, want %+v", repeat, first)
 			typed := roguelikeApplyUpdates(t, prepared.Tasks[0].Typed, first, repeat)
-			if typed.State != Succeeded {
-				t.Fatalf("repeated identical fact did not stay achieved: %+v", typed)
-			}
+			require.Equal(t, Succeeded, typed.State, "repeated identical fact did not stay achieved: %+v", typed)
 		})
 	}
 }
@@ -380,9 +341,8 @@ func TestRoguelikeReducerStartRunStatuses(t *testing.T) {
 				details = `{"status":"completed","rewards":["unnumbered_item"]}`
 			}
 			update := roguelikeObserve(t, prepared.reducers[0], 20003, 1, roguelikeExtra(101, roguelikeWhatStartRun, details))
-			if len(update.Targets) != 1 || !sameTarget(update.Targets[0], test.want) {
-				t.Fatalf("status %s = %+v, want %+v", test.status, update.Targets, test.want)
-			}
+			require.True(t, len(update.Targets) == 1 && sameTarget(update.Targets[0], test.want),
+				"status %s = %+v, want %+v", test.status, update.Targets, test.want)
 		})
 	}
 	for _, status := range []string{"preparing", "target_run", "reward_missed", "reward_picked", "future_status"} {
@@ -412,13 +372,9 @@ func TestRoguelikeReducerJieGardenTargetSubtype(t *testing.T) {
 	prepared := roguelikePreparedPlan(t, params)
 	update := roguelikeObserve(t, prepared.reducers[0], 20003, 1, roguelikeExtra(101, roguelikeWhatJieGardenFound, `{"target_subtype":"Nian"}`))
 	want := TargetResult{ID: roguelikeTargetJieGarden, Outcome: TargetAchieved, Code: roguelikeCodeTargetFound, Details: json.RawMessage(`{"target_subtype":"Nian"}`)}
-	if len(update.Targets) != 1 || !sameTarget(update.Targets[0], want) {
-		t.Fatalf("found fact = %+v, want %+v", update.Targets, want)
-	}
+	require.True(t, len(update.Targets) == 1 && sameTarget(update.Targets[0], want), "found fact = %+v, want %+v", update.Targets, want)
 	typed := roguelikeApplyUpdates(t, prepared.Tasks[0].Typed, update)
-	if typed.State != Succeeded {
-		t.Fatalf("found fact did not achieve the target: %+v", typed)
-	}
+	require.Equal(t, Succeeded, typed.State, "found fact did not achieve the target: %+v", typed)
 	// The what alone proves the fact; unusable subtypes are simply not published.
 	for name, details := range map[string]string{
 		"no subtype":         `{}`,
@@ -433,9 +389,8 @@ func TestRoguelikeReducerJieGardenTargetSubtype(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fresh := roguelikePreparedPlan(t, params)
 			update := roguelikeObserve(t, fresh.reducers[0], 20003, 1, roguelikeExtra(101, roguelikeWhatJieGardenFound, details))
-			if len(update.Targets) != 1 || update.Targets[0].Outcome != TargetAchieved || update.Targets[0].Details != nil {
-				t.Fatalf("unusable subtype changed the fact: %+v", update.Targets)
-			}
+			require.True(t, len(update.Targets) == 1 && update.Targets[0].Outcome == TargetAchieved && update.Targets[0].Details == nil,
+				"unusable subtype changed the fact: %+v", update.Targets)
 		})
 	}
 }
@@ -459,18 +414,13 @@ func TestRoguelikeReducerConflictsStayWithSharedUpdate(t *testing.T) {
 			reducer := prepared.reducers[0]
 			first := roguelikeObserve(t, reducer, 20003, 1, test.first)
 			typed, _, err := applyTypedUpdate(prepared.Tasks[0].Typed, first)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			second := roguelikeObserve(t, reducer, 20003, 2, test.second)
 			_, _, err = applyTypedUpdate(typed, second)
-			if !errors.Is(err, ErrTypedConflict) {
-				t.Fatalf("contradictory fact = %v, want ErrTypedConflict", err)
-			}
+			require.ErrorIs(t, err, ErrTypedConflict, "contradictory fact = %v, want ErrTypedConflict", err)
 			// The first fact survives the rejected update.
-			if typed.Targets[0].Outcome != first.Targets[0].Outcome || typed.Targets[0].Code != first.Targets[0].Code {
-				t.Fatalf("rejected update changed the recorded fact: %+v", typed.Targets)
-			}
+			require.True(t, typed.Targets[0].Outcome == first.Targets[0].Outcome && typed.Targets[0].Code == first.Targets[0].Code,
+				"rejected update changed the recorded fact: %+v", typed.Targets)
 		})
 	}
 }
@@ -486,9 +436,7 @@ func TestRoguelikeReducerRejectsMalformedAndDuplicateCallbacks(t *testing.T) {
 			t.Run(fmt.Sprint(messageID)+raw, func(t *testing.T) {
 				prepared := roguelikePreparedPlan(t, `{"theme":"Phantom","mode":0,"starts_count":1}`)
 				update, err := prepared.reducers[0].Observe(Observation{MessageID: messageID, JSON: json.RawMessage(raw)})
-				if !errors.Is(err, ErrTypedResult) {
-					t.Fatalf("malformed callback error = %v", err)
-				}
+				require.ErrorIs(t, err, ErrTypedResult, "malformed callback error = %v", err)
 				requireNoRoguelikeFacts(t, update)
 			})
 		}
@@ -508,9 +456,8 @@ func TestRoguelikeReducerClassifiesBlackFlowEnvironment(t *testing.T) {
 		{20002, `{"taskchain":"Roguelike","taskid":0,"subtask":"ProcessTask","details":{"task":"RolesDefault"}}`},
 		{20003, `{"taskchain":"Roguelike","taskid":0,"subtask":"BlackFlowTask","what":"BlackFlowInventoryCleanup","details":{"status":"cleaned","name":"Cell"}}`},
 	} {
-		if !classifier.IsUnassociatedProgress(Observation{MessageID: test.messageID, JSON: json.RawMessage(test.raw)}) {
-			t.Fatalf("internal callback was not classified as environment: %d %s", test.messageID, test.raw)
-		}
+		require.True(t, classifier.IsUnassociatedProgress(Observation{MessageID: test.messageID, JSON: json.RawMessage(test.raw)}),
+			"internal callback was not classified as environment: %d %s", test.messageID, test.raw)
 	}
 	for _, test := range []struct {
 		messageID int32
@@ -522,9 +469,8 @@ func TestRoguelikeReducerClassifiesBlackFlowEnvironment(t *testing.T) {
 		{20001, `{"taskchain":"Roguelike","taskid":0,"subtask":"ProcessTask","details":{"task":"a","task":"b"}}`},
 		{20001, `{"taskchain":"Roguelike"}`},
 	} {
-		if classifier.IsUnassociatedProgress(Observation{MessageID: test.messageID, JSON: json.RawMessage(test.raw)}) {
-			t.Fatalf("associated or malformed callback was absorbed: %d %s", test.messageID, test.raw)
-		}
+		require.False(t, classifier.IsUnassociatedProgress(Observation{MessageID: test.messageID, JSON: json.RawMessage(test.raw)}),
+			"associated or malformed callback was absorbed: %d %s", test.messageID, test.raw)
 	}
 	// Environmental events carry no facts even if they reached Observe.
 	requireNoRoguelikeFacts(t, roguelikeObserve(t, reducer, 20001, 1, `{"taskchain":"Roguelike","taskid":0,"subtask":"ProcessTask","details":{"task":"GamePass"}}`))

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	. "github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/adapters/copilot"
 )
@@ -23,28 +25,19 @@ func TestRuntimeCopilotInputOnlyUsesChainFacts(t *testing.T) {
 				ref := copilot.New().Descriptor()
 				plan.Tasks[0] = Task{ID: "battle", Type: "Copilot", Adapter: &ref, Params: json.RawMessage(`{"filename":"9007199254740993.json"` + loop + `}`)}
 				run, err := rt.Run(context.Background(), plan)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				if test.mode == "stop" {
 					waitStarted(t, run)
-					if err := run.Stop(context.Background()); err != nil {
-						t.Fatal(err)
-					}
+					err := run.Stop(context.Background())
+					require.NoError(t, err)
 				}
 				events, result := waitRuntimeRun(t, run)
-				if result.State != test.state || result.Cleanup != "complete" || result.Tasks[0].Policy != ObjectiveNone || result.Tasks[0].Typed != nil {
-					t.Fatalf("input-only chain result = %+v", result)
-				}
+				require.False(t, result.State != test.state || result.Cleanup != "complete" || result.Tasks[0].Policy != ObjectiveNone || result.Tasks[0].Typed != nil, "input-only chain result = %+v", result)
 				for _, event := range events {
-					if event.Type == "typed" || event.Typed != nil {
-						t.Fatalf("input-only task emitted business facts: %+v", event)
-					}
+					require.False(t, event.Type == "typed" || event.Typed != nil, "input-only task emitted business facts: %+v", event)
 				}
 				record, err := ReadRecord(cfg.DataDir, result.RunID)
-				if err != nil || record.Result.State != test.state || record.Result.Tasks[0].Typed != nil || record.Result.Tasks[0].Policy != ObjectiveNone {
-					t.Fatalf("input-only record = %+v, %v", record, err)
-				}
+				require.False(t, err != nil || record.Result.State != test.state || record.Result.Tasks[0].Typed != nil || record.Result.Tasks[0].Policy != ObjectiveNone, "input-only record = %+v, %v", record, err)
 			})
 		}
 	}

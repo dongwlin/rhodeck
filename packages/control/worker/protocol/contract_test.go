@@ -10,6 +10,8 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // roundTrip encodes m as one frame, reads it back, and decodes its payload
@@ -17,19 +19,13 @@ import (
 func roundTrip(t *testing.T, m Message, target any) {
 	t.Helper()
 	data, err := Encode(m)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got, err := NewReader(bytes.NewReader(data)).Read()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if target == nil {
 		return
 	}
-	if err := Decode(got.Payload, target); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, Decode(got.Payload, target))
 }
 
 // TestNumericVectors freezes the lossless integer encoding: every control
@@ -46,41 +42,23 @@ func TestNumericVectors(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, err := NewMessage(Request, Ping, v, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			data, err := Encode(m)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			// The literal must appear verbatim: 2^53+1 may not become
 			// 9007199254740992 through any float rounding.
-			if !bytes.Contains(data, []byte(uint64Text(v))) {
-				t.Fatalf("literal %s not on the wire: %s", uint64Text(v), data)
-			}
+			require.True(t, bytes.Contains(data, []byte(uint64Text(v))), "literal %s not on the wire: %s", uint64Text(v), data)
 			got, err := NewReader(bytes.NewReader(data)).Read()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.ID != v {
-				t.Fatalf("request ID %d came back as %d", v, got.ID)
-			}
+			require.NoError(t, err)
+			require.Equal(t, v, got.ID, "request ID %d came back as %d", v, got.ID)
 
 			e := Message{Version: Version, Type: Event, Name: CoreEvent, Sequence: v}
-			if err := e.Validate(); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, e.Validate())
 			data, err = Encode(e)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			got, err = NewReader(bytes.NewReader(data)).Read()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.Sequence != v {
-				t.Fatalf("event sequence %d came back as %d", v, got.Sequence)
-			}
+			require.NoError(t, err)
+			require.Equal(t, v, got.Sequence, "event sequence %d came back as %d", v, got.Sequence)
 		})
 	}
 
@@ -91,9 +69,8 @@ func TestNumericVectors(t *testing.T) {
 		"negative":     `{"version":1,"type":"request","id":-1,"name":"ping"}` + "\n",
 	} {
 		t.Run("reject "+name, func(t *testing.T) {
-			if _, err := NewReader(strings.NewReader(raw)).Read(); err == nil {
-				t.Fatalf("%s accepted", name)
-			}
+			_, err := NewReader(strings.NewReader(raw)).Read()
+			require.Error(t, err, "%s accepted", name)
 		})
 	}
 }
@@ -116,14 +93,10 @@ func TestRawMessageBytePreservation(t *testing.T) {
 		},
 	}
 	m, err := NewMessage(Request, Initialize, 7, req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var got InitializeRequest
 	roundTrip(t, m, &got)
-	if !bytes.Equal(got.ConnectionExtras[0].JSON, raw) {
-		t.Fatalf("raw extra changed:\n got %s\nwant %s", got.ConnectionExtras[0].JSON, raw)
-	}
+	require.True(t, bytes.Equal(got.ConnectionExtras[0].JSON, raw), "raw extra changed:\n got %s\nwant %s", got.ConnectionExtras[0].JSON, raw)
 }
 
 // TestEmptyValuesAreNormal freezes that legal empty observations never become
@@ -144,9 +117,7 @@ func TestEmptyValuesAreNormal(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if err := c.m.Validate(); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, c.m.Validate())
 			roundTrip(t, c.m, c.target)
 		})
 	}
@@ -159,34 +130,22 @@ func TestErrorDetailContract(t *testing.T) {
 	m := Message{Version: Version, Type: Response, ID: 1, Name: Ping,
 		Error: &Error{Code: LimitExceeded, Message: "boom", Detail: &ErrorDetail{Kind: "transport_budget", Field: "Limits.InputJSONBytes", Unit: "bytes", Capacity: 5 << 20, Maximum: MaxInputJSONBytes}}}
 	data, err := Encode(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(data, []byte(`"detail"`)) {
-		t.Fatal("detail missing on the wire")
-	}
+	require.NoError(t, err)
+	require.True(t, bytes.Contains(data, []byte(`"detail"`)), "detail missing on the wire")
 	gotFrame, err := NewReader(bytes.NewReader(data)).Read()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotFrame.Error == nil || gotFrame.Error.Detail == nil || gotFrame.Error.Detail.Maximum != MaxInputJSONBytes || gotFrame.Error.Detail.Kind != "transport_budget" {
-		t.Fatalf("detail did not survive: %+v", gotFrame.Error)
-	}
+	require.NoError(t, err)
+	require.True(t, gotFrame.Error != nil && gotFrame.Error.Detail != nil && gotFrame.Error.Detail.Maximum == MaxInputJSONBytes && gotFrame.Error.Detail.Kind == "transport_budget",
+		"detail did not survive: %+v", gotFrame.Error)
 
 	without := Message{Version: Version, Type: Response, ID: 1, Name: Ping, Error: &Error{Code: InvalidInput, Message: "plain"}}
 	data, err = Encode(without)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(data, []byte(`"detail"`)) {
-		t.Fatal("nil detail must be omitted")
-	}
+	require.NoError(t, err)
+	require.False(t, bytes.Contains(data, []byte(`"detail"`)), "nil detail must be omitted")
 
 	oversized := Message{Version: Version, Type: Response, ID: 1, Name: Ping,
 		Error: &Error{Code: InvalidInput, Message: "m", Detail: &ErrorDetail{Kind: strings.Repeat("x", 129)}}}
-	if _, err := Encode(oversized); err == nil {
-		t.Fatal("oversized detail accepted")
-	}
+	_, err = Encode(oversized)
+	require.Error(t, err, "oversized detail accepted")
 }
 
 // TestVersionCompatibilityRejection freezes the upgrade rule: v1 is the only
@@ -194,18 +153,13 @@ func TestErrorDetailContract(t *testing.T) {
 func TestVersionCompatibilityRejection(t *testing.T) {
 	for _, v := range []int{0, 2, Version + 1, math.MaxInt32} {
 		m := Message{Version: v, Type: Request, ID: 1, Name: Ping}
-		if err := m.Validate(); err == nil {
-			t.Fatalf("version %d accepted", v)
-		}
+		require.Error(t, m.Validate(), "version %d accepted", v)
 		data, _ := json.Marshal(m)
-		if _, err := NewReader(bytes.NewReader(append(data, '\n'))).Read(); err == nil {
-			t.Fatalf("frame with version %d accepted", v)
-		}
+		_, err := NewReader(bytes.NewReader(append(data, '\n'))).Read()
+		require.Error(t, err, "frame with version %d accepted", v)
 	}
 	hello := Message{Version: 2, Type: Hello, Name: ""}
-	if err := hello.Validate(); err == nil {
-		t.Fatal("greeting with wrong version accepted")
-	}
+	require.Error(t, hello.Validate(), "greeting with wrong version accepted")
 }
 
 // TestPointerFromUint64 freezes the window-handle conversion: the wire value
@@ -216,23 +170,18 @@ func TestPointerFromUint64(t *testing.T) {
 	width := uint64(^uintptr(0))
 	for _, v := range []uint64{0, 1, 1 << 32, width} {
 		got, ok := PointerFromUint64(v)
-		if !ok || got != uintptr(v) {
-			t.Fatalf("PointerFromUint64(%d) = %d, %v", v, got, ok)
-		}
+		require.True(t, ok && got == uintptr(v), "PointerFromUint64(%d) = %d, %v", v, got, ok)
 	}
 	if width < math.MaxUint64 {
-		if _, ok := PointerFromUint64(width + 1); ok {
-			t.Fatalf("value beyond the %d-bit pointer width accepted", width)
-		}
+		_, ok := PointerFromUint64(width + 1)
+		require.False(t, ok, "value beyond the %d-bit pointer width accepted", width)
 	}
 }
 
 func mustMessage(t *testing.T, kind, name string, id uint64, payload any) Message {
 	t.Helper()
 	m, err := NewMessage(kind, name, id, payload)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return m
 }
 
@@ -265,16 +214,14 @@ func TestWireLimitsRejectsUndeliverableConfigurations(t *testing.T) {
 		EarlyResults:      1,
 		EarlyBytes:        1 << 20,
 	}
-	if err := CheckWireLimits(&defaults); err != nil {
-		t.Fatalf("binding defaults must be wire-compatible: %v", err)
-	}
+	err := CheckWireLimits(&defaults)
+	require.NoError(t, err, "binding defaults must be wire-compatible: %v", err)
 
 	legal := defaults
 	legal.InputJSONBytes = MaxInputJSONBytes
 	legal.ImageBGR = BufferLimits{Initial: 4 << 20, Max: ImageTransferMaxBytes, GrowthRetries: 5}
-	if err := CheckWireLimits(&legal); err != nil {
-		t.Fatalf("binding-legal explicit maxima must be wire-compatible: %v", err)
-	}
+	err = CheckWireLimits(&legal)
+	require.NoError(t, err, "binding-legal explicit maxima must be wire-compatible: %v", err)
 
 	cases := []struct {
 		name   string
@@ -294,9 +241,8 @@ func TestWireLimitsRejectsUndeliverableConfigurations(t *testing.T) {
 			c.change(&l)
 			err := CheckWireLimits(&l)
 			var wire *Error
-			if !errors.As(err, &wire) || wire.Code != LimitExceeded || wire.Detail == nil || wire.Detail.Maximum == 0 || wire.Detail.Field != c.field {
-				t.Fatalf("expected limit_exceeded with effective maximum for %s, got %v", c.field, err)
-			}
+			require.True(t, errors.As(err, &wire) && wire.Code == LimitExceeded && wire.Detail != nil && wire.Detail.Maximum != 0 && wire.Detail.Field == c.field,
+				"expected limit_exceeded with effective maximum for %s, got %v", c.field, err)
 		})
 	}
 }
@@ -304,23 +250,16 @@ func TestWireLimitsRejectsUndeliverableConfigurations(t *testing.T) {
 // TestImageTransferContract freezes the admission and per-chunk rules.
 func TestImageTransferContract(t *testing.T) {
 	t.Run("admission", func(t *testing.T) {
-		if err := AdmitImageTransfer(32<<20, 0); err != nil {
-			t.Fatal(err)
-		}
-		if err := AdmitImageTransfer(64<<20, 1); err != nil {
-			t.Fatal(err)
-		}
-		if err := AdmitImageTransfer(ImageTransferMaxBytes, ImageTransfersMax-1); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, AdmitImageTransfer(32<<20, 0))
+		require.NoError(t, AdmitImageTransfer(64<<20, 1))
+		require.NoError(t, AdmitImageTransfer(ImageTransferMaxBytes, ImageTransfersMax-1))
 		err := AdmitImageTransfer(ImageTransferMaxBytes+1, 0)
 		var wire *Error
-		if !errors.As(err, &wire) || wire.Code != LimitExceeded || wire.Detail == nil || wire.Detail.Maximum != ImageTransferMaxBytes {
-			t.Fatalf("over-ceiling transfer must be rejected with the effective maximum, got %v", err)
-		}
-		if err = AdmitImageTransfer(1, ImageTransfersMax); !errors.As(err, &wire) || wire.Code != LimitExceeded {
-			t.Fatalf("transfer beyond the concurrency budget must be rejected, got %v", err)
-		}
+		require.True(t, errors.As(err, &wire) && wire.Code == LimitExceeded && wire.Detail != nil && wire.Detail.Maximum == ImageTransferMaxBytes,
+			"over-ceiling transfer must be rejected with the effective maximum, got %v", err)
+		err = AdmitImageTransfer(1, ImageTransfersMax)
+		require.True(t, errors.As(err, &wire) && wire.Code == LimitExceeded,
+			"transfer beyond the concurrency budget must be rejected, got %v", err)
 	})
 
 	t.Run("transfer validation", func(t *testing.T) {
@@ -333,14 +272,10 @@ func TestImageTransferContract(t *testing.T) {
 			{TransferID: 1, TotalBytes: ImageTransferMaxBytes + 1, SHA256: sha256Hex(nil), ChunkBytes: ImageChunkBytes},
 		}
 		for i, b := range bad {
-			if err := b.Validate(); err == nil {
-				t.Fatalf("invalid transfer %d accepted: %+v", i, b)
-			}
+			require.Error(t, b.Validate(), "invalid transfer %d accepted: %+v", i, b)
 		}
 		good := ImageTransfer{TransferID: math.MaxUint64, TotalBytes: 0, SHA256: sha256Hex(nil), ChunkBytes: 1}
-		if err := good.Validate(); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, good.Validate())
 	})
 
 	t.Run("chunk validation", func(t *testing.T) {
@@ -353,14 +288,10 @@ func TestImageTransferContract(t *testing.T) {
 			{TransferID: 5, Offset: ImageChunkBytes + 5, Length: 6},
 		}
 		for i, b := range bad {
-			if err := b.Validate(&tr); err == nil {
-				t.Fatalf("invalid chunk request %d accepted: %+v", i, b)
-			}
+			require.Error(t, b.Validate(&tr), "invalid chunk request %d accepted: %+v", i, b)
 		}
 		valid := ImageChunkRequest{TransferID: 5, Offset: ImageChunkBytes, Length: 10}
-		if err := valid.Validate(&tr); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, valid.Validate(&tr))
 	})
 }
 
@@ -374,9 +305,7 @@ func TestDefaultImageBudgetCarriedEndToEnd(t *testing.T) {
 			payload := make([]byte, total)
 			fillPseudoRandom(payload)
 			transfer := ImageTransfer{TransferID: 9, TotalBytes: uint64(total), SHA256: sha256Hex(payload), ChunkBytes: ImageChunkBytes}
-			if err := transfer.Validate(); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, transfer.Validate())
 			reassembled := make([]byte, 0, total)
 			chunks := 0
 			for offset := uint64(0); offset < transfer.TotalBytes; {
@@ -385,48 +314,28 @@ func TestDefaultImageBudgetCarriedEndToEnd(t *testing.T) {
 					length = transfer.ChunkBytes
 				}
 				req := ImageChunkRequest{TransferID: transfer.TransferID, Offset: offset, Length: length}
-				if err := req.Validate(&transfer); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, req.Validate(&transfer))
 				chunk := payload[offset : offset+uint64(length)]
 				resp := ImageChunkResponse{TransferID: req.TransferID, Offset: req.Offset, Data: base64.StdEncoding.EncodeToString(chunk)}
 				m := mustMessage(t, Response, ImageChunk, 100+uint64(chunks), resp)
 				data, err := Encode(m)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(data) > MaxFrameBytes {
-					t.Fatalf("chunk frame of %d bytes exceeds the %d byte frame budget", len(data), MaxFrameBytes)
-				}
+				require.NoError(t, err)
+				require.LessOrEqual(t, len(data), MaxFrameBytes, "chunk frame of %d bytes exceeds the %d byte frame budget", len(data), MaxFrameBytes)
 				got, err := NewReader(bytes.NewReader(data)).Read()
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				var back ImageChunkResponse
-				if err := Decode(got.Payload, &back); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, Decode(got.Payload, &back))
 				raw, err := base64.StdEncoding.DecodeString(back.Data)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if uint64(len(raw)) != uint64(length) || back.Offset != offset {
-					t.Fatalf("chunk mismatch: offset %d length %d", back.Offset, len(raw))
-				}
+				require.NoError(t, err)
+				require.True(t, uint64(len(raw)) == uint64(length) && back.Offset == offset, "chunk mismatch: offset %d length %d", back.Offset, len(raw))
 				reassembled = append(reassembled, raw...)
 				offset += uint64(length)
 				chunks++
 			}
 			wantChunks := (total + ImageChunkBytes - 1) / ImageChunkBytes
-			if chunks != wantChunks {
-				t.Fatalf("chunk count = %d, want %d", chunks, wantChunks)
-			}
-			if !bytes.Equal(reassembled, payload) {
-				t.Fatal("reassembled image differs")
-			}
-			if sha256Hex(reassembled) != transfer.SHA256 {
-				t.Fatal("sha256 of the reassembled image does not match the transfer")
-			}
+			require.Equal(t, wantChunks, chunks, "chunk count = %d, want %d", chunks, wantChunks)
+			require.True(t, bytes.Equal(reassembled, payload), "reassembled image differs")
+			require.Equal(t, transfer.SHA256, sha256Hex(reassembled), "sha256 of the reassembled image does not match the transfer")
 		})
 	}
 }
@@ -450,14 +359,10 @@ func fillPseudoRandom(b []byte) {
 func TestFaultAndDiagnosticsPayloads(t *testing.T) {
 	fault := mustMessage(t, Event, FaultEvent, 0, FaultNotice{Error: Error{Code: EventOverflow, Message: "events lost"}})
 	fault.Sequence = 1
-	if err := fault.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, fault.Validate())
 	var notice FaultNotice
 	roundTrip(t, fault, &notice)
-	if notice.Error.Code != EventOverflow {
-		t.Fatalf("fault notice: %+v", notice)
-	}
+	require.Equal(t, EventOverflow, notice.Error.Code, "fault notice: %+v", notice)
 
 	rawPrefix := []byte{0x00, 0xFF, 0x80, 0xC3, 0x28, 0x00}
 	report := InstanceDiagnostics{
@@ -468,62 +373,35 @@ func TestFaultAndDiagnosticsPayloads(t *testing.T) {
 	}
 	diag := mustMessage(t, Event, DiagnosticsEvent, 0, report)
 	diag.Sequence = 2
-	if err := diag.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, diag.Validate())
 	var got InstanceDiagnostics
 	roundTrip(t, diag, &got)
-	if got.LostEvents != math.MaxUint64 || got.FirstFault == nil || got.StopDiagnostic == nil {
-		t.Fatalf("diagnostics did not survive: %+v", got)
-	}
+	require.True(t, got.LostEvents == math.MaxUint64 && got.FirstFault != nil && got.StopDiagnostic != nil, "diagnostics did not survive: %+v", got)
 	decoded, err := base64.StdEncoding.DecodeString(got.RawPrefix)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(decoded, rawPrefix) {
-		t.Fatalf("raw prefix changed: %x", decoded)
-	}
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(decoded, rawPrefix), "raw prefix changed: %x", decoded)
 
 	// The payload validators reject bound breaches before a client records
 	// the facts: unstable errors, an unbounded or undecodable raw prefix.
-	if err := (&FaultNotice{}).Validate(); err == nil {
-		t.Fatal("a fault without a code must be rejected")
-	}
-	if err := (&FaultNotice{Error: Error{Code: EventOverflow}}).Validate(); err == nil {
-		t.Fatal("a fault without a message must be rejected")
-	}
-	if err := (&FaultNotice{Error: Error{Code: EventOverflow, Message: strings.Repeat("x", 4097)}}).Validate(); err == nil {
-		t.Fatal("an over-long fault message must be rejected")
-	}
-	if err := (&FaultNotice{Error: Error{Code: EventOverflow, Message: "m", Detail: &ErrorDetail{Kind: strings.Repeat("x", 129)}}}).Validate(); err == nil {
-		t.Fatal("an over-long fault detail must be rejected")
-	}
-	if err := report.Validate(); err != nil {
-		t.Fatalf("the frozen report must validate: %v", err)
-	}
-	if err := (&InstanceDiagnostics{RawPrefix: "!!!"}).Validate(); err == nil {
-		t.Fatal("a non-base64 raw prefix must be rejected")
-	}
+	require.Error(t, (&FaultNotice{}).Validate(), "a fault without a code must be rejected")
+	require.Error(t, (&FaultNotice{Error: Error{Code: EventOverflow}}).Validate(), "a fault without a message must be rejected")
+	require.Error(t, (&FaultNotice{Error: Error{Code: EventOverflow, Message: strings.Repeat("x", 4097)}}).Validate(), "an over-long fault message must be rejected")
+	require.Error(t, (&FaultNotice{Error: Error{Code: EventOverflow, Message: "m", Detail: &ErrorDetail{Kind: strings.Repeat("x", 129)}}}).Validate(), "an over-long fault detail must be rejected")
+	err = report.Validate()
+	require.NoError(t, err, "the frozen report must validate: %v", err)
+	require.Error(t, (&InstanceDiagnostics{RawPrefix: "!!!"}).Validate(), "a non-base64 raw prefix must be rejected")
 	oversize := InstanceDiagnostics{RawPrefix: base64.StdEncoding.EncodeToString(make([]byte, MaxRawPrefixBytes+1))}
-	if err := oversize.Validate(); err == nil {
-		t.Fatal("an unbounded raw prefix must be rejected")
-	}
+	require.Error(t, oversize.Validate(), "an unbounded raw prefix must be rejected")
 	atBound := InstanceDiagnostics{RawPrefix: base64.StdEncoding.EncodeToString(make([]byte, MaxRawPrefixBytes))}
-	if err := atBound.Validate(); err != nil {
-		t.Fatalf("the frozen raw-prefix bound must validate: %v", err)
-	}
-	if err := (&InstanceDiagnostics{FirstFault: &Error{Code: EventOverflow}}).Validate(); err == nil {
-		t.Fatal("a first fault without a message must be rejected")
-	}
+	err = atBound.Validate()
+	require.NoError(t, err, "the frozen raw-prefix bound must validate: %v", err)
+	require.Error(t, (&InstanceDiagnostics{FirstFault: &Error{Code: EventOverflow}}).Validate(), "a first fault without a message must be rejected")
 
 	// A normal close carries neither fault nor prefix; the fields are absent.
 	normal, err := json.Marshal(InstanceDiagnostics{LostEvents: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(normal, []byte("first_fault")) || bytes.Contains(normal, []byte("raw_prefix")) || bytes.Contains(normal, []byte("stop_diagnostic")) {
-		t.Fatalf("normal close must omit fault fields: %s", normal)
-	}
+	require.NoError(t, err)
+	require.False(t, bytes.Contains(normal, []byte("first_fault")) || bytes.Contains(normal, []byte("raw_prefix")) || bytes.Contains(normal, []byte("stop_diagnostic")),
+		"normal close must omit fault fields: %s", normal)
 }
 
 // TestFrozenCommandNamesAreValidFrames freezes the reserved v1 command names:
@@ -534,15 +412,13 @@ func TestFrozenCommandNamesAreValidFrames(t *testing.T) {
 		BackToHome, UUID, Click, Screencap, AttachWindow, GetImagePNG, GetImageBGR, ImageChunk, Log, MapLevelKey, ItemName}
 	for _, name := range commands {
 		m := Message{Version: Version, Type: Request, ID: 1, Name: name}
-		if err := m.Validate(); err != nil {
-			t.Fatalf("command %q rejected by the wire rules: %v", name, err)
-		}
+		err := m.Validate()
+		require.NoError(t, err, "command %q rejected by the wire rules: %v", name, err)
 	}
 	events := []string{CoreEvent, OperationEvent, FaultEvent, DiagnosticsEvent}
 	for _, name := range events {
 		m := Message{Version: Version, Type: Event, Name: name, Sequence: 1}
-		if err := m.Validate(); err != nil {
-			t.Fatalf("event %q rejected by the wire rules: %v", name, err)
-		}
+		err := m.Validate()
+		require.NoError(t, err, "event %q rejected by the wire rules: %v", name, err)
 	}
 }

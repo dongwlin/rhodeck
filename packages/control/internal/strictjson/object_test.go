@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestCheckKeysRejectsAmbiguousNestedInput(t *testing.T) {
@@ -23,9 +25,8 @@ func TestCheckKeysRejectsAmbiguousNestedInput(t *testing.T) {
 	} {
 		decoder := json.NewDecoder(strings.NewReader(test.raw))
 		decoder.UseNumber()
-		if err := CheckKeys(decoder); (err != nil) != test.wantError {
-			t.Fatalf("CheckKeys(%s) = %v; want error=%v", test.raw, err, test.wantError)
-		}
+		err := CheckKeys(decoder)
+		require.Equal(t, test.wantError, err != nil, "CheckKeys(%s) = %v; want error=%v", test.raw, err, test.wantError)
 	}
 }
 
@@ -37,21 +38,21 @@ func TestAssociationFieldsRequireExactValueKinds(t *testing.T) {
 		"array":        json.RawMessage(`[]`),
 		"details":      json.RawMessage(`{"id":9007199254740993,"future":{"flag":true}}`),
 	}
-	if got, ok := FieldString(fields, "name"); !ok || got != "🚀" {
-		t.Fatalf("exact name = %q/%v", got, ok)
-	}
+	got, ok := FieldString(fields, "name")
+	require.True(t, ok, "exact name = %q/%v", got, ok)
+	require.Equal(t, "🚀", got, "exact name = %q/%v", got, ok)
 	for _, key := range []string{"missing", "invalid_name", "null", "details", "array"} {
-		if got, ok := FieldString(fields, key); ok || got != "" {
-			t.Fatalf("invalid string association %q = %q/%v", key, got, ok)
-		}
+		got, ok := FieldString(fields, key)
+		require.False(t, ok, "invalid string association %q = %q/%v", key, got, ok)
+		require.Empty(t, got, "invalid string association %q = %q/%v", key, got, ok)
 	}
 	object, ok := ObjectField(fields, "details")
-	if !ok || string(object["id"]) != "9007199254740993" || string(object["future"]) != `{"flag":true}` {
-		t.Fatalf("association object changed: %v/%v", object, ok)
-	}
+	require.True(t, ok, "association object changed: %v/%v", object, ok)
+	require.Equal(t, "9007199254740993", string(object["id"]), "association object changed: %v/%v", object, ok)
+	require.Equal(t, `{"flag":true}`, string(object["future"]), "association object changed: %v/%v", object, ok)
 	for _, key := range []string{"missing", "null", "array", "name"} {
-		if got, ok := ObjectField(fields, key); ok || got != nil {
-			t.Fatalf("invalid object association %q = %v/%v", key, got, ok)
-		}
+		got, ok := ObjectField(fields, key)
+		require.False(t, ok, "invalid object association %q = %v/%v", key, got, ok)
+		require.Nil(t, got, "invalid object association %q = %v/%v", key, got, ok)
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -16,6 +15,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
@@ -506,18 +508,14 @@ func helper(mode string) int {
 func fixtureConfig(t *testing.T, mode string) Config {
 	t.Helper()
 	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return Config{Executable: exe, Env: []string{"RHODECK_TEST_WORKER_MODE=" + mode}, StartupTimeout: 3 * time.Second, RequestTimeout: 3 * time.Second, ShutdownTimeout: 3 * time.Second}
 }
 
 func launchFixture(t *testing.T, mode string) *Client {
 	t.Helper()
 	c, err := Launch(context.Background(), fixtureConfig(t, mode))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close(context.Background()) })
 	return c
 }
@@ -525,9 +523,8 @@ func launchFixture(t *testing.T, mode string) *Client {
 func requireFailure(t *testing.T, err error, unknown bool) *Failure {
 	t.Helper()
 	var failure *Failure
-	if !errors.As(err, &failure) || failure.Unknown != unknown {
-		t.Fatalf("failure = %v, want unknown=%t", err, unknown)
-	}
+	require.ErrorAs(t, err, &failure, "failure = %v, want unknown=%t", err, unknown)
+	require.Equal(t, unknown, failure.Unknown, "failure = %v, want unknown=%t", err, unknown)
 	return failure
 }
 
@@ -536,80 +533,61 @@ func requireReaped(t *testing.T, c *Client) {
 	select {
 	case <-c.Done():
 	case <-time.After(5 * time.Second):
-		t.Fatal("worker was not reaped")
+		require.FailNow(t, "worker was not reaped")
 	}
-	if c.cmd.ProcessState == nil {
-		t.Fatal("missing process exit state")
-	}
+	require.NotNil(t, c.cmd.ProcessState, "missing process exit state")
 }
 
 func TestClientFullConversation(t *testing.T) {
 	c := launchFixture(t, "flow")
-	if c.Greeting().WorkerVersion != "fixture" {
-		t.Fatal(c.Greeting())
-	}
+	require.Equal(t, "fixture", c.Greeting().WorkerVersion, "greeting = %+v", c.Greeting())
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	task, err := c.AppendTask(ctx, protocol.TaskRequest{Type: "FutureTask", Params: json.RawMessage(`{"unknown":900719925474099312345}`)})
-	if err != nil || task.TaskID != 23 {
-		t.Fatalf("append: %+v, %v", task, err)
-	}
-	if err := c.SetTaskParams(ctx, protocol.TaskParamsRequest{TaskID: 23, Params: json.RawMessage(`{"enable":false,"future":900719925474099312345}`)}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "append: %+v, %v", task, err)
+	require.Equal(t, int32(23), task.TaskID, "append: %+v, %v", task, err)
+	require.NoError(t, c.SetTaskParams(ctx, protocol.TaskParamsRequest{TaskID: 23, Params: json.RawMessage(`{"enable":false,"future":900719925474099312345}`)}))
 	op, err := c.Connect(ctx, protocol.ConnectRequest{})
-	if err != nil || op.ID() != 41 {
-		t.Fatalf("connect: %v, %v", op, err)
-	}
+	require.NoError(t, err, "connect: %v, %v", op, err)
+	require.Equal(t, int32(41), op.ID(), "connect: %v, %v", op, err)
 	first := <-c.Events()
-	if !strings.Contains(string(first.Payload), "900719925474099312345") {
-		t.Fatalf("raw event changed: %s", first.Payload)
-	}
+	require.Contains(t, string(first.Payload), "900719925474099312345", "raw event changed: %s", first.Payload)
 	second := <-c.Events()
 	var result protocol.OperationResult
-	if err := protocol.Decode(second.Payload, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.OK || result.Error.Code != protocol.NativeRejected || first.Sequence != 1 || second.Sequence != 2 {
-		t.Fatalf("completion: %+v", result)
-	}
+	require.NoError(t, protocol.Decode(second.Payload, &result))
+	require.False(t, result.OK, "completion: %+v", result)
+	require.Equal(t, protocol.NativeRejected, result.Error.Code, "completion: %+v", result)
+	require.Equal(t, uint64(1), first.Sequence, "completion: %+v", result)
+	require.Equal(t, uint64(2), second.Sequence, "completion: %+v", result)
 	// The same terminal state is reachable through the operation object without
 	// depending on the event consumer.
 	waited, waitErr := op.Wait(ctx)
 	var rejected *protocol.Error
-	if !errors.As(waitErr, &rejected) || rejected.Code != protocol.NativeRejected || waited.OK || waited.AsyncID != 41 {
-		t.Fatalf("operation wait: %+v, %v", waited, waitErr)
-	}
-	if err := c.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if status, err := c.Status(ctx); err != nil || status.Running || len(status.Tasks) != 1 {
-		t.Fatalf("status: %+v, %v", status, err)
-	}
-	if err := c.BackToHome(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if uuid, err := c.UUID(ctx); err != nil || uuid.UUID != "emulator-5554" {
-		t.Fatalf("uuid: %+v, %v", uuid, err)
-	}
-	if stopped, err := c.Stop(ctx); err != nil || !stopped.Stopped {
-		t.Fatalf("stop: %+v, %v", stopped, err)
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.ErrorAs(t, waitErr, &rejected, "operation wait: %+v, %v", waited, waitErr)
+	require.Equal(t, protocol.NativeRejected, rejected.Code, "operation wait: %+v, %v", waited, waitErr)
+	require.False(t, waited.OK, "operation wait: %+v, %v", waited, waitErr)
+	require.Equal(t, int32(41), waited.AsyncID, "operation wait: %+v, %v", waited, waitErr)
+	require.NoError(t, c.Start(ctx))
+	status, err := c.Status(ctx)
+	require.NoError(t, err, "status: %+v, %v", status, err)
+	require.False(t, status.Running, "status: %+v, %v", status, err)
+	require.Len(t, status.Tasks, 1, "status: %+v, %v", status, err)
+	require.NoError(t, c.BackToHome(ctx))
+	uuid, err := c.UUID(ctx)
+	require.NoError(t, err, "uuid: %+v, %v", uuid, err)
+	require.Equal(t, "emulator-5554", uuid.UUID, "uuid: %+v, %v", uuid, err)
+	stopped, err := c.Stop(ctx)
+	require.NoError(t, err, "stop: %+v, %v", stopped, err)
+	require.True(t, stopped.Stopped, "stop: %+v, %v", stopped, err)
+	require.NoError(t, c.Close(ctx))
 	requireReaped(t, c)
-	if _, open := <-c.Events(); open {
-		t.Fatal("event stream remains open")
-	}
-	if err := c.Ping(ctx); !errors.Is(err, ErrClosed) {
-		t.Fatalf("post-close request: %v", err)
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatalf("repeated close: %v", err)
-	}
+	_, open := <-c.Events()
+	require.False(t, open, "event stream remains open")
+	err = c.Ping(ctx)
+	require.ErrorIs(t, err, ErrClosed, "post-close request: %v", err)
+	err = c.Close(ctx)
+	require.NoError(t, err, "repeated close: %v", err)
 }
 
 // TestClientInitializeSnapshotIsLosslessAndDetached proves the initialize
@@ -621,35 +599,24 @@ func TestClientInitializeSnapshotIsLosslessAndDetached(t *testing.T) {
 	c := launchFixture(t, "flow")
 	ctx := context.Background()
 	info, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.NullSize != math.MaxUint64 {
-		t.Fatalf("null_size = %d, want the locked sentinel", info.NullSize)
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint64(math.MaxUint64), info.NullSize, "null_size = %d, want the locked sentinel", info.NullSize)
 	wantCaps := protocol.Capabilities{ImageBGR: true, AttachWindow: false, MapLevelKey: true, ItemName: false}
-	if info.Capabilities != wantCaps {
-		t.Fatalf("capabilities = %+v, want %+v", info.Capabilities, wantCaps)
-	}
-	if limits := fixtureLimits(); info.Limits == nil || *info.Limits != *limits {
-		t.Fatalf("limits = %+v, want %+v", info.Limits, *limits)
-	}
+	require.Equal(t, wantCaps, info.Capabilities, "capabilities = %+v, want %+v", info.Capabilities, wantCaps)
+	limits := fixtureLimits()
+	require.NotNil(t, info.Limits, "limits = %+v, want %+v", info.Limits, *limits)
+	require.Equal(t, *limits, *info.Limits, "limits = %+v, want %+v", info.Limits, *limits)
 	info.Limits.InputJSONBytes = 7
 	info.Limits.ImagePNG.Max = 7
 	info.Limits.Tasks.GrowthRetries = 7
 	info.Resources[0].Root = "mutated"
 	info.CoreVersion = "mutated"
 	info.Capabilities.ImageBGR = false
-	if err := c.Ping(ctx); err != nil {
-		t.Fatalf("mutated snapshot damaged the session: %v", err)
-	}
+	require.NoError(t, c.Ping(ctx), "mutated snapshot damaged the session")
 	task, err := c.AppendTask(ctx, protocol.TaskRequest{Type: "FutureTask", Params: json.RawMessage(`{"unknown":900719925474099312345}`)})
-	if err != nil || task.TaskID != 23 {
-		t.Fatalf("append after mutation: %+v, %v", task, err)
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "append after mutation: %+v, %v", task, err)
+	require.Equal(t, int32(23), task.TaskID, "append after mutation: %+v, %v", task, err)
+	require.NoError(t, c.Close(ctx))
 	requireReaped(t, c)
 }
 
@@ -675,22 +642,18 @@ func TestClientRejectsIncompleteRuntimeSnapshot(t *testing.T) {
 func TestClientEmptyObservationsAreNormalResults(t *testing.T) {
 	c := launchFixture(t, "empty")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	status, err := c.Status(ctx)
-	if err != nil || status.Running || status.Connected || len(status.Tasks) != 0 {
-		t.Fatalf("empty status: %+v, %v", status, err)
-	}
-	if uuid, err := c.UUID(ctx); err != nil || uuid.UUID != "" {
-		t.Fatalf("empty uuid: %+v, %v", uuid, err)
-	}
-	if err := c.BackToHome(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "empty status: %+v, %v", status, err)
+	require.False(t, status.Running, "empty status: %+v, %v", status, err)
+	require.False(t, status.Connected, "empty status: %+v, %v", status, err)
+	require.Empty(t, status.Tasks, "empty status: %+v, %v", status, err)
+	uuid, err := c.UUID(ctx)
+	require.NoError(t, err, "empty uuid: %+v, %v", uuid, err)
+	require.Empty(t, uuid.UUID, "empty uuid: %+v, %v", uuid, err)
+	require.NoError(t, c.BackToHome(ctx))
+	require.NoError(t, c.Close(ctx))
 	requireReaped(t, c)
 }
 
@@ -701,17 +664,13 @@ func TestClientConcurrentRequestsAndClose(t *testing.T) {
 			var wg sync.WaitGroup
 			for range 32 {
 				wg.Go(func() {
-					if err := c.Ping(context.Background()); err != nil {
-						t.Error(err)
-					}
+					assert.NoError(t, c.Ping(context.Background()))
 				})
 			}
 			wg.Wait()
 			for range 16 {
 				wg.Go(func() {
-					if err := c.Close(context.Background()); err != nil {
-						t.Error(err)
-					}
+					assert.NoError(t, c.Close(context.Background()))
 				})
 			}
 			wg.Wait()
@@ -731,9 +690,7 @@ func TestClientFailureIsolationAndNoReplay(t *testing.T) {
 			}
 			requireFailure(t, err, true)
 			requireReaped(t, c)
-			if err := c.Ping(context.Background()); err == nil {
-				t.Fatal("faulted session accepted another request")
-			}
+			require.Error(t, c.Ping(context.Background()), "faulted session accepted another request")
 		})
 	}
 }
@@ -744,9 +701,7 @@ func TestClientRequestAndShutdownDeadlines(t *testing.T) {
 			cfg := fixtureConfig(t, mode)
 			cfg.RequestTimeout, cfg.ShutdownTimeout = 150*time.Millisecond, 200*time.Millisecond
 			c, err := Launch(context.Background(), cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			t.Cleanup(func() { c.Close(context.Background()) })
 			if mode == "hang" {
 				err = c.Start(context.Background())
@@ -767,21 +722,18 @@ func TestClientHandshakeAndPrecancelledRequests(t *testing.T) {
 			if mode == "flow" {
 				cfg.ExpectedWorkerVersion = "different-build"
 			}
-			if c, err := Launch(context.Background(), cfg); err == nil {
+			c, err := Launch(context.Background(), cfg)
+			if err == nil {
 				c.Close(context.Background())
-				t.Fatal("incompatible worker accepted")
 			}
+			require.Error(t, err, "incompatible worker accepted")
 		})
 	}
 	c := launchFixture(t, "flow")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := c.Ping(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("precancelled request: %v", err)
-	}
-	if err := c.Ping(context.Background()); err != nil {
-		t.Fatalf("precancelled request damaged worker: %v", err)
-	}
+	require.ErrorIs(t, c.Ping(ctx), context.Canceled, "precancelled request")
+	require.NoError(t, c.Ping(context.Background()), "precancelled request damaged worker")
 }
 
 // TestClientLogAndExperimentQueries proves the client surfaces for the
@@ -793,63 +745,49 @@ func TestClientHandshakeAndPrecancelledRequests(t *testing.T) {
 func TestClientLogAndExperimentQueries(t *testing.T) {
 	c := launchFixture(t, "flow")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Log(ctx, protocol.LogRequest{Level: "warn", Message: " hello 世界 "}); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Log(ctx, protocol.LogRequest{}); err != nil {
-		t.Fatalf("empty log input: %v", err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
+	require.NoError(t, c.Log(ctx, protocol.LogRequest{Level: "warn", Message: " hello 世界 "}))
+	require.NoError(t, c.Log(ctx, protocol.LogRequest{}), "empty log input")
 	mk, err := c.MapLevelKey(ctx, protocol.MapLevelKeyRequest{Key: "粉碎矿山"})
-	if err != nil || mk != (protocol.MapLevelKeyResult{StageID: "main-07", Code: "1-7", LevelID: "level_07", Name: "粉碎矿山"}) {
-		t.Fatalf("map_level_key: %+v, %v", mk, err)
-	}
-	if empty, err := c.MapLevelKey(ctx, protocol.MapLevelKeyRequest{}); err != nil || empty != (protocol.MapLevelKeyResult{}) {
-		t.Fatalf("not-found is a normal result: %+v, %v", empty, err)
-	}
-	if name, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: ""}); err != nil || name.Name != "Unknown" {
-		t.Fatalf("empty id: %+v, %v", name, err)
-	}
-	if name, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: "known"}); err != nil || name.Name != "item-name" {
-		t.Fatalf("known id: %+v, %v", name, err)
-	}
-	if name, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: "missing"}); err != nil || name.Name != "" {
-		t.Fatalf("empty name is a normal result: %+v, %v", name, err)
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "map_level_key: %+v, %v", mk, err)
+	require.Equal(t, protocol.MapLevelKeyResult{StageID: "main-07", Code: "1-7", LevelID: "level_07", Name: "粉碎矿山"}, mk, "map_level_key: %+v, %v", mk, err)
+	empty, err := c.MapLevelKey(ctx, protocol.MapLevelKeyRequest{})
+	require.NoError(t, err, "not-found is a normal result: %+v, %v", empty, err)
+	require.Equal(t, protocol.MapLevelKeyResult{}, empty, "not-found is a normal result: %+v, %v", empty, err)
+	name, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: ""})
+	require.NoError(t, err, "empty id: %+v, %v", name, err)
+	require.Equal(t, "Unknown", name.Name, "empty id: %+v, %v", name, err)
+	name, err = c.ItemName(ctx, protocol.ItemNameRequest{ID: "known"})
+	require.NoError(t, err, "known id: %+v, %v", name, err)
+	require.Equal(t, "item-name", name.Name, "known id: %+v, %v", name, err)
+	name, err = c.ItemName(ctx, protocol.ItemNameRequest{ID: "missing"})
+	require.NoError(t, err, "empty name is a normal result: %+v, %v", name, err)
+	require.Empty(t, name.Name, "empty name is a normal result: %+v, %v", name, err)
+	require.NoError(t, c.Close(ctx))
 	requireReaped(t, c)
 }
 
 func TestClientRemoteRejectionAndBadResponseSchema(t *testing.T) {
 	c := launchFixture(t, "reject")
 	var rejected *protocol.Error
-	if err := c.Start(context.Background()); !errors.As(err, &rejected) || rejected.Code != protocol.NativeRejected {
-		t.Fatalf("native rejection: %v", err)
-	}
-	if err := c.Ping(context.Background()); err != nil {
-		t.Fatalf("native rejection damaged worker: %v", err)
-	}
+	err := c.Start(context.Background())
+	require.ErrorAs(t, err, &rejected, "native rejection: %v", err)
+	require.Equal(t, protocol.NativeRejected, rejected.Code, "native rejection: %v", err)
+	require.NoError(t, c.Ping(context.Background()), "native rejection damaged worker")
 	c = launchFixture(t, "badschema")
-	_, err := c.Status(context.Background())
+	_, err = c.Status(context.Background())
 	requireFailure(t, err, true)
 	requireReaped(t, c)
 	c = launchFixture(t, "uuidschema")
-	if _, err := c.UUID(context.Background()); err == nil {
-		t.Fatal("bad uuid schema accepted")
-	} else {
-		requireFailure(t, err, true)
-	}
+	_, err = c.UUID(context.Background())
+	require.Error(t, err, "bad uuid schema accepted")
+	requireFailure(t, err, true)
 	requireReaped(t, c)
 	c = launchFixture(t, "queryschema")
-	if _, err := c.MapLevelKey(context.Background(), protocol.MapLevelKeyRequest{Key: "k"}); err == nil {
-		t.Fatal("bad map_level_key schema accepted")
-	} else {
-		requireFailure(t, err, true)
-	}
+	_, err = c.MapLevelKey(context.Background(), protocol.MapLevelKeyRequest{Key: "k"})
+	require.Error(t, err, "bad map_level_key schema accepted")
+	requireFailure(t, err, true)
 	requireReaped(t, c)
 }
 
@@ -858,9 +796,8 @@ func TestClientRejectsIncompleteClose(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			c := launchFixture(t, mode)
 			if mode == "missingoperation" {
-				if _, err := c.Connect(context.Background(), protocol.ConnectRequest{}); err != nil {
-					t.Fatal(err)
-				}
+				_, err := c.Connect(context.Background(), protocol.ConnectRequest{})
+				require.NoError(t, err)
 			}
 			requireFailure(t, c.Close(context.Background()), true)
 			requireReaped(t, c)
@@ -870,13 +807,10 @@ func TestClientRejectsIncompleteClose(t *testing.T) {
 
 func TestClientBoundedDiagnostics(t *testing.T) {
 	c := launchFixture(t, "stderr")
-	if err := c.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, c.Close(context.Background()))
 	logs := c.Diagnostics()
-	if len(logs) != diagnosticBytes || !strings.HasSuffix(logs, "fixture log tail") {
-		t.Fatalf("diagnostics: %d bytes", len(logs))
-	}
+	require.Len(t, logs, diagnosticBytes, "diagnostics: %d bytes", len(logs))
+	require.True(t, strings.HasSuffix(logs, "fixture log tail"), "diagnostics: %d bytes", len(logs))
 }
 
 // TestClientAsyncOperationsEndToEnd proves the four async submissions share one
@@ -886,44 +820,38 @@ func TestClientBoundedDiagnostics(t *testing.T) {
 func TestClientAsyncOperationsEndToEnd(t *testing.T) {
 	c := launchFixture(t, "flow")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	connect, err := c.Connect(ctx, protocol.ConnectRequest{})
-	if err != nil || connect.ID() != 41 {
-		t.Fatalf("connect: %v, %v", connect, err)
-	}
+	require.NoError(t, err, "connect: %v, %v", connect, err)
+	require.Equal(t, int32(41), connect.ID(), "connect: %v, %v", connect, err)
 	click, err := c.Click(ctx, protocol.ClickRequest{X: -5, Y: 7})
-	if err != nil || click.ID() != 42 {
-		t.Fatalf("click: %v, %v", click, err)
-	}
+	require.NoError(t, err, "click: %v, %v", click, err)
+	require.Equal(t, int32(42), click.ID(), "click: %v, %v", click, err)
 	cap, err := c.Screencap(ctx)
-	if err != nil || cap.ID() != 43 {
-		t.Fatalf("screencap: %v, %v", cap, err)
-	}
+	require.NoError(t, err, "screencap: %v, %v", cap, err)
+	require.Equal(t, int32(43), cap.ID(), "screencap: %v, %v", cap, err)
 	window, err := c.AttachWindow(ctx, protocol.AttachWindowRequest{Hwnd: 9007199254740993, ScreencapMethod: 1 << 63, MouseMethod: math.MaxUint64, KeyboardMethod: 1 << 40})
-	if err != nil || window.ID() != 44 {
-		t.Fatalf("attach_window: %v, %v", window, err)
-	}
+	require.NoError(t, err, "attach_window: %v, %v", window, err)
+	require.Equal(t, int32(44), window.ID(), "attach_window: %v, %v", window, err)
 	res, waitErr := connect.Wait(ctx)
 	var rejected *protocol.Error
-	if !errors.As(waitErr, &rejected) || rejected.Code != protocol.NativeRejected || res.OK || res.AsyncID != 41 {
-		t.Fatalf("connect terminal state: %+v, %v", res, waitErr)
-	}
+	require.ErrorAs(t, waitErr, &rejected, "connect terminal state: %+v, %v", res, waitErr)
+	require.Equal(t, protocol.NativeRejected, rejected.Code, "connect terminal state: %+v, %v", res, waitErr)
+	require.False(t, res.OK, "connect terminal state: %+v, %v", res, waitErr)
+	require.Equal(t, int32(41), res.AsyncID, "connect terminal state: %+v, %v", res, waitErr)
 	for _, op := range []*Operation{click, cap, window} {
 		res, waitErr := op.Wait(ctx)
-		if waitErr != nil || !res.OK || res.What == "" || res.AsyncID != op.ID() {
-			t.Fatalf("%d terminal state: %+v, %v", op.ID(), res, waitErr)
-		}
+		require.NoError(t, waitErr, "%d terminal state: %+v, %v", op.ID(), res, waitErr)
+		require.True(t, res.OK, "%d terminal state: %+v, %v", op.ID(), res, waitErr)
+		require.NotEmpty(t, res.What, "%d terminal state: %+v, %v", op.ID(), res, waitErr)
+		require.Equal(t, op.ID(), res.AsyncID, "%d terminal state: %+v, %v", op.ID(), res, waitErr)
 	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, c.Close(ctx))
 	requireReaped(t, c)
 	// IDs stay readable after settlement and after the session is gone.
-	if connect.ID() != 41 || window.ID() != 44 {
-		t.Fatalf("IDs changed after settlement: %d %d", connect.ID(), window.ID())
-	}
+	require.Equal(t, int32(41), connect.ID(), "IDs changed after settlement: %d %d", connect.ID(), window.ID())
+	require.Equal(t, int32(44), window.ID(), "IDs changed after settlement: %d %d", connect.ID(), window.ID())
 }
 
 // TestClientOperationWaitIsRepeatableAndConcurrent proves Wait is repeatable
@@ -933,49 +861,42 @@ func TestClientAsyncOperationsEndToEnd(t *testing.T) {
 func TestClientOperationWaitIsRepeatableAndConcurrent(t *testing.T) {
 	c := launchFixture(t, "flow")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	op, err := c.Connect(ctx, protocol.ConnectRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	first, waitErr := op.Wait(ctx)
 	var rejected *protocol.Error
-	if !errors.As(waitErr, &rejected) || rejected.Code != protocol.NativeRejected {
-		t.Fatalf("first wait: %+v, %v", first, waitErr)
-	}
+	require.ErrorAs(t, waitErr, &rejected, "first wait: %+v, %v", first, waitErr)
+	require.Equal(t, protocol.NativeRejected, rejected.Code, "first wait: %+v, %v", first, waitErr)
 	results := make([]protocol.OperationResult, 8)
 	var wg sync.WaitGroup
 	for i := range results {
 		wg.Go(func() {
 			r, err := op.Wait(ctx)
 			var rejected *protocol.Error
-			if !errors.As(err, &rejected) || rejected.Code != protocol.NativeRejected {
-				t.Errorf("concurrent wait: %+v, %v", r, err)
+			if assert.ErrorAs(t, err, &rejected, "concurrent wait: %+v, %v", r, err) {
+				assert.Equal(t, protocol.NativeRejected, rejected.Code, "concurrent wait: %+v, %v", r, err)
 			}
 			results[i] = r
 		})
 	}
 	wg.Wait()
 	for i, r := range results {
-		if r.AsyncID != first.AsyncID || r.What != first.What || r.OK != first.OK || string(r.Details) != string(first.Details) {
-			t.Fatalf("wait %d diverged: %+v vs %+v", i, r, first)
-		}
+		require.Equal(t, first.AsyncID, r.AsyncID, "wait %d diverged: %+v vs %+v", i, r, first)
+		require.Equal(t, first.What, r.What, "wait %d diverged: %+v vs %+v", i, r, first)
+		require.Equal(t, first.OK, r.OK, "wait %d diverged: %+v vs %+v", i, r, first)
+		require.Equal(t, string(first.Details), string(r.Details), "wait %d diverged: %+v vs %+v", i, r, first)
 	}
 	// Mutating one returned copy leaves the cache untouched.
 	first.Details[0] = 'X'
 	again, waitErr := op.Wait(ctx)
 	var stillRejected *protocol.Error
-	if !errors.As(waitErr, &stillRejected) || stillRejected.Code != protocol.NativeRejected || string(again.Details) != `{"ret":false}` {
-		t.Fatalf("cached result was rewritten through a returned copy: %s, %v", again.Details, waitErr)
-	}
-	if op.ID() != 41 {
-		t.Fatalf("ID changed after settlement: %d", op.ID())
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.ErrorAs(t, waitErr, &stillRejected, "cached result was rewritten through a returned copy: %s, %v", again.Details, waitErr)
+	require.Equal(t, protocol.NativeRejected, stillRejected.Code, "cached result was rewritten through a returned copy: %s, %v", again.Details, waitErr)
+	require.Equal(t, `{"ret":false}`, string(again.Details), "cached result was rewritten through a returned copy: %s, %v", again.Details, waitErr)
+	require.Equal(t, int32(41), op.ID(), "ID changed after settlement: %d", op.ID())
+	require.NoError(t, c.Close(ctx))
 	requireReaped(t, c)
 }
 
@@ -986,24 +907,17 @@ func TestClientOperationWaitIsRepeatableAndConcurrent(t *testing.T) {
 func TestClientWaitCancellationIsLocal(t *testing.T) {
 	c := launchFixture(t, "pendingops")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	op, err := c.Connect(ctx, protocol.ConnectRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for range 2 {
 		waitCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-		if _, err := op.Wait(waitCtx); !errors.Is(err, context.DeadlineExceeded) {
-			cancel()
-			t.Fatalf("timed-out wait: %v", err)
-		}
+		_, waitErr := op.Wait(waitCtx)
 		cancel()
+		require.ErrorIs(t, waitErr, context.DeadlineExceeded, "timed-out wait: %v", waitErr)
 	}
-	if err := c.Ping(ctx); err != nil {
-		t.Fatalf("cancelled wait damaged the session: %v", err)
-	}
+	require.NoError(t, c.Ping(ctx), "cancelled wait damaged the session")
 	type settled struct {
 		result protocol.OperationResult
 		err    error
@@ -1013,14 +927,13 @@ func TestClientWaitCancellationIsLocal(t *testing.T) {
 		r, err := op.Wait(ctx)
 		done <- settled{r, err}
 	}()
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, c.Close(ctx))
 	got := <-done
 	var lifecycle *protocol.Error
-	if !errors.As(got.err, &lifecycle) || lifecycle.Code != protocol.InvalidState || got.result.OK || got.result.What != "" {
-		t.Fatalf("close settlement: %+v, %v", got.result, got.err)
-	}
+	require.ErrorAs(t, got.err, &lifecycle, "close settlement: %+v, %v", got.result, got.err)
+	require.Equal(t, protocol.InvalidState, lifecycle.Code, "close settlement: %+v, %v", got.result, got.err)
+	require.False(t, got.result.OK, "close settlement: %+v, %v", got.result, got.err)
+	require.Empty(t, got.result.What, "close settlement: %+v, %v", got.result, got.err)
 	requireReaped(t, c)
 }
 
@@ -1033,14 +946,13 @@ func TestClientRejectsWrongOperationAttributes(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			c := launchFixture(t, mode)
 			ctx := context.Background()
-			if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-				t.Fatal(err)
-			}
+			_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+			require.NoError(t, err)
 			_, _ = c.Connect(ctx, protocol.ConnectRequest{})
 			select {
 			case <-c.Done():
 			case <-time.After(5 * time.Second):
-				t.Fatal("session survived a wrong operation result")
+				require.FailNow(t, "session survived a wrong operation result")
 			}
 			requireFailure(t, c.Err(), true)
 			requireReaped(t, c)
@@ -1054,34 +966,24 @@ func TestClientRejectsWrongOperationAttributes(t *testing.T) {
 func TestClientAsyncCompletionOutOfOrder(t *testing.T) {
 	c := launchFixture(t, "reversedops")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	a, err := c.Connect(ctx, protocol.ConnectRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	b, err := c.Connect(ctx, protocol.ConnectRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a.ID() != 41 || b.ID() != 42 {
-		t.Fatalf("async ids: %d %d", a.ID(), b.ID())
-	}
+	require.NoError(t, err)
+	require.Equal(t, int32(41), a.ID(), "async ids: %d %d", a.ID(), b.ID())
+	require.Equal(t, int32(42), b.ID(), "async ids: %d %d", a.ID(), b.ID())
 	rb, err := b.Wait(ctx)
-	if err != nil || !rb.OK || rb.AsyncID != 42 {
-		t.Fatalf("second completion: %+v, %v", rb, err)
-	}
+	require.NoError(t, err, "second completion: %+v, %v", rb, err)
+	require.True(t, rb.OK, "second completion: %+v, %v", rb, err)
+	require.Equal(t, int32(42), rb.AsyncID, "second completion: %+v, %v", rb, err)
 	ra, err := a.Wait(ctx)
-	if err != nil || !ra.OK || ra.AsyncID != 41 {
-		t.Fatalf("first completion: %+v, %v", ra, err)
-	}
-	if ra.RequestID == rb.RequestID {
-		t.Fatal("results crossed their request IDs")
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "first completion: %+v, %v", ra, err)
+	require.True(t, ra.OK, "first completion: %+v, %v", ra, err)
+	require.Equal(t, int32(41), ra.AsyncID, "first completion: %+v, %v", ra, err)
+	require.NotEqual(t, ra.RequestID, rb.RequestID, "results crossed their request IDs")
+	require.NoError(t, c.Close(ctx))
 	requireReaped(t, c)
 }
 
@@ -1092,20 +994,15 @@ func TestClientAsyncCompletionOutOfOrder(t *testing.T) {
 func TestClientAttachWindowWireIsLossless(t *testing.T) {
 	c := launchFixture(t, "winmask")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	op, err := c.AttachWindow(ctx, protocol.AttachWindowRequest{Hwnd: 9007199254740993, ScreencapMethod: math.MaxUint64, MouseMethod: math.MaxUint64, KeyboardMethod: 1 << 40})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	res, waitErr := op.Wait(ctx)
-	if waitErr != nil || !res.OK || res.What != "AttachWindow" {
-		t.Fatalf("attach_window terminal state: %+v, %v", res, waitErr)
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, waitErr, "attach_window terminal state: %+v, %v", res, waitErr)
+	require.True(t, res.OK, "attach_window terminal state: %+v, %v", res, waitErr)
+	require.Equal(t, "AttachWindow", res.What, "attach_window terminal state: %+v, %v", res, waitErr)
+	require.NoError(t, c.Close(ctx))
 	requireReaped(t, c)
 }
 
@@ -1116,13 +1013,10 @@ func TestClientAttachWindowWireIsLossless(t *testing.T) {
 func TestClientUnconfirmedOperationAfterFaultIsUnknown(t *testing.T) {
 	c := launchFixture(t, "pendingcrash")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	op, err := c.Connect(ctx, protocol.ConnectRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	type settled struct {
 		result protocol.OperationResult
 		err    error
@@ -1134,22 +1028,19 @@ func TestClientUnconfirmedOperationAfterFaultIsUnknown(t *testing.T) {
 	}()
 	// The crash arrives through the same session; the waiting goroutine must
 	// return without any further input.
-	if err := c.Start(ctx); err == nil {
-		t.Fatal("crashing start succeeded")
-	}
+	require.Error(t, c.Start(ctx), "crashing start succeeded")
 	select {
 	case got := <-done:
 		requireFailure(t, got.err, true)
-		if got.result.What != "" || got.result.OK || got.result.Error != nil {
-			t.Fatalf("a fault must not fabricate a terminal state: %+v", got.result)
-		}
+		require.Empty(t, got.result.What, "a fault must not fabricate a terminal state: %+v", got.result)
+		require.False(t, got.result.OK, "a fault must not fabricate a terminal state: %+v", got.result)
+		require.Nil(t, got.result.Error, "a fault must not fabricate a terminal state: %+v", got.result)
 	case <-time.After(5 * time.Second):
-		t.Fatal("wait hung against a faulted session")
+		require.FailNow(t, "wait hung against a faulted session")
 	}
 	requireReaped(t, c)
-	if _, err := op.Wait(ctx); !errors.Is(err, c.Err()) {
-		t.Fatalf("later wait diverged from the sticky failure: %v", err)
-	}
+	_, err = op.Wait(ctx)
+	require.ErrorIs(t, err, c.Err(), "later wait diverged from the sticky failure: %v", err)
 }
 
 // fixtureImagePattern is the deterministic image the fixture subprocess serves
@@ -1171,63 +1062,47 @@ func fixtureImagePattern(size int, salt byte) []byte {
 func TestClientImageTransfersAssembleVerifiedSnapshots(t *testing.T) {
 	c := launchFixture(t, "images")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	png, err := c.GetImagePNG(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	wantPNG := fixtureImagePattern(3<<20+4567, 0x50)
-	if !bytes.Equal(png, wantPNG) {
-		t.Fatalf("png snapshot diverged: %d bytes", len(png))
-	}
+	require.True(t, bytes.Equal(png, wantPNG), "png snapshot diverged: %d bytes", len(png))
 	bgr, err := c.GetImageBGR(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(bgr, fixtureImagePattern(3<<20+4567, 0x47)) {
-		t.Fatalf("bgr snapshot diverged: %d bytes", len(bgr))
-	}
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(bgr, fixtureImagePattern(3<<20+4567, 0x47)), "bgr snapshot diverged: %d bytes", len(bgr))
 	// One core event interleaved with each transfer's chunk traffic; both
 	// kept their own contiguous sequence domain.
 	var sequences []uint64
 	for range 2 {
 		select {
 		case event := <-c.Events():
-			if event.Name != protocol.CoreEvent {
-				t.Fatalf("unexpected event: %+v", event)
-			}
+			require.Equal(t, protocol.CoreEvent, event.Name, "unexpected event: %+v", event)
 			sequences = append(sequences, event.Sequence)
 		case <-time.After(5 * time.Second):
-			t.Fatal("interleaved core event missing")
+			require.FailNow(t, "interleaved core event missing")
 		}
 	}
-	if len(sequences) != 2 || sequences[0] != 1 || sequences[1] != 2 {
-		t.Fatalf("event sequences: %v", sequences)
-	}
+	require.Len(t, sequences, 2, "event sequences: %v", sequences)
+	require.Equal(t, uint64(1), sequences[0], "event sequences: %v", sequences)
+	require.Equal(t, uint64(2), sequences[1], "event sequences: %v", sequences)
 	select {
 	case event := <-c.Events():
-		t.Fatalf("chunk traffic produced extra events: %+v", event)
+		require.FailNow(t, fmt.Sprintf("chunk traffic produced extra events: %+v", event))
 	default:
 	}
 	// The returned snapshots are independently owned: mutating one does not
 	// damage the session or any other returned buffer.
 	png[0] ^= 0xFF
-	if err := c.Ping(ctx); err != nil {
-		t.Fatalf("session damaged by caller mutation: %v", err)
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, c.Ping(ctx), "session damaged by caller mutation")
+	require.NoError(t, c.Close(ctx))
 	requireReaped(t, c)
 
 	// Concurrent transfers interleave on the wire while each stays a
 	// sequential, backpressured pull of its own snapshot.
 	c = launchFixture(t, "images")
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err = c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	var wg sync.WaitGroup
 	results := make([][]byte, 2)
 	errs := make([]error, 2)
@@ -1236,16 +1111,11 @@ func TestClientImageTransfersAssembleVerifiedSnapshots(t *testing.T) {
 	go func() { defer wg.Done(); results[1], errs[1] = c.GetImageBGR(ctx) }()
 	wg.Wait()
 	for i, err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent transfer %d: %v", i, err)
-		}
+		require.NoError(t, err, "concurrent transfer %d", i)
 	}
-	if !bytes.Equal(results[0], wantPNG) || !bytes.Equal(results[1], fixtureImagePattern(3<<20+4567, 0x47)) {
-		t.Fatal("concurrent snapshots diverged")
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.True(t, bytes.Equal(results[0], wantPNG), "concurrent snapshots diverged")
+	require.True(t, bytes.Equal(results[1], fixtureImagePattern(3<<20+4567, 0x47)), "concurrent snapshots diverged")
+	require.NoError(t, c.Close(ctx))
 }
 
 // TestClientRejectsBrokenImageTransfers proves that broken transfers never
@@ -1291,44 +1161,35 @@ func TestClientRejectsBrokenImageTransfers(t *testing.T) {
 		deadline := time.Now().Add(10 * time.Second)
 		for !strings.Contains(c.Diagnostics(), "slowchunk: second chunk request received") {
 			if time.Now().After(deadline) {
-				t.Fatal("second chunk request never arrived")
+				require.FailNow(t, "second chunk request never arrived")
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
 		cancel()
 		err := <-errCh
-		if err == nil {
-			t.Fatal("cancelled transfer succeeded")
-		}
+		require.Error(t, err, "cancelled transfer succeeded")
 		requireFailure(t, err, true)
 		requireReaped(t, c)
 	})
 	t.Run("worker rejections stay remote errors", func(t *testing.T) {
 		c := launchFixture(t, "chunkerror")
 		var rejected *protocol.Error
-		if _, err := c.GetImagePNG(context.Background()); !errors.As(err, &rejected) || rejected.Code != protocol.LimitExceeded {
-			t.Fatalf("chunk rejection: %v", err)
-		}
-		if err := c.Ping(context.Background()); err != nil {
-			t.Fatalf("session unusable after the rejection: %v", err)
-		}
-		if err := c.Close(context.Background()); err != nil {
-			t.Fatal(err)
-		}
+		_, err := c.GetImagePNG(context.Background())
+		require.ErrorAs(t, err, &rejected, "chunk rejection: %v", err)
+		require.Equal(t, protocol.LimitExceeded, rejected.Code, "chunk rejection: %v", err)
+		require.NoError(t, c.Ping(context.Background()), "session unusable after the rejection")
+		require.NoError(t, c.Close(context.Background()))
 	})
 	t.Run("missing optional BGR symbol is unsupported", func(t *testing.T) {
 		c := launchFixture(t, "unsupportedbgr")
 		var rejected *protocol.Error
-		if _, err := c.GetImageBGR(context.Background()); !errors.As(err, &rejected) || rejected.Code != protocol.Unsupported {
-			t.Fatalf("bgr rejection: %v", err)
-		}
+		_, err := c.GetImageBGR(context.Background())
+		require.ErrorAs(t, err, &rejected, "bgr rejection: %v", err)
+		require.Equal(t, protocol.Unsupported, rejected.Code, "bgr rejection: %v", err)
 		png, err := c.GetImagePNG(context.Background())
-		if err != nil || !bytes.Equal(png, fixtureImagePattern(3<<20+4567, 0x50)) {
-			t.Fatalf("png after bgr rejection: %d bytes, %v", len(png), err)
-		}
-		if err := c.Close(context.Background()); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err, "png after bgr rejection: %d bytes, %v", len(png), err)
+		require.True(t, bytes.Equal(png, fixtureImagePattern(3<<20+4567, 0x50)), "png after bgr rejection: %d bytes, %v", len(png), err)
+		require.NoError(t, c.Close(context.Background()))
 	})
 }
 
@@ -1340,19 +1201,12 @@ func TestClientEmptyImageIsNormalResult(t *testing.T) {
 	ctx := context.Background()
 	for _, fetch := range []func(context.Context) ([]byte, error){c.GetImagePNG, c.GetImageBGR} {
 		image, err := fetch(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if image == nil || len(image) != 0 {
-			t.Fatalf("empty image must be an empty non-nil snapshot: %#v", image)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, image, "empty image must be an empty non-nil snapshot: %#v", image)
+		require.Empty(t, image, "empty image must be an empty non-nil snapshot: %#v", image)
 	}
-	if err := c.Ping(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, c.Ping(ctx))
+	require.NoError(t, c.Close(ctx))
 }
 
 // waitFault waits for the client's native fault observation.
@@ -1361,7 +1215,7 @@ func waitFault(t *testing.T, c *Client) {
 	select {
 	case <-c.Fault():
 	case <-time.After(5 * time.Second):
-		t.Fatal("the native fault observation never fired")
+		require.FailNow(t, "the native fault observation never fired")
 	}
 }
 
@@ -1375,60 +1229,47 @@ func waitFault(t *testing.T, c *Client) {
 func TestClientFaultAndDiagnosticsAreNativeObservations(t *testing.T) {
 	c := launchFixture(t, "faultdiag")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	// The fault is armed by Start; the event channel is left undrained on
 	// purpose — the fault observation must not depend on the consumer.
-	if err := c.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, c.Start(ctx))
 	waitFault(t, c)
-	if err := c.InstanceErr(); err == nil || err.Code != protocol.EventOverflow {
-		t.Fatalf("instance error = %v, want event_overflow", err)
-	}
+	instErr := c.InstanceErr()
+	require.NotNil(t, instErr, "instance error = %v, want event_overflow", instErr)
+	require.Equal(t, protocol.EventOverflow, instErr.Code, "instance error = %v, want event_overflow", instErr)
 
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, c.Close(ctx))
 	requireReaped(t, c)
 	select {
 	case <-c.InstanceDone():
 	case <-time.After(5 * time.Second):
-		t.Fatal("the native terminal observation never fired")
+		require.FailNow(t, "the native terminal observation never fired")
 	}
 	snap, ok := c.InstanceDiagnostics()
-	if !ok {
-		t.Fatal("the terminal snapshot was reported missing after delivery")
-	}
-	if snap.LostEvents != math.MaxUint64 {
-		t.Fatalf("lost_events = %d, want the saturated count", snap.LostEvents)
-	}
-	if snap.FirstFault == nil || snap.FirstFault.Code != protocol.EventOverflow {
-		t.Fatalf("first fault = %+v, want event_overflow", snap.FirstFault)
-	}
-	if snap.StopDiagnostic != nil {
-		t.Fatalf("unexpected stop diagnostic: %+v", snap.StopDiagnostic)
-	}
+	require.True(t, ok, "the terminal snapshot was reported missing after delivery")
+	require.Equal(t, uint64(math.MaxUint64), snap.LostEvents, "lost_events = %d, want the saturated count", snap.LostEvents)
+	require.NotNil(t, snap.FirstFault, "first fault = %+v, want event_overflow", snap.FirstFault)
+	require.Equal(t, protocol.EventOverflow, snap.FirstFault.Code, "first fault = %+v, want event_overflow", snap.FirstFault)
+	require.Nil(t, snap.StopDiagnostic, "unexpected stop diagnostic: %+v", snap.StopDiagnostic)
 	want := []byte{0xDE, 0x00, 0xFF, 0xFE, 0x80}
-	if string(snap.RawPrefix) != string(want) {
-		t.Fatalf("raw prefix changed: %q, want %q", snap.RawPrefix, want)
-	}
+	require.Equal(t, string(want), string(snap.RawPrefix), "raw prefix changed: %q, want %q", snap.RawPrefix, want)
 	// The final snapshot is stable and every access is an independent copy.
 	snap.RawPrefix[0] = 'X'
 	if snap.FirstFault.Detail != nil {
 		snap.FirstFault.Detail.Kind = "mutated"
 	}
 	again, ok := c.InstanceDiagnostics()
-	if !ok || string(again.RawPrefix) != string(want) || again.FirstFault == nil || again.FirstFault.Code != protocol.EventOverflow {
-		t.Fatalf("snapshot was rewritten through a returned copy: %+v, %t", again, ok)
-	}
+	require.True(t, ok, "snapshot was rewritten through a returned copy: %+v, %t", again, ok)
+	require.Equal(t, string(want), string(again.RawPrefix), "snapshot was rewritten through a returned copy: %+v, %t", again, ok)
+	require.NotNil(t, again.FirstFault, "snapshot was rewritten through a returned copy: %+v, %t", again, ok)
+	require.Equal(t, protocol.EventOverflow, again.FirstFault.Code, "snapshot was rewritten through a returned copy: %+v, %t", again, ok)
 	// The process done channel is a separate observation from the native one;
 	// after a normal close both are closed, but neither substitutes the other.
 	select {
 	case <-c.Done():
 	default:
-		t.Fatal("process done must be closed after a reaped close")
+		require.FailNow(t, "process done must be closed after a reaped close")
 	}
 }
 
@@ -1438,33 +1279,24 @@ func TestClientFaultAndDiagnosticsAreNativeObservations(t *testing.T) {
 func TestClientConfirmedOperationSurvivesLaterFault(t *testing.T) {
 	c := launchFixture(t, "faultdiag")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	op, err := c.Click(ctx, protocol.ClickRequest{X: -5, Y: 7})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	first, waitErr := op.Wait(ctx)
-	if waitErr != nil || !first.OK {
-		t.Fatalf("click terminal state: %+v, %v", first, waitErr)
-	}
-	if err := c.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, waitErr, "click terminal state: %+v, %v", first, waitErr)
+	require.True(t, first.OK, "click terminal state: %+v, %v", first, waitErr)
+	require.NoError(t, c.Start(ctx))
 	waitFault(t, c)
 	again, waitErr := op.Wait(ctx)
-	if waitErr != nil || !again.OK || string(again.Details) != string(first.Details) {
-		t.Fatalf("confirmed result was rewritten by the fault: %+v, %v", again, waitErr)
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, waitErr, "confirmed result was rewritten by the fault: %+v, %v", again, waitErr)
+	require.True(t, again.OK, "confirmed result was rewritten by the fault: %+v, %v", again, waitErr)
+	require.Equal(t, string(first.Details), string(again.Details), "confirmed result was rewritten by the fault: %+v, %v", again, waitErr)
+	require.NoError(t, c.Close(ctx))
 	requireReaped(t, c)
 	final, waitErr := op.Wait(ctx)
-	if waitErr != nil || !final.OK {
-		t.Fatalf("confirmed result changed after close: %+v, %v", final, waitErr)
-	}
+	require.NoError(t, waitErr, "confirmed result changed after close: %+v, %v", final, waitErr)
+	require.True(t, final.OK, "confirmed result changed after close: %+v, %v", final, waitErr)
 }
 
 // TestClientFaultObservationDoesNotDependOnEventConsumption proves the
@@ -1474,26 +1306,20 @@ func TestClientConfirmedOperationSurvivesLaterFault(t *testing.T) {
 func TestClientFaultObservationDoesNotDependOnEventConsumption(t *testing.T) {
 	c := launchFixture(t, "faultdiag")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	// No goroutine reads c.Events() in this test.
+	require.NoError(t, c.Start(ctx))
 	waitFault(t, c)
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, c.Close(ctx))
 	requireReaped(t, c)
 	select {
 	case <-c.InstanceDone():
 	case <-time.After(5 * time.Second):
-		t.Fatal("the terminal snapshot never fired without a consumer")
+		require.FailNow(t, "the terminal snapshot never fired without a consumer")
 	}
-	if _, ok := c.InstanceDiagnostics(); !ok {
-		t.Fatal("the terminal snapshot was reported missing without a consumer")
-	}
+	_, ok := c.InstanceDiagnostics()
+	require.True(t, ok, "the terminal snapshot was reported missing without a consumer")
 }
 
 // TestClientStopDiagnosticWithoutFault proves a stop-only diagnostic is a
@@ -1502,25 +1328,23 @@ func TestClientFaultObservationDoesNotDependOnEventConsumption(t *testing.T) {
 func TestClientStopDiagnosticWithoutFault(t *testing.T) {
 	c := launchFixture(t, "stopdiag")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
+	require.NoError(t, c.Close(ctx))
 	requireReaped(t, c)
 	select {
 	case <-c.Fault():
-		t.Fatal("a stop-only diagnostic must not close the fault observation")
+		require.FailNow(t, "a stop-only diagnostic must not close the fault observation")
 	default:
 	}
-	if err := c.InstanceErr(); err != nil {
-		t.Fatalf("instance error = %v, want nil", err)
-	}
+	instErr := c.InstanceErr()
+	require.Nil(t, instErr, "instance error = %v, want nil", instErr)
 	snap, ok := c.InstanceDiagnostics()
-	if !ok || snap.StopDiagnostic == nil || snap.StopDiagnostic.Code != protocol.NativeRejected || snap.FirstFault != nil || snap.LostEvents != 0 {
-		t.Fatalf("snapshot = %+v, %t", snap, ok)
-	}
+	require.True(t, ok, "snapshot = %+v, %t", snap, ok)
+	require.NotNil(t, snap.StopDiagnostic, "snapshot = %+v, %t", snap, ok)
+	require.Equal(t, protocol.NativeRejected, snap.StopDiagnostic.Code, "snapshot = %+v, %t", snap, ok)
+	require.Nil(t, snap.FirstFault, "snapshot = %+v, %t", snap, ok)
+	require.Equal(t, uint64(0), snap.LostEvents, "snapshot = %+v, %t", snap, ok)
 }
 
 // TestClientKilledProcessReportsDiagnosticsUnavailable proves the process and
@@ -1530,30 +1354,27 @@ func TestClientStopDiagnosticWithoutFault(t *testing.T) {
 func TestClientKilledProcessReportsDiagnosticsUnavailable(t *testing.T) {
 	c := launchFixture(t, "crash")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
-	err := c.Start(ctx)
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
+	err = c.Start(ctx)
 	// The exit races the EOF on the pipes, so only the unknown-discipline is
 	// pinned here: the process is gone and no native fact survived it.
 	requireFailure(t, err, true)
 	requireReaped(t, c)
 	select {
 	case <-c.InstanceDone():
-		t.Fatal("a killed process must not fabricate the native terminal state")
+		require.FailNow(t, "a killed process must not fabricate the native terminal state")
 	default:
 	}
 	select {
 	case <-c.Fault():
-		t.Fatal("a killed process must not fabricate a native fault")
+		require.FailNow(t, "a killed process must not fabricate a native fault")
 	default:
 	}
-	if err := c.InstanceErr(); err != nil {
-		t.Fatalf("instance error = %v, want nil", err)
-	}
-	if _, ok := c.InstanceDiagnostics(); ok {
-		t.Fatal("a killed process must not fabricate a diagnostics snapshot")
-	}
+	instErr := c.InstanceErr()
+	require.Nil(t, instErr, "instance error = %v, want nil", instErr)
+	_, ok := c.InstanceDiagnostics()
+	require.False(t, ok, "a killed process must not fabricate a diagnostics snapshot")
 }
 
 // TestClientRejectsBrokenFaultAndDiagnosticsReports proves the client does
@@ -1565,22 +1386,20 @@ func TestClientRejectsBrokenFaultAndDiagnosticsReports(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			c := launchFixture(t, mode)
 			ctx := context.Background()
-			if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-				t.Fatal(err)
-			}
-			if err := c.Start(ctx); err != nil {
+			_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+			require.NoError(t, err)
+			err = c.Start(ctx)
+			if err != nil {
 				if mode == "badfault" {
 					requireFailure(t, err, true)
 					requireReaped(t, c)
 					return
 				}
-				t.Fatal(err)
+				require.NoError(t, err)
 			}
-			err := c.Close(ctx)
+			err = c.Close(ctx)
 			failure := requireFailure(t, err, true)
-			if failure.Code != "protocol_error" {
-				t.Fatalf("failure code = %s, want protocol_error", failure.Code)
-			}
+			require.Equal(t, "protocol_error", failure.Code, "failure code = %s, want protocol_error", failure.Code)
 			requireReaped(t, c)
 		})
 	}
@@ -1593,12 +1412,12 @@ func requireIPCStopped(t *testing.T, c *Client) {
 	select {
 	case <-c.readDone:
 	default:
-		t.Fatal("the read loop outlived Done")
+		require.FailNow(t, "the read loop outlived Done")
 	}
 	select {
 	case <-c.writeDone:
 	default:
-		t.Fatal("the write loop outlived Done")
+		require.FailNow(t, "the write loop outlived Done")
 	}
 }
 
@@ -1620,14 +1439,11 @@ func TestClientConcurrentTransfersOperationsFaultAndClose(t *testing.T) {
 	cfg := fixtureConfig(t, "faultdiag")
 	cfg.RequestTimeout, cfg.ShutdownTimeout = 30*time.Second, 5*time.Second
 	c, err := Launch(context.Background(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close(context.Background()) })
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err = c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	wantPNG := fixtureImagePattern(3<<20+4567, 0x50)
 	wantBGR := fixtureImagePattern(3<<20+4567, 0x47)
 
@@ -1639,42 +1455,35 @@ func TestClientConcurrentTransfersOperationsFaultAndClose(t *testing.T) {
 				fetch, want = c.GetImageBGR, wantBGR
 			}
 			got, err := fetch(ctx)
-			if err != nil {
-				t.Errorf("transfer %d: %v", i, err)
+			if !assert.NoError(t, err, "transfer %d", i) {
 				return
 			}
-			if !bytes.Equal(got, want) {
-				t.Errorf("transfer %d delivered %d bytes instead of the verified snapshot", i, len(got))
-			}
+			assert.True(t, bytes.Equal(got, want), "transfer %d delivered %d bytes instead of the verified snapshot", i, len(got))
 		})
 	}
 	for range 4 {
 		wg.Go(func() {
 			op, err := c.Click(ctx, protocol.ClickRequest{X: -5, Y: 7})
-			if err != nil {
-				t.Error(err)
+			if !assert.NoError(t, err) {
 				return
 			}
 			result, waitErr := op.Wait(ctx)
-			if waitErr != nil || !result.OK {
-				t.Errorf("click terminal state: %+v, %v", result, waitErr)
+			if !assert.NoError(t, waitErr, "click terminal state: %+v, %v", result, waitErr) {
+				return
 			}
+			assert.True(t, result.OK, "click terminal state: %+v, %v", result, waitErr)
 		})
 	}
 	wg.Wait()
 
 	// The native fault is armed by Start. From here the closers, a last
 	// transfer and a repeat wait race each other on the shared terminal facts.
-	if err := c.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, c.Start(ctx))
 	waitFault(t, c)
 	wg = sync.WaitGroup{}
 	for range 8 {
 		wg.Go(func() {
-			if err := c.Close(ctx); err != nil {
-				t.Errorf("concurrent close: %v", err)
-			}
+			assert.NoError(t, c.Close(ctx), "concurrent close")
 		})
 	}
 	wg.Go(func() {
@@ -1682,8 +1491,8 @@ func TestClientConcurrentTransfersOperationsFaultAndClose(t *testing.T) {
 		// succeed partially: whatever comes back must be the whole verified
 		// snapshot or an error.
 		got, err := c.GetImagePNG(ctx)
-		if err == nil && !bytes.Equal(got, wantPNG) {
-			t.Errorf("racing transfer delivered %d bytes instead of the verified snapshot", len(got))
+		if err == nil {
+			assert.True(t, bytes.Equal(got, wantPNG), "racing transfer delivered %d bytes instead of the verified snapshot", len(got))
 		}
 	})
 	wg.Wait()
@@ -1694,9 +1503,9 @@ func TestClientConcurrentTransfersOperationsFaultAndClose(t *testing.T) {
 	// observations stay readable after Done: the buffered events drain, then
 	// the closed stream terminates the range.
 	snap, ok := c.InstanceDiagnostics()
-	if !ok || snap.FirstFault == nil || snap.FirstFault.Code != protocol.EventOverflow {
-		t.Fatalf("final diagnostics after the concurrent close: %+v, %t", snap, ok)
-	}
+	require.True(t, ok, "final diagnostics after the concurrent close: %+v, %t", snap, ok)
+	require.NotNil(t, snap.FirstFault, "final diagnostics after the concurrent close: %+v, %t", snap, ok)
+	require.Equal(t, protocol.EventOverflow, snap.FirstFault.Code, "final diagnostics after the concurrent close: %+v, %t", snap, ok)
 	closed := time.After(5 * time.Second)
 	for {
 		select {
@@ -1705,7 +1514,7 @@ func TestClientConcurrentTransfersOperationsFaultAndClose(t *testing.T) {
 				return
 			}
 		case <-closed:
-			t.Fatal("the event stream never closed after Done")
+			require.FailNow(t, "the event stream never closed after Done")
 		}
 	}
 }
@@ -1717,13 +1526,10 @@ func TestClientConcurrentTransfersOperationsFaultAndClose(t *testing.T) {
 func TestClientKillReleasesEveryWaiter(t *testing.T) {
 	c := launchFixture(t, "pendingcrash")
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	op, err := c.Connect(ctx, protocol.ConnectRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var wg sync.WaitGroup
 	waitErrs := make([]error, 8)
 	for i := range 8 {
@@ -1735,9 +1541,7 @@ func TestClientKillReleasesEveryWaiter(t *testing.T) {
 	// process under them: no wait may invent a result, a cancellation or a
 	// rollback, and none may hang.
 	time.Sleep(100 * time.Millisecond)
-	if err := c.Start(ctx); err == nil {
-		t.Fatal("the crashed session reported a successful start")
-	}
+	require.Error(t, c.Start(ctx), "the crashed session reported a successful start")
 	wg.Wait()
 	for _, waitErr := range waitErrs {
 		requireFailure(t, waitErr, true)
@@ -1755,20 +1559,17 @@ func TestClientCloseDuringStuckTransferStaysBounded(t *testing.T) {
 	cfg := fixtureConfig(t, "slowchunk")
 	cfg.ShutdownTimeout = 500 * time.Millisecond
 	c, err := Launch(context.Background(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close(context.Background()) })
 	ctx := context.Background()
-	if _, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"}); err != nil {
-		t.Fatal(err)
-	}
+	_, err = c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "fixture"})
+	require.NoError(t, err)
 	fetchErr := make(chan error, 1)
 	go func() { _, err := c.GetImagePNG(ctx); fetchErr <- err }()
 	deadline := time.Now().Add(10 * time.Second)
 	for !strings.Contains(c.Diagnostics(), "slowchunk: second chunk request received") {
 		if time.Now().After(deadline) {
-			t.Fatal("the second chunk request never arrived")
+			require.FailNow(t, "the second chunk request never arrived")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -1776,18 +1577,16 @@ func TestClientCloseDuringStuckTransferStaysBounded(t *testing.T) {
 	go func() { closing <- c.Close(context.Background()) }()
 	select {
 	case err := <-fetchErr:
-		if err == nil {
-			t.Fatal("the interrupted transfer reported success")
-		}
+		require.Error(t, err, "the interrupted transfer reported success")
 		requireFailure(t, err, true)
 	case <-time.After(10 * time.Second):
-		t.Fatal("the interrupted fetch never returned")
+		require.FailNow(t, "the interrupted fetch never returned")
 	}
 	select {
 	case err := <-closing:
 		requireFailure(t, err, true)
 	case <-time.After(10 * time.Second):
-		t.Fatal("close did not finish within its bounded deadline")
+		require.FailNow(t, "close did not finish within its bounded deadline")
 	}
 	requireReaped(t, c)
 	requireIPCStopped(t, c)

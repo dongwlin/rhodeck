@@ -3,7 +3,6 @@ package control
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
+	"github.com/stretchr/testify/require"
 )
 
 type runtimeAdapterFixture struct {
@@ -74,29 +74,22 @@ func TestRuntimeTypedChainAndBusinessResults(t *testing.T) {
 			cfg.Adapters[0] = nil // Runtime owns its registry slice.
 			plan := typedRuntimePlan(t)
 			r, err := rt.Run(context.Background(), plan)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			plan.Tasks[0].Adapter.Name = "mutated"
 			events, result := waitRuntimeRun(t, r)
-			if result.SchemaVersion != SchemaVersion || result.State != test.state || result.Code != test.code || result.Cleanup != "complete" {
-				t.Fatalf("business result = %+v", result)
-			}
-			if result.Tasks[0].State != Succeeded || result.Tasks[1].Typed != nil || result.Tasks[0].Typed.Targets[0].Outcome != test.outcome {
-				t.Fatalf("chain/business isolation = %+v", result.Tasks)
-			}
+			require.True(t, result.SchemaVersion == SchemaVersion && result.State == test.state && result.Code == test.code && result.Cleanup == "complete",
+				"business result = %+v", result)
+			require.True(t, result.Tasks[0].State == Succeeded && result.Tasks[1].Typed == nil && result.Tasks[0].Typed.Targets[0].Outcome == test.outcome,
+				"chain/business isolation = %+v", result.Tasks)
 			typedEvents := 0
 			for _, e := range events {
-				if len(e.Details) != 0 {
-					t.Fatal("default event disclosed raw callback")
-				}
+				require.Empty(t, e.Details, "default event disclosed raw callback")
 				if e.Type != "typed" {
 					continue
 				}
 				typedEvents++
-				if e.SchemaVersion != SchemaVersion || e.TaskID != "first" || e.CoreTaskID != 101 || e.Typed == nil {
-					t.Fatalf("typed association = %+v", e)
-				}
+				require.True(t, e.SchemaVersion == SchemaVersion && e.TaskID == "first" && e.CoreTaskID == 101 && e.Typed != nil,
+					"typed association = %+v", e)
 				e.Typed.Targets[0].Outcome = TargetAmbiguous
 				e.Typed.Targets[0].Details[0] = '['
 				e.Typed.Summary[0] = '['
@@ -105,34 +98,24 @@ func TestRuntimeTypedChainAndBusinessResults(t *testing.T) {
 			if test.outcome == TargetUnobserved {
 				wantEvents = 0
 			}
-			if typedEvents != wantEvents {
-				t.Fatalf("typed event count = %d, want %d", typedEvents, wantEvents)
-			}
+			require.Equal(t, wantEvents, typedEvents, "typed event count = %d, want %d", typedEvents, wantEvents)
 			result.Tasks[0].Typed.Targets[0].Outcome = TargetAmbiguous
 			next := r.Snapshot()
-			if next.Tasks[0].Typed.Targets[0].Outcome != test.outcome {
-				t.Fatal("event or result aliases runtime facts")
-			}
+			require.Equal(t, test.outcome, next.Tasks[0].Typed.Targets[0].Outcome, "event or result aliases runtime facts")
 			record, err := ReadRecord(cfg.DataDir, result.RunID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if record.Result.State != test.state || record.Result.Tasks[0].Typed.Targets[0].Outcome != test.outcome || !strings.Contains(string(record.Plan.Tasks[0].Params), "9007199254740993") {
-				t.Fatalf("record lost facts or raw precision: %+v", record)
-			}
+			require.NoError(t, err)
+			require.True(t, record.Result.State == test.state && record.Result.Tasks[0].Typed.Targets[0].Outcome == test.outcome && strings.Contains(string(record.Plan.Tasks[0].Params), "9007199254740993"),
+				"record lost facts or raw precision: %+v", record)
 		})
 	}
 }
 
 func TestRuntimeRejectsUnregisteredAdapterBeforeLaunch(t *testing.T) {
 	rt := newRuntime(t, runtimeConfig(t, "nohello"))
-	if _, err := rt.Run(context.Background(), typedRuntimePlan(t)); !errors.Is(err, ErrInvalidPlan) {
-		t.Fatalf("unsupported adapter = %v", err)
-	}
+	_, err := rt.Run(context.Background(), typedRuntimePlan(t))
+	require.ErrorIs(t, err, ErrInvalidPlan, "unsupported adapter = %v", err)
 	entries, err := os.ReadDir(rt.store.dir)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("rejection persisted an admission: %v %v", entries, err)
-	}
+	require.True(t, err == nil && len(entries) == 0, "rejection persisted an admission: %v %v", entries, err)
 }
 
 func TestRuntimeTypedCleanupFailurePreservesProvenFacts(t *testing.T) {
@@ -149,27 +132,18 @@ func TestRuntimeTypedCleanupFailurePreservesProvenFacts(t *testing.T) {
 			cfg.Adapters = []TaskAdapter{fixtureOutcomeAdapter(test.outcome)}
 			rt := newRuntime(t, cfg)
 			r, err := rt.Run(context.Background(), typedRuntimePlan(t))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			_, result := waitRuntimeRun(t, r)
-			if result.State != test.state || result.Code != test.code || result.Cleanup != "failed" || result.CleanupCode == "" {
-				t.Fatalf("cleanup failure changed proven outcome: %+v", result)
-			}
-			if result.Tasks[0].State != Succeeded || result.Tasks[0].Typed.State != test.state || result.Tasks[0].Typed.Targets[0].Outcome != test.outcome {
-				t.Fatalf("cleanup failure changed task facts: %+v", result.Tasks[0])
-			}
+			require.True(t, result.State == test.state && result.Code == test.code && result.Cleanup == "failed" && result.CleanupCode != "",
+				"cleanup failure changed proven outcome: %+v", result)
+			require.True(t, result.Tasks[0].State == Succeeded && result.Tasks[0].Typed.State == test.state && result.Tasks[0].Typed.Targets[0].Outcome == test.outcome,
+				"cleanup failure changed task facts: %+v", result.Tasks[0])
 			record, err := ReadRecord(cfg.DataDir, result.RunID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if record.Result.State != test.state || record.Result.Cleanup != "failed" || record.Result.Tasks[0].Typed.Targets[0].Outcome != test.outcome {
-				t.Fatalf("record lost facts after cleanup failure: %+v", record.Result)
-			}
+			require.NoError(t, err)
+			require.True(t, record.Result.State == test.state && record.Result.Cleanup == "failed" && record.Result.Tasks[0].Typed.Targets[0].Outcome == test.outcome,
+				"record lost facts after cleanup failure: %+v", record.Result)
 			result.Tasks[0].Typed.Targets[0].Outcome = TargetAmbiguous
-			if r.Snapshot().Tasks[0].Typed.Targets[0].Outcome != test.outcome {
-				t.Fatal("returned result aliases confirmed facts after cleanup failure")
-			}
+			require.True(t, r.Snapshot().Tasks[0].Typed.Targets[0].Outcome == test.outcome, "returned result aliases confirmed facts after cleanup failure")
 		})
 	}
 }
@@ -187,21 +161,14 @@ func TestRuntimePreservesSourceWhenAdapterCompilesParams(t *testing.T) {
 	plan := typedRuntimePlan(t)
 	plan.Tasks[0].Params = append(json.RawMessage(nil), original...)
 	r, err := rt.Run(context.Background(), plan)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	plan.Tasks[0].Params[0] = '['
 	_, result := waitRuntimeRun(t, r)
-	if result.State != Succeeded || string(r.plan.Tasks[0].Params) != string(compiled) {
-		t.Fatalf("compiled Core input was not used: %+v %s", result, r.plan.Tasks[0].Params)
-	}
+	require.True(t, result.State == Succeeded && string(r.plan.Tasks[0].Params) == string(compiled),
+		"compiled Core input was not used: %+v %s", result, r.plan.Tasks[0].Params)
 	record, err := ReadRecord(cfg.DataDir, result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(record.Plan.Tasks[0].Params) != string(original) {
-		t.Fatalf("record lost original adapter input: %s", record.Plan.Tasks[0].Params)
-	}
+	require.NoError(t, err)
+	require.Equal(t, string(original), string(record.Plan.Tasks[0].Params), "record lost original adapter input: %s", record.Plan.Tasks[0].Params)
 }
 
 func TestRuntimeTypedFactPersistsBeforeChainAndRecovers(t *testing.T) {
@@ -209,9 +176,7 @@ func TestRuntimeTypedFactPersistsBeforeChainAndRecovers(t *testing.T) {
 	cfg.Adapters = []TaskAdapter{fixtureOutcomeAdapter(TargetAchieved)}
 	rt := newRuntime(t, cfg)
 	r, err := rt.Run(context.Background(), typedRuntimePlan(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	timer := time.NewTimer(3 * time.Second)
 	defer timer.Stop()
 	for {
@@ -221,42 +186,28 @@ func TestRuntimeTypedFactPersistsBeforeChainAndRecovers(t *testing.T) {
 				goto persisted
 			}
 		case <-r.Done():
-			t.Fatalf("terminated before fact: %+v", r.Snapshot())
+			require.FailNowf(t, "terminated before fact", "%+v", r.Snapshot())
 		case <-timer.C:
-			t.Fatal("typed fact was not published")
+			require.FailNow(t, "typed fact was not published")
 		}
 	}
 
 persisted:
 	record, err := ReadRecord(cfg.DataDir, r.Snapshot().RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if terminal(record.Result.State) || terminal(record.Result.Tasks[0].State) || record.Result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved {
-		t.Fatalf("in-flight fact was not durable: %+v", record.Result)
-	}
+	require.NoError(t, err)
+	require.True(t, !terminal(record.Result.State) && !terminal(record.Result.Tasks[0].State) && record.Result.Tasks[0].Typed.Targets[0].Outcome == TargetAchieved,
+		"in-flight fact was not durable: %+v", record.Result)
 	recoveryCfg := runtimeConfig(t, "crash")
 	s, err := openStore(recoveryCfg.DataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.save(record); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, s.save(record))
+	require.NoError(t, s.close())
 	_ = newRuntime(t, recoveryCfg)
 	recovered, err := ReadRecord(recoveryCfg.DataDir, record.Result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if recovered.Result.State != Unknown || recovered.Result.Code != "host_interrupted" || recovered.Result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved {
-		t.Fatalf("recovery lost confirmed fact: %+v", recovered.Result)
-	}
-	if err := r.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.True(t, recovered.Result.State == Unknown && recovered.Result.Code == "host_interrupted" && recovered.Result.Tasks[0].Typed.Targets[0].Outcome == TargetAchieved,
+		"recovery lost confirmed fact: %+v", recovered.Result)
+	require.NoError(t, r.Stop(context.Background()))
 }
 
 func typedObservationHarness(t *testing.T, reducer TaskReducer) *Run {
@@ -264,13 +215,9 @@ func typedObservationHarness(t *testing.T, reducer TaskReducer) *Run {
 	plan := typedRuntimePlan(t)
 	plan.Tasks = plan.Tasks[:1]
 	prepared, err := PreparePlan(plan, fixtureAdapter(reducer))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	s, err := openStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); _ = s.close() })
 	prepared.Tasks[0].CoreTaskID, prepared.Tasks[0].State = 101, Started
@@ -283,9 +230,7 @@ func typedObservationHarness(t *testing.T, reducer TaskReducer) *Run {
 func sendTypedCallback(t *testing.T, r *Run, messageID int32, raw string) {
 	t.Helper()
 	m, err := protocol.NewMessage(protocol.Event, protocol.CoreEvent, 0, protocol.Callback{MessageID: messageID, CoreSequence: 1, JSON: json.RawMessage(raw)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	r.observe(m)
 }
 
@@ -309,13 +254,11 @@ func TestRuntimeTypedInvalidAndConflictingUpdatesPreserveFacts(t *testing.T) {
 			sendTypedCallback(t, r, 20003, `{"taskid":101}`)
 			update = test.upd
 			sendTypedCallback(t, r, 20003, test.raw)
-			if r.fatal != test.code || r.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetAchieved {
-				t.Fatalf("rejected update altered facts: fatal=%s result=%+v", r.fatal, r.Snapshot())
-			}
+			require.True(t, r.fatal == test.code && r.Snapshot().Tasks[0].Typed.Targets[0].Outcome == TargetAchieved,
+				"rejected update altered facts: fatal=%s result=%+v", r.fatal, r.Snapshot())
 			record, err := ReadRecord(filepath.Dir(r.runtime.store.dir), r.result.RunID)
-			if err != nil || record.Result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved {
-				t.Fatalf("durable fact changed: %+v %v", record, err)
-			}
+			require.True(t, err == nil && record.Result.Tasks[0].Typed.Targets[0].Outcome == TargetAchieved,
+				"durable fact changed: %+v %v", record, err)
 		})
 	}
 }
@@ -332,29 +275,22 @@ func TestRuntimeTypedLateCallbacksCannotChangeSettledFacts(t *testing.T) {
 	sendTypedCallback(t, r, 20003, `{"taskid":101,"future":true}`)
 	sendTypedCallback(t, r, 3, `{"finished_tasks":[101]}`)
 	sendTypedCallback(t, r, 10000, `{"taskid":101}`)
-	if calls != settledCalls || r.proof != Succeeded || r.fatal != "" || r.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetAchieved {
-		t.Fatalf("late callback changed result: calls=%d proof=%s fatal=%s", calls, r.proof, r.fatal)
-	}
+	require.True(t, calls == settledCalls && r.proof == Succeeded && r.fatal == "" && r.Snapshot().Tasks[0].Typed.Targets[0].Outcome == TargetAchieved,
+		"late callback changed result: calls=%d proof=%s fatal=%s", calls, r.proof, r.fatal)
 }
 
 func TestRuntimeTypedWriteFailureDoesNotPublishUndurableFact(t *testing.T) {
 	r := typedObservationHarness(t, runtimeReducerFunc(func(Observation) (TypedUpdate, error) {
 		return TypedUpdate{Targets: []TargetResult{{ID: "goal", Outcome: TargetAchieved}}}, nil
 	}))
-	if err := os.RemoveAll(r.runtime.store.dir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(r.runtime.store.dir, []byte("blocked"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.RemoveAll(r.runtime.store.dir))
+	require.NoError(t, os.WriteFile(r.runtime.store.dir, []byte("blocked"), 0600))
 	sendTypedCallback(t, r, 20003, `{"taskid":101}`)
-	if r.fatal != "record_write_failed" || r.proof != "" || r.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetAchieved {
-		t.Fatalf("write failure promoted or erased fact: fatal=%s result=%+v", r.fatal, r.Snapshot())
-	}
+	require.True(t, r.fatal == "record_write_failed" && r.proof == "" && r.Snapshot().Tasks[0].Typed.Targets[0].Outcome == TargetAchieved,
+		"write failure promoted or erased fact: fatal=%s result=%+v", r.fatal, r.Snapshot())
 	for len(r.events) > 0 {
-		if e := <-r.events; e.Type == "typed" {
-			t.Fatal("undurable fact was published as typed event")
-		}
+		e := <-r.events
+		require.NotEqual(t, "typed", e.Type, "undurable fact was published as typed event")
 	}
 }
 
@@ -369,26 +305,21 @@ func TestRuntimeTypedQueueHasIndependentCountAndByteBounds(t *testing.T) {
 					typed.Targets = append(typed.Targets, TargetResult{ID: fmt.Sprint(i), Outcome: TargetAchieved, Details: json.RawMessage(`{"value":"` + strings.Repeat("x", 3000) + `"}`)})
 				}
 				typed.State, typed.Code = typedState(typed)
-				if err := validateTypedResult(typed); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, validateTypedResult(typed))
 			}
 			for i := 0; i <= MaxTypedEventMessages && r.fatal == ""; i++ {
 				r.emit(Event{Type: "typed", Typed: typed})
 			}
-			if r.fatal != "typed_event_overflow" || r.typedEventCount > MaxTypedEventMessages || r.typedEventBytes > MaxTypedEventRetainedBytes {
-				t.Fatalf("typed queue exceeded independent bounds: fatal=%s count=%d bytes=%d", r.fatal, r.typedEventCount, r.typedEventBytes)
-			}
-			if large && r.typedEventCount >= MaxTypedEventMessages {
-				t.Fatal("byte budget did not bound queue independently")
+			require.True(t, r.fatal == "typed_event_overflow" && r.typedEventCount <= MaxTypedEventMessages && r.typedEventBytes <= MaxTypedEventRetainedBytes,
+				"typed queue exceeded independent bounds: fatal=%s count=%d bytes=%d", r.fatal, r.typedEventCount, r.typedEventBytes)
+			if large {
+				require.Less(t, r.typedEventCount, MaxTypedEventMessages, "byte budget did not bound queue independently")
 			}
 			for len(r.events) > 0 {
 				<-r.events
 			}
 			r.emit(Event{Type: "typed", Typed: typed})
-			if r.typedEventCount != 1 {
-				t.Fatalf("consumed typed entries still counted: %d", r.typedEventCount)
-			}
+			require.Equal(t, 1, r.typedEventCount, "consumed typed entries still counted: %d", r.typedEventCount)
 		})
 	}
 }
@@ -403,20 +334,18 @@ func TestRuntimeTypedReducerAndConcurrentCloseKeepCleanupIndependent(t *testing.
 	}))}
 	rt := newRuntime(t, cfg)
 	r, err := rt.Run(context.Background(), typedRuntimePlan(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	select {
 	case <-entered:
 	case <-time.After(3 * time.Second):
-		t.Fatal("reducer did not enter")
+		require.FailNow(t, "reducer did not enter")
 	}
 	snapshotDone := make(chan struct{})
 	go func() { _ = r.Snapshot(); close(snapshotDone) }()
 	select {
 	case <-snapshotDone:
 	case <-time.After(time.Second):
-		t.Fatal("reducer held the result lock")
+		require.FailNow(t, "reducer held the result lock")
 	}
 	var wg sync.WaitGroup
 	wg.Go(func() { _ = r.Stop(context.Background()) })
@@ -425,7 +354,6 @@ func TestRuntimeTypedReducerAndConcurrentCloseKeepCleanupIndependent(t *testing.
 	wg.Wait()
 	// No consumer has drained Events. Closing and reaping must still finish.
 	result := r.Snapshot()
-	if result.State != Stopped || result.Cleanup != "complete" || result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved {
-		t.Fatalf("concurrent close lost typed fact: %+v", result)
-	}
+	require.True(t, result.State == Stopped && result.Cleanup == "complete" && result.Tasks[0].Typed.Targets[0].Outcome == TargetAchieved,
+		"concurrent close lost typed fact: %+v", result)
 }

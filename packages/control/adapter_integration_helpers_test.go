@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	. "github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/worker"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
@@ -88,9 +91,7 @@ func (f runtimeReducerFunc) Observe(o Observation) (TypedUpdate, error) { return
 func sendTypedCallback(t *testing.T, r *Run, messageID int32, raw string) {
 	t.Helper()
 	m, err := protocol.NewMessage(protocol.Event, protocol.CoreEvent, 0, protocol.Callback{MessageID: messageID, CoreSequence: 1, JSON: json.RawMessage(raw)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	ObserveRunForTest(r, m)
 }
 
@@ -126,9 +127,7 @@ func runtimePlan(t *testing.T) Plan {
 func runtimeConfig(t *testing.T, mode string) Config {
 	t.Helper()
 	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return Config{DataDir: t.TempDir(), StopTimeout: 300 * time.Millisecond,
 		Worker: worker.Config{Executable: executable, Env: []string{"RHODECK_TEST_CONTROL_WORKER=" + mode, "GORACE=atexit_sleep_ms=0"},
 			StartupTimeout: time.Second, RequestTimeout: 300 * time.Millisecond, ShutdownTimeout: 300 * time.Millisecond}}
@@ -137,15 +136,11 @@ func runtimeConfig(t *testing.T, mode string) Config {
 func newRuntime(t *testing.T, cfg Config) *Runtime {
 	t.Helper()
 	rt, err := New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if err := rt.Close(ctx); err != nil {
-			t.Error(err)
-		}
+		assert.NoError(t, rt.Close(ctx))
 	})
 	return rt
 }
@@ -165,7 +160,7 @@ func waitRuntimeRun(t *testing.T, r *Run) ([]Event, Result) {
 				return events, r.Snapshot()
 			}
 		case <-timer.C:
-			t.Fatal("run did not terminate")
+			require.FailNow(t, "run did not terminate")
 		}
 	}
 }
@@ -178,13 +173,13 @@ func waitStarted(t *testing.T, r *Run) {
 		select {
 		case e, ok := <-r.Events():
 			if !ok {
-				t.Fatalf("run terminated before start: %+v", r.Snapshot())
+				require.FailNow(t, fmt.Sprintf("run terminated before start: %+v", r.Snapshot()))
 			}
 			if e.Type == "state" && e.State == Started {
 				return
 			}
 		case <-timer.C:
-			t.Fatal("run did not start")
+			require.FailNow(t, "run did not start")
 		}
 	}
 }
@@ -212,31 +207,24 @@ func operProgressPlansJSON(n int) string {
 func mutateCopilotResultField(t *testing.T, source, field, value string) string {
 	t.Helper()
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(source), &fields); err != nil {
-		t.Fatal(err)
-	}
+	err := json.Unmarshal([]byte(source), &fields)
+	require.NoError(t, err)
 	if value == "" {
 		delete(fields, field)
 	} else {
 		fields[field] = json.RawMessage(value)
 	}
 	raw, err := json.Marshal(fields)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return string(raw)
 }
 
 func requireWorkerProcessExited(t *testing.T, pidFile string) {
 	t.Helper()
 	raw, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatalf("worker PID marker missing: %v", err)
-	}
+	require.NoError(t, err, "worker PID marker missing")
 	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil || pid <= 0 {
-		t.Fatalf("invalid worker PID marker %q", raw)
-	}
+	require.False(t, err != nil || pid <= 0, "invalid worker PID marker %q", raw)
 	if runtime.GOOS == "windows" {
 		t.Logf("worker %d liveness probe skipped on windows", pid)
 		return
@@ -245,9 +233,7 @@ func requireWorkerProcessExited(t *testing.T, pidFile string) {
 	if err != nil {
 		return
 	}
-	if err := proc.Signal(syscall.Signal(0)); err == nil {
-		t.Fatalf("worker process %d was not reaped", pid)
-	}
+	require.Error(t, proc.Signal(syscall.Signal(0)), "worker process %d was not reaped", pid)
 }
 
 func switchThemeThemesJSON(t *testing.T, themes ...string) string {
@@ -255,26 +241,20 @@ func switchThemeThemesJSON(t *testing.T, themes ...string) string {
 	raw, err := json.Marshal(struct {
 		Themes []string `json:"themes"`
 	}{themes})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return string(raw)
 }
 
 func switchThemeSelectCallback(t *testing.T, taskID int32, theme string) string {
 	t.Helper()
 	encoded, err := json.Marshal(theme)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return fmt.Sprintf(`{"taskchain":"SwitchTheme","taskid":%d,"subtask":"ProcessTask","details":{"task":"SwitchThemeByNameSelectTheme","result":{"text":%s,"rect":[1,2,3,4],"score":0.98}}}`, taskID, encoded)
 }
 
 func switchThemeBranchCallback(t *testing.T, taskID int32, node string) string {
 	t.Helper()
 	encoded, err := json.Marshal(node)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return fmt.Sprintf(`{"taskchain":"SwitchTheme","taskid":%d,"subtask":"ProcessTask","details":{"task":%s,"result":{"text":"branch","rect":[5,6,7,8],"score":0.5}}}`, taskID, encoded)
 }

@@ -10,14 +10,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestStoreRecoversWithoutReplaying(t *testing.T) {
 	dir := t.TempDir()
 	s, err := openStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	id := newRunID()
 	plan := validTestPlan(t)
 	plan.Tasks[0].ID = "done"
@@ -25,32 +25,19 @@ func TestStoreRecoversWithoutReplaying(t *testing.T) {
 	pending.ID = "pending"
 	plan.Tasks = append(plan.Tasks, pending)
 	rec := Record{SchemaVersion: SchemaVersion, Plan: plan, Result: Result{SchemaVersion: SchemaVersion, RunID: id, State: Started, Cleanup: "pending", Tasks: []TaskResult{{ID: "done", State: Succeeded}, {ID: "pending", State: Started}}}}
-	if err := s.save(rec); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, s.save(rec))
+	require.NoError(t, s.close())
 	s, err = openStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer s.close()
 	got, err := ReadRecord(dir, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Result.State != Unknown || got.Result.Code != "host_interrupted" || got.Result.Cleanup != "unconfirmed" || got.Result.Tasks[0].State != Succeeded || got.Result.Tasks[1].State != Unknown {
-		t.Fatalf("incorrect recovered facts: %+v", got.Result)
-	}
-	if !strings.Contains(string(got.Plan.Tasks[0].Params), "9007199254740993") {
-		t.Fatal("record lost integer precision")
-	}
+	require.NoError(t, err)
+	require.True(t, got.Result.State == Unknown && got.Result.Code == "host_interrupted" && got.Result.Cleanup == "unconfirmed" &&
+		got.Result.Tasks[0].State == Succeeded && got.Result.Tasks[1].State == Unknown, "incorrect recovered facts: %+v", got.Result)
+	require.True(t, strings.Contains(string(got.Plan.Tasks[0].Params), "9007199254740993"), "record lost integer precision")
 	if runtime.GOOS != "windows" {
 		info, err := os.Stat(filepath.Join(dir, "runs", id+".json"))
-		if err != nil || info.Mode().Perm() != 0600 {
-			t.Fatalf("private record permissions: %v %v", info, err)
-		}
+		require.True(t, err == nil && info.Mode().Perm() == 0600, "private record permissions: %v %v", info, err)
 	}
 }
 
@@ -69,16 +56,10 @@ func TestStoreLockReleasedAfterProcessExit(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestStoreLockReleasedAfterProcessExit$")
 	cmd.Env = append(os.Environ(), "RHODECK_TEST_STORE_LOCK=1", "RHODECK_TEST_STORE_DIR="+dir)
 	input, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	output, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	ready := make(chan error, 1)
 	go func() {
@@ -91,55 +72,39 @@ func TestStoreLockReleasedAfterProcessExit(t *testing.T) {
 	}()
 	select {
 	case err := <-ready:
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 	case <-time.After(10 * time.Second):
-		t.Fatal("helper did not acquire lock")
+		require.FailNow(t, "helper did not acquire lock")
 	}
-	if second, err := openStore(dir); !errors.Is(err, ErrBusy) {
-		if second != nil {
-			_ = second.close()
-		}
-		t.Fatalf("expected process lock, got %v", err)
+	second, err := openStore(dir)
+	if second != nil {
+		_ = second.close()
 	}
+	require.ErrorIs(t, err, ErrBusy, "expected process lock, got %v", err)
 	_ = input.Close()
-	if err := cmd.Wait(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cmd.Wait())
 	s, err := openStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, s.close())
 	// The lock inode stays in place: unlinking it would permit lock bypass.
-	if _, err := os.Stat(filepath.Join(dir, "runtime.lock")); err != nil {
-		t.Fatal(err)
-	}
+	_, err = os.Stat(filepath.Join(dir, "runtime.lock"))
+	require.NoError(t, err)
 }
 
 func TestStoreRejectsCorruptionAndTraversal(t *testing.T) {
 	dir := t.TempDir()
 	s, err := openStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.save(Record{SchemaVersion: SchemaVersion, Result: Result{SchemaVersion: SchemaVersion, RunID: "../escape"}}); err == nil {
-		t.Fatal("accepted unsafe record identity")
-	}
-	if _, err := ReadRecord(dir, "../escape"); err == nil {
-		t.Fatal("accepted traversal")
-	}
+	require.NoError(t, err)
+	require.Error(t, s.save(Record{SchemaVersion: SchemaVersion, Result: Result{SchemaVersion: SchemaVersion, RunID: "../escape"}}), "accepted unsafe record identity")
+	_, err = ReadRecord(dir, "../escape")
+	require.Error(t, err, "accepted traversal")
 	_ = s.close()
 	broken := Record{SchemaVersion: SchemaVersion + 1, Result: Result{SchemaVersion: SchemaVersion, RunID: newRunID()}}
 	raw, _ := json.Marshal(broken)
-	if err := os.WriteFile(filepath.Join(dir, "runs", broken.Result.RunID+".json"), raw, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if s, err := openStore(dir); err == nil {
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "runs", broken.Result.RunID+".json"), raw, 0600))
+	s, err = openStore(dir)
+	if s != nil {
 		_ = s.close()
-		t.Fatal("accepted unsupported record schema")
 	}
+	require.Error(t, err, "accepted unsupported record schema")
 }

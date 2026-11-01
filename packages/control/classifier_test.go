@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
 
@@ -46,18 +48,12 @@ func TestRuntimeClassifierCanReadSnapshotAndReceivesDetachedJSON(t *testing.T) {
 	}()
 	select {
 	case ok := <-accepted:
-		if !ok || snapshot.RunID != run.Snapshot().RunID {
-			t.Fatalf("classifier failed to inspect its run: accepted=%v snapshot=%+v", ok, snapshot)
-		}
+		require.True(t, ok && snapshot.RunID == run.Snapshot().RunID, "classifier failed to inspect its run: accepted=%v snapshot=%+v", ok, snapshot)
 	case <-time.After(3 * time.Second):
-		t.Fatal("classifier could not read Snapshot while holding the result lock")
+		require.FailNow(t, "classifier could not read Snapshot while holding the result lock")
 	}
-	if !bytes.Equal(callback.JSON, original) {
-		t.Fatalf("classifier changed the source callback: %q", callback.JSON)
-	}
-	if run.fatal != "" || len(typedEventsIn(run)) != 0 || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved {
-		t.Fatalf("progress classifier created a target fact: fatal=%q result=%+v", run.fatal, run.Snapshot())
-	}
+	require.True(t, bytes.Equal(callback.JSON, original), "classifier changed the source callback: %q", callback.JSON)
+	require.False(t, run.fatal != "" || len(typedEventsIn(run)) != 0 || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved, "progress classifier created a target fact: fatal=%q result=%+v", run.fatal, run.Snapshot())
 }
 
 func TestRuntimeClassifierCannotChangeFallbackAssociation(t *testing.T) {
@@ -69,9 +65,7 @@ func TestRuntimeClassifierCannotChangeFallbackAssociation(t *testing.T) {
 	}})
 	callback := classifierCallback()
 	id := int32(0)
-	if run.observeTyped(callback, &id, nil) || run.fatal != "typed_invalid_event" {
-		t.Fatalf("classifier changed fallback association: fatal=%q callback=%s", run.fatal, callback.JSON)
-	}
+	require.False(t, run.observeTyped(callback, &id, nil) || run.fatal != "typed_invalid_event", "classifier changed fallback association: fatal=%q callback=%s", run.fatal, callback.JSON)
 }
 
 func TestRuntimeClassifierDoesNotBlockControlAndRejectsLateProgress(t *testing.T) {
@@ -94,7 +88,7 @@ func TestRuntimeClassifierDoesNotBlockControlAndRejectsLateProgress(t *testing.T
 			select {
 			case <-entered:
 			case <-time.After(3 * time.Second):
-				t.Fatal("classifier did not enter")
+				require.FailNow(t, "classifier did not enter")
 			}
 			controlDone := make(chan error, 1)
 			if ending == "failure_after_close" {
@@ -141,24 +135,18 @@ func TestRuntimeClassifierDoesNotBlockControlAndRejectsLateProgress(t *testing.T
 			}()
 			select {
 			case err := <-controlDone:
-				if err != nil {
-					t.Fatalf("control operation failed while classifier was blocked: %v", err)
-				}
+				require.NoError(t, err, "control operation failed while classifier was blocked")
 			case <-time.After(3 * time.Second):
-				t.Fatal("classifier held the result lock against control operations")
+				require.FailNow(t, "classifier held the result lock against control operations")
 			}
 			releaseClassifier()
 			select {
 			case ok := <-accepted:
-				if ok {
-					t.Fatal("accepted classifier progress after run termination")
-				}
+				require.False(t, ok, "accepted classifier progress after run termination")
 			case <-time.After(3 * time.Second):
-				t.Fatal("classifier did not return after release")
+				require.FailNow(t, "classifier did not return after release")
 			}
-			if len(typedEventsIn(run)) != 0 || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved {
-				t.Fatalf("late classifier changed target facts: %+v", run.Snapshot())
-			}
+			require.False(t, len(typedEventsIn(run)) != 0 || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved, "late classifier changed target facts: %+v", run.Snapshot())
 		})
 	}
 }

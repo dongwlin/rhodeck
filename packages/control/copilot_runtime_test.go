@@ -3,12 +3,13 @@ package control_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	. "github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/adapters/copilot"
@@ -58,43 +59,27 @@ func TestCopilotRuntimeKeepsEntryAndCoreTaskIdentities(t *testing.T) {
 	sendTypedCallback(t, run, 20003, copilotRuntimeLoad(101, 7, "same.json"))
 	// Navigation can run ProcessTask nodes too; it is not the battle settlement.
 	sendTypedCallback(t, run, 20001, `{"taskid":101,"taskchain":"Copilot","subtask":"ProcessTask","first":["StageNavigationBegin"],"details":{"task":"StageDrops-Stars-3"}}`)
-	if got := run.Snapshot().Tasks[0].Typed.Targets[0].Outcome; got != TargetUnobserved {
-		t.Fatalf("navigation created a battle fact: %s", got)
-	}
+	got := run.Snapshot().Tasks[0].Typed.Targets[0].Outcome
+	require.Equal(t, TargetUnobserved, got, "navigation created a battle fact: %s", got)
 	sendTypedCallback(t, run, 20001, copilotRuntimeNode(101, "StageDrops-Stars-3"))
 	first := run.Snapshot()
-	if first.Tasks[0].Typed.Targets[0].ID != "copilot:7" || first.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved ||
-		first.Tasks[0].Typed.Targets[1].Outcome != TargetUnobserved || first.Tasks[1].Typed.Targets[0].Outcome != TargetUnobserved {
-		t.Fatalf("entry or Core task identity leaked: %+v", first.Tasks)
-	}
+	require.False(t, first.Tasks[0].Typed.Targets[0].ID != "copilot:7" || first.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved ||
+		first.Tasks[0].Typed.Targets[1].Outcome != TargetUnobserved || first.Tasks[1].Typed.Targets[0].Outcome != TargetUnobserved, "entry or Core task identity leaked: %+v", first.Tasks)
 	copilotRuntimeFact(t, run, 202, 7, "same.json", "StageDrops-Stars-3")
 	copilotRuntimeFact(t, run, 101, 8, "same.json", "StageDrops-Stars-Adverse")
 	result := run.Snapshot()
-	if result.Tasks[0].Typed.Policy != ObjectiveAll || result.Tasks[0].Typed.State != Succeeded || result.Tasks[1].Typed.State != Succeeded {
-		t.Fatalf("independent entries were not achieved: %+v", result.Tasks)
-	}
-	if got := result.Tasks[0].Typed.Targets[1]; got.ID != "copilot:8" || got.Code != "adverse_clear" || got.Outcome != TargetAchieved {
-		t.Fatalf("raid entry fact = %+v", got)
-	}
+	require.False(t, result.Tasks[0].Typed.Policy != ObjectiveAll || result.Tasks[0].Typed.State != Succeeded || result.Tasks[1].Typed.State != Succeeded, "independent entries were not achieved: %+v", result.Tasks)
+	raid := result.Tasks[0].Typed.Targets[1]
+	require.False(t, raid.ID != "copilot:8" || raid.Code != "adverse_clear" || raid.Outcome != TargetAchieved, "raid entry fact = %+v", raid)
 	events := typedEventsIn(run)
-	if len(events) != 3 || events[0].TaskID != "copilot-0" || events[0].CoreTaskID != 101 || events[1].TaskID != "copilot-1" || events[1].CoreTaskID != 202 {
-		t.Fatalf("typed event associations = %+v", events)
-	}
+	require.False(t, len(events) != 3 || events[0].TaskID != "copilot-0" || events[0].CoreTaskID != 101 || events[1].TaskID != "copilot-1" || events[1].CoreTaskID != 202, "typed event associations = %+v", events)
 	record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(run)), result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(record.Result.Tasks, result.Tasks) || !reflect.DeepEqual(record.Plan, plan) {
-		t.Fatalf("record changed target facts or original plan: %+v", record)
-	}
-	if !reflect.DeepEqual(events[2].Typed, result.Tasks[0].Typed) {
-		t.Fatalf("last typed event differs from snapshot: %+v", events[2])
-	}
+	require.NoError(t, err)
+	require.False(t, !reflect.DeepEqual(record.Result.Tasks, result.Tasks) || !reflect.DeepEqual(record.Plan, plan), "record changed target facts or original plan: %+v", record)
+	require.False(t, !reflect.DeepEqual(events[2].Typed, result.Tasks[0].Typed), "last typed event differs from snapshot: %+v", events[2])
 	events[2].Typed.Targets[1].Outcome = TargetFailed
 	events[2].Typed.Targets[1].Details[0] = '['
-	if !reflect.DeepEqual(run.Snapshot().Tasks, result.Tasks) {
-		t.Fatal("typed event aliases the snapshot")
-	}
+	require.True(t, reflect.DeepEqual(run.Snapshot().Tasks, result.Tasks), "typed event aliases the snapshot")
 }
 
 func TestCopilotRuntimeDoesNotGuessMissingEntryScope(t *testing.T) {
@@ -109,16 +94,12 @@ func TestCopilotRuntimeDoesNotGuessMissingEntryScope(t *testing.T) {
 			copilotRuntimeFact(t, run, 101, 7, "same.json", "StageDrops-Stars-3")
 			sendTypedCallback(t, run, 20003, raw)
 			sendTypedCallback(t, run, 20001, copilotRuntimeNode(101, "FightMissionFailed"))
-			if InspectRunForTest(run).Fatal != "" {
-				t.Fatalf("missing scope overwrote a confirmed fact: %s", InspectRunForTest(run).Fatal)
-			}
+			require.Empty(t, InspectRunForTest(run).Fatal, "missing scope overwrote a confirmed fact: %s", InspectRunForTest(run).Fatal)
 			sendTypedCallback(t, run, 10002, `{"taskid":101}`)
 			sendTypedCallback(t, run, 3, `{"finished_tasks":[101]}`)
 			result := run.Snapshot()
-			if InspectRunForTest(run).Proof != Unknown || InspectRunForTest(run).ProofCode != "typed_incomplete" || result.Tasks[0].State != Succeeded ||
-				result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || result.Tasks[0].Typed.Targets[1].Outcome == TargetAchieved || result.Tasks[0].Typed.Targets[1].Outcome == TargetFailed {
-				t.Fatalf("unassociated evidence became a clear or failure: %+v, proof=%s/%s", result.Tasks[0], InspectRunForTest(run).Proof, InspectRunForTest(run).ProofCode)
-			}
+			require.False(t, InspectRunForTest(run).Proof != Unknown || InspectRunForTest(run).ProofCode != "typed_incomplete" || result.Tasks[0].State != Succeeded ||
+				result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || result.Tasks[0].Typed.Targets[1].Outcome == TargetAchieved || result.Tasks[0].Typed.Targets[1].Outcome == TargetFailed, "unassociated evidence became a clear or failure: %+v, proof=%s/%s", result.Tasks[0], InspectRunForTest(run).Proof, InspectRunForTest(run).ProofCode)
 		})
 	}
 }
@@ -132,14 +113,10 @@ func TestCopilotRuntimeLoadStartInvalidatesPreviousEntryScope(t *testing.T) {
 	// Its subsequent battle must not inherit the previous entry's identity.
 	sendTypedCallback(t, run, 20001, `{"taskid":101,"taskchain":"Copilot","subtask":"MultiCopilotTask"}`)
 	sendTypedCallback(t, run, 20001, copilotRuntimeNode(101, "FightMissionFailed"))
-	if InspectRunForTest(run).Fatal != "" || !sameTarget(run.Snapshot().Tasks[0].Typed.Targets[0], original) || run.Snapshot().Tasks[0].Typed.Targets[1].Outcome != TargetUnobserved {
-		t.Fatalf("missing load inherited the previous entry: fatal=%s, targets=%+v", InspectRunForTest(run).Fatal, run.Snapshot().Tasks[0].Typed.Targets)
-	}
+	require.False(t, InspectRunForTest(run).Fatal != "" || !sameTarget(run.Snapshot().Tasks[0].Typed.Targets[0], original) || run.Snapshot().Tasks[0].Typed.Targets[1].Outcome != TargetUnobserved, "missing load inherited the previous entry: fatal=%s, targets=%+v", InspectRunForTest(run).Fatal, run.Snapshot().Tasks[0].Typed.Targets)
 	sendTypedCallback(t, run, 10002, `{"taskid":101}`)
 	sendTypedCallback(t, run, 3, `{"finished_tasks":[101]}`)
-	if InspectRunForTest(run).Proof != Unknown || InspectRunForTest(run).ProofCode != "typed_incomplete" {
-		t.Fatalf("missing load was hidden by chain completion: %s/%s", InspectRunForTest(run).Proof, InspectRunForTest(run).ProofCode)
-	}
+	require.False(t, InspectRunForTest(run).Proof != Unknown || InspectRunForTest(run).ProofCode != "typed_incomplete", "missing load was hidden by chain completion: %s/%s", InspectRunForTest(run).Proof, InspectRunForTest(run).ProofCode)
 }
 
 func TestCopilotRuntimeDuplicateConflictAndUnknownTaskPreserveFacts(t *testing.T) {
@@ -150,9 +127,8 @@ func TestCopilotRuntimeDuplicateConflictAndUnknownTaskPreserveFacts(t *testing.T
 			copilotRuntimeFact(t, run, 101, 7, "same.json", "StageDrops-Stars-3")
 			original := run.Snapshot().Tasks[0].Typed.Targets[0]
 			copilotRuntimeFact(t, run, 101, 7, "same.json", "StageDrops-Stars-3")
-			if got := len(typedEventsIn(run)); got != 1 {
-				t.Fatalf("duplicate fact emitted %d events", got)
-			}
+			duplicateCount := len(typedEventsIn(run))
+			require.Equal(t, 1, duplicateCount, "duplicate fact emitted %d events", duplicateCount)
 			code := "typed_conflict"
 			switch fault {
 			case "conflict":
@@ -163,20 +139,14 @@ func TestCopilotRuntimeDuplicateConflictAndUnknownTaskPreserveFacts(t *testing.T
 			case "lost events":
 				code = "event_overflow"
 				message, err := protocol.NewMessage(protocol.Event, protocol.DiagnosticsEvent, 0, protocol.InstanceDiagnostics{LostEvents: 1})
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				ObserveRunForTest(run, message)
 			}
 			sendTypedCallback(t, run, 10002, `{"taskid":101}`)
 			sendTypedCallback(t, run, 3, `{"finished_tasks":[101]}`)
-			if InspectRunForTest(run).Fatal != code || InspectRunForTest(run).Proof != "" || !sameTarget(run.Snapshot().Tasks[0].Typed.Targets[0], original) {
-				t.Fatalf("fault changed a confirmed fact: fatal=%s, proof=%s, target=%+v", InspectRunForTest(run).Fatal, InspectRunForTest(run).Proof, run.Snapshot().Tasks[0].Typed.Targets[0])
-			}
+			require.False(t, InspectRunForTest(run).Fatal != code || InspectRunForTest(run).Proof != "" || !sameTarget(run.Snapshot().Tasks[0].Typed.Targets[0], original), "fault changed a confirmed fact: fatal=%s, proof=%s, target=%+v", InspectRunForTest(run).Fatal, InspectRunForTest(run).Proof, run.Snapshot().Tasks[0].Typed.Targets[0])
 			record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(run)), run.Snapshot().RunID)
-			if err != nil || !sameTarget(record.Result.Tasks[0].Typed.Targets[0], original) {
-				t.Fatalf("fault changed durable facts: %+v, %v", record, err)
-			}
+			require.False(t, err != nil || !sameTarget(record.Result.Tasks[0].Typed.Targets[0], original), "fault changed durable facts: %+v, %v", record, err)
 		})
 	}
 }
@@ -201,9 +171,7 @@ func TestCopilotRuntimeSeparatesChainAndStageResults(t *testing.T) {
 			sendTypedCallback(t, run, 10002, `{"taskid":101}`)
 			sendTypedCallback(t, run, 3, `{"finished_tasks":[101]}`)
 			result := run.Snapshot()
-			if InspectRunForTest(run).Proof != test.state || InspectRunForTest(run).ProofCode != test.code || result.Tasks[0].State != Succeeded || result.Tasks[0].Typed.State != test.state {
-				t.Fatalf("chain completion replaced stage evidence: %+v, proof=%s/%s", result.Tasks[0], InspectRunForTest(run).Proof, InspectRunForTest(run).ProofCode)
-			}
+			require.False(t, InspectRunForTest(run).Proof != test.state || InspectRunForTest(run).ProofCode != test.code || result.Tasks[0].State != Succeeded || result.Tasks[0].Typed.State != test.state, "chain completion replaced stage evidence: %+v, proof=%s/%s", result.Tasks[0], InspectRunForTest(run).Proof, InspectRunForTest(run).ProofCode)
 		})
 	}
 }
@@ -243,16 +211,14 @@ func waitCopilotRuntimeFact(t *testing.T, run *Run) {
 		select {
 		case event, ok := <-run.Events():
 			if !ok {
-				t.Fatalf("run ended before its stage fact: %+v", run.Snapshot())
+				require.FailNow(t, fmt.Sprintf("run ended before its stage fact: %+v", run.Snapshot()))
 			}
 			if event.Type == "typed" {
-				if event.Typed == nil || event.Typed.Targets[0].Outcome != TargetAchieved {
-					t.Fatalf("unexpected stage fact: %+v", event)
-				}
+				require.False(t, event.Typed == nil || event.Typed.Targets[0].Outcome != TargetAchieved, "unexpected stage fact: %+v", event)
 				return
 			}
 		case <-timer.C:
-			t.Fatal("stage fact was not observed")
+			require.FailNow(t, "stage fact was not observed")
 		}
 	}
 }
@@ -276,32 +242,23 @@ func TestCopilotRuntimeLifecyclePreservesClearFacts(t *testing.T) {
 			rt := newRuntime(t, cfg)
 			plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"9007199254740993.json"}]}`)
 			run, err := rt.Run(context.Background(), plan)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			if test.mode == "stop" || test.mode == "stopstuck" {
 				waitCopilotRuntimeFact(t, run)
 				err := run.Stop(context.Background())
 				if test.mode == "stopstuck" {
 					var failure *protocol.Error
-					if !errors.As(err, &failure) || failure.Code != "stop_unconfirmed" {
-						t.Fatalf("unconfirmed stop error = %v", err)
-					}
-				} else if err != nil {
-					t.Fatal(err)
+					require.ErrorAs(t, err, &failure, "unconfirmed stop error = %v", err)
+					require.Equal(t, "stop_unconfirmed", failure.Code, "unconfirmed stop error = %v", err)
+				} else {
+					require.NoError(t, err)
 				}
 			}
 			_, result := waitRuntimeRun(t, run)
-			if result.State != test.state || test.cleanup != "" && result.Cleanup != test.cleanup {
-				t.Fatalf("clear fact changed lifecycle outcome: %+v", result)
-			}
-			if test.mode == "stopstuck" && result.Code != "stop_timeout" {
-				t.Fatalf("unconfirmed stop lost its deadline: %+v", result)
-			}
+			require.False(t, result.State != test.state || test.cleanup != "" && result.Cleanup != test.cleanup, "clear fact changed lifecycle outcome: %+v", result)
+			require.False(t, test.mode == "stopstuck" && result.Code != "stop_timeout", "unconfirmed stop lost its deadline: %+v", result)
 			record, err := ReadRecord(cfg.DataDir, result.RunID)
-			if err != nil || record.Result.State != test.state || !reflect.DeepEqual(record.Result.Tasks, result.Tasks) || result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved {
-				t.Fatalf("lifecycle fault erased clear facts: %+v, %v", record, err)
-			}
+			require.False(t, err != nil || record.Result.State != test.state || !reflect.DeepEqual(record.Result.Tasks, result.Tasks) || result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved, "lifecycle fault erased clear facts: %+v, %v", record, err)
 		})
 	}
 }
@@ -311,29 +268,19 @@ func TestCopilotRuntimeRecoversFactsWithoutAdapterOrReplay(t *testing.T) {
 	run := newPreparedTypedHarness(t, plan, []int32{101}, true, copilot.New())
 	copilotRuntimeFact(t, run, 101, 7, "same.json", "StageDrops-Stars-3")
 	record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(run)), run.Snapshot().RunID)
-	if err != nil || terminal(record.Result.State) || record.Result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved {
-		t.Fatalf("in-flight clear was not persisted: %+v, %v", record, err)
-	}
+	require.False(t, err != nil || terminal(record.Result.State) || record.Result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved, "in-flight clear was not persisted: %+v, %v", record, err)
 	recoveryDir := t.TempDir()
 	s, err := openStore(recoveryDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Save(record); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, s.Save(record))
+	require.NoError(t, s.Close())
 	cfg := runtimeConfig(t, "crash")
 	cfg.DataDir = recoveryDir
 	cfg.Worker.Executable = filepath.Join(t.TempDir(), "missing-worker")
 	_ = newRuntime(t, cfg)
 	recovered, err := ReadRecord(recoveryDir, record.Result.RunID)
-	if err != nil || recovered.Result.State != Unknown || recovered.Result.Code != "host_interrupted" || recovered.Result.Cleanup != "unconfirmed" ||
-		!reflect.DeepEqual(recovered.Result.Tasks[0].Typed, record.Result.Tasks[0].Typed) || !reflect.DeepEqual(recovered.Plan, plan) {
-		t.Fatalf("recovery reinterpreted or lost clear evidence: %+v, %v", recovered, err)
-	}
+	require.False(t, err != nil || recovered.Result.State != Unknown || recovered.Result.Code != "host_interrupted" || recovered.Result.Cleanup != "unconfirmed" ||
+		!reflect.DeepEqual(recovered.Result.Tasks[0].Typed, record.Result.Tasks[0].Typed) || !reflect.DeepEqual(recovered.Plan, plan), "recovery reinterpreted or lost clear evidence: %+v, %v", recovered, err)
 }
 
 func TestCopilotRuntimeEventBudgetPreservesAcceptedFacts(t *testing.T) {
@@ -347,9 +294,7 @@ func TestCopilotRuntimeEventBudgetPreservesAcceptedFacts(t *testing.T) {
 	params, err := json.Marshal(struct {
 		Entries any `json:"copilot_list"`
 	}{entries})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	plan := copilotRuntimePlan(t, string(params))
 	run := newPreparedTypedHarness(t, plan, []int32{101}, true, copilot.New())
 	id := int32(101)
@@ -358,11 +303,7 @@ func TestCopilotRuntimeEventBudgetPreservesAcceptedFacts(t *testing.T) {
 		ObserveTypedForTest(run, protocol.Callback{MessageID: 20001, CoreSequence: uint64(2*i + 2), JSON: json.RawMessage(copilotRuntimeNode(id, "StageDrops-Stars-3"))}, &id, nil)
 	}
 	result := run.Snapshot()
-	if InspectRunForTest(run).Fatal != "typed_event_overflow" || InspectRunForTest(run).Proof != "" || result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || result.Tasks[0].Typed.Targets[len(entries)-1].Outcome != TargetUnobserved {
-		t.Fatalf("event budget erased or manufactured stage facts: fatal=%s, proof=%s, targets=%+v", InspectRunForTest(run).Fatal, InspectRunForTest(run).Proof, result.Tasks[0].Typed.Targets)
-	}
+	require.False(t, InspectRunForTest(run).Fatal != "typed_event_overflow" || InspectRunForTest(run).Proof != "" || result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || result.Tasks[0].Typed.Targets[len(entries)-1].Outcome != TargetUnobserved, "event budget erased or manufactured stage facts: fatal=%s, proof=%s, targets=%+v", InspectRunForTest(run).Fatal, InspectRunForTest(run).Proof, result.Tasks[0].Typed.Targets)
 	record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(run)), result.RunID)
-	if err != nil || !reflect.DeepEqual(record.Result.Tasks, result.Tasks) {
-		t.Fatalf("event overflow changed durable stage facts: %+v, %v", record, err)
-	}
+	require.False(t, err != nil || !reflect.DeepEqual(record.Result.Tasks, result.Tasks), "event overflow changed durable stage facts: %+v, %v", record, err)
 }

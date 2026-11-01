@@ -5,37 +5,30 @@ import (
 	"encoding/json"
 	"strconv"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestRawValuesRetainUnknownFieldsAndIntegerLiterals(t *testing.T) {
 	const source = ` {"future":{"large":9007199254740993},"items":[9007199254740993,{"unknown":-9223372036854775808}]} `
 	raw := json.RawMessage(source)
-	if !ValidObject(raw, uint64(len(raw))) || ValidObject(raw, uint64(len(raw)-1)) {
-		t.Fatal("object byte boundary was not enforced")
-	}
+	require.True(t, ValidObject(raw, uint64(len(raw))), "object byte boundary was not enforced")
+	require.False(t, ValidObject(raw, uint64(len(raw)-1)), "object byte boundary was not enforced")
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		t.Fatal(err)
-	}
+	err := json.Unmarshal(raw, &fields)
+	require.NoError(t, err)
 	items, err := Array(fields["items"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(items) != 2 || string(items[0]) != "9007199254740993" || string(items[1]) != `{"unknown":-9223372036854775808}` {
-		t.Fatalf("raw array changed number or unknown field literals: %s", fields["items"])
-	}
-	if !bytes.Equal(raw, []byte(source)) {
-		t.Fatal("validation mutated the caller's input")
-	}
+	require.NoError(t, err)
+	require.Len(t, items, 2, "raw array changed number or unknown field literals: %s", fields["items"])
+	require.Equal(t, "9007199254740993", string(items[0]), "raw array changed number or unknown field literals: %s", fields["items"])
+	require.Equal(t, `{"unknown":-9223372036854775808}`, string(items[1]), "raw array changed number or unknown field literals: %s", fields["items"])
+	require.True(t, bytes.Equal(raw, []byte(source)), "validation mutated the caller's input")
 	for _, invalid := range []string{`null`, `[]`, `{"a":1} {}`, "{\"a\":\"\xff\"}", `{`} {
-		if ValidObject(json.RawMessage(invalid), 1024) {
-			t.Fatalf("invalid object accepted: %q", invalid)
-		}
+		require.False(t, ValidObject(json.RawMessage(invalid), 1024), "invalid object accepted: %q", invalid)
 	}
 	for _, invalid := range []string{`null`, `{}`, `[1`, `"[]"`} {
-		if _, err := Array(json.RawMessage(invalid)); err == nil {
-			t.Fatalf("invalid array accepted: %q", invalid)
-		}
+		_, err := Array(json.RawMessage(invalid))
+		require.Error(t, err, "invalid array accepted: %q", invalid)
 	}
 }
 
@@ -48,14 +41,12 @@ func TestIntegerAcceptsExactInRangeLiterals(t *testing.T) {
 	for _, want := range values {
 		raw := " \n" + strconv.FormatInt(int64(want), 10) + "\t"
 		got, err := Integer(json.RawMessage(raw))
-		if err != nil || got != want {
-			t.Fatalf("Integer(%q) = %d, %v; want %d", raw, got, err, want)
-		}
+		require.NoError(t, err, "Integer(%q) = %d, %v; want %d", raw, got, err, want)
+		require.Equal(t, want, got, "Integer(%q) = %d, %v; want %d", raw, got, err, want)
 	}
 	for _, raw := range []string{`1.0`, `1e3`, `"1"`, `null`, `true`, `[]`, `9223372036854775808`, `-9223372036854775809`} {
-		if _, err := Integer(json.RawMessage(raw)); err == nil {
-			t.Fatalf("non-integer or overflowing literal accepted: %s", raw)
-		}
+		_, err := Integer(json.RawMessage(raw))
+		require.Error(t, err, "non-integer or overflowing literal accepted: %s", raw)
 	}
 }
 
@@ -65,14 +56,12 @@ func TestStringPreservesNamesAndRejectsUnpairedSurrogates(t *testing.T) {
 		{`"quote\" slash\\ line\n"`, "quote\" slash\\ line\n"},
 	} {
 		got, err := String(json.RawMessage(test.raw))
-		if err != nil || got != test.want {
-			t.Fatalf("String(%s) = %q, %v; want %q", test.raw, got, err, test.want)
-		}
+		require.NoError(t, err, "String(%s) = %q, %v; want %q", test.raw, got, err, test.want)
+		require.Equal(t, test.want, got, "String(%s) = %q, %v; want %q", test.raw, got, err, test.want)
 	}
 	for _, raw := range []string{`"\uD800"`, `"\uDC00"`, `"\uD800x"`, `"\uD800\u0041"`, `"\u12"`, `null`, `1`, `"\q"`} {
-		if _, err := String(json.RawMessage(raw)); err == nil {
-			t.Fatalf("malformed string accepted: %s", raw)
-		}
+		_, err := String(json.RawMessage(raw))
+		require.Error(t, err, "malformed string accepted: %s", raw)
 	}
 	for _, test := range []struct {
 		value       string
@@ -82,8 +71,7 @@ func TestStringPreservesNamesAndRejectsUnpairedSurrogates(t *testing.T) {
 		{"甲", 3, false, true}, {"甲", 2, false, false}, {"", 0, true, true},
 		{"", 5, false, false}, {"a\x00b", 3, false, false}, {string([]byte{0xff}), 1, false, false},
 	} {
-		if got := ValidText(test.value, test.max, test.empty); got != test.want {
-			t.Fatalf("ValidText(%q, %d, %v) = %v", test.value, test.max, test.empty, got)
-		}
+		got := ValidText(test.value, test.max, test.empty)
+		require.Equal(t, test.want, got, "ValidText(%q, %d, %v) = %v", test.value, test.max, test.empty, got)
 	}
 }

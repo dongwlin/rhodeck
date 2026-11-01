@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func policyStoreRecord(t *testing.T, policy ObjectivePolicy) Record {
@@ -34,27 +36,17 @@ func TestObjectivePolicyRecordsRoundTripAndDetach(t *testing.T) {
 		t.Run(string(policy), func(t *testing.T) {
 			dir := t.TempDir()
 			s, err := openStore(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			defer s.close()
 			rec := policyStoreRecord(t, policy)
-			if err := s.save(rec); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, s.save(rec))
 			got, err := ReadRecord(dir, rec.Result.RunID)
-			if err != nil || !reflect.DeepEqual(got, rec) {
-				t.Fatalf("policy round trip changed evidence: got=%+v, error=%v", got, err)
-			}
+			require.True(t, err == nil && reflect.DeepEqual(got, rec), "policy round trip changed evidence: got=%+v, error=%v", got, err)
 			raw, err := os.ReadFile(filepath.Join(dir, "runs", rec.Result.RunID+".json"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Contains(raw, []byte(`"objective_policy":"`+string(policy)+`"`)) {
-				t.Fatalf("record omitted the objective policy: %s", raw)
-			}
-			if policy == ObjectiveNone && bytes.Contains(raw, []byte(`"typed"`)) {
-				t.Fatalf("input-only record manufactured typed facts: %s", raw)
+			require.NoError(t, err)
+			require.True(t, bytes.Contains(raw, []byte(`"objective_policy":"`+string(policy)+`"`)), "record omitted the objective policy: %s", raw)
+			if policy == ObjectiveNone {
+				require.False(t, bytes.Contains(raw, []byte(`"typed"`)), "input-only record manufactured typed facts: %s", raw)
 			}
 			got.Result.Tasks[0].Policy = "mutated"
 			got.Plan.Tasks[0].Adapter.Name = "mutated"
@@ -65,9 +57,7 @@ func TestObjectivePolicyRecordsRoundTripAndDetach(t *testing.T) {
 				typed.Summary[2] = 'X'
 			}
 			again, err := ReadRecord(dir, rec.Result.RunID)
-			if err != nil || !reflect.DeepEqual(again, rec) {
-				t.Fatalf("mutable read changed persisted facts: got=%+v, error=%v", again, err)
-			}
+			require.True(t, err == nil && reflect.DeepEqual(again, rec), "mutable read changed persisted facts: got=%+v, error=%v", again, err)
 		})
 	}
 }
@@ -77,20 +67,15 @@ func TestInputOnlyRecordsPreserveChainTerminalStates(t *testing.T) {
 		t.Run(string(state), func(t *testing.T) {
 			dir := t.TempDir()
 			s, err := openStore(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			defer s.close()
 			rec := policyStoreRecord(t, ObjectiveNone)
 			rec.Result.State, rec.Result.Tasks[0].State = state, state
 			rec.Result.Cleanup = "complete"
-			if err := s.save(rec); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, s.save(rec))
 			got, err := ReadRecord(dir, rec.Result.RunID)
-			if err != nil || got.Result.State != state || got.Result.Tasks[0].Typed != nil || got.Result.Tasks[0].Policy != ObjectiveNone {
-				t.Fatalf("input-only terminal record changed facts: got=%+v, error=%v", got, err)
-			}
+			require.True(t, err == nil && got.Result.State == state && got.Result.Tasks[0].Typed == nil && got.Result.Tasks[0].Policy == ObjectiveNone,
+				"input-only terminal record changed facts: got=%+v, error=%v", got, err)
 		})
 	}
 }
@@ -100,47 +85,29 @@ func TestObjectivePolicyRecoveryPreservesEvidenceWithoutAdapters(t *testing.T) {
 		t.Run(string(policy), func(t *testing.T) {
 			dir := t.TempDir()
 			s, err := openStore(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			rec := policyStoreRecord(t, policy)
-			if err := s.save(rec); err != nil {
-				t.Fatal(err)
-			}
-			if err := s.close(); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, s.save(rec))
+			require.NoError(t, s.close())
 			// Opening storage has no adapter registry or worker configuration.
 			// Even an already-achieved any objective cannot complete a run
 			// whose native chain was interrupted.
 			s, err = openStore(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			defer s.close()
 			got, err := ReadRecord(dir, rec.Result.RunID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.Result.State != Unknown || got.Result.Code != "host_interrupted" || got.Result.Cleanup != "unconfirmed" || got.Result.Tasks[0].State != Unknown {
-				t.Fatalf("interrupted chain acquired a conclusion: %+v", got.Result)
-			}
-			if got.Result.Tasks[0].Policy != policy || !reflect.DeepEqual(got.Result.Tasks[0].Typed, rec.Result.Tasks[0].Typed) || !reflect.DeepEqual(got.Plan, rec.Plan) {
-				t.Fatalf("recovery reinterpreted or lost objective evidence: %+v", got)
-			}
+			require.NoError(t, err)
+			require.True(t, got.Result.State == Unknown && got.Result.Code == "host_interrupted" && got.Result.Cleanup == "unconfirmed" && got.Result.Tasks[0].State == Unknown,
+				"interrupted chain acquired a conclusion: %+v", got.Result)
+			require.True(t, got.Result.Tasks[0].Policy == policy && reflect.DeepEqual(got.Result.Tasks[0].Typed, rec.Result.Tasks[0].Typed) && reflect.DeepEqual(got.Plan, rec.Plan),
+				"recovery reinterpreted or lost objective evidence: %+v", got)
 			first := cloneResult(got.Result)
-			if err := s.close(); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, s.close())
 			s, err = openStore(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			defer s.close()
 			again, err := ReadRecord(dir, rec.Result.RunID)
-			if err != nil || !reflect.DeepEqual(again.Result, first) {
-				t.Fatalf("second recovery rewrote terminal evidence: got=%+v, error=%v", again, err)
-			}
+			require.True(t, err == nil && reflect.DeepEqual(again.Result, first), "second recovery rewrote terminal evidence: got=%+v, error=%v", again, err)
 		})
 	}
 }
@@ -188,36 +155,24 @@ func TestObjectivePolicyRecordsRejectInvalidCombinations(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			s, err := openStore(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			rec := typedStoreRecord(t)
 			mutate(&rec)
-			if err := s.save(rec); err == nil {
-				t.Fatal("save accepted invalid objective policy data")
-			}
-			if err := s.close(); err != nil {
-				t.Fatal(err)
-			}
+			require.Error(t, s.save(rec), "save accepted invalid objective policy data")
+			require.NoError(t, s.close())
 			raw, err := json.Marshal(rec)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			path := filepath.Join(dir, "runs", rec.Result.RunID+".json")
-			if err := os.WriteFile(path, raw, 0600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := ReadRecord(dir, rec.Result.RunID); err == nil {
-				t.Fatal("read accepted invalid objective policy data")
-			}
-			if recovered, err := openStore(dir); err == nil {
+			require.NoError(t, os.WriteFile(path, raw, 0600))
+			_, err = ReadRecord(dir, rec.Result.RunID)
+			require.Error(t, err, "read accepted invalid objective policy data")
+			recovered, openErr := openStore(dir)
+			if openErr == nil {
 				_ = recovered.close()
-				t.Fatal("startup accepted invalid objective policy data")
 			}
+			require.Error(t, openErr, "startup accepted invalid objective policy data")
 			after, err := os.ReadFile(path)
-			if err != nil || !bytes.Equal(after, raw) {
-				t.Fatalf("rejection altered evidence: error=%v", err)
-			}
+			require.True(t, err == nil && bytes.Equal(after, raw), "rejection altered evidence: error=%v", err)
 		})
 	}
 }

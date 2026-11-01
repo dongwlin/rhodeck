@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func typedStoreRecord(t *testing.T) Record {
@@ -26,36 +28,24 @@ func typedStoreRecord(t *testing.T) Record {
 func TestTypedRecordRecoveryPreservesFactsAndVersion(t *testing.T) {
 	dir := t.TempDir()
 	s, err := openStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	rec := typedStoreRecord(t)
-	if err := s.save(rec); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, s.save(rec))
+	require.NoError(t, s.close())
 	s, err = openStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer s.close()
 	got, err := ReadRecord(dir, rec.Result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.SchemaVersion != SchemaVersion || got.Result.State != Unknown || got.Result.Code != "host_interrupted" ||
-		got.Result.Tasks[0].State != Unknown || got.Result.Tasks[0].Typed.State != Succeeded {
-		t.Fatalf("recovery changed confirmed facts: %+v", got.Result)
-	}
+	require.NoError(t, err)
+	require.True(t, got.SchemaVersion == SchemaVersion && got.Result.State == Unknown && got.Result.Code == "host_interrupted" &&
+		got.Result.Tasks[0].State == Unknown && got.Result.Tasks[0].Typed.State == Succeeded,
+		"recovery changed confirmed facts: %+v", got.Result)
 	got.Result.Tasks[0].Typed.Targets[0].Details[2] = 'X'
 	got.Plan.Tasks[0].Adapter.Name = "changed"
 	next, err := ReadRecord(dir, rec.Result.RunID)
-	if err != nil || !bytes.Equal(next.Result.Tasks[0].Typed.Targets[0].Details, rec.Result.Tasks[0].Typed.Targets[0].Details) ||
-		next.Plan.Tasks[0].Adapter.Name != "fixture" {
-		t.Fatalf("record read aliases mutable state: %+v, %v", next, err)
-	}
+	require.True(t, err == nil && bytes.Equal(next.Result.Tasks[0].Typed.Targets[0].Details, rec.Result.Tasks[0].Typed.Targets[0].Details) &&
+		next.Plan.Tasks[0].Adapter.Name == "fixture",
+		"record read aliases mutable state: %+v, %v", next, err)
 }
 
 func TestRecordRejectsIncompatibleTypedData(t *testing.T) {
@@ -89,22 +79,15 @@ func TestRecordRejectsIncompatibleTypedData(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			s, err := openStore(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			defer s.close()
 			rec := typedStoreRecord(t)
 			mutate(&rec)
-			if err := s.save(rec); err == nil {
-				t.Fatal("save accepted incompatible evidence")
-			}
+			require.Error(t, s.save(rec), "save accepted incompatible evidence")
 			raw, _ := json.Marshal(rec)
-			if err := os.WriteFile(filepath.Join(dir, "runs", rec.Result.RunID+".json"), raw, 0600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := ReadRecord(dir, rec.Result.RunID); err == nil {
-				t.Fatal("read accepted incompatible evidence")
-			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "runs", rec.Result.RunID+".json"), raw, 0600))
+			_, err = ReadRecord(dir, rec.Result.RunID)
+			require.Error(t, err, "read accepted incompatible evidence")
 		})
 	}
 }
@@ -112,60 +95,39 @@ func TestRecordRejectsIncompatibleTypedData(t *testing.T) {
 func TestRecordRejectsDuplicateNestedControlFields(t *testing.T) {
 	dir := t.TempDir()
 	s, err := openStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer s.close()
 	rec := typedStoreRecord(t)
 	raw, _ := json.Marshal(rec)
 	raw = bytes.Replace(raw, []byte(`"outcome":"achieved"`), []byte(`"outcome":"failed","outcome":"achieved"`), 1)
-	if err := os.WriteFile(filepath.Join(dir, "runs", rec.Result.RunID+".json"), raw, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ReadRecord(dir, rec.Result.RunID); err == nil {
-		t.Fatal("ambiguous nested control fields accepted")
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "runs", rec.Result.RunID+".json"), raw, 0600))
+	_, err = ReadRecord(dir, rec.Result.RunID)
+	require.Error(t, err, "ambiguous nested control fields accepted")
 }
 
 func TestCurrentSchemaRecordsAllowRawAndAdaptedTasks(t *testing.T) {
 	dir := t.TempDir()
 	s, err := openStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer s.close()
 	rec := typedStoreRecord(t)
 	rec.Plan.Tasks = append(rec.Plan.Tasks, Task{ID: "raw", Type: "FutureTask", Params: json.RawMessage(`{"future":9007199254740993}`)})
 	rec.Result.Tasks = append(rec.Result.Tasks, TaskResult{ID: "raw", State: Started})
-	if err := s.save(rec); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, s.save(rec))
 	got, err := ReadRecord(dir, rec.Result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.SchemaVersion != SchemaVersion || got.Plan.SchemaVersion != SchemaVersion || got.Result.SchemaVersion != SchemaVersion ||
-		got.Result.Tasks[0].Typed.SchemaVersion != SchemaVersion || got.Result.Tasks[1].Typed != nil || got.Plan.Tasks[1].Adapter != nil {
-		t.Fatalf("current schema did not retain mixed task forms: %+v", got)
-	}
-	if !strings.Contains(string(got.Plan.Tasks[1].Params), "9007199254740993") {
-		t.Fatal("mixed raw task lost integer precision")
-	}
+	require.NoError(t, err)
+	require.True(t, got.SchemaVersion == SchemaVersion && got.Plan.SchemaVersion == SchemaVersion && got.Result.SchemaVersion == SchemaVersion &&
+		got.Result.Tasks[0].Typed.SchemaVersion == SchemaVersion && got.Result.Tasks[1].Typed == nil && got.Plan.Tasks[1].Adapter == nil,
+		"current schema did not retain mixed task forms: %+v", got)
+	require.True(t, strings.Contains(string(got.Plan.Tasks[1].Params), "9007199254740993"), "mixed raw task lost integer precision")
 	// Optional adapter and typed fields are naturally omitted for raw tasks.
 	rec.Result.RunID = newRunID()
 	rec.Plan.Tasks = rec.Plan.Tasks[1:]
 	rec.Result.Tasks = rec.Result.Tasks[1:]
-	if err := s.save(rec); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, s.save(rec))
 	raw, err := os.ReadFile(filepath.Join(dir, "runs", rec.Result.RunID+".json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(raw, []byte(`"adapter"`)) || bytes.Contains(raw, []byte(`"typed"`)) {
-		t.Fatal("raw record emitted optional adapter fields")
-	}
-	if _, err := ReadRecord(dir, rec.Result.RunID); err != nil {
-		t.Fatalf("current record with omitted optional fields was rejected: %v", err)
-	}
+	require.NoError(t, err)
+	require.False(t, bytes.Contains(raw, []byte(`"adapter"`)) || bytes.Contains(raw, []byte(`"typed"`)), "raw record emitted optional adapter fields")
+	_, err = ReadRecord(dir, rec.Result.RunID)
+	require.NoError(t, err, "current record with omitted optional fields was rejected: %v", err)
 }

@@ -3,13 +3,12 @@ package switchtheme
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/dongwlin/rhodeck/packages/control"
+	"github.com/stretchr/testify/require"
 )
 
 func switchThemeTaskWithThemes(t *testing.T, themes ...string) control.Task {
@@ -17,9 +16,7 @@ func switchThemeTaskWithThemes(t *testing.T, themes ...string) control.Task {
 	raw, err := json.Marshal(struct {
 		Themes []string `json:"themes"`
 	}{Themes: themes})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return control.Task{ID: "theme", Type: switchThemeTaskType, Params: raw}
 }
 
@@ -39,49 +36,37 @@ func switchThemeNumberedThemes(n int) []string {
 func switchThemeTestReducer(t *testing.T, themes ...string) *switchThemeReducer {
 	t.Helper()
 	prepared, err := New().Prepare(switchThemeTaskWithThemes(t, themes...))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	reducer, ok := prepared.Reducer.(*switchThemeReducer)
-	if !ok {
-		t.Fatalf("reducer type = %T, want a fresh *switchThemeReducer", prepared.Reducer)
-	}
+	require.True(t, ok, "reducer type = %T, want a fresh *switchThemeReducer", prepared.Reducer)
 	return reducer
 }
 
 func switchThemeObserve(t *testing.T, reducer control.TaskReducer, messageID int32, raw string) control.TypedUpdate {
 	t.Helper()
 	update, err := reducer.Observe(control.Observation{MessageID: messageID, JSON: json.RawMessage(raw)})
-	if err != nil {
-		t.Fatalf("unexpected reducer error: %v", err)
-	}
+	require.NoError(t, err, "unexpected reducer error: %v", err)
 	return update
 }
 
 func switchThemeSelectCallback(t *testing.T, taskID int32, theme string) string {
 	t.Helper()
 	encoded, err := json.Marshal(theme)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return fmt.Sprintf(`{"taskchain":"SwitchTheme","taskid":%d,"subtask":"ProcessTask","details":{"task":"SwitchThemeByNameSelectTheme","result":{"text":%s,"rect":[1,2,3,4],"score":0.98}}}`, taskID, encoded)
 }
 
 func switchThemeBranchCallback(t *testing.T, taskID int32, node string) string {
 	t.Helper()
 	encoded, err := json.Marshal(node)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return fmt.Sprintf(`{"taskchain":"SwitchTheme","taskid":%d,"subtask":"ProcessTask","details":{"task":%s,"result":{"text":"branch","rect":[5,6,7,8],"score":0.5}}}`, taskID, encoded)
 }
 
 func switchThemeNotFoundCallback(t *testing.T, taskID int32, theme string) string {
 	t.Helper()
 	encoded, err := json.Marshal(theme)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return fmt.Sprintf(`{"taskchain":"SwitchTheme","taskid":%d,"subtask":"SwitchThemeTask","what":"SwitchThemeNotFound","details":{"theme":%s}}`, taskID, encoded)
 }
 
@@ -91,42 +76,30 @@ func switchThemeSkippedCallback(taskID int32) string {
 
 func wantNoSwitchThemeUpdate(t *testing.T, update control.TypedUpdate) {
 	t.Helper()
-	if len(update.Targets) != 0 || len(update.Summary) != 0 {
-		t.Fatalf("unexpected typed update: %+v", update)
-	}
+	require.False(t, len(update.Targets) != 0 || len(update.Summary) != 0, "unexpected typed update: %+v", update)
 }
 
 func wantSwitchThemeFact(t *testing.T, update control.TypedUpdate, outcome control.TargetOutcome, code, theme string) {
 	t.Helper()
-	if len(update.Summary) != 0 {
-		t.Fatalf("unexpected summary: %s", update.Summary)
-	}
-	if len(update.Targets) != 1 {
-		t.Fatalf("targets = %+v, want exactly one", update.Targets)
-	}
+	require.Empty(t, update.Summary, "unexpected summary: %s", update.Summary)
+	require.Len(t, update.Targets, 1, "targets = %+v, want exactly one", update.Targets)
 	got := update.Targets[0]
-	if got.ID != switchThemeTargetID || got.Outcome != outcome || got.Code != code {
-		t.Fatalf("target = %+v, want id=%q outcome=%q code=%q", got, switchThemeTargetID, outcome, code)
-	}
+	require.True(t, got.ID == switchThemeTargetID && got.Outcome == outcome && got.Code == code,
+		"target = %+v, want id=%q outcome=%q code=%q", got, switchThemeTargetID, outcome, code)
 	var wantDetails json.RawMessage
 	if theme != "" {
 		raw, err := json.Marshal(switchThemeTargetDetails{Theme: theme})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		wantDetails = raw
 	}
-	if !bytes.Equal(got.Details, wantDetails) {
-		t.Fatalf("details = %s, want %s", got.Details, wantDetails)
-	}
+	require.True(t, bytes.Equal(got.Details, wantDetails), "details = %s, want %s", got.Details, wantDetails)
 }
 
 func TestSwitchThemeAdapterDescriptor(t *testing.T) {
 	adapter := New()
 	want := control.AdapterRef{Name: "switch_theme", Version: 1}
-	if got := adapter.Descriptor(); got != want {
-		t.Fatalf("descriptor = %+v, want %+v", got, want)
-	}
+	got := adapter.Descriptor()
+	require.Equal(t, want, got, "descriptor = %+v, want %+v", got, want)
 }
 
 func TestSwitchThemePrepareCompilesOrderedCandidates(t *testing.T) {
@@ -143,24 +116,14 @@ func TestSwitchThemePrepareCompilesOrderedCandidates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			params := switchThemeThemesJSON(t, tc.themes...)
 			prepared, err := adapter.Prepare(control.Task{ID: "theme-1", Type: switchThemeTaskType, Params: json.RawMessage(params)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(prepared.Params) != params {
-				t.Fatalf("compiled params = %s, want ordered candidate array %s", prepared.Params, params)
-			}
+			require.NoError(t, err)
+			require.Equal(t, params, string(prepared.Params), "compiled params = %s, want ordered candidate array %s", prepared.Params, params)
 			// Multiple candidates still yield exactly one target. Preparation does
 			// not model a sequential attempt per candidate.
-			if !reflect.DeepEqual(prepared.Targets, []string{switchThemeTargetID}) {
-				t.Fatalf("targets = %v, want [%s]", prepared.Targets, switchThemeTargetID)
-			}
+			require.Equal(t, []string{switchThemeTargetID}, prepared.Targets, "targets = %v, want [%s]", prepared.Targets, switchThemeTargetID)
 			reducer, ok := prepared.Reducer.(*switchThemeReducer)
-			if !ok || reducer == nil {
-				t.Fatalf("reducer has type %T, want fresh *switchThemeReducer", prepared.Reducer)
-			}
-			if !reflect.DeepEqual(reducer.themes, tc.themes) {
-				t.Fatalf("reducer candidates = %v, want %v", reducer.themes, tc.themes)
-			}
+			require.True(t, ok && reducer != nil, "reducer has type %T, want fresh *switchThemeReducer", prepared.Reducer)
+			require.Equal(t, tc.themes, reducer.themes, "reducer candidates = %v, want %v", reducer.themes, tc.themes)
 		})
 	}
 }
@@ -210,9 +173,8 @@ func TestSwitchThemePrepareRejectsInvalidInput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := adapter.Prepare(control.Task{ID: "theme", Type: switchThemeTaskType, Params: json.RawMessage(tc.params)}); !errors.Is(err, control.ErrInvalidPlan) {
-				t.Fatalf("invalid input accepted: %v", err)
-			}
+			_, err := adapter.Prepare(control.Task{ID: "theme", Type: switchThemeTaskType, Params: json.RawMessage(tc.params)})
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "invalid input accepted: %v", err)
 		})
 	}
 }
@@ -228,26 +190,18 @@ func TestSwitchThemePrepareAcceptsCandidateBoundaries(t *testing.T) {
 	}{
 		{"minimum count", switchThemeThemesJSON(t, "Theme One"), nil},
 		{"maximum count", switchThemeThemesJSON(t, themes...), func(t *testing.T, prepared control.PreparedTask) {
-			if len(prepared.Targets) != 1 {
-				t.Fatalf("targets = %v", prepared.Targets)
-			}
+			require.Len(t, prepared.Targets, 1, "targets = %v", prepared.Targets)
 		}},
 		{"maximum name bytes", `{"themes":["` + longName + `"]}`, nil},
 		{"paired surrogate", `{"themes":["\ud83d\ude00"]}`, func(t *testing.T, prepared control.PreparedTask) {
-			if string(prepared.Params) != `{"themes":["😀"]}` {
-				t.Fatalf("compiled params = %s", prepared.Params)
-			}
+			require.Equal(t, `{"themes":["😀"]}`, string(prepared.Params), "compiled params = %s", prepared.Params)
 		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			prepared, err := adapter.Prepare(control.Task{ID: "theme", Type: switchThemeTaskType, Params: json.RawMessage(tc.params)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if prepared.Reducer == nil {
-				t.Fatal("adapter returned a nil reducer")
-			}
+			require.NoError(t, err)
+			require.True(t, prepared.Reducer != nil, "adapter returned a nil reducer")
 			if tc.check != nil {
 				tc.check(t, prepared)
 			}
@@ -261,11 +215,11 @@ func TestSwitchThemePrepareParamsByteBoundary(t *testing.T) {
 	for _, size := range []int{control.MaxAdapterParamsBytes, control.MaxAdapterParamsBytes + 1} {
 		params := base + strings.Repeat(" ", size-len(base))
 		_, err := adapter.Prepare(control.Task{ID: "theme", Type: switchThemeTaskType, Params: json.RawMessage(params)})
-		if size == control.MaxAdapterParamsBytes && err != nil {
-			t.Fatalf("params at the byte limit rejected: %v", err)
+		if size == control.MaxAdapterParamsBytes {
+			require.NoError(t, err, "params at the byte limit rejected: %v", err)
 		}
-		if size > control.MaxAdapterParamsBytes && !errors.Is(err, control.ErrInvalidPlan) {
-			t.Fatalf("params over the byte limit accepted: %v", err)
+		if size > control.MaxAdapterParamsBytes {
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "params over the byte limit accepted: %v", err)
 		}
 	}
 }
@@ -274,9 +228,8 @@ func TestSwitchThemePrepareRejectsWrongCoreType(t *testing.T) {
 	adapter := New()
 	params := json.RawMessage(switchThemeThemesJSON(t, "Theme One"))
 	for _, taskType := range []string{"OperProgress", "switch_theme", "SwitchTheme ", "switchtheme", ""} {
-		if _, err := adapter.Prepare(control.Task{ID: "theme", Type: taskType, Params: params}); !errors.Is(err, control.ErrInvalidPlan) {
-			t.Fatalf("Core type %q accepted: %v", taskType, err)
-		}
+		_, err := adapter.Prepare(control.Task{ID: "theme", Type: taskType, Params: params})
+		require.ErrorIs(t, err, control.ErrInvalidPlan, "Core type %q accepted: %v", taskType, err)
 	}
 }
 
@@ -285,32 +238,23 @@ func TestSwitchThemePrepareIsDetachedAndFreshPerTask(t *testing.T) {
 	const source = `{"themes":["Alpha","Beta"]}`
 	input := []byte(source)
 	prepared, err := adapter.Prepare(control.Task{ID: "theme-1", Type: switchThemeTaskType, Params: json.RawMessage(input)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(input) != source {
-		t.Fatal("Prepare mutated the caller's params")
-	}
+	require.NoError(t, err)
+	require.Equal(t, source, string(input), "Prepare mutated the caller's params")
 	reducer := prepared.Reducer.(*switchThemeReducer)
 	input[2] = 'X'
-	if string(prepared.Params) != source || prepared.Targets[0] != switchThemeTargetID || reducer.themes[0] != "Alpha" {
-		t.Fatal("prepared output aliases the caller's params")
-	}
+	require.True(t, string(prepared.Params) == source && prepared.Targets[0] == switchThemeTargetID && reducer.themes[0] == "Alpha",
+		"prepared output aliases the caller's params")
 
 	second, err := adapter.Prepare(switchThemeTaskWithThemes(t, "Alpha", "Beta"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	secondReducer := second.Reducer.(*switchThemeReducer)
-	if secondReducer == reducer || &secondReducer.themes[0] == &reducer.themes[0] {
-		t.Fatal("reducer was reused across preparations")
-	}
+	require.True(t, secondReducer != reducer && &secondReducer.themes[0] != &reducer.themes[0],
+		"reducer was reused across preparations")
 	prepared.Targets[0] = "mutated"
 	prepared.Params[2] = 'Y'
 	reducer.themes[0] = "mutated"
-	if second.Targets[0] != switchThemeTargetID || string(second.Params) != source || secondReducer.themes[0] != "Alpha" {
-		t.Fatal("preparations share mutable slices or JSON buffers")
-	}
+	require.True(t, second.Targets[0] == switchThemeTargetID && string(second.Params) == source && secondReducer.themes[0] == "Alpha",
+		"preparations share mutable slices or JSON buffers")
 }
 
 func TestSwitchThemeRawPlanRemainsOpen(t *testing.T) {
@@ -322,23 +266,17 @@ func TestSwitchThemeRawPlanRemainsOpen(t *testing.T) {
 		{ID: "strict", Type: switchThemeTaskType, Adapter: &ref, Params: json.RawMessage(`{"themes":["Strict One","Strict Two"]}`)},
 	}
 	prepared, err := control.PreparePlan(plan, New())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if prepared.Tasks[0].Typed != nil {
-		t.Fatal("raw task was routed through the adapter")
-	}
-	if !bytes.Contains(prepared.Plan.Tasks[0].Params, []byte(`"enable":true`)) ||
-		!bytes.Contains(prepared.Plan.Tasks[0].Params, []byte("9007199254740993")) {
-		t.Fatalf("raw params lost unknown fields or integer literals: %s", prepared.Plan.Tasks[0].Params)
-	}
+	require.NoError(t, err)
+	require.Nil(t, prepared.Tasks[0].Typed, "raw task was routed through the adapter")
+	// The 9007199254740993 literal is asserted byte-wise on purpose; it must
+	// survive as an exact integer, not a float64 round-trip.
+	require.True(t, bytes.Contains(prepared.Plan.Tasks[0].Params, []byte(`"enable":true`)) &&
+		bytes.Contains(prepared.Plan.Tasks[0].Params, []byte("9007199254740993")),
+		"raw params lost unknown fields or integer literals: %s", prepared.Plan.Tasks[0].Params)
 	typed := prepared.Tasks[1].Typed
-	if typed == nil || len(typed.Targets) != 1 || typed.Targets[0].ID != switchThemeTargetID || typed.Targets[0].Outcome != control.TargetUnobserved {
-		t.Fatalf("strict task was not prepared: %+v", typed)
-	}
-	if string(prepared.Plan.Tasks[1].Params) != `{"themes":["Strict One","Strict Two"]}` {
-		t.Fatalf("strict task kept uncompiled params: %s", prepared.Plan.Tasks[1].Params)
-	}
+	require.True(t, typed != nil && len(typed.Targets) == 1 && typed.Targets[0].ID == switchThemeTargetID && typed.Targets[0].Outcome == control.TargetUnobserved,
+		"strict task was not prepared: %+v", typed)
+	require.Equal(t, `{"themes":["Strict One","Strict Two"]}`, string(prepared.Plan.Tasks[1].Params), "strict task kept uncompiled params: %s", prepared.Plan.Tasks[1].Params)
 }
 
 func TestSwitchThemeReducerRequiresExactSelection(t *testing.T) {
@@ -412,9 +350,7 @@ func TestSwitchThemeReducerBranches(t *testing.T) {
 			wantSwitchThemeFact(t, update, tc.outcome, tc.code, "Beta")
 			details := update.Targets[0].Details
 			for _, forbidden := range []string{"rect", "score", "path", "actually_changed", "final_state_verified", "branch"} {
-				if bytes.Contains(details, []byte(forbidden)) {
-					t.Fatalf("details exposed %q: %s", forbidden, details)
-				}
+				require.False(t, bytes.Contains(details, []byte(forbidden)), "details exposed %q: %s", forbidden, details)
 			}
 		})
 	}
@@ -493,9 +429,8 @@ func TestSwitchThemeReducerRejectsMalformedCallbacks(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := switchThemeTestReducer(t, "Alpha")
-			if _, err := r.Observe(control.Observation{MessageID: switchThemeMessageSubTaskCompleted, JSON: json.RawMessage(raw)}); !errors.Is(err, control.ErrTypedResult) {
-				t.Fatalf("malformed callback accepted: %v", err)
-			}
+			_, err := r.Observe(control.Observation{MessageID: switchThemeMessageSubTaskCompleted, JSON: json.RawMessage(raw)})
+			require.ErrorIs(t, err, control.ErrTypedResult, "malformed callback accepted: %v", err)
 		})
 	}
 }
@@ -518,9 +453,7 @@ func TestSwitchThemeReducerRepeatingIdenticalNodeIsStable(t *testing.T) {
 	second := switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeLocked))
 	wantSwitchThemeFact(t, first, control.TargetLocked, switchThemeCodeLocked, "Alpha")
 	wantSwitchThemeFact(t, second, control.TargetLocked, switchThemeCodeLocked, "Alpha")
-	if !reflect.DeepEqual(first, second) {
-		t.Fatalf("repeated node produced a different update: %+v vs %+v", first, second)
-	}
+	require.Equal(t, first, second, "repeated node produced a different update: %+v vs %+v", first, second)
 }
 
 func TestSwitchThemeReducerSelectionConflictKeepsFirstSelection(t *testing.T) {
@@ -530,9 +463,8 @@ func TestSwitchThemeReducerSelectionConflictKeepsFirstSelection(t *testing.T) {
 	wantSwitchThemeFact(t, update, control.TargetAmbiguous, switchThemeCodeSelectionConflict, "")
 	// The target fact is now fixed as ambiguous; a later branch cannot promote it.
 	wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeAlreadySet)))
-	if r.selected != "Alpha" || !r.selectedSet {
-		t.Fatalf("conflicting selection rewrote the recorded theme: %q %v", r.selected, r.selectedSet)
-	}
+	require.True(t, r.selected == "Alpha" && r.selectedSet,
+		"conflicting selection rewrote the recorded theme: %q %v", r.selected, r.selectedSet)
 }
 
 func TestSwitchThemeReducerKeepsFirstFactImmutably(t *testing.T) {
@@ -544,9 +476,7 @@ func TestSwitchThemeReducerKeepsFirstFactImmutably(t *testing.T) {
 	// typed_conflict and preserve the original locked fact.
 	confirm := switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeConfirm))
 	wantSwitchThemeFact(t, confirm, control.TargetConfirmationObserved, switchThemeCodeConfirmationObserved, "Alpha")
-	if r.selected != "Alpha" {
-		t.Fatalf("conflicting branch rewrote the selected theme: %q", r.selected)
-	}
+	require.Equal(t, "Alpha", r.selected, "conflicting branch rewrote the selected theme: %q", r.selected)
 }
 
 func ExampleNew() {

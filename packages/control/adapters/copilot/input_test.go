@@ -3,7 +3,6 @@ package copilot
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -12,6 +11,8 @@ import (
 
 	"github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/internal/strictjson"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func copilotTask(params string) control.Task {
@@ -33,18 +34,12 @@ func TestCopilotPrepareAcceptsStrictInputs(t *testing.T) {
 	} {
 		t.Run(params, func(t *testing.T) {
 			prepared, err := New().Prepare(copilotTask(params))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strictjson.ValidObject(prepared.Params, control.MaxAdapterParamsBytes) {
-				t.Fatalf("compiled params are invalid: %s", prepared.Params)
-			}
+			require.NoError(t, err)
+			require.True(t, strictjson.ValidObject(prepared.Params, control.MaxAdapterParamsBytes), "compiled params are invalid: %s", prepared.Params)
 			if strings.Contains(params, `"copilot_list"`) {
-				if prepared.Policy != control.ObjectiveAll || len(prepared.Targets) == 0 || prepared.Reducer == nil {
-					t.Fatalf("list preparation = %+v", prepared)
-				}
-			} else if prepared.Policy != control.ObjectiveNone || len(prepared.Targets) != 0 || prepared.Reducer != nil {
-				t.Fatalf("input-only preparation = %+v", prepared)
+				require.False(t, prepared.Policy != control.ObjectiveAll || len(prepared.Targets) == 0 || prepared.Reducer == nil, "list preparation = %+v", prepared)
+			} else {
+				require.False(t, prepared.Policy != control.ObjectiveNone || len(prepared.Targets) != 0 || prepared.Reducer != nil, "input-only preparation = %+v", prepared)
 			}
 		})
 	}
@@ -115,9 +110,8 @@ func TestCopilotPrepareRejectsInvalidInputs(t *testing.T) {
 		"trailing input":          `{"filename":"x"}{}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := New().Prepare(copilotTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
-				t.Fatalf("invalid input accepted: %v", err)
-			}
+			_, err := New().Prepare(copilotTask(params))
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "invalid input accepted: %v", err)
 		})
 	}
 	for _, field := range []string{"filename", "copilot_list", "formation", "formation_index", "add_trust", "ignore_requirements", "use_sanity_potion", "support_unit_usage", "support_unit_name", "loop_times", "operbox_data_path", "user_additional"} {
@@ -126,9 +120,8 @@ func TestCopilotPrepareRejectsInvalidInputs(t *testing.T) {
 			if field == "filename" {
 				params = `{"filename":null}`
 			}
-			if _, err := New().Prepare(copilotTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
-				t.Fatalf("null input accepted: %v", err)
-			}
+			_, err := New().Prepare(copilotTask(params))
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "null input accepted: %v", err)
 		})
 	}
 	for _, field := range []string{"id", "filename", "nav_name_override", "is_raid"} {
@@ -137,9 +130,8 @@ func TestCopilotPrepareRejectsInvalidInputs(t *testing.T) {
 			if field == "filename" {
 				params = `{"copilot_list":[{"filename":null}]}`
 			}
-			if _, err := New().Prepare(copilotTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
-				t.Fatalf("null list input accepted: %v", err)
-			}
+			_, err := New().Prepare(copilotTask(params))
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "null list input accepted: %v", err)
 		})
 	}
 }
@@ -147,41 +139,26 @@ func TestCopilotPrepareRejectsInvalidInputs(t *testing.T) {
 func TestCopilotCompilePreservesFieldsAndEntryIdentity(t *testing.T) {
 	const input = `{"copilot_list":[{"filename":"same/../job.json","is_raid":false},{"filename":"same/../job.json","id":0,"is_raid":true},{"filename":"same/../job.json"},{"filename":"same/../job.json","id":2,"nav_name_override":"1-7"}],"formation":true,"formation_index":4,"add_trust":true,"ignore_requirements":true,"use_sanity_potion":true,"support_unit_usage":2,"support_unit_name":"Support","operbox_data_path":"../box.json","user_additional":[{"name":"Alpha","skill":3}],"loop_times":1}`
 	params, entries, err := compileCopilot(json.RawMessage(input))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := []int32{entries[0].ID, entries[1].ID, entries[2].ID, entries[3].ID}; !reflect.DeepEqual(got, []int32{1, 0, 3, 2}) {
-		t.Fatalf("assigned IDs = %v", got)
-	}
+	require.NoError(t, err)
+	got := []int32{entries[0].ID, entries[1].ID, entries[2].ID, entries[3].ID}
+	require.Equal(t, []int32{1, 0, 3, 2}, got, "assigned IDs = %v", got)
 	for i, entry := range entries {
-		if entry.SourceIndex != i || entry.Filename != "same/../job.json" || entry.IsRaid != (i == 1) {
-			t.Fatalf("entry mapping lost identity: %+v", entry)
-		}
+		require.False(t, entry.SourceIndex != i || entry.Filename != "same/../job.json" || entry.IsRaid != (i == 1), "entry mapping lost identity: %+v", entry)
 	}
 	var source, compiled map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(input), &source); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(params, &compiled); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, json.Unmarshal([]byte(input), &source))
+	require.NoError(t, json.Unmarshal(params, &compiled))
 	for field, want := range source {
-		if field != "copilot_list" && !bytes.Equal(compiled[field], want) {
-			t.Fatalf("field %s changed: %s, want %s", field, compiled[field], want)
+		if field != "copilot_list" {
+			require.True(t, bytes.Equal(compiled[field], want), "field %s changed: %s, want %s", field, compiled[field], want)
 		}
 	}
 	var list []copilotCoreEntry
-	if err := json.Unmarshal(compiled["copilot_list"], &list); err != nil {
-		t.Fatal(err)
-	}
-	if list[3].NavNameOverride == nil || *list[3].NavNameOverride != "1-7" || !list[1].IsRaid || list[0].ID == list[2].ID {
-		t.Fatalf("list fields lost: %+v", list)
-	}
+	require.NoError(t, json.Unmarshal(compiled["copilot_list"], &list))
+	require.False(t, list[3].NavNameOverride == nil || *list[3].NavNameOverride != "1-7" || !list[1].IsRaid || list[0].ID == list[2].ID, "list fields lost: %+v", list)
 	for range 5 {
 		again, mapping, err := compileCopilot(json.RawMessage(input))
-		if err != nil || !bytes.Equal(again, params) || !reflect.DeepEqual(mapping, entries) {
-			t.Fatalf("compilation was not deterministic: %s, %+v, %v", again, mapping, err)
-		}
+		require.False(t, err != nil || !bytes.Equal(again, params) || !reflect.DeepEqual(mapping, entries), "compilation was not deterministic: %s, %+v, %v", again, mapping, err)
 	}
 }
 
@@ -192,47 +169,37 @@ func TestCopilotPrepareBudgets(t *testing.T) {
 		"entry count":    `{"copilot_list":[` + strings.TrimSuffix(strings.Repeat(`{"filename":"x"},`, copilotMaxEntries+1), ",") + `]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := New().Prepare(copilotTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
-				t.Fatalf("over-budget input accepted: %v", err)
-			}
+			_, err := New().Prepare(copilotTask(params))
+			require.ErrorIs(t, err, control.ErrInvalidPlan, "over-budget input accepted: %v", err)
 		})
 	}
 	params := `{"copilot_list":[` + strings.TrimSuffix(strings.Repeat(`{"filename":"x"},`, copilotMaxEntries), ",") + `]}`
-	if _, err := New().Prepare(copilotTask(params)); err != nil {
-		t.Fatalf("entry limit rejected: %v", err)
-	}
+	_, err := New().Prepare(copilotTask(params))
+	require.NoError(t, err, "entry limit rejected: %v", err)
 }
 
 func TestCopilotPrepareIsDetachedAndConcurrent(t *testing.T) {
 	const input = `{"copilot_list":[{"filename":"not-present/../job.json","is_raid":true}]}`
 	adapter := New()
-	if got := adapter.Descriptor(); got != (control.AdapterRef{Name: "copilot", Version: 1}) {
-		t.Fatalf("descriptor = %+v", got)
-	}
+	got := adapter.Descriptor()
+	require.Equal(t, control.AdapterRef{Name: "copilot", Version: 1}, got, "descriptor = %+v", got)
 	task := copilotTask(input)
 	first, err := adapter.Prepare(task)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	task.Params[2] = 'X'
-	if bytes.Contains(first.Params, []byte("X")) {
-		t.Fatal("compiled params alias input")
-	}
+	require.False(t, bytes.Contains(first.Params, []byte("X")), "compiled params alias input")
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			prepared, err := adapter.Prepare(copilotTask(input))
-			if err != nil || !bytes.Equal(prepared.Params, first.Params) {
-				t.Errorf("concurrent preparation changed output: %s, %v", prepared.Params, err)
-			}
+			assert.False(t, err != nil || !bytes.Equal(prepared.Params, first.Params), "concurrent preparation changed output: %s, %v", prepared.Params, err)
 		}()
 	}
 	wg.Wait()
-	if _, err := adapter.Prepare(control.Task{Type: "ParadoxCopilot", Params: json.RawMessage(input)}); !errors.Is(err, control.ErrInvalidPlan) {
-		t.Fatalf("wrong Core task type accepted: %v", err)
-	}
+	_, err = adapter.Prepare(control.Task{Type: "ParadoxCopilot", Params: json.RawMessage(input)})
+	require.ErrorIs(t, err, control.ErrInvalidPlan, "wrong Core task type accepted: %v", err)
 }
 
 func TestCopilotRawPlanRemainsOpen(t *testing.T) {
@@ -244,18 +211,10 @@ func TestCopilotRawPlanRemainsOpen(t *testing.T) {
 		{ID: "strict", Type: "Copilot", Adapter: &ref, Params: json.RawMessage(`{"filename":"unavailable/../job.json"}`)},
 	}
 	prepared, err := control.PreparePlan(plan, New())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(prepared.Plan.Tasks[0].Params) != raw || prepared.Tasks[0].Policy != "" || prepared.Tasks[0].Typed != nil {
-		t.Fatalf("raw task changed: %+v", prepared.Tasks[0])
-	}
-	if prepared.Tasks[1].Policy != control.ObjectiveNone || prepared.Tasks[1].Typed != nil {
-		t.Fatalf("input-only preview = %+v", prepared.Tasks[1])
-	}
-	if !bytes.Contains(prepared.Plan.Tasks[1].Params, []byte(`"filename":"unavailable/../job.json"`)) {
-		t.Fatalf("path was changed: %s", prepared.Plan.Tasks[1].Params)
-	}
+	require.NoError(t, err)
+	require.False(t, string(prepared.Plan.Tasks[0].Params) != raw || prepared.Tasks[0].Policy != "" || prepared.Tasks[0].Typed != nil, "raw task changed: %+v", prepared.Tasks[0])
+	require.False(t, prepared.Tasks[1].Policy != control.ObjectiveNone || prepared.Tasks[1].Typed != nil, "input-only preview = %+v", prepared.Tasks[1])
+	require.True(t, bytes.Contains(prepared.Plan.Tasks[1].Params, []byte(`"filename":"unavailable/../job.json"`)), "path was changed: %s", prepared.Plan.Tasks[1].Params)
 }
 
 func ExampleNew() {

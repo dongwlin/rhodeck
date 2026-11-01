@@ -3,7 +3,6 @@ package control
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
+	"github.com/stretchr/testify/require"
 )
 
 func policyRuntimeAdapter(policy ObjectivePolicy, targets []string, reducer TaskReducer) TaskAdapter {
@@ -33,37 +33,24 @@ func TestRuntimeObjectiveNoneUsesOnlyChainFacts(t *testing.T) {
 			cfg.Adapters = []TaskAdapter{policyRuntimeAdapter(ObjectiveNone, nil, nil)}
 			rt := newRuntime(t, cfg)
 			run, err := rt.Run(context.Background(), typedRuntimePlan(t))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			if test.mode == "stop" {
 				waitStarted(t, run)
-				if err := run.Stop(context.Background()); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, run.Stop(context.Background()))
 			}
 			events, result := waitRuntimeRun(t, run)
-			if result.State != test.state || result.Cleanup != "complete" {
-				t.Fatalf("input-only result = %+v", result)
-			}
-			if result.Tasks[0].Policy != ObjectiveNone || result.Tasks[0].Typed != nil || len(run.reducers) != 0 {
-				t.Fatalf("input-only task gained target interpretation: %+v", result.Tasks[0])
-			}
-			if result.Tasks[1].Policy != "" || result.Tasks[1].Typed != nil {
-				t.Fatalf("raw task gained a policy or typed facts: %+v", result.Tasks[1])
-			}
+			require.True(t, result.State == test.state && result.Cleanup == "complete", "input-only result = %+v", result)
+			require.True(t, result.Tasks[0].Policy == ObjectiveNone && result.Tasks[0].Typed == nil && len(run.reducers) == 0,
+				"input-only task gained target interpretation: %+v", result.Tasks[0])
+			require.True(t, result.Tasks[1].Policy == "" && result.Tasks[1].Typed == nil,
+				"raw task gained a policy or typed facts: %+v", result.Tasks[1])
 			for _, event := range events {
-				if event.Type == "typed" || event.Typed != nil {
-					t.Fatalf("input-only task emitted typed facts: %+v", event)
-				}
+				require.True(t, event.Type != "typed" && event.Typed == nil, "input-only task emitted typed facts: %+v", event)
 			}
 			record, err := ReadRecord(cfg.DataDir, result.RunID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if record.Result.State != test.state || record.Result.Tasks[0].Policy != ObjectiveNone || record.Result.Tasks[0].Typed != nil {
-				t.Fatalf("input-only record changed chain or target facts: %+v", record.Result)
-			}
+			require.NoError(t, err)
+			require.True(t, record.Result.State == test.state && record.Result.Tasks[0].Policy == ObjectiveNone && record.Result.Tasks[0].Typed == nil,
+				"input-only record changed chain or target facts: %+v", record.Result)
 		})
 	}
 }
@@ -109,32 +96,25 @@ func TestRuntimeObjectiveAnyKeepsIndependentTargetFacts(t *testing.T) {
 					TaskID int32        `json:"taskid"`
 					Target TargetResult `json:"target"`
 				}{101, update})
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				sendTypedCallback(t, run, 20003, string(raw))
 			}
 			sendTypedCallback(t, run, 10002, `{"taskid":101}`)
 			sendTypedCallback(t, run, 3, `{"finished_tasks":[101]}`)
 			result := run.Snapshot()
-			if run.proof != test.state || run.proofCode != test.code || run.fatal != "" {
-				t.Fatalf("run aggregate = %s/%s, fatal = %q", run.proof, run.proofCode, run.fatal)
-			}
-			if result.Tasks[0].State != Succeeded || result.Tasks[0].Policy != ObjectiveAny || result.Tasks[0].Typed.State != test.state {
-				t.Fatalf("chain and objective aggregate = %+v", result.Tasks[0])
-			}
+			require.True(t, run.proof == test.state && run.proofCode == test.code && run.fatal == "",
+				"run aggregate = %s/%s, fatal = %q", run.proof, run.proofCode, run.fatal)
+			require.True(t, result.Tasks[0].State == Succeeded && result.Tasks[0].Policy == ObjectiveAny && result.Tasks[0].Typed.State == test.state,
+				"chain and objective aggregate = %+v", result.Tasks[0])
 			for i, outcome := range test.outcomes {
-				if got := result.Tasks[0].Typed.Targets[i].Outcome; got != outcome {
-					t.Fatalf("target %d = %s, want %s", i, got, outcome)
-				}
+				got := result.Tasks[0].Typed.Targets[i].Outcome
+				require.Equal(t, outcome, got, "target %d = %s, want %s", i, got, outcome)
 			}
-			if events := typedEventsIn(run); len(events) != len(test.updates) {
-				t.Fatalf("typed event count = %d, want %d; chain completion must not create targets", len(events), len(test.updates))
-			}
+			events := typedEventsIn(run)
+			require.Len(t, events, len(test.updates), "typed event count = %d, want %d; chain completion must not create targets", len(events), len(test.updates))
 			record, err := ReadRecord(filepath.Dir(run.runtime.store.dir), result.RunID)
-			if err != nil || record.Result.Tasks[0].Typed.Policy != ObjectiveAny {
-				t.Fatalf("policy was not persisted with target facts: %+v, %v", record, err)
-			}
+			require.True(t, err == nil && record.Result.Tasks[0].Typed.Policy == ObjectiveAny,
+				"policy was not persisted with target facts: %+v, %v", record, err)
 		})
 	}
 }
@@ -160,16 +140,15 @@ func waitAnyPolicyFact(t *testing.T, run *Run) {
 		select {
 		case event, ok := <-run.Events():
 			if !ok {
-				t.Fatalf("run ended before target achievement: %+v", run.Snapshot())
+				require.FailNow(t, fmt.Sprintf("run ended before target achievement: %+v", run.Snapshot()))
 			}
 			if event.Type == "typed" {
-				if event.Typed == nil || event.Typed.State != Succeeded || event.Typed.Policy != ObjectiveAny {
-					t.Fatalf("unexpected objective fact: %+v", event)
-				}
+				require.True(t, event.Typed != nil && event.Typed.State == Succeeded && event.Typed.Policy == ObjectiveAny,
+					"unexpected objective fact: %+v", event)
 				return
 			}
 		case <-timer.C:
-			t.Fatal("target achievement was not observed")
+			require.FailNow(t, "target achievement was not observed")
 		}
 	}
 }
@@ -192,36 +171,32 @@ func TestRuntimeObjectiveAnyDoesNotOverrideRunTermination(t *testing.T) {
 			cfg.Adapters = []TaskAdapter{achievedAnyRuntimeAdapter()}
 			rt := newRuntime(t, cfg)
 			run, err := rt.Run(context.Background(), typedRuntimePlan(t))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			if test.mode == "stop" || test.mode == "stopstuck" {
 				waitAnyPolicyFact(t, run)
 				stopErr := run.Stop(context.Background())
 				if test.mode == "stopstuck" {
 					var failure *protocol.Error
-					if !errors.As(stopErr, &failure) || failure.Code != "stop_unconfirmed" {
-						t.Fatalf("unconfirmed stop error = %v", stopErr)
-					}
-				} else if stopErr != nil {
-					t.Fatal(stopErr)
+					require.ErrorAs(t, stopErr, &failure, "unconfirmed stop error = %v", stopErr)
+					require.Equal(t, "stop_unconfirmed", failure.Code, "unconfirmed stop error = %v", stopErr)
+				} else {
+					require.NoError(t, stopErr)
 				}
 			}
 			_, result := waitRuntimeRun(t, run)
-			if result.State != test.state || test.cleanup != "" && result.Cleanup != test.cleanup {
-				t.Fatalf("target achievement overrode run termination: %+v", result)
-			}
-			if test.mode == "stopstuck" && (result.Code != "stop_timeout" || (result.Cleanup != "complete" && result.Cleanup != "failed")) {
-				t.Fatalf("unconfirmed stop lost its deadline or cleanup result: %+v", result)
+			require.True(t, result.State == test.state && (test.cleanup == "" || result.Cleanup == test.cleanup),
+				"target achievement overrode run termination: %+v", result)
+			if test.mode == "stopstuck" {
+				require.True(t, result.Code == "stop_timeout" && (result.Cleanup == "complete" || result.Cleanup == "failed"),
+					"unconfirmed stop lost its deadline or cleanup result: %+v", result)
 			}
 			typed := result.Tasks[0].Typed
-			if typed == nil || typed.State != Succeeded || typed.Policy != ObjectiveAny || typed.Targets[0].Outcome != TargetAchieved || typed.Targets[1].Outcome != TargetFailed {
-				t.Fatalf("run termination erased independent target facts: %+v", typed)
-			}
+			require.True(t, typed != nil && typed.State == Succeeded && typed.Policy == ObjectiveAny &&
+				typed.Targets[0].Outcome == TargetAchieved && typed.Targets[1].Outcome == TargetFailed,
+				"run termination erased independent target facts: %+v", typed)
 			record, err := ReadRecord(cfg.DataDir, result.RunID)
-			if err != nil || record.Result.State != test.state || record.Result.Tasks[0].Typed.State != Succeeded {
-				t.Fatalf("record lost target/run separation: %+v, %v", record, err)
-			}
+			require.True(t, err == nil && record.Result.State == test.state && record.Result.Tasks[0].Typed.State == Succeeded,
+				"record lost target/run separation: %+v, %v", record, err)
 		})
 	}
 }
@@ -241,9 +216,7 @@ func TestRuntimeObjectiveAnyPreservesFactsOnLostOrInvalidEvents(t *testing.T) {
 			switch fault {
 			case "lost events":
 				m, err := protocol.NewMessage(protocol.Event, protocol.DiagnosticsEvent, 0, protocol.InstanceDiagnostics{LostEvents: 1})
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				run.observe(m)
 			case "conflicting target":
 				code = "typed_conflict"
@@ -256,13 +229,10 @@ func TestRuntimeObjectiveAnyPreservesFactsOnLostOrInvalidEvents(t *testing.T) {
 			}
 			sendTypedCallback(t, run, 10002, `{"taskid":101}`)
 			sendTypedCallback(t, run, 3, `{"finished_tasks":[101]}`)
-			if run.fatal != code || run.proof != "" {
-				t.Fatalf("achieved target hid a fault: fatal=%s, proof=%s", run.fatal, run.proof)
-			}
+			require.True(t, run.fatal == code && run.proof == "", "achieved target hid a fault: fatal=%s, proof=%s", run.fatal, run.proof)
 			record, err := ReadRecord(filepath.Dir(run.runtime.store.dir), run.Snapshot().RunID)
-			if err != nil || record.Result.Tasks[0].Typed.State != Succeeded || record.Result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved {
-				t.Fatalf("fault destroyed durable target fact: %+v, %v", record, err)
-			}
+			require.True(t, err == nil && record.Result.Tasks[0].Typed.State == Succeeded && record.Result.Tasks[0].Typed.Targets[0].Outcome == TargetAchieved,
+				"fault destroyed durable target fact: %+v, %v", record, err)
 		})
 	}
 }
@@ -287,31 +257,24 @@ func TestRuntimeObjectiveAnyRejectsSameTargetConflictInEitherOrder(t *testing.T)
 				return TypedUpdate{}, nil
 			}))
 			sendTypedCallback(t, run, 20003, `{"taskid":101}`)
-			if events := typedEventsIn(run); len(events) != 1 {
-				t.Fatalf("first fact published %d typed events, want 1", len(events))
-			}
+			events := typedEventsIn(run)
+			require.Len(t, events, 1, "first fact published %d typed events, want 1", len(events))
 			update = TypedUpdate{Targets: []TargetResult{{ID: "run-1", Outcome: test.second, Code: "conflicting_fact"}}}
 			sendTypedCallback(t, run, 20003, `{"taskid":101}`)
 			sendTypedCallback(t, run, 10002, `{"taskid":101}`)
 			sendTypedCallback(t, run, 3, `{"finished_tasks":[101]}`)
-			if run.fatal != "typed_conflict" || run.proof != "" {
-				t.Fatalf("same-target conflict established a run result: fatal=%s, proof=%s", run.fatal, run.proof)
-			}
+			require.True(t, run.fatal == "typed_conflict" && run.proof == "",
+				"same-target conflict established a run result: fatal=%s, proof=%s", run.fatal, run.proof)
 			typed := run.Snapshot().Tasks[0].Typed
-			if typed.State != test.state || !sameTarget(typed.Targets[0], original) || typed.Targets[1].Outcome != TargetUnobserved {
-				t.Fatalf("conflict replaced or invented a target fact: %+v", typed)
-			}
-			if events := typedEventsIn(run); len(events) != 0 {
-				t.Fatalf("conflict published %d further typed events", len(events))
-			}
+			require.True(t, typed.State == test.state && sameTarget(typed.Targets[0], original) && typed.Targets[1].Outcome == TargetUnobserved,
+				"conflict replaced or invented a target fact: %+v", typed)
+			events = typedEventsIn(run)
+			require.Empty(t, events, "conflict published %d further typed events", len(events))
 			record, err := ReadRecord(filepath.Dir(run.runtime.store.dir), run.Snapshot().RunID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			durable := record.Result.Tasks[0].Typed
-			if durable.Policy != ObjectiveAny || durable.State != test.state || !sameTarget(durable.Targets[0], original) || durable.Targets[1].Outcome != TargetUnobserved {
-				t.Fatalf("conflict changed durable target facts: %+v", durable)
-			}
+			require.True(t, durable.Policy == ObjectiveAny && durable.State == test.state && sameTarget(durable.Targets[0], original) && durable.Targets[1].Outcome == TargetUnobserved,
+				"conflict changed durable target facts: %+v", durable)
 		})
 	}
 }
@@ -332,15 +295,12 @@ func TestRuntimeObjectiveAnyEventBudgetStillStopsAchievedRun(t *testing.T) {
 	for i := range targets {
 		run.observeTyped(protocol.Callback{MessageID: 20003, CoreSequence: uint64(i + 1), JSON: json.RawMessage(`{"taskid":101}`)}, &id, nil)
 	}
-	if run.fatal != "typed_event_overflow" || run.typedEventCount != MaxTypedEventMessages || run.proof != "" {
-		t.Fatalf("achieved target bypassed event budget: fatal=%s, count=%d, proof=%s", run.fatal, run.typedEventCount, run.proof)
-	}
+	require.True(t, run.fatal == "typed_event_overflow" && run.typedEventCount == MaxTypedEventMessages && run.proof == "",
+		"achieved target bypassed event budget: fatal=%s, count=%d, proof=%s", run.fatal, run.typedEventCount, run.proof)
 	result := run.Snapshot()
-	if result.Tasks[0].Typed.State != Succeeded || result.Tasks[0].Typed.Targets[count-1].Outcome != TargetUnobserved {
-		t.Fatalf("overflow changed or invented facts: %+v", result.Tasks[0].Typed)
-	}
+	require.True(t, result.Tasks[0].Typed.State == Succeeded && result.Tasks[0].Typed.Targets[count-1].Outcome == TargetUnobserved,
+		"overflow changed or invented facts: %+v", result.Tasks[0].Typed)
 	record, err := ReadRecord(filepath.Dir(run.runtime.store.dir), result.RunID)
-	if err != nil || record.Result.Tasks[0].Typed.State != Succeeded || record.Result.Tasks[0].Typed.Targets[count-1].Outcome != TargetUnobserved {
-		t.Fatalf("overflow changed durable facts: %+v, %v", record, err)
-	}
+	require.True(t, err == nil && record.Result.Tasks[0].Typed.State == Succeeded && record.Result.Tasks[0].Typed.Targets[count-1].Outcome == TargetUnobserved,
+		"overflow changed durable facts: %+v, %v", record, err)
 }

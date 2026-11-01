@@ -10,6 +10,7 @@ import (
 	. "github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/adapters/operprogress"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
+	"github.com/stretchr/testify/require"
 )
 
 // A typed callback that reaches the monitor before Start was issued cannot be
@@ -20,19 +21,14 @@ func TestTypedMonitorRejectsCallbackBeforeStart(t *testing.T) {
 	r := newPreparedTypedHarness(t, plan, []int32{101}, false, operprogress.New())
 	sendTypedCallback(t, r, operProgressMessageSubTaskExtraInfo,
 		`{"taskchain":"OperProgress","taskid":101,"what":"OperProgressDetail","details":{"role":"Warrior","name":"Alpha","result":"Success","result_detail":"Completed","elite":2}}`)
-	if InspectRunForTest(r).Fatal != "typed_invalid_event" {
-		t.Fatalf("early callback fatal = %q, want typed_invalid_event", InspectRunForTest(r).Fatal)
-	}
+	require.Equal(t, "typed_invalid_event", InspectRunForTest(r).Fatal, "early callback fatal = %q, want typed_invalid_event", InspectRunForTest(r).Fatal)
 	result := r.Snapshot()
-	if result.Tasks[0].Typed.State != Unknown || result.Tasks[0].Typed.Code != "typed_incomplete" {
-		t.Fatalf("early callback changed the aggregate: %+v", result.Tasks[0].Typed)
-	}
-	if target := result.Tasks[0].Typed.Targets[0]; target.Outcome != TargetUnobserved {
-		t.Fatalf("early callback created a fact: %+v", target)
-	}
-	if events := typedEventsIn(r); len(events) != 0 {
-		t.Fatalf("early callback published %d typed events", len(events))
-	}
+	require.True(t, result.Tasks[0].Typed.State == Unknown && result.Tasks[0].Typed.Code == "typed_incomplete",
+		"early callback changed the aggregate: %+v", result.Tasks[0].Typed)
+	target := result.Tasks[0].Typed.Targets[0]
+	require.Equal(t, TargetUnobserved, target.Outcome, "early callback created a fact: %+v", target)
+	events := typedEventsIn(r)
+	require.Empty(t, events, "early callback published %d typed events", len(events))
 }
 
 // A repeated identical fact is a no-op, while a different fact for an already
@@ -44,29 +40,20 @@ func TestTypedMonitorDuplicateAndConflictingFacts(t *testing.T) {
 	achieved := `{"taskchain":"OperProgress","taskid":101,"what":"OperProgressDetail","details":{"role":"Warrior","name":"Alpha","result":"Success","result_detail":"Completed","elite":2}}`
 	sendTypedCallback(t, r, operProgressMessageSubTaskExtraInfo, achieved)
 	sendTypedCallback(t, r, operProgressMessageSubTaskExtraInfo, achieved)
-	if InspectRunForTest(r).Fatal != "" {
-		t.Fatalf("repeating a fact failed the run: %s", InspectRunForTest(r).Fatal)
-	}
-	if events := typedEventsIn(r); len(events) != 1 {
-		t.Fatalf("duplicate fact published %d typed events, want 1", len(events))
-	}
+	require.Empty(t, InspectRunForTest(r).Fatal, "repeating a fact failed the run: %s", InspectRunForTest(r).Fatal)
+	events := typedEventsIn(r)
+	require.Len(t, events, 1, "duplicate fact published %d typed events, want 1", len(events))
 	sendTypedCallback(t, r, operProgressMessageSubTaskExtraInfo,
 		`{"taskchain":"OperProgress","taskid":101,"what":"OperProgressDetail","details":{"role":"Warrior","name":"Alpha","result":"Failed","result_detail":"ResourceInsufficient"}}`)
-	if InspectRunForTest(r).Fatal != "typed_conflict" {
-		t.Fatalf("conflicting fact fatal = %q, want typed_conflict", InspectRunForTest(r).Fatal)
-	}
+	require.Equal(t, "typed_conflict", InspectRunForTest(r).Fatal, "conflicting fact fatal = %q, want typed_conflict", InspectRunForTest(r).Fatal)
 	result := r.Snapshot()
 	target := result.Tasks[0].Typed.Targets[0]
-	if target.Outcome != TargetAchieved || target.Code != "completed" || !strings.Contains(string(target.Details), `"reported":2`) {
-		t.Fatalf("conflict replaced the confirmed fact: %+v", target)
-	}
+	require.True(t, target.Outcome == TargetAchieved && target.Code == "completed" && strings.Contains(string(target.Details), `"reported":2`),
+		"conflict replaced the confirmed fact: %+v", target)
 	record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(r)), result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := record.Result.Tasks[0].Typed.Targets[0]; got.Outcome != TargetAchieved || string(got.Details) != string(target.Details) {
-		t.Fatalf("durable fact changed: %+v", got)
-	}
+	require.NoError(t, err)
+	got := record.Result.Tasks[0].Typed.Targets[0]
+	require.True(t, got.Outcome == TargetAchieved && string(got.Details) == string(target.Details), "durable fact changed: %+v", got)
 }
 
 // Retained typed events have their own count and byte bounds inside the total
@@ -86,15 +73,10 @@ func TestTypedMonitorBoundsRetainedEventsWithoutConsumer(t *testing.T) {
 		raw := fmt.Sprintf(`{"taskchain":"OperProgress","taskid":101,"what":"OperProgressDetail","details":{"role":"Warrior","name":"Operator-%02d","result":"Success","result_detail":"Completed","elite":2}}`, i)
 		ObserveTypedForTest(r, protocol.Callback{MessageID: operProgressMessageSubTaskExtraInfo, CoreSequence: uint64(i + 1), JSON: json.RawMessage(raw)}, &coreID, nil)
 	}
-	if InspectRunForTest(r).Fatal != "typed_event_overflow" {
-		t.Fatalf("fatal = %q, want typed_event_overflow", InspectRunForTest(r).Fatal)
-	}
-	if InspectRunForTest(r).TypedEventCount != MaxTypedEventMessages || InspectRunForTest(r).TypedEventBytes > MaxTypedEventRetainedBytes {
-		t.Fatalf("retained typed events = %d/%d bytes, want the count bound", InspectRunForTest(r).TypedEventCount, InspectRunForTest(r).TypedEventBytes)
-	}
-	if len(r.Events()) != MaxTypedEventMessages {
-		t.Fatalf("queued typed events = %d, want %d", len(r.Events()), MaxTypedEventMessages)
-	}
+	require.Equal(t, "typed_event_overflow", InspectRunForTest(r).Fatal, "fatal = %q, want typed_event_overflow", InspectRunForTest(r).Fatal)
+	require.True(t, InspectRunForTest(r).TypedEventCount == MaxTypedEventMessages && InspectRunForTest(r).TypedEventBytes <= MaxTypedEventRetainedBytes,
+		"retained typed events = %d/%d bytes, want the count bound", InspectRunForTest(r).TypedEventCount, InspectRunForTest(r).TypedEventBytes)
+	require.Len(t, r.Events(), MaxTypedEventMessages, "queued typed events = %d, want %d", len(r.Events()), MaxTypedEventMessages)
 	// The update that could not publish its event was applied and persisted
 	// before publication, so at most one extra confirmed fact may exist.
 	achieved := 0
@@ -104,20 +86,15 @@ func TestTypedMonitorBoundsRetainedEventsWithoutConsumer(t *testing.T) {
 			achieved++
 		}
 	}
-	if achieved < MaxTypedEventMessages || achieved > MaxTypedEventMessages+1 {
-		t.Fatalf("confirmed facts = %d, want %d or %d", achieved, MaxTypedEventMessages, MaxTypedEventMessages+1)
-	}
+	require.True(t, achieved >= MaxTypedEventMessages && achieved <= MaxTypedEventMessages+1,
+		"confirmed facts = %d, want %d or %d", achieved, MaxTypedEventMessages, MaxTypedEventMessages+1)
 	record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(r)), snapshot.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	durable := 0
 	for _, target := range record.Result.Tasks[0].Typed.Targets {
 		if target.Outcome == TargetAchieved {
 			durable++
 		}
 	}
-	if durable != achieved {
-		t.Fatalf("durable facts = %d, snapshot = %d", durable, achieved)
-	}
+	require.Equal(t, achieved, durable, "durable facts = %d, snapshot = %d", durable, achieved)
 }

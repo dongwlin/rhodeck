@@ -3,10 +3,11 @@ package control
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
@@ -22,30 +23,20 @@ func validTestPlan(t *testing.T) Plan {
 func TestPlanOpenJSONAndSnapshot(t *testing.T) {
 	p := validTestPlan(t)
 	raw, err := json.Marshal(p)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got, err := DecodePlan(bytes.NewReader(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(got.Tasks[0].Params, []byte("9007199254740993")) || got.Tasks[0].Type != "FutureTask" {
-		t.Fatal("open task input changed")
-	}
+	require.NoError(t, err)
+	require.True(t, bytes.Contains(got.Tasks[0].Params, []byte("9007199254740993")) && got.Tasks[0].Type == "FutureTask", "open task input changed")
 	copy := clonePlan(got)
 	got.Tasks[0].Params[2] = 'X'
 	got.Initialize.ResourceRoots[0] = "changed"
-	if !bytes.Equal(copy.Tasks[0].Params, p.Tasks[0].Params) || copy.Initialize.ResourceRoots[0] != p.Initialize.ResourceRoots[0] {
-		t.Fatal("snapshot aliases caller input")
-	}
+	require.True(t, bytes.Equal(copy.Tasks[0].Params, p.Tasks[0].Params) && copy.Initialize.ResourceRoots[0] == p.Initialize.ResourceRoots[0], "snapshot aliases caller input")
 }
 
 func TestPlanRejectsAmbiguousControls(t *testing.T) {
 	p := validTestPlan(t)
 	raw, err := json.Marshal(p)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for name, input := range map[string]string{
 		"top duplicate":    strings.Replace(string(raw), `"schema_version":1`, `"schema_version":1,"schema_version":1`, 1),
 		"nested duplicate": strings.Replace(string(raw), `"snapshot_id":"test-install"`, `"snapshot_id":"test-install","snapshot_id":"other"`, 1),
@@ -56,18 +47,16 @@ func TestPlanRejectsAmbiguousControls(t *testing.T) {
 		"invalid utf8":     string(raw) + string([]byte{0xff}),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := DecodePlan(strings.NewReader(input)); !errors.Is(err, ErrInvalidPlan) {
-				t.Fatalf("got %v", err)
-			}
+			_, err := DecodePlan(strings.NewReader(input))
+			require.ErrorIs(t, err, ErrInvalidPlan, "got %v", err)
 		})
 	}
 	// Duplicate native fields remain an open Core concern, never decoded into
 	// floating-point values by this application.
 	p.Tasks[0].Params = json.RawMessage(`{"future":1,"future":9007199254740993}`)
 	raw, _ = json.Marshal(p)
-	if _, err := DecodePlan(bytes.NewReader(raw)); err != nil {
-		t.Fatal(err)
-	}
+	_, err = DecodePlan(bytes.NewReader(raw))
+	require.NoError(t, err)
 }
 
 func TestPlanAdmissionRejections(t *testing.T) {
@@ -89,14 +78,12 @@ func TestPlanAdmissionRejections(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			p := validTestPlan(t)
 			mutate(&p)
-			if err := ValidatePlan(p); !errors.Is(err, ErrInvalidPlan) {
-				t.Fatalf("got %v", err)
-			}
+			err := ValidatePlan(p)
+			require.ErrorIs(t, err, ErrInvalidPlan, "got %v", err)
 		})
 	}
-	if _, err := DecodePlan(ioTooLarge{}); !errors.Is(err, ErrInvalidPlan) {
-		t.Fatalf("oversize input: %v", err)
-	}
+	_, err := DecodePlan(ioTooLarge{})
+	require.ErrorIs(t, err, ErrInvalidPlan, "oversize input: %v", err)
 }
 
 type ioTooLarge struct{}
