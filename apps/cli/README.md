@@ -27,8 +27,9 @@ paths; all installation and data paths below must be absolute on the host OS.
 and command list it reports:
 
 - `task_adapters`: one row per locally registered adapter with `name`,
-  `version`, `core_type`, the accepted `input` contract and an `acceptance`
-  statement;
+  `version`, `core_type`, the accepted `input` contract, `objective_policy`,
+  `result_interpretation` and an `acceptance` statement; both registered adapters
+  use `all` and `target_results`;
 - `adapter_basis`: the reviewed implementation source revision (MAA source
   `9b75f9f7b103079458414c6e20216c8c531d6987`) and that the adapters were not
   executed;
@@ -163,7 +164,8 @@ registered adapters `run` uses, and prints one JSON object containing:
 - `plan`: the explicit plan with each selected adapter's final compiled Core
   parameters; raw tasks keep their original parameters;
 - `tasks`: the prepared per-task results, including each adapted task's
-  `unobserved` target IDs and `typed_incomplete` aggregate;
+  normalized `objective_policy`, `unobserved` target IDs and `typed_incomplete`
+  aggregate;
 - `sources` and `unverified`: the input/worker/data-dir sources plus
   installation, Core, device and adapter-specific conditions that local
   preparation cannot verify (operator identity, skills and prerequisites, theme
@@ -210,9 +212,10 @@ local diagnostic opt-in can disclose connection details or other private Core
 data. Records always retain the private input plan; callers choose their own
 retention and access policy for the data directory.
 
-An adapted task result also carries `typed`: schema version 1, the selected
-`adapter`, an independent business `state`/`code`, the fixed per-task `targets`
-and an optional `summary`. Each changed target fact is validated and saved
+An adapted task result carries `objective_policy`; the registered adapters use
+`all`. Its `typed` result repeats that policy and carries schema version 1, the
+selected `adapter`, an independent business `state`/`code`, the fixed per-task
+`targets` and an optional `summary`. Each changed target fact is validated and saved
 before a `type: "typed"` event carrying the full task result is written; these
 events need no `--include-raw-events` and never include raw callback fields.
 `TaskResult.state` remains the native task-chain fact. Once a business failure is

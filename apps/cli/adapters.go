@@ -27,28 +27,34 @@ const deviceAcceptance = "none"
 // identity in capability output comes from Descriptor, so name and version are
 // declared once by the control package.
 type cliAdapterSpec struct {
-	coreType   string
-	input      string
-	unverified []string
-	newAdapter func() control.TaskAdapter
+	coreType             string
+	input                string
+	objectivePolicy      control.ObjectivePolicy
+	resultInterpretation string
+	unverified           []string
+	newAdapter           func() control.TaskAdapter
 }
 
 // adapterCapability describes one registered adapter in machine output. The
 // name and version are copied from Descriptor; the remaining fields document
 // what the runner accepts and which evidence is still missing.
 type adapterCapability struct {
-	Name       string `json:"name"`
-	Version    int    `json:"version"`
-	CoreType   string `json:"core_type"`
-	Input      string `json:"input"`
-	Acceptance string `json:"acceptance"`
+	Name                 string                  `json:"name"`
+	Version              int                     `json:"version"`
+	CoreType             string                  `json:"core_type"`
+	Input                string                  `json:"input"`
+	ObjectivePolicy      control.ObjectivePolicy `json:"objective_policy"`
+	ResultInterpretation string                  `json:"result_interpretation"`
+	Acceptance           string                  `json:"acceptance"`
 }
 
 func cliAdapterSpecs() []cliAdapterSpec {
 	return []cliAdapterSpec{
 		{
-			coreType: "OperProgress",
-			input:    "strict plans: 1-128 entries with role (Pioneer, Warrior, Tank, Sniper, Caster, Medic, Support, Special), name (valid UTF-8, 1-256 bytes, no NUL, not all whitespace) and exactly one of elite 1-2, skill_level 2-7 or skill_mastery (three 0-3 integers, exactly one nonzero slot); targets op-0001..op-0128",
+			coreType:             "OperProgress",
+			objectivePolicy:      control.ObjectiveAll,
+			resultInterpretation: "target_results",
+			input:                "strict plans: 1-128 entries with role (Pioneer, Warrior, Tank, Sniper, Caster, Medic, Support, Special), name (valid UTF-8, 1-256 bytes, no NUL, not all whitespace) and exactly one of elite 1-2, skill_level 2-7 or skill_mastery (three 0-3 integers, exactly one nonzero slot); targets op-0001..op-0128",
 			unverified: []string{
 				"oper_progress: operator identity, role agreement with installed battle data, skill existence, elite prerequisites, materials, inventory and training-room state",
 				"oper_progress: target achievements and training-start reports have no authorized device acceptance",
@@ -57,8 +63,10 @@ func cliAdapterSpecs() []cliAdapterSpec {
 			newAdapter: control.NewOperProgressAdapter,
 		},
 		{
-			coreType: "SwitchTheme",
-			input:    "strict themes: 1-32 distinct names (valid UTF-8, 1-256 bytes, no NUL, no leading or trailing whitespace); sole target theme-selection; Core selects one candidate at random once, not a retry or fallback sequence",
+			coreType:             "SwitchTheme",
+			objectivePolicy:      control.ObjectiveAll,
+			resultInterpretation: "target_results",
+			input:                "strict themes: 1-32 distinct names (valid UTF-8, 1-256 bytes, no NUL, no leading or trailing whitespace); sole target theme-selection; Core selects one candidate at random once, not a retry or fallback sequence",
 			unverified: []string{
 				"switch_theme: theme availability, unlock state and the final theme state",
 				"switch_theme: already-set, locked, not-found and confirmation observations have no authorized device acceptance",
@@ -87,13 +95,23 @@ func cliAdapterCapabilities() []adapterCapability {
 	specs := cliAdapterSpecs()
 	out := make([]adapterCapability, 0, len(specs))
 	for _, spec := range specs {
-		ref := spec.newAdapter().Descriptor()
-		out = append(out, adapterCapability{
-			Name: ref.Name, Version: ref.Version, CoreType: spec.coreType, Input: spec.input,
-			Acceptance: "local preparation and result interpretation only; authorized device acceptance: " + deviceAcceptance,
-		})
+		out = append(out, cliAdapterCapability(spec))
 	}
 	return out
+}
+
+func cliAdapterCapability(spec cliAdapterSpec) adapterCapability {
+	ref := spec.newAdapter().Descriptor()
+	acceptance := "local preparation and result interpretation only; authorized device acceptance: " + deviceAcceptance
+	interpretation := spec.resultInterpretation
+	if spec.objectivePolicy == control.ObjectiveNone {
+		interpretation = "none"
+		acceptance = "local preparation only; result interpretation: none; authorized device acceptance: " + deviceAcceptance
+	}
+	return adapterCapability{
+		Name: ref.Name, Version: ref.Version, CoreType: spec.coreType, Input: spec.input,
+		ObjectivePolicy: spec.objectivePolicy, ResultInterpretation: interpretation, Acceptance: acceptance,
+	}
 }
 
 // cliAdapterSummary lists the registered identities for help output. Names and

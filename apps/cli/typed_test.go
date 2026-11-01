@@ -116,6 +116,9 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 		if got.CoreType != wantCore[got.Name] {
 			t.Fatalf("capability %d lacks core type: %+v", i, got)
 		}
+		if got.ObjectivePolicy != control.ObjectiveAll || got.ResultInterpretation != "target_results" {
+			t.Fatalf("capability %d lacks the bundled objective contract: %+v", i, got)
+		}
 		for _, fragment := range wantInput[got.Name] {
 			if !strings.Contains(got.Input, fragment) {
 				t.Fatalf("capability %d input lacks %q: %q", i, fragment, got.Input)
@@ -210,7 +213,7 @@ func TestTypedDryRunPreviewsCompiledTargetsWithoutEffects(t *testing.T) {
 				t.Fatalf("theme targets = %v", got)
 			}
 			for _, task := range preview.Tasks[:2] {
-				if task.Typed == nil || task.Typed.State != control.Unknown || task.Typed.Code != "typed_incomplete" {
+				if task.Policy != control.ObjectiveAll || task.Typed == nil || task.Typed.Policy != task.Policy || task.Typed.State != control.Unknown || task.Typed.Code != "typed_incomplete" {
 					t.Fatalf("prepared task lacks an unobserved aggregate: %+v", task)
 				}
 				for _, target := range task.Typed.Targets {
