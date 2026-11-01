@@ -18,12 +18,82 @@ CGO_ENABLED=0 go build -o /tmp/core-worker ./apps/core-worker
 /tmp/rhodeck-cli capabilities
 /tmp/rhodeck-cli version
 /tmp/rhodeck-cli help
+/tmp/rhodeck-cli help --format json
 ```
+
+`help` prints human-readable text; `help --format json` prints the machine
+envelope for the same help text. See [Command surface](#command-surface).
 
 The CLI build version defaults to `dev`; release builds can set it with
 `-ldflags '-X main.version=VERSION'`. `CGO_ENABLED=0` does not remove the Core
 library's native dependency requirements. Windows binaries use `.exe` output
 paths; all installation and data paths below must be absolute on the host OS.
+
+## Command surface
+
+The CLI is a command tree. There is no installation discovery, shell expansion
+or default device selection; each command declares its own explicit inputs.
+
+| Command | Purpose |
+| --- | --- |
+| `run` | Execute one explicit task batch through the shared control runtime. Also accepts `--dry-run`. |
+| `dry-run` | Preview one explicit plan: compiles the selected adapters and previews each task's actual objective policy and unobserved targets, with no side effects. |
+| `doctor` | Diagnose an explicit installation: checks files, directories and executable bits, then initializes Core in a supervised worker and closes it. |
+| `capabilities` | Report the platform, worker protocol version, registered task adapters and the task input contract. |
+| `version` | Print the CLI build version. |
+| `help` | Show the help text of a command; `help run` shows `run`'s help. |
+
+The `capabilities` report lists exactly these commands, in this order: `run`,
+`dry-run`, `doctor`, `capabilities`, `version`, `help`. The list is derived
+from the command tree, not maintained by hand.
+
+There is no `completion` command and no `--version` flag. A completion command
+would print a shell script on stdout instead of a JSON object and break the
+machine contract, and `version` already reports the build version.
+
+The input, worker and data-directory flags of `run`, `dry-run` and `doctor` are
+unchanged and documented below; `--dry-run` is specific to `run`.
+
+### Help output
+
+Help is human-readable text by default. `rhodeck-cli --help`,
+`rhodeck-cli help`, `rhodeck-cli run --help` and `rhodeck-cli help run` print
+a help screen — the command description, its usage, the available commands and
+its flags — on stdout and exit `0`.
+
+A persistent flag `--format` selects the encoding of the help and usage
+output:
+
+- `--format text` (default) — human-readable help text.
+- `--format json` — the machine envelope
+  `{"schema_version":1,"type":"help","usage":"<the same help text>"}`, one
+  JSON object on stdout. Machine callers that ask for help must use this form;
+  it carries the same information the old `help` output carried.
+
+Any other value is rejected with code `invalid_arguments` and exit `2`.
+
+`--format` only affects the help and usage surface. Command results
+(`version`, `capabilities`, `plan`, `doctor`, run events, `terminal`) and error
+envelopes are always schema version 1 JSON lines, unchanged.
+
+## Changes from the previous command line
+
+- Single-dash long flags are no longer accepted. `-input plan.json` used to
+  work and is now an error (`invalid_arguments`, exit `2`); only
+  `--input plan.json` works. This README only ever documented the `--` form.
+- `--help` is accepted in any position: `rhodeck-cli run --input plan.json
+  --help` prints help instead of running the command.
+- `rhodeck-cli help <unknown-command>` is now an error (`unknown_command`,
+  exit `2`). Previously any extra argument after `help` was ignored.
+- Help output defaults to text instead of a JSON envelope. Use `--format json`
+  for the machine form.
+- `rhodeck-cli` with no arguments is still `command_required` with exit `2`; it
+  does not print help.
+- Exit codes are unchanged: `0` success, `2` input or environment rejection,
+  `3` runtime or data directory already owned, `4` failed result, `5` confirmed
+  stop, `6` unknown or typed-incomplete result, persistence failure,
+  worker/transport failure, failed cleanup or output failure. Exit code `1` is
+  never produced.
 
 ## Capability report
 
@@ -55,7 +125,8 @@ registers, so the report cannot drift from the registry. There is no dynamic
 Core API enumerating supported task types, and an installed Core version string
 does not prove that a task or adapter works. `help` restates the adapter names,
 the explicit `task.adapter` selection rule, the per-task policy preview and the
-missing device acceptance. The generic `task_input` continues to describe the
+missing device acceptance; `--format json` carries that same help text in the
+machine envelope. The generic `task_input` continues to describe the
 open raw path.
 
 The unpublished schema version 1 replaces `static_snapshot_basis` with
@@ -269,7 +340,9 @@ caller IDs and Core task IDs. A new run uses a new worker; failed work is never
 automatically reconnected, retried or replayed.
 
 All stdout output is schema version 1 JSON, with one object per line during a
-run. Diagnostic stderr contains stable error codes and no raw worker log tail.
+run, except the default text help. Machine callers that ask for help must pass
+`--format json` and read the machine envelope. Diagnostic stderr contains
+stable error codes and no raw worker log tail.
 Run events carry `run_id`, optional `host_run_id`, sequence, time, type and any
 known task/Core association. Native callbacks retain message ID and Core sequence;
 their raw `details` are included only with `--include-raw-events`. This explicit
