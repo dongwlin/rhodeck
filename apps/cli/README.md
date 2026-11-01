@@ -6,6 +6,10 @@
 desktop host. Only the worker loads MaaCore. The caller supplies the worker,
 Core library and its native dependencies, resources, ADB and writable directories.
 
+`main.go` is the executable entry point. Command handling, input parsing, path
+checks, adapter registration, JSON output and exit codes live in `internal/cli`,
+alongside their tests.
+
 Build the two executables from the repository root:
 
 ```sh
@@ -373,8 +377,8 @@ establish mutual exclusion with another directory, external CLI or host.
 Run CLI/control regressions from the repository root:
 
 ```sh
-CGO_ENABLED=0 go test ./apps/cli ./packages/control/... -count=1 -timeout=3m
-go test -race ./apps/cli ./packages/control/... -count=1 -timeout=3m
+CGO_ENABLED=0 go test ./apps/cli/... ./packages/control/... -count=1 -timeout=3m
+go test -race ./apps/cli/... ./packages/control/... -count=1 -timeout=3m
 ```
 
 The CLI tests use real helper processes without a native library or device and

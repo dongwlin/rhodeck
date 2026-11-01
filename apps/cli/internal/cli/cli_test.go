@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -24,7 +24,7 @@ import (
 func TestMain(m *testing.M) {
 	if os.Getenv("RHODECK_CLI_PROCESS") == "1" {
 		_ = os.Unsetenv("RHODECK_CLI_PROCESS")
-		main()
+		os.Exit(Run("dev"))
 	}
 	if mode := os.Getenv("RHODECK_CLI_WORKER_MODE"); mode != "" {
 		os.Exit(cliWorker(mode))
@@ -402,7 +402,7 @@ func TestDiscoveryHasNoInstallationDependency(t *testing.T) {
 	for _, command := range []string{"capabilities", "version", "help"} {
 		t.Run(command, func(t *testing.T) {
 			var out, diagnostics bytes.Buffer
-			if code := runCLI(context.Background(), []string{command}, strings.NewReader("invalid"), &out, &diagnostics); code != 0 {
+			if code := runCLI("dev", context.Background(), []string{command}, strings.NewReader("invalid"), &out, &diagnostics); code != 0 {
 				t.Fatalf("exit = %d: %s", code, diagnostics.String())
 			}
 			if got := len(decodeLines(t, out.Bytes())); got != 1 {
@@ -419,7 +419,7 @@ func TestDryRunPreservesOpenParametersWithoutEffects(t *testing.T) {
 	plan, _, dir := testPlan(t)
 	missingWorker := filepath.Join(t.TempDir(), "not-installed")
 	var out, diagnostics bytes.Buffer
-	if code := runCLI(context.Background(), cliArgs("dry-run", missingWorker, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != 0 {
+	if code := runCLI("dev", context.Background(), cliArgs("dry-run", missingWorker, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != 0 {
 		t.Fatalf("exit = %d: %s", code, diagnostics.String())
 	}
 	if !bytes.Contains(out.Bytes(), []byte("900719925474099312345")) || !bytes.Contains(out.Bytes(), []byte("FutureTask")) {
@@ -440,7 +440,7 @@ func TestInputRejectionsHaveStablePrivateOutput(t *testing.T) {
 	valid := encodePlan(t, plan)
 	for _, input := range [][]byte{[]byte(`{"private-secret":true}`), append(bytes.Clone(valid), []byte(` {"secret":1}`)...)} {
 		var out, diagnostics bytes.Buffer
-		if code := runCLI(context.Background(), cliArgs("dry-run", executable, dir), bytes.NewReader(input), &out, &diagnostics); code != exitRejected {
+		if code := runCLI("dev", context.Background(), cliArgs("dry-run", executable, dir), bytes.NewReader(input), &out, &diagnostics); code != exitRejected {
 			t.Fatalf("exit = %d", code)
 		}
 		decodeLines(t, out.Bytes())
@@ -450,7 +450,7 @@ func TestInputRejectionsHaveStablePrivateOutput(t *testing.T) {
 	}
 	for _, args := range [][]string{nil, {"unknown"}, {"version", "secret"}, {"run", "--input", "secret"}, {"dry-run", "--timeout=-1s"}} {
 		var out, diagnostics bytes.Buffer
-		if code := runCLI(context.Background(), args, bytes.NewReader(valid), &out, &diagnostics); code != exitRejected {
+		if code := runCLI("dev", context.Background(), args, bytes.NewReader(valid), &out, &diagnostics); code != exitRejected {
 			t.Fatalf("arguments %q: exit = %d", args, code)
 		}
 	}
@@ -469,7 +469,7 @@ func TestRunMachineTerminalAndExitCodes(t *testing.T) {
 			t.Setenv("RHODECK_CLI_WORKER_MODE", tc.mode)
 			plan, executable, dir := testPlan(t)
 			var out, diagnostics bytes.Buffer
-			if code := runCLI(context.Background(), cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != tc.code {
+			if code := runCLI("dev", context.Background(), cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != tc.code {
 				t.Fatalf("exit = %d, want %d: %s (%s)", code, tc.code, out.String(), diagnostics.String())
 			}
 			lines := decodeLines(t, out.Bytes())
@@ -496,7 +496,7 @@ func TestDoctorDoesNotSubmitDeviceActions(t *testing.T) {
 	t.Setenv("RHODECK_CLI_TRACE", trace)
 	plan, executable, dir := testPlan(t)
 	var out, diagnostics bytes.Buffer
-	if code := runCLI(context.Background(), cliArgs("doctor", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitSuccess {
+	if code := runCLI("dev", context.Background(), cliArgs("doctor", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitSuccess {
 		t.Fatalf("exit = %d: %s (%s)", code, out.String(), diagnostics.String())
 	}
 	commands, err := os.ReadFile(trace)
@@ -530,7 +530,7 @@ func TestDoctorMissingADBStillReportsCoreSnapshot(t *testing.T) {
 	plan, executable, dir := testPlan(t)
 	plan.Connection.ADBPath = filepath.Join(t.TempDir(), "missing-adb")
 	var out, diagnostics bytes.Buffer
-	if code := runCLI(context.Background(), cliArgs("doctor", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitRejected {
+	if code := runCLI("dev", context.Background(), cliArgs("doctor", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitRejected {
 		t.Fatalf("exit = %d: %s", code, out.String())
 	}
 	var report envelope
@@ -550,7 +550,7 @@ func TestRawEventsRequireExplicitOptIn(t *testing.T) {
 	plan, executable, dir := testPlan(t)
 	var out, diagnostics bytes.Buffer
 	args := append(cliArgs("run", executable, dir), "--include-raw-events")
-	if code := runCLI(context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitSuccess {
+	if code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitSuccess {
 		t.Fatalf("exit = %d: %s", code, out.String())
 	}
 	if !bytes.Contains(out.Bytes(), []byte("private-secret")) {
@@ -566,7 +566,7 @@ func TestBrokenOutputStillClosesRuntime(t *testing.T) {
 	t.Setenv("RHODECK_CLI_WORKER_MODE", "wait")
 	plan, executable, dir := testPlan(t)
 	var diagnostics bytes.Buffer
-	if code := runCLI(context.Background(), cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), brokenWriter{}, &diagnostics); code != exitUnknown {
+	if code := runCLI("dev", context.Background(), cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), brokenWriter{}, &diagnostics); code != exitUnknown {
 		t.Fatalf("exit = %d", code)
 	}
 	rt, err := control.New(control.Config{DataDir: dir, Worker: worker.Config{Executable: executable}})
@@ -600,7 +600,7 @@ func TestCancellationUsesControlStopAndCleanup(t *testing.T) {
 	defer cancel()
 	out := &stopWriter{cancel: cancel}
 	var diagnostics bytes.Buffer
-	if code := runCLI(ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics); code != exitStopped {
+	if code := runCLI("dev", ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics); code != exitStopped {
 		t.Fatalf("exit = %d: %s (%s)", code, out.String(), diagnostics.String())
 	}
 	commands, err := os.ReadFile(trace)
@@ -614,7 +614,7 @@ func TestDeadlineRemainsDistinctFromSignalStop(t *testing.T) {
 	plan, executable, dir := testPlan(t)
 	var out, diagnostics bytes.Buffer
 	args := append(cliArgs("run", executable, dir), "--timeout", "1s")
-	if code := runCLI(context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitUnknown {
+	if code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitUnknown {
 		t.Fatalf("exit = %d: %s (%s)", code, out.String(), diagnostics.String())
 	}
 	lines := decodeLines(t, out.Bytes())
@@ -635,7 +635,7 @@ func TestStartupTimeoutUsesTimeoutExitCode(t *testing.T) {
 	plan, executable, dir := testPlan(t)
 	var out, diagnostics bytes.Buffer
 	args := append(cliArgs("run", executable, dir), "--startup-timeout", "50ms")
-	if code := runCLI(context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitUnknown {
+	if code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitUnknown {
 		t.Fatalf("startup timeout exit = %d: %s (%s)", code, out.String(), diagnostics.String())
 	}
 	lines := decodeLines(t, out.Bytes())
@@ -693,7 +693,7 @@ func TestBlockedOutputReleasesRuntimeAfterCancellationOrCompletion(t *testing.T)
 			var diagnostics bytes.Buffer
 			finished := make(chan int, 1)
 			args := append(cliArgs("run", executable, dir), "--output-timeout", tc.outputTimeout)
-			go func() { finished <- runCLI(ctx, args, bytes.NewReader(input), out, &diagnostics) }()
+			go func() { finished <- runCLI("dev", ctx, args, bytes.NewReader(input), out, &diagnostics) }()
 			select {
 			case <-out.started:
 			case <-time.After(5 * time.Second):

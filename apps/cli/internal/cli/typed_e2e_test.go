@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -299,7 +299,7 @@ func TestTypedWorkerCrashKeepsConfirmedFacts(t *testing.T) {
 	out := &markerCancelWriter{cancel: cancel, marker: []byte(`"type":"typed"`)}
 	var diagnostics bytes.Buffer
 	args := append(cliArgs("run", executable, dir), "--timeout", "20s")
-	code := runCLI(ctx, args, bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
+	code := runCLI("dev", ctx, args, bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
 	if code != exitUnknown {
 		t.Fatalf("exit = %d: %s", code, diagnostics.String())
 	}
@@ -354,7 +354,7 @@ func TestTypedCancellationKeepsConfirmedFacts(t *testing.T) {
 	defer cancel()
 	out := &markerCancelWriter{cancel: cancel, marker: []byte(`"type":"typed"`)}
 	var diagnostics bytes.Buffer
-	code := runCLI(ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
+	code := runCLI("dev", ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
 	if code != exitStopped {
 		t.Fatalf("exit = %d: %s", code, diagnostics.String())
 	}
@@ -396,7 +396,7 @@ func TestTypedBlockedTerminalOutputKeepsRecordFacts(t *testing.T) {
 	finished := make(chan int, 1)
 	args := append(cliArgs("run", executable, dir), "--output-timeout", "200ms")
 	go func() {
-		finished <- runCLI(context.Background(), args, bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
+		finished <- runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
 	}()
 	select {
 	case <-out.started:

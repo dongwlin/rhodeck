@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bufio"
@@ -72,7 +72,7 @@ func withInput(args []string, input string) []string {
 func runMachine(t *testing.T, args []string, input []byte) (int, string, []json.RawMessage, string) {
 	t.Helper()
 	var out, diagnostics bytes.Buffer
-	code := runCLI(context.Background(), args, bytes.NewReader(input), &out, &diagnostics)
+	code := runCLI("dev", context.Background(), args, bytes.NewReader(input), &out, &diagnostics)
 	return code, out.String(), decodeLines(t, out.Bytes()), diagnostics.String()
 }
 
@@ -100,7 +100,7 @@ func targetIDs(result *control.TypedResult) []string {
 
 func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.T) {
 	var out, diagnostics bytes.Buffer
-	if code := runCLI(context.Background(), []string{"capabilities"}, strings.NewReader(""), &out, &diagnostics); code != exitSuccess {
+	if code := runCLI("dev", context.Background(), []string{"capabilities"}, strings.NewReader(""), &out, &diagnostics); code != exitSuccess {
 		t.Fatalf("exit = %d: %s", code, diagnostics.String())
 	}
 	var caps capabilities
@@ -206,7 +206,7 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 
 	out.Reset()
 	diagnostics.Reset()
-	if code := runCLI(context.Background(), []string{"help"}, strings.NewReader(""), &out, &diagnostics); code != exitSuccess {
+	if code := runCLI("dev", context.Background(), []string{"help"}, strings.NewReader(""), &out, &diagnostics); code != exitSuccess {
 		t.Fatalf("help exit = %d", code)
 	}
 	var help envelope
@@ -725,7 +725,7 @@ func TestConfirmedStopSurvivesCleanupFailure(t *testing.T) {
 	defer cancel()
 	out := &markerCancelWriter{cancel: cancel, marker: []byte(`"state":"started"`)}
 	var diagnostics bytes.Buffer
-	code := runCLI(ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
+	code := runCLI("dev", ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
 	if code != exitUnknown {
 		t.Fatalf("exit = %d: %s", code, diagnostics.String())
 	}
@@ -753,7 +753,7 @@ func TestStopWithEstablishedTypedFailureSurvivesCleanupFailure(t *testing.T) {
 	defer cancel()
 	out := &markerCancelWriter{cancel: cancel, marker: []byte(`"type":"typed"`)}
 	var diagnostics bytes.Buffer
-	code := runCLI(ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
+	code := runCLI("dev", ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
 	if code != exitUnknown {
 		t.Fatalf("exit = %d: %s", code, diagnostics.String())
 	}
