@@ -27,7 +27,7 @@ func newOperProgressHarness(t *testing.T, params string) *operProgressHarness {
 	if !ok {
 		t.Fatalf("reducer has type %T", prepared.Reducer)
 	}
-	typed := &TypedResult{SchemaVersion: SchemaVersion, Adapter: AdapterRef{Name: operProgressAdapterName, Version: operProgressVersion}}
+	typed := &TypedResult{SchemaVersion: SchemaVersion, Adapter: AdapterRef{Name: operProgressAdapterName, Version: operProgressVersion}, Policy: ObjectiveAll}
 	for _, id := range prepared.Targets {
 		typed.Targets = append(typed.Targets, TargetResult{ID: id, Outcome: TargetUnobserved})
 	}

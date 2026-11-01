@@ -72,11 +72,14 @@ type Config struct {
 
 // TaskResult.State is the native task-chain fact. Typed carries the independent
 // business target facts used when deciding an adapted run's overall result.
+// Policy is explicit for adapted tasks and omitted for raw tasks. ObjectiveNone
+// has no Typed result and makes no business-objective claim.
 type TaskResult struct {
-	ID         string       `json:"id"`
-	CoreTaskID int32        `json:"core_task_id,omitempty"`
-	State      State        `json:"state"`
-	Typed      *TypedResult `json:"typed,omitempty"`
+	ID         string          `json:"id"`
+	CoreTaskID int32           `json:"core_task_id,omitempty"`
+	State      State           `json:"state"`
+	Policy     ObjectivePolicy `json:"objective_policy,omitempty"`
+	Typed      *TypedResult    `json:"typed,omitempty"`
 }
 
 // Result separates observed task facts from cleanup. Succeeded with a failed

@@ -10,7 +10,8 @@ Configure adapters with `Config.Adapters`, or call
 initial target results. Preparation does not create directories, take locks,
 launch workers, load native code or connect devices. Each adapter must implement
 deterministic preparation without side effects, reject incompatible task types,
-and create a fresh reducer for each task. Adapters may be prepared concurrently.
+and create a fresh reducer for each task with interpreted targets. Input-only
+adapters return no reducer. Adapters may be prepared concurrently.
 The package bundles two strict adapters: `NewOperProgressAdapter`
 (`oper_progress`, version 1) and `NewSwitchThemeAdapter` (`switch_theme`,
 version 1). The [standalone CLI](../../apps/cli/README.md) registers both
@@ -61,7 +62,24 @@ surrogate escapes and duplicate candidates are rejected with `ErrInvalidPlan`.
 See `ExampleNewSwitchThemeAdapter` for a deterministic preview.
 
 `PreparedTask.Params` is the final Core object; `PreparedTask.Targets` contains
-stable, unique target IDs. `PreparedPlan.Plan` contains the compiled parameters.
+stable, unique target IDs. `PreparedTask.Policy` selects `ObjectiveAll` (`all`,
+also the default when omitted), `ObjectiveAny` (`any`) or `ObjectiveNone`
+(`none`). `all` and `any` require at least one target and a non-nil reducer.
+`none` requires zero targets and a nil reducer: it validates and compiles input
+without interpreting business results. Unknown policies and illegal combinations
+return `ErrInvalidPlan` before admission. For example, an input-only adapter may
+return `PreparedTask{Params: compiled, Policy: ObjectiveNone}`.
+
+`PreparedPlan.Tasks[i].Policy` exposes the normalized choice as
+`objective_policy`. Interpreted tasks repeat that choice in
+`TypedResult.Policy`, so each typed event carries its own aggregation contract.
+Input-only tasks carry `objective_policy: "none"` and omit `typed`; they publish
+no typed events. Their run outcome follows native chain facts and makes no
+business-objective claim. Raw task results omit both fields. The two bundled
+adapters continue to use `all`. Policy selection belongs to the adapter; it is
+not an additional caller-controlled plan field.
+
+`PreparedPlan.Plan` contains the compiled parameters.
 The runtime prepares its own detached submission and keeps the original caller
 plan in the private record. Mutating a preview cannot alter an admitted run.
 
@@ -70,8 +88,8 @@ plan in the private record. Mutating a preview cannot alter an admitted run.
 | Container | Generic input | Explicit adapter input |
 | --- | --- | --- |
 | Plan | `schema_version: 1` | Same schema, optional per-task `adapter`; mixed raw tasks allowed |
-| Result, Event, Record | `schema_version: 1` | Same schema, optional `typed` on task results and typed events |
-| TypedResult | Absent | `schema_version: 1` |
+| Result, Event, Record | `schema_version: 1` | Same schema, task result `objective_policy`; `typed` only for `all`/`any` |
+| TypedResult | Absent | `schema_version: 1`, matching `objective_policy: "all"` or `"any"` |
 | CLI envelope | `schema_version: 1` | `schema_version: 1` |
 
 The schema is under development and extends version 1 directly before the first
@@ -89,7 +107,12 @@ preview and adapter-specific unverified conditions without side effects.
 
 Records do not require the original adapter to be installed for reading.
 Recovery retains confirmed facts, marks unfinished work unknown, and executes
-nothing. Omitted optional adapter/result fields use the generic path.
+nothing. A raw task omits adapter, policy and typed fields. An adapted record
+requires an explicit policy: `none` has no typed result, while `all`/`any` require
+a matching typed adapter and policy with nonempty targets. Missing or unknown
+policies and inconsistent combinations are rejected; they never fall back to
+raw processing. Recovery preserves the recorded policy and facts without
+preparing the adapter or reinterpreting observations.
 Unsupported container or nested result versions, malformed associations and
 over-budget records refuse reading/startup. No automatic migration, deletion or
 replay is performed for records from unpublished snapshots.
@@ -119,9 +142,23 @@ the batch result is established, late callbacks cannot add typed facts.
 | `confirmation_observed` | Observed confirmation, incomplete final-state evidence |
 
 All targets must contribute success evidence for `TypedResult.State` to be
-`succeeded`. Any failure produces `failed` with `typed_failed`; otherwise the
-aggregate is `unknown` with `typed_incomplete`. Native task-chain state remains
-in `TaskResult.State`. For a matching completed batch, failure wins over unknown,
+`succeeded` under `all`. Any failure produces `failed` with `typed_failed`;
+otherwise the aggregate is `unknown` with `typed_incomplete`.
+
+Under `any`, at least one successful target produces `succeeded`, even when
+other independent targets failed or remain unobserved/ambiguous. Without success,
+all targets must have confirmed failure evidence to produce `failed` with
+`typed_failed`; any remaining incomplete evidence gives `unknown` with
+`typed_incomplete`. Different rounds or entries require distinct prepared target
+IDs. Both failure-then-success and success-then-failure across distinct targets
+retain each fact and satisfy `any`. Reusing a single target for another round
+is a conflict, not a way to overwrite its history. A confirmed failure cannot be
+replaced by later success; a contradictory update in either direction stops
+observation with `typed_conflict` while preserving the original fact. This
+conflict remains a run fault even if `any` was already achieved.
+
+Native task-chain state remains in `TaskResult.State`. For a matching completed
+batch, aggregate failure wins over unknown,
 which wins over success. A confirmed stop retains target facts and the existing
 stopped result unless a failure has already been established; a stop that
 already recorded a task or typed failure stays failed. A worker fault, lost
@@ -130,6 +167,13 @@ even when a typed failure was already recorded; confirmed target facts are
 preserved. Cleanup remains
 independent: a cleanup failure never produces a successful CLI exit and does not
 rewrite an established business state.
+
+Achieving an objective alone never completes a run or stops observation. Chain
+errors still fail the run; confirmed stops, timeouts, worker faults and lost
+events follow the same runtime rules even after an `any` objective was achieved.
+`TaskChainCompleted` (10002) does not create target facts. `none` avoids
+`typed_incomplete` by making no typed claim, rather than treating chain completion
+as business success.
 
 Every changed fact is validated and saved before its `type: "typed"` event is
 published. Typed events include a full detached task `TypedResult` and work
@@ -154,8 +198,8 @@ it cannot establish durable success or trigger replay.
 Details and summaries must be UTF-8 JSON objects with no duplicate keys at any
 depth. Unknown business fields and large integer literals retain their raw JSON;
 an adapter decides which fields belong in its public contract. Unsupported
-outcomes and inconsistent aggregates are rejected. Retained results contain
-current immutable facts, not callback histories.
+outcomes, policies and inconsistent aggregates are rejected. Retained results
+contain current immutable facts, not callback histories.
 
 Result validation errors support `errors.Is` with `ErrTypedResult`,
 `ErrTypedBudget` and `ErrTypedConflict`. Record persistence errors wrap
