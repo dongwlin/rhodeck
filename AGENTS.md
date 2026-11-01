@@ -29,6 +29,7 @@ Rhodeck 当前是一个 Go module，提供 MaaCore 动态绑定、独立 Core wo
 - Events 流只设一个消费者，并同时观察相应 Done/Err；关闭完成后仍可读取缓冲事件，清理不能依赖消费者继续排空。
 - 错误通过 `errors.Is` / `errors.As`、协议稳定 Code 判别；诊断文本不作为控制逻辑。新增错误和测试诊断沿用英文，注释沿用所在文件的语言。
 - Go 导出标识符使用 CamelCase，协议字段沿用 `snake_case` JSON tag；测试放在对应包的 `*_test.go`，平台差异沿用文件后缀和 build constraints。
+- 测试断言统一使用 testify：失败即止的前置条件用 `require`，可继续的检查用 `assert`；testify 消息参数为急切求值，并发写入的缓冲区只能在失败路径或进程 Wait 之后读取。
 - 新增行为或修复 Bug 时，在负责该行为的层补接受、拒绝或回归用例；并发修改需覆盖相关竞态与关闭路径，优先用通道/受控阻塞确认时序。
 - 可复用接口契约留在包文档和 README；任务编号、实施过程与个人验收证据不写入生产源码。
 
