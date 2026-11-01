@@ -7,24 +7,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoadCInputRejectsSymlinkEscape(t *testing.T) {
 	files := positiveFiles(t)
 	dir := writeCInputDir(t, files, nil)
 	outside := filepath.Join(t.TempDir(), "AsstCaller.h")
-	if err := os.WriteFile(outside, []byte(files[FileAsstCaller]), 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(outside, []byte(files[FileAsstCaller]), 0600))
 	path := filepath.Join(dir, filepath.FromSlash(FileAsstCaller))
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, path); err != nil {
-		t.Fatalf("create symlink: %v", err)
-	}
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, os.Symlink(outside, path), "create symlink")
 	_, diags := LoadCInput(dir)
-	if len(diags) == 0 || !strings.Contains(diags[0].Message, "escapes") {
-		t.Fatalf("escaped input admitted: %v", diags)
-	}
+	require.True(t, len(diags) != 0 && strings.Contains(diags[0].Message, "escapes"),
+		"escaped input admitted: %v", diags)
 }

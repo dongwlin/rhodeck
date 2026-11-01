@@ -5,15 +5,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // repoRoot locates the repository root from this package's directory.
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatalf("locate repo root: %v", err)
-	}
+	require.NoError(t, err, "locate repo root")
 	return root
 }
 
@@ -46,9 +47,7 @@ func copyGoTree(t *testing.T, src, dst string) {
 		}
 		return os.WriteFile(target, data, 0o644)
 	})
-	if err != nil {
-		t.Fatalf("copy go tree: %v", err)
-	}
+	require.NoError(t, err, "copy go tree")
 }
 
 // mutatedRepo copies the repository into a temp directory, applies replace
@@ -61,16 +60,10 @@ func mutatedRepo(t *testing.T, edits map[string][2]string) string {
 	for file, edit := range edits {
 		path := filepath.Join(dst, file)
 		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", file, err)
-		}
-		if !strings.Contains(string(data), edit[0]) {
-			t.Fatalf("mutation target %q not found in %s", edit[0], file)
-		}
+		require.NoError(t, err, "read %s", file)
+		require.Contains(t, string(data), edit[0], "mutation target %q not found in %s", edit[0], file)
 		data = []byte(strings.Replace(string(data), edit[0], edit[1], 1))
-		if err := os.WriteFile(path, data, 0o644); err != nil {
-			t.Fatalf("write %s: %v", file, err)
-		}
+		require.NoError(t, os.WriteFile(path, data, 0o644), "write %s", file)
 	}
 	return dst
 }
@@ -78,13 +71,9 @@ func mutatedRepo(t *testing.T, edits map[string][2]string) string {
 func scanAndCheck(t *testing.T, root string, mode Mode) *Report {
 	t.Helper()
 	scan, err := ScanBinding(root)
-	if err != nil {
-		t.Fatalf("scan binding: %v", err)
-	}
+	require.NoError(t, err, "scan binding")
 	report, err := Check(scan, root, mode)
-	if err != nil {
-		t.Fatalf("check: %v", err)
-	}
+	require.NoError(t, err, "check")
 	return report
 }
 
@@ -102,20 +91,12 @@ func hasItemWithPrefix(items []string, prefix string) bool {
 func TestScanIsReproducible(t *testing.T) {
 	root := repoRoot(t)
 	first, err := ScanBinding(root)
-	if err != nil {
-		t.Fatalf("first scan: %v", err)
-	}
+	require.NoError(t, err, "first scan")
 	second, err := ScanBinding(root)
-	if err != nil {
-		t.Fatalf("second scan: %v", err)
-	}
-	if len(first) != len(second) {
-		t.Fatalf("scan produced %d then %d symbols", len(first), len(second))
-	}
+	require.NoError(t, err, "second scan")
+	require.Len(t, second, len(first), "scan produced %d then %d symbols", len(first), len(second))
 	for i := range first {
-		if first[i] != second[i] {
-			t.Fatalf("scan not reproducible at %d: %+v vs %+v", i, first[i], second[i])
-		}
+		require.Equal(t, first[i], second[i], "scan not reproducible at %d: %+v vs %+v", i, first[i], second[i])
 	}
 }
 
@@ -126,48 +107,32 @@ func TestScanIsReproducible(t *testing.T) {
 // TestFinalModeFailsWhileGapsRemain.
 func TestFrozenInventoryReconcilesWithSource(t *testing.T) {
 	report := scanAndCheck(t, repoRoot(t), ModeDrift)
-	if !report.Pass {
-		t.Fatalf("drift check failed: added=%v removed=%v changed=%v mapping=%v",
-			report.Added, report.Removed, report.Changed, report.Mapping)
-	}
-	if report.Scanned != report.Frozen {
-		t.Fatalf("scanned %d items but inventory freezes %d", report.Scanned, report.Frozen)
-	}
+	require.True(t, report.Pass, "drift check failed: added=%v removed=%v changed=%v mapping=%v",
+		report.Added, report.Removed, report.Changed, report.Mapping)
+	require.Equal(t, report.Frozen, report.Scanned, "scanned %d items but inventory freezes %d", report.Scanned, report.Frozen)
 }
 
 // TestInventoryPinsThirtyTwoPublicEntries pins the 32 public entry points
 // (Open + 8 Runtime + 21 Instance + 2 Operation methods) item by item.
 func TestInventoryPinsThirtyTwoPublicEntries(t *testing.T) {
 	frozen, err := inventorySymbols()
-	if err != nil {
-		t.Fatalf("inventory symbols: %v", err)
-	}
+	require.NoError(t, err, "inventory symbols")
 	entries := map[string]int{}
 	for _, s := range frozen {
 		if s.Kind == KindEntry {
 			entries[s.Owner]++
 		}
 	}
-	if entries[""] != 1 {
-		t.Errorf("package-level entries: got %d, want 1 (Open)", entries[""])
-	}
-	if entries["Runtime"] != 8 {
-		t.Errorf("*Runtime entries: got %d, want 8", entries["Runtime"])
-	}
-	if entries["Instance"] != 21 {
-		t.Errorf("*Instance entries: got %d, want 21", entries["Instance"])
-	}
-	if entries["Operation"] != 2 {
-		t.Errorf("*Operation entries: got %d, want 2", entries["Operation"])
-	}
+	assert.Equal(t, 1, entries[""], "package-level entries: got %d, want 1 (Open)", entries[""])
+	assert.Equal(t, 8, entries["Runtime"], "*Runtime entries: got %d, want 8", entries["Runtime"])
+	assert.Equal(t, 21, entries["Instance"], "*Instance entries: got %d, want 21", entries["Instance"])
+	assert.Equal(t, 2, entries["Operation"], "*Operation entries: got %d, want 2", entries["Operation"])
 	mappings := inventoryMappings()
 	for _, s := range frozen {
 		if s.Kind != KindEntry {
 			continue
 		}
-		if _, ok := mappings[s.Key()]; !ok {
-			t.Errorf("public entry %s has no five-segment mapping", s.Key())
-		}
+		assert.Contains(t, mappings, s.Key(), "public entry %s has no five-segment mapping", s.Key())
 	}
 }
 
@@ -187,35 +152,23 @@ func TestFinalModeFailsWhileGapsRemain(t *testing.T) {
 			break
 		}
 	}
-	if downgraded == "" {
-		t.Fatal("no done entry to downgrade into a registered gap")
-	}
+	require.NotEmpty(t, downgraded, "no done entry to downgrade into a registered gap")
 	root := repoRoot(t)
 	drift := checkWithInventory(t, root, mappings, ModeDrift)
-	if !drift.Pass {
-		t.Fatalf("drift check must pass while registered gaps exist: added=%v removed=%v changed=%v mapping=%v",
-			drift.Added, drift.Removed, drift.Changed, drift.Mapping)
-	}
+	require.True(t, drift.Pass, "drift check must pass while registered gaps exist: added=%v removed=%v changed=%v mapping=%v",
+		drift.Added, drift.Removed, drift.Changed, drift.Mapping)
 	report := checkWithInventory(t, root, mappings, ModeFinal)
-	if report.Pass {
-		t.Fatal("final check passed while registered gaps remain; gaps must not count as coverage")
-	}
-	if report.Pending == 0 {
-		t.Fatal("final report lists no pending gaps although the inventory carries them")
-	}
+	require.False(t, report.Pass, "final check passed while registered gaps remain; gaps must not count as coverage")
+	require.NotZero(t, report.Pending, "final report lists no pending gaps although the inventory carries them")
 	found := false
 	for _, f := range report.Mapping {
 		if strings.Contains(f.Problem, "zero pending items") {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatal("final report does not state the zero-pending requirement")
-	}
+	require.True(t, found, "final report does not state the zero-pending requirement")
 	for _, gap := range report.Gaps {
-		if !strings.Contains(gap, "pending:WKR-") {
-			t.Fatalf("gap %q is not attributed to a WKR task", gap)
-		}
+		require.Contains(t, gap, "pending:WKR-", "gap %q is not attributed to a WKR task", gap)
 	}
 }
 
@@ -227,12 +180,8 @@ func TestMutationAddedMethod(t *testing.T) {
 			"func (rt *Runtime) ExtraAPI() string { return \"\" }\n\nfunc Open(cfg RuntimeConfig) (*Runtime, error) {"},
 	})
 	report := scanAndCheck(t, root, ModeDrift)
-	if report.Pass {
-		t.Fatal("adding an exported method must fail the drift check")
-	}
-	if !hasItemWithPrefix(report.Added, "entry Runtime.ExtraAPI") {
-		t.Fatalf("added method not reported: %v", report.Added)
-	}
+	require.False(t, report.Pass, "adding an exported method must fail the drift check")
+	require.True(t, hasItemWithPrefix(report.Added, "entry Runtime.ExtraAPI"), "added method not reported: %v", report.Added)
 }
 
 // TestMutationAddedLimitsField: a new Limits field is a field-level drift,
@@ -242,12 +191,8 @@ func TestMutationAddedLimitsField(t *testing.T) {
 		"packages/maa-go/runtime.go": {"type Limits struct {\n", "type Limits struct {\n\tExtra uint64\n"},
 	})
 	report := scanAndCheck(t, root, ModeDrift)
-	if report.Pass {
-		t.Fatal("adding a Limits field must fail the drift check")
-	}
-	if !hasItemWithPrefix(report.Added, "field Limits.Extra") {
-		t.Fatalf("added field not reported: %v", report.Added)
-	}
+	require.False(t, report.Pass, "adding a Limits field must fail the drift check")
+	require.True(t, hasItemWithPrefix(report.Added, "field Limits.Extra"), "added field not reported: %v", report.Added)
 }
 
 // TestMutationChangedSignature: reshaping a frozen signature fails.
@@ -257,12 +202,8 @@ func TestMutationChangedSignature(t *testing.T) {
 			"func (rt *Runtime) Version() (string, error) { return rt.version, nil }"},
 	})
 	report := scanAndCheck(t, root, ModeDrift)
-	if report.Pass {
-		t.Fatal("changing a frozen signature must fail the drift check")
-	}
-	if len(report.Changed) != 1 || !strings.HasPrefix(report.Changed[0], "entry Runtime.Version") {
-		t.Fatalf("changed signature not reported: %v", report.Changed)
-	}
+	require.False(t, report.Pass, "changing a frozen signature must fail the drift check")
+	require.True(t, len(report.Changed) == 1 && strings.HasPrefix(report.Changed[0], "entry Runtime.Version"), "changed signature not reported: %v", report.Changed)
 }
 
 // TestMutationRenamedMethod: deleting or renaming a method removes a frozen
@@ -272,15 +213,9 @@ func TestMutationRenamedMethod(t *testing.T) {
 		"packages/maa-go/instance.go": {"func (in *Instance) UUID() (string, error)", "func (in *Instance) UUID2() (string, error)"},
 	})
 	report := scanAndCheck(t, root, ModeDrift)
-	if report.Pass {
-		t.Fatal("renaming an entry must fail the drift check")
-	}
-	if !hasItemWithPrefix(report.Removed, "entry Instance.UUID ") {
-		t.Fatalf("removed entry not reported: %v", report.Removed)
-	}
-	if !hasItemWithPrefix(report.Added, "entry Instance.UUID2") {
-		t.Fatalf("added entry not reported: %v", report.Added)
-	}
+	require.False(t, report.Pass, "renaming an entry must fail the drift check")
+	require.True(t, hasItemWithPrefix(report.Removed, "entry Instance.UUID "), "removed entry not reported: %v", report.Removed)
+	require.True(t, hasItemWithPrefix(report.Added, "entry Instance.UUID2"), "added entry not reported: %v", report.Added)
 }
 
 // TestMutationAddedConstant: a new constant (e.g. another Win32 input method)
@@ -291,12 +226,8 @@ func TestMutationAddedConstant(t *testing.T) {
 			"type Win32InputMethod uint64\n\nconst Win32InputNew Win32InputMethod = 1 << 11"},
 	})
 	report := scanAndCheck(t, root, ModeDrift)
-	if report.Pass {
-		t.Fatal("adding a constant must fail the drift check")
-	}
-	if !hasItemWithPrefix(report.Added, "const Win32InputNew") {
-		t.Fatalf("added constant not reported: %v", report.Added)
-	}
+	require.False(t, report.Pass, "adding a constant must fail the drift check")
+	require.True(t, hasItemWithPrefix(report.Added, "const Win32InputNew"), "added constant not reported: %v", report.Added)
 }
 
 // TestMutationRenamedErrorSentinel: the error surface is part of the
@@ -306,15 +237,9 @@ func TestMutationRenamedErrorSentinel(t *testing.T) {
 		"packages/maa-go/errors.go": {"ErrProtocol = native.ErrProtocol", "ErrProtocol2 = native.ErrProtocol"},
 	})
 	report := scanAndCheck(t, root, ModeDrift)
-	if report.Pass {
-		t.Fatal("renaming an error sentinel must fail the drift check")
-	}
-	if !hasItemWithPrefix(report.Removed, "error ErrProtocol ") {
-		t.Fatalf("removed sentinel not reported: %v", report.Removed)
-	}
-	if !hasItemWithPrefix(report.Added, "error ErrProtocol2") {
-		t.Fatalf("added sentinel not reported: %v", report.Added)
-	}
+	require.False(t, report.Pass, "renaming an error sentinel must fail the drift check")
+	require.True(t, hasItemWithPrefix(report.Removed, "error ErrProtocol "), "removed sentinel not reported: %v", report.Removed)
+	require.True(t, hasItemWithPrefix(report.Added, "error ErrProtocol2"), "added sentinel not reported: %v", report.Added)
 }
 
 // TestMutationChangedFieldType: changing a field's type drifts at field
@@ -324,12 +249,8 @@ func TestMutationChangedFieldType(t *testing.T) {
 		"packages/maa-go/runtime.go": {"GrowthRetries uint32", "GrowthRetries int32"},
 	})
 	report := scanAndCheck(t, root, ModeDrift)
-	if report.Pass {
-		t.Fatal("changing a field type must fail the drift check")
-	}
-	if len(report.Changed) != 1 || !strings.HasPrefix(report.Changed[0], "field BufferLimits.GrowthRetries") {
-		t.Fatalf("changed field not reported: %v", report.Changed)
-	}
+	require.False(t, report.Pass, "changing a field type must fail the drift check")
+	require.True(t, len(report.Changed) == 1 && strings.HasPrefix(report.Changed[0], "field BufferLimits.GrowthRetries"), "changed field not reported: %v", report.Changed)
 }
 
 func mappingsCopy(t *testing.T) map[string]Mapping {
@@ -345,17 +266,11 @@ func mappingsCopy(t *testing.T) map[string]Mapping {
 func checkWithInventory(t *testing.T, root string, mappings map[string]Mapping, mode Mode) *Report {
 	t.Helper()
 	scan, err := ScanBinding(root)
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
+	require.NoError(t, err, "scan")
 	frozen, err := inventorySymbols()
-	if err != nil {
-		t.Fatalf("inventory: %v", err)
-	}
+	require.NoError(t, err, "inventory")
 	report, err := checkWith(scan, frozen, mappings, root, mode)
-	if err != nil {
-		t.Fatalf("check: %v", err)
-	}
+	require.NoError(t, err, "check")
 	return report
 }
 
@@ -370,18 +285,14 @@ func TestCapabilityMarkerAloneCannotSatisfyCheck(t *testing.T) {
 	m.Worker, m.Client, m.Test = "", "", ""
 	mappings["entry Runtime.Log"] = m
 	report := checkWithInventory(t, repoRoot(t), mappings, ModeFinal)
-	if report.Pass {
-		t.Fatal("a capability marker alone must not satisfy the check")
-	}
+	require.False(t, report.Pass, "a capability marker alone must not satisfy the check")
 	problems := 0
 	for _, f := range report.Mapping {
 		if f.Item == "entry Runtime.Log" && strings.Contains(f.Problem, "empty") {
 			problems++
 		}
 	}
-	if problems != 3 {
-		t.Fatalf("expected three empty-segment failures, got %d: %v", problems, report.Mapping)
-	}
+	require.Equal(t, 3, problems, "expected three empty-segment failures, got %d: %v", problems, report.Mapping)
 }
 
 // TestUnresolvableTestReferenceFails: acceptance mappings must point at real
@@ -392,18 +303,14 @@ func TestUnresolvableTestReferenceFails(t *testing.T) {
 	m.Test = "TestNoSuchTestEver"
 	mappings["entry Open"] = m
 	report := checkWithInventory(t, repoRoot(t), mappings, ModeDrift)
-	if report.Pass {
-		t.Fatal("a fabricated test reference must fail the check")
-	}
+	require.False(t, report.Pass, "a fabricated test reference must fail the check")
 	found := false
 	for _, f := range report.Mapping {
 		if f.Item == "entry Open" && strings.Contains(f.Problem, `test reference "TestNoSuchTestEver" does not resolve`) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("unresolved test reference not reported: %v", report.Mapping)
-	}
+	require.True(t, found, "unresolved test reference not reported: %v", report.Mapping)
 }
 
 // TestRemovedWorkerBranchFails: dropping the worker adaptation (e.g. renaming
@@ -414,18 +321,14 @@ func TestRemovedWorkerBranchFails(t *testing.T) {
 			"func (e *nativeEngine) AppendTaskX(req protocol.TaskRequest) (int32, error) {"},
 	})
 	report := scanAndCheck(t, root, ModeDrift)
-	if report.Pass {
-		t.Fatal("losing the worker branch must fail the check")
-	}
+	require.False(t, report.Pass, "losing the worker branch must fail the check")
 	found := false
 	for _, f := range report.Mapping {
 		if f.Item == "entry Instance.AppendTask" && strings.Contains(f.Problem, `worker reference "nativeEngine.AppendTask" does not resolve`) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("missing worker branch not reported: %v", report.Mapping)
-	}
+	require.True(t, found, "missing worker branch not reported: %v", report.Mapping)
 }
 
 // TestRemovedClientBranchFails: dropping the client method breaks the
@@ -436,18 +339,14 @@ func TestRemovedClientBranchFails(t *testing.T) {
 			"func (c *Client) AppendTaskX(ctx context.Context, req protocol.TaskRequest) (protocol.TaskAccepted, error) {"},
 	})
 	report := scanAndCheck(t, root, ModeDrift)
-	if report.Pass {
-		t.Fatal("losing the client method must fail the check")
-	}
+	require.False(t, report.Pass, "losing the client method must fail the check")
 	found := false
 	for _, f := range report.Mapping {
 		if f.Item == "entry Instance.AppendTask" && strings.Contains(f.Problem, `client reference "Client.AppendTask" does not resolve`) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("missing client method not reported: %v", report.Mapping)
-	}
+	require.True(t, found, "missing client method not reported: %v", report.Mapping)
 }
 
 // TestRemovedDTOFails: dropping the protocol DTO breaks the verified mapping
@@ -457,18 +356,14 @@ func TestRemovedDTOFails(t *testing.T) {
 		"packages/control/worker/protocol/protocol.go": {"type ConnectRequest struct {", "type ConnectRequestX struct {"},
 	})
 	report := scanAndCheck(t, root, ModeDrift)
-	if report.Pass {
-		t.Fatal("losing the protocol DTO must fail the check")
-	}
+	require.False(t, report.Pass, "losing the protocol DTO must fail the check")
 	found := false
 	for _, f := range report.Mapping {
 		if f.Item == "entry Instance.Connect" && strings.Contains(f.Problem, `dto reference "ConnectRequest.ADBPath" does not resolve`) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("missing DTO not reported: %v", report.Mapping)
-	}
+	require.True(t, found, "missing DTO not reported: %v", report.Mapping)
 }
 
 // TestNAWithoutReasonIsRejected: non-applicable entries must state the reason
@@ -477,16 +372,11 @@ func TestNAWithoutReasonIsRejected(t *testing.T) {
 	mappings := mappingsCopy(t)
 	mappings["capability Capabilities.Create"] = Mapping{Status: "na"}
 	scan, err := ScanBinding(repoRoot(t))
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
+	require.NoError(t, err, "scan")
 	frozen, err := inventorySymbols()
-	if err != nil {
-		t.Fatalf("inventory: %v", err)
-	}
-	if _, err := checkWith(scan, frozen, mappings, repoRoot(t), ModeDrift); err == nil {
-		t.Fatal("na status without a reason must be rejected")
-	}
+	require.NoError(t, err, "inventory")
+	_, err = checkWith(scan, frozen, mappings, repoRoot(t), ModeDrift)
+	require.Error(t, err, "na status without a reason must be rejected")
 }
 
 // TestInvalidStatusIsRejected: statuses outside the frozen vocabulary are
@@ -497,16 +387,11 @@ func TestInvalidStatusIsRejected(t *testing.T) {
 	m.Status = "covered"
 	mappings["entry Open"] = m
 	scan, err := ScanBinding(repoRoot(t))
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
+	require.NoError(t, err, "scan")
 	frozen, err := inventorySymbols()
-	if err != nil {
-		t.Fatalf("inventory: %v", err)
-	}
-	if _, err := checkWith(scan, frozen, mappings, repoRoot(t), ModeDrift); err == nil {
-		t.Fatal("an invalid status must be rejected")
-	}
+	require.NoError(t, err, "inventory")
+	_, err = checkWith(scan, frozen, mappings, repoRoot(t), ModeDrift)
+	require.Error(t, err, "an invalid status must be rejected")
 }
 
 // TestMappingWithoutSymbolIsRejected: mappings may not reference symbols the
@@ -515,14 +400,9 @@ func TestMappingWithoutSymbolIsRejected(t *testing.T) {
 	mappings := mappingsCopy(t)
 	mappings["entry Runtime.Ghost"] = Mapping{Status: "done", DTO: "Error", Worker: "classify", Client: "Client.Err", Test: "TestNativeErrorCodes"}
 	scan, err := ScanBinding(repoRoot(t))
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
+	require.NoError(t, err, "scan")
 	frozen, err := inventorySymbols()
-	if err != nil {
-		t.Fatalf("inventory: %v", err)
-	}
-	if _, err := checkWith(scan, frozen, mappings, repoRoot(t), ModeDrift); err == nil {
-		t.Fatal("a mapping without a frozen symbol must be rejected")
-	}
+	require.NoError(t, err, "inventory")
+	_, err = checkWith(scan, frozen, mappings, repoRoot(t), ModeDrift)
+	require.Error(t, err, "a mapping without a frozen symbol must be rejected")
 }

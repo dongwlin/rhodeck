@@ -9,8 +9,10 @@
 package main
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestLockedPolicyExpectations 钉死冻结期望表的全部 30 项:23 项
@@ -53,40 +55,26 @@ func TestLockedPolicyExpectations(t *testing.T) {
 		"AsstConnect":      {Policy: ExpectPolicyExcluded},
 		"AsstAttachWindow": {Policy: ExpectPolicyExcluded},
 	}
-	if len(policyExpectations) != 30 {
-		t.Fatalf("locked policy expectations has %d entries, want 30", len(policyExpectations))
-	}
-	if len(policyExpectations) != len(want) {
-		t.Fatalf("locked policy expectations has %d entries, want %d",
-			len(policyExpectations), len(want))
-	}
+	require.Len(t, policyExpectations, 30,
+		"locked policy expectations has %d entries, want 30", len(policyExpectations))
+	require.Len(t, policyExpectations, len(want),
+		"locked policy expectations has %d entries, want %d",
+		len(policyExpectations), len(want))
 	for symbol, w := range want {
 		got, ok := policyExpectations[symbol]
-		if !ok {
-			t.Fatalf("locked policy expectations is missing %s", symbol)
-		}
-		if got != w {
-			t.Errorf("%s = %+v, want %+v", symbol, got, w)
-		}
+		require.True(t, ok, "locked policy expectations is missing %s", symbol)
+		assert.Equal(t, w, got, "%s = %+v, want %+v", symbol, got, w)
 	}
 	// 词表冻结:policy/platform 取值只允许期望常量。
 	for symbol, e := range policyExpectations {
-		switch e.Policy {
-		case ExpectPolicyRequired, ExpectPolicyOptional, ExpectPolicyExcluded:
-		default:
-			t.Errorf("%s has unexpected policy %q", symbol, e.Policy)
-		}
-		switch e.Platform {
-		case "", ExpectPlatformAll, ExpectPlatformWindows:
-		default:
-			t.Errorf("%s has unexpected platform %q", symbol, e.Platform)
-		}
-		if e.Policy == ExpectPolicyExcluded && e.Platform != "" {
-			t.Errorf("%s is excluded but carries platform %q", symbol, e.Platform)
-		}
-		if e.Policy != ExpectPolicyExcluded && e.Platform == "" {
-			t.Errorf("%s is bound-expected but has no platform", symbol)
-		}
+		assert.True(t, e.Policy == ExpectPolicyRequired || e.Policy == ExpectPolicyOptional ||
+			e.Policy == ExpectPolicyExcluded, "%s has unexpected policy %q", symbol, e.Policy)
+		assert.True(t, e.Platform == "" || e.Platform == ExpectPlatformAll ||
+			e.Platform == ExpectPlatformWindows, "%s has unexpected platform %q", symbol, e.Platform)
+		assert.False(t, e.Policy == ExpectPolicyExcluded && e.Platform != "",
+			"%s is excluded but carries platform %q", symbol, e.Platform)
+		assert.False(t, e.Policy != ExpectPolicyExcluded && e.Platform == "",
+			"%s is bound-expected but has no platform", symbol)
 	}
 }
 
@@ -96,25 +84,17 @@ func TestLockedPolicyExpectations(t *testing.T) {
 func TestCompareExpectationsPositive(t *testing.T) {
 	g := mustExtractGo(t, copyRealNative(t))
 	res, diags := CompareExpectations(g)
-	if len(diags) != 0 {
-		t.Fatalf("CompareExpectations unexpectedly failed: %v", diags)
-	}
-	if len(res.Entries) != 30 {
-		t.Fatalf("entries = %d, want 30", len(res.Entries))
-	}
+	require.Empty(t, diags, "CompareExpectations unexpectedly failed: %v", diags)
+	require.Len(t, res.Entries, 30, "entries = %d, want 30", len(res.Entries))
 	for i, e := range res.Entries {
 		wantSym := sortedExpectationSymbols()[i]
-		if e.Symbol != wantSym {
-			t.Fatalf("entries[%d].Symbol = %q, want %q (must be sorted)", i, e.Symbol, wantSym)
-		}
+		require.Equal(t, wantSym, e.Symbol,
+			"entries[%d].Symbol = %q, want %q (must be sorted)", i, e.Symbol, wantSym)
 		want := policyExpectations[e.Symbol]
-		if e.Expected.Policy != want.Policy || e.Expected.Platform != want.Platform {
-			t.Errorf("%s expected = %+v, want %+v", e.Symbol, e.Expected, want)
-		}
-		if e.Actual != e.Expected {
-			t.Errorf("%s actual = %+v, want %+v (frozen table must match the production table)",
-				e.Symbol, e.Actual, e.Expected)
-		}
+		assert.Equal(t, want, Expectation(e.Expected), "%s expected = %+v, want %+v", e.Symbol, e.Expected, want)
+		assert.Equal(t, e.Expected, e.Actual,
+			"%s actual = %+v, want %+v (frozen table must match the production table)",
+			e.Symbol, e.Actual, e.Expected)
 	}
 }
 
@@ -123,24 +103,19 @@ func TestCompareExpectationsPositive(t *testing.T) {
 func mustCompareFail(t *testing.T, g *GoExtraction, wantFile string, wantLine int, wantSymbol, wantText string) Diagnostic {
 	t.Helper()
 	res, diags := CompareExpectations(g)
+	// 失败路径的 res 为 nil,计数须留在原 if 守卫内惰性求值。
 	if len(diags) == 0 {
-		t.Fatalf("CompareExpectations unexpectedly passed (%d entries); want failure mentioning %q",
+		require.FailNowf(t, "CompareExpectations unexpectedly passed",
+			"CompareExpectations unexpectedly passed (%d entries); want failure mentioning %q",
 			len(res.Entries), wantText)
 	}
 	d := diags[0]
-	if d.Category != CatPolicy {
-		t.Errorf("category = %q, want %q", d.Category, CatPolicy)
-	}
-	if d.File != wantFile || (wantLine > 0 && d.Line != wantLine) {
-		t.Errorf("location = %s:%d, want %s:%d", d.File, d.Line, wantFile, wantLine)
-	}
-	if d.Symbol != wantSymbol {
-		t.Errorf("symbol = %q, want %q", d.Symbol, wantSymbol)
-	}
+	assert.Equal(t, CatPolicy, d.Category, "category = %q, want %q", d.Category, CatPolicy)
+	assert.False(t, d.File != wantFile || (wantLine > 0 && d.Line != wantLine),
+		"location = %s:%d, want %s:%d", d.File, d.Line, wantFile, wantLine)
+	assert.Equal(t, wantSymbol, d.Symbol, "symbol = %q, want %q", d.Symbol, wantSymbol)
 	joined := d.Expected + "\n" + d.Actual + "\n" + d.Message
-	if !strings.Contains(joined, wantText) {
-		t.Errorf("diagnostic %+v does not mention %q", d, wantText)
-	}
+	assert.Contains(t, joined, wantText, "diagnostic %+v does not mention %q", d, wantText)
 	return d
 }
 
@@ -152,7 +127,7 @@ func specLine(t *testing.T, g *GoExtraction, symbol string) int {
 			return s.Line
 		}
 	}
-	t.Fatalf("spec %s not found", symbol)
+	require.FailNowf(t, "spec not found", "spec %s not found", symbol)
 	return 0
 }
 
@@ -168,9 +143,8 @@ func TestCompareExpectationsFailures(t *testing.T) {
 			Policy: ExpectPolicyRequired, Platform: ExpectPlatformAll,
 			File: "symbols.go", Line: 999})
 		d := mustCompareFail(t, g, "symbols.go", 999, "AsstUnfrozen", "not frozen")
-		if !strings.Contains(d.Expected, "expectation table") {
-			t.Errorf("expected = %q, want it to reference the expectation table", d.Expected)
-		}
+		assert.Contains(t, d.Expected, "expectation table",
+			"expected = %q, want it to reference the expectation table", d.Expected)
 	})
 	t.Run("deprecated export rebound", func(t *testing.T) {
 		g := base(t)

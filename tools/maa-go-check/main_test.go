@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSelectLayers(t *testing.T) {
@@ -35,35 +35,23 @@ func TestSelectLayers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := selectLayers(defs, tc.spec)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("selectLayers(%q) succeeded, want error", tc.spec)
-				}
+				require.Error(t, err, "selectLayers(%q) succeeded, want error", tc.spec)
 				return
 			}
-			if err != nil {
-				t.Fatalf("selectLayers(%q): %v", tc.spec, err)
-			}
-			if !reflect.DeepEqual(sortedKeys(got), tc.want) {
-				t.Fatalf("selectLayers(%q) = %v, want %v", tc.spec, sortedKeys(got), tc.want)
-			}
+			require.NoError(t, err, "selectLayers(%q): %v", tc.spec, err)
+			require.Equal(t, tc.want, sortedKeys(got), "selectLayers(%q) = %v, want %v", tc.spec, sortedKeys(got), tc.want)
 		})
 	}
 }
 
 func TestCISelectionDoesNotClaimRealCore(t *testing.T) {
 	selected, err := selectLayers(definitions(), "ci")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for _, name := range []string{"core", "race"} {
-		if selected[name] {
-			t.Fatalf("ci selection must not include %q", name)
-		}
+		require.False(t, selected[name], "ci selection must not include %q", name)
 	}
 	for _, name := range []string{"static", "go", "loader", "abi", "callback", "build", "fmt"} {
-		if !selected[name] {
-			t.Fatalf("ci selection must include %q", name)
-		}
+		require.True(t, selected[name], "ci selection must include %q", name)
 	}
 }
 
@@ -86,9 +74,8 @@ func TestExitCode(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := exitCode(report{Selected: tc.selected, Layers: tc.layers}); got != tc.want {
-				t.Fatalf("exitCode() = %d, want %d", got, tc.want)
-			}
+			got := exitCode(report{Selected: tc.selected, Layers: tc.layers})
+			require.Equal(t, tc.want, got, "exitCode() = %d, want %d", got, tc.want)
 		})
 	}
 }
@@ -96,33 +83,21 @@ func TestExitCode(t *testing.T) {
 func TestConclusionReportsExpectedSkips(t *testing.T) {
 	results := []layerResult{{Name: "core", Status: statusPassExpected, Skipped: 1}}
 	got := conclusion(map[string]bool{"core": true}, results)
-	if !strings.Contains(got, "expected skips") {
-		t.Fatalf("conclusion = %q, want mention of expected skips", got)
-	}
+	require.Contains(t, got, "expected skips", "conclusion = %q, want mention of expected skips", got)
 }
 
 func TestGoTestArgsIncludesRaceOnlyWhenRequested(t *testing.T) {
 	base := goTestStep{Packages: []string{"./x"}}
-	if containsArg(goTestArgs(base), "-race") {
-		t.Fatal("goTestArgs must not add -race for an ordinary step")
-	}
+	require.False(t, containsArg(goTestArgs(base), "-race"), "goTestArgs must not add -race for an ordinary step")
 	spec := raceGoTestStep()
-	if !spec.Race {
-		t.Fatal("raceGoTestStep must set Race: true")
-	}
+	require.True(t, spec.Race, "raceGoTestStep must set Race: true")
 	args := goTestArgs(spec)
-	if !containsArg(args, "-race") {
-		t.Fatalf("race layer args = %v, want -race", args)
-	}
-	if spec.Skip != "TestRealCore" {
-		t.Fatalf("race layer skip filter = %q, want TestRealCore", spec.Skip)
-	}
-	if !containsArg(args, "-skip") {
-		t.Fatalf("race layer args = %v, want -skip", args)
-	}
+	require.True(t, containsArg(args, "-race"), "race layer args = %v, want -race", args)
+	require.Equal(t, "TestRealCore", spec.Skip, "race layer skip filter = %q, want TestRealCore", spec.Skip)
+	require.True(t, containsArg(args, "-skip"), "race layer args = %v, want -skip", args)
 	for i, arg := range args {
-		if arg == "-skip" && (i+1 >= len(args) || args[i+1] != spec.Skip) {
-			t.Fatalf("race layer -skip value = %v, want %q", args, spec.Skip)
+		if arg == "-skip" {
+			require.Truef(t, i+1 < len(args) && args[i+1] == spec.Skip, "race layer -skip value = %v, want %q", args, spec.Skip)
 		}
 	}
 }
@@ -144,25 +119,17 @@ func TestRunLayerPreservesDefinitionName(t *testing.T) {
 		},
 	}
 	res := runLayer(context.Background(), environment{}, def)
-	if res.Name != "outer" {
-		t.Fatalf("runLayer name = %q, want outer", res.Name)
-	}
+	require.Equal(t, "outer", res.Name, "runLayer name = %q, want outer", res.Name)
 }
 
 func TestLayerResultMergeStatusPrecedence(t *testing.T) {
 	var res layerResult
 	res.Status = statusPass
 	res.merge(layerResult{Status: statusUnverified, Passed: 1, Skipped: 1})
-	if res.Status != statusUnverified {
-		t.Fatalf("status = %q, want %q", res.Status, statusUnverified)
-	}
+	require.Equal(t, statusUnverified, res.Status, "status = %q, want %q", res.Status, statusUnverified)
 	res.merge(layerResult{Status: statusFail, Failed: 1})
-	if res.Status != statusFail {
-		t.Fatalf("status = %q, want %q", res.Status, statusFail)
-	}
-	if res.Passed != 1 || res.Skipped != 1 || res.Failed != 1 {
-		t.Fatalf("counts = %d/%d/%d, want 1/1/1", res.Passed, res.Skipped, res.Failed)
-	}
+	require.Equal(t, statusFail, res.Status, "status = %q, want %q", res.Status, statusFail)
+	require.Truef(t, res.Passed == 1 && res.Skipped == 1 && res.Failed == 1, "counts = %d/%d/%d, want 1/1/1", res.Passed, res.Skipped, res.Failed)
 }
 
 func TestRunGoTestClassifiesPassSkipAndFail(t *testing.T) {
@@ -224,15 +191,12 @@ func TestRunGoTestClassifiesPassSkipAndFail(t *testing.T) {
 				Env:        noCGO,
 				Timeout:    2 * time.Minute,
 			})
-			if res.Status != tc.wantStatus {
-				t.Fatalf("status = %q, want %q (detail: %s)", res.Status, tc.wantStatus, res.Detail)
-			}
-			if res.Passed != tc.wantPassed || res.Skipped != tc.wantSkip || res.Failed != tc.wantFailed {
-				t.Fatalf("counts = %d/%d/%d, want %d/%d/%d (detail: %s)",
-					res.Passed, res.Skipped, res.Failed, tc.wantPassed, tc.wantSkip, tc.wantFailed, res.Detail)
-			}
-			if tc.wantStatus == statusUnverified && tc.wantSkip > 0 && len(res.UnexpectedSkips) == 0 && len(res.ExpectedSkips) == 0 {
-				t.Fatalf("unverified skip must name the skipped test: %s", res.Detail)
+			require.Equal(t, tc.wantStatus, res.Status, "status = %q, want %q (detail: %s)", res.Status, tc.wantStatus, res.Detail)
+			require.Truef(t, res.Passed == tc.wantPassed && res.Skipped == tc.wantSkip && res.Failed == tc.wantFailed,
+				"counts = %d/%d/%d, want %d/%d/%d (detail: %s)",
+				res.Passed, res.Skipped, res.Failed, tc.wantPassed, tc.wantSkip, tc.wantFailed, res.Detail)
+			if tc.wantStatus == statusUnverified && tc.wantSkip > 0 {
+				require.Truef(t, len(res.UnexpectedSkips) > 0 || len(res.ExpectedSkips) > 0, "unverified skip must name the skipped test: %s", res.Detail)
 			}
 		})
 	}
@@ -241,13 +205,11 @@ func TestRunGoTestClassifiesPassSkipAndFail(t *testing.T) {
 func writeTestModule(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/checktest\n\ngo 1.25.0\n"), 0o644); err != nil {
-		t.Fatalf("write go.mod: %v", err)
-	}
+	err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/checktest\n\ngo 1.25.0\n"), 0o644)
+	require.NoError(t, err, "write go.mod")
 	src := "package checktest\n\nimport \"testing\"\n\n" + body + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "x_test.go"), []byte(src), 0o644); err != nil {
-		t.Fatalf("write test: %v", err)
-	}
+	err = os.WriteFile(filepath.Join(dir, "x_test.go"), []byte(src), 0o644)
+	require.NoError(t, err, "write test")
 	return dir
 }
 
@@ -255,16 +217,12 @@ func TestRunCommandFailOnOutput(t *testing.T) {
 	dir := t.TempDir()
 	env := environment{Root: dir}
 	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	args := []string{exe, "-test.run=^TestRunCommandHelper$"}
-	if res := runCommand(context.Background(), env, "silent", args, []string{"MAA_CHECK_COMMAND_HELPER=silent"}, time.Minute, true); res.Status != statusPass {
-		t.Fatalf("silent command status = %q, want %q (%s)", res.Status, statusPass, res.Detail)
-	}
-	if res := runCommand(context.Background(), env, "noisy", args, []string{"MAA_CHECK_COMMAND_HELPER=noisy"}, time.Minute, true); res.Status != statusFail {
-		t.Fatalf("noisy command status = %q, want %q (%s)", res.Status, statusFail, res.Detail)
-	}
+	res := runCommand(context.Background(), env, "silent", args, []string{"MAA_CHECK_COMMAND_HELPER=silent"}, time.Minute, true)
+	require.Equal(t, statusPass, res.Status, "silent command status = %q, want %q (%s)", res.Status, statusPass, res.Detail)
+	res = runCommand(context.Background(), env, "noisy", args, []string{"MAA_CHECK_COMMAND_HELPER=noisy"}, time.Minute, true)
+	require.Equal(t, statusFail, res.Status, "noisy command status = %q, want %q (%s)", res.Status, statusFail, res.Detail)
 }
 
 // TestRunCommandHelper supplies portable silent/noisy subprocesses without
@@ -282,39 +240,28 @@ func TestRunCommandHelper(t *testing.T) {
 
 func TestCheckerTargetsUseSelectedInput(t *testing.T) {
 	root, err := resolveRoot("")
-	if err != nil {
-		t.Fatalf("resolveRoot: %v", err)
-	}
+	require.NoError(t, err, "resolveRoot")
 	input := t.TempDir()
 	source := filepath.Join(root, "tools", "check-maa-api", "testdata", "snapshot")
 	for _, name := range []string{"inputs.json", "upstream/AsstCaller.h", "upstream/AsstCallerExtra.h", "upstream/AsstPort.h", "upstream/LICENSE"} {
 		data, err := os.ReadFile(filepath.Join(source, name))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if name == "inputs.json" {
 			var manifest map[string]json.RawMessage
-			if err := json.Unmarshal(data, &manifest); err != nil {
-				t.Fatal(err)
-			}
+			err = json.Unmarshal(data, &manifest)
+			require.NoError(t, err)
 			manifest["snapshot_id"] = json.RawMessage(`"caller-selected-headers"`)
 			data, err = json.Marshal(manifest)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 		}
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(input, name)), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(input, name), data, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		err = os.MkdirAll(filepath.Dir(filepath.Join(input, name)), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(filepath.Join(input, name), data, 0o644)
+		require.NoError(t, err)
 	}
 	env := environment{Root: root, CInput: input}
 	bin, cleanup, err := buildChecker(context.Background(), env)
-	if err != nil {
-		t.Fatalf("buildChecker: %v", err)
-	}
+	require.NoError(t, err, "buildChecker")
 	defer cleanup()
 
 	for _, tc := range []struct {
@@ -326,31 +273,21 @@ func TestCheckerTargetsUseSelectedInput(t *testing.T) {
 		{goos: "windows", bound: 28, nonTarget: 0},
 	} {
 		res := runCheckerTarget(context.Background(), env, bin, tc.goos, tc.bound, tc.nonTarget, 2)
-		if res.Status != statusPass {
-			t.Fatalf("checker %s status = %q, want %q (%s)", tc.goos, res.Status, statusPass, res.Detail)
-		}
-		if res.HeaderInput == nil || res.HeaderInput.SnapshotID != "caller-selected-headers" {
-			t.Fatalf("checker did not report the selected input: %+v", res.HeaderInput)
-		}
+		require.Equal(t, statusPass, res.Status, "checker %s status = %q, want %q (%s)", tc.goos, res.Status, statusPass, res.Detail)
+		require.Truef(t, res.HeaderInput != nil && res.HeaderInput.SnapshotID == "caller-selected-headers", "checker did not report the selected input: %+v", res.HeaderInput)
 	}
 }
 
 func TestCheckerTargetRejectsWrongPolicyCounts(t *testing.T) {
 	root, err := resolveRoot("")
-	if err != nil {
-		t.Fatalf("resolveRoot: %v", err)
-	}
+	require.NoError(t, err, "resolveRoot")
 	env := environment{Root: root, CInput: filepath.Join(root, "tools", "check-maa-api", "testdata", "snapshot")}
 	bin, cleanup, err := buildChecker(context.Background(), env)
-	if err != nil {
-		t.Fatalf("buildChecker: %v", err)
-	}
+	require.NoError(t, err, "buildChecker")
 	defer cleanup()
 
 	res := runCheckerTarget(context.Background(), env, bin, "linux", 26, 1, 2)
-	if res.Status != statusFail {
-		t.Fatalf("wrong bound count status = %q, want %q (%s)", res.Status, statusFail, res.Detail)
-	}
+	require.Equal(t, statusFail, res.Status, "wrong bound count status = %q, want %q (%s)", res.Status, statusFail, res.Detail)
 }
 
 func TestBuildReportOmitsRepositoryRoot(t *testing.T) {
@@ -363,41 +300,29 @@ func TestBuildReportOmitsRepositoryRoot(t *testing.T) {
 	}
 	rep := buildReport(env, map[string]bool{"static": true}, []layerResult{{Name: "static", Status: statusPass}})
 	data, err := json.Marshal(rep)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(data), "/home/private-user") {
-		t.Fatalf("report leaked the repository root: %s", data)
-	}
+	require.NoError(t, err, "marshal")
+	require.NotContains(t, string(data), "/home/private-user", "report leaked the repository root: %s", data)
 }
 
 func TestMergeEnvOverridesWithoutDuplicates(t *testing.T) {
 	got := mergeEnv([]string{"A=1", "CGO_ENABLED=1", "GOOS=linux"}, "CGO_ENABLED=0", "GOWORK=off")
 	want := []string{"A=1", "GOOS=linux", "CGO_ENABLED=0", "GOWORK=off"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("mergeEnv = %v, want %v", got, want)
-	}
+	require.Equal(t, want, got, "mergeEnv = %v, want %v", got, want)
 }
 
 func TestDefinitionsAreUniqueAndConsistent(t *testing.T) {
 	defs := definitions()
 	seen := map[string]bool{}
 	for _, def := range defs {
-		if seen[def.Name] {
-			t.Fatalf("duplicate layer %q", def.Name)
-		}
+		require.False(t, seen[def.Name], "duplicate layer %q", def.Name)
 		seen[def.Name] = true
-		if def.Description == "" {
-			t.Fatalf("layer %q has no description", def.Name)
-		}
-		if def.Run == nil {
-			t.Fatalf("layer %q has no run function", def.Name)
-		}
+		require.NotEmpty(t, def.Description, "layer %q has no description", def.Name)
+		require.NotNil(t, def.Run, "layer %q has no run function", def.Name)
 		for _, req := range def.Requires {
 			switch req {
 			case "cc", "headers", "core-input":
 			default:
-				t.Fatalf("layer %q has unknown requirement %q", def.Name, req)
+				require.Failf(t, "unknown layer requirement", "layer %q has unknown requirement %q", def.Name, req)
 			}
 		}
 	}
@@ -412,9 +337,7 @@ func TestMissingHeaderInputIsUnverified(t *testing.T) {
 			return layerResult{Status: statusPass, Passed: 1}
 		},
 	})
-	if called || res.Status != statusUnverified || res.Passed != 0 {
-		t.Fatalf("missing header manifest = %+v, called=%v", res, called)
-	}
+	require.Truef(t, !called && res.Status == statusUnverified && res.Passed == 0, "missing header manifest = %+v, called=%v", res, called)
 }
 
 func TestCoreInputPresenceAndRequirements(t *testing.T) {
@@ -432,13 +355,9 @@ func TestCoreInputPresenceAndRequirements(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			kind := coreInputKind(tc.tarball, tc.library, tc.resources)
-			if kind != tc.kind {
-				t.Fatalf("input kind = %q, want %q", kind, tc.kind)
-			}
+			require.Equal(t, tc.kind, kind, "input kind = %q, want %q", kind, tc.kind)
 			err := requirementError("core-input", environment{CoreInput: kind})
-			if (err != nil) != tc.unverified {
-				t.Fatalf("requirement error = %v; unverified=%v", err, tc.unverified)
-			}
+			require.Equal(t, tc.unverified, err != nil, "requirement error = %v; unverified=%v", err, tc.unverified)
 		})
 	}
 }
@@ -455,9 +374,8 @@ func TestCoreExpectationsPresence(t *testing.T) {
 		{values: []string{"MAA_CORE_EXPECTED_TARBALL_SHA256=invalid"}, want: true},
 		{values: []string{"MAA_CORE_EXPECTED_VERSION_SHA256=invalid"}, want: true},
 	} {
-		if got := hasCoreExpectations(tc.values); got != tc.want {
-			t.Fatalf("hasCoreExpectations(%v) = %v, want %v", tc.values, got, tc.want)
-		}
+		got := hasCoreExpectations(tc.values)
+		require.Equal(t, tc.want, got, "hasCoreExpectations(%v) = %v, want %v", tc.values, got, tc.want)
 	}
 }
 

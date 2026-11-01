@@ -19,6 +19,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mustFailThroughCLI 断言一次完整命令入口的反例契约:非零退出、stdout
@@ -31,25 +34,17 @@ func mustFailThroughCLI(t *testing.T, goos, cInput, goRoot, wantCat string, want
 		"--goos", goos, "--goarch", "amd64",
 		"--c-input", cInput, "--go-root", goRoot,
 	}, &stdout, &stderr)
-	if code == 0 {
-		t.Fatalf("counterexample unexpectedly passed:\n%s", stdout.String())
-	}
-	if stdout.Len() != 0 || strings.Contains(stdout.String()+stderr.String(), "PASS") {
-		t.Errorf("failure output must stay off stdout without PASS:\nstdout=%q stderr=%q",
-			stdout.String(), stderr.String())
-	}
+	require.NotEqual(t, 0, code, "counterexample unexpectedly passed:\n%s", stdout.String())
+	assert.False(t, stdout.Len() != 0 || strings.Contains(stdout.String()+stderr.String(), "PASS"),
+		"failure output must stay off stdout without PASS:\nstdout=%q stderr=%q",
+		stdout.String(), stderr.String())
 	errOut := stderr.String()
-	if !strings.Contains(errOut, wantCat) {
-		t.Errorf("stderr must carry category %q:\n%s", wantCat, errOut)
-	}
+	assert.Contains(t, errOut, wantCat, "stderr must carry category %q:\n%s", wantCat, errOut)
 	for _, want := range wantLocs {
-		if !strings.Contains(errOut, want) {
-			t.Errorf("stderr must locate %q:\n%s", want, errOut)
-		}
+		assert.Contains(t, errOut, want, "stderr must locate %q:\n%s", want, errOut)
 	}
-	if !strings.Contains(errOut, "("+goos+", amd64)") {
-		t.Errorf("stderr must print the profile and target header:\n%s", errOut)
-	}
+	assert.Contains(t, errOut, "("+goos+", amd64)",
+		"stderr must print the profile and target header:\n%s", errOut)
 }
 
 // positiveCInput 构造正例合成 c 输入并注册对应测试 profile,供 Go 侧
@@ -103,13 +98,9 @@ func TestCounterexampleCInputThroughCLI(t *testing.T) {
 		dir := writeCInputDir(t, files, nil)
 		full := filepath.Join(dir, filepath.FromSlash(FileAsstCaller))
 		orig, err := os.ReadFile(full)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		orig[len(orig)/2] ^= 0x20 // 同长度改写:只破坏摘要
-		if err := os.WriteFile(full, orig, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(full, orig, 0o644))
 		mustFailThroughCLI(t, "linux", dir, repoRoot(t), CatInput, "sha256", FileAsstCaller)
 	})
 	t.Run("manifest path escape", func(t *testing.T) {
@@ -290,9 +281,8 @@ func TestCounterexampleExclusionThroughCLI(t *testing.T) {
 			extra := fs[FileAsstCallerExtra]
 			extra = strings.Replace(extra, "#if ASST_WITH_EXTRA_CALLERS\n\n", "", 1)
 			extra = strings.Replace(extra, "#endif // ASST_WITH_EXTRA_CALLERS\n", "", 1)
-			if strings.Contains(extra, "ASST_WITH_EXTRA_CALLERS") {
-				t.Fatal("guard removal mutation did not apply")
-			}
+			require.False(t, strings.Contains(extra, "ASST_WITH_EXTRA_CALLERS"),
+				"guard removal mutation did not apply")
 			fs[FileAsstCallerExtra] = extra
 		}, "AsstGetMapLevelKey"},
 	}
@@ -490,9 +480,7 @@ func TestCounterexampleFileSelectionThroughCLI(t *testing.T) {
 		t.Helper()
 		i := strings.Index(api, "type api struct {")
 		j := strings.Index(api[i:], "\n}\n")
-		if i < 0 || j < 0 {
-			t.Fatal("cannot slice the production api struct")
-		}
+		require.True(t, i >= 0 && j >= 0, "cannot slice the production api struct")
 		return "package native\n\nimport \"unsafe\"\n\n" + api[i:i+j+len("\n}\n")]
 	}
 

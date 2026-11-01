@@ -14,6 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const testProfileID = "test-fixture-v1"
@@ -23,9 +26,7 @@ var profileRegistry = map[string]Profile{}
 func loadFixture(t *testing.T, name string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", name))
-	if err != nil {
-		t.Fatalf("read fixture %s: %v", name, err)
-	}
+	require.NoError(t, err, "read fixture %s", name)
 	return string(b)
 }
 
@@ -118,20 +119,12 @@ func writeCInputDir(t *testing.T, files map[string]string, mutate func(*manifest
 	}
 	for path, content := range files {
 		full := filepath.Join(dir, filepath.FromSlash(path))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "inputs.json"), append(b, '\n'), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "inputs.json"), append(b, '\n'), 0o644))
 	return dir
 }
 
@@ -146,9 +139,7 @@ func writeCInput(t *testing.T, files map[string]string) (string, Profile) {
 // mustReplace 对文本做一次替换;old 不存在即失败。
 func mustReplace(t *testing.T, s, old, new string) string {
 	t.Helper()
-	if !strings.Contains(s, old) {
-		t.Fatalf("text is missing the replacement target: %q", old)
-	}
+	require.True(t, strings.Contains(s, old), "text is missing the replacement target: %q", old)
 	return strings.Replace(s, old, new, 1)
 }
 
@@ -160,18 +151,14 @@ func lookupTestProfile(id string) (Profile, bool) {
 func testProfile(t *testing.T) Profile {
 	t.Helper()
 	prof, ok := lookupTestProfile(testProfileID)
-	if !ok {
-		t.Fatal("test profile is not registered")
-	}
+	require.True(t, ok, "test profile is not registered")
 	return prof
 }
 
 func testLoadCInput(t *testing.T, dir string) *CInput {
 	t.Helper()
 	input, diags := LoadCInput(dir, testProfile(t))
-	if len(diags) != 0 {
-		t.Fatalf("LoadCInput unexpectedly failed: %v", diags)
-	}
+	require.Empty(t, diags, "LoadCInput unexpectedly failed: %v", diags)
 	return input
 }
 
@@ -179,16 +166,11 @@ func testLoadCInput(t *testing.T, dir string) *CInput {
 func wantLoadFail(t *testing.T, dir, wantSymbol string) Diagnostic {
 	t.Helper()
 	_, diags := LoadCInput(dir, testProfile(t))
-	if len(diags) == 0 {
-		t.Fatalf("LoadCInput unexpectedly passed; want failure mentioning %q", wantSymbol)
-	}
+	require.NotEmpty(t, diags, "LoadCInput unexpectedly passed; want failure mentioning %q", wantSymbol)
 	d := diags[0]
-	if d.Category != CatInput {
-		t.Errorf("category = %q, want %q", d.Category, CatInput)
-	}
-	if wantSymbol != "" && !strings.Contains(d.Symbol, wantSymbol) {
-		t.Errorf("symbol = %q, want it to contain %q", d.Symbol, wantSymbol)
-	}
+	assert.Equal(t, CatInput, d.Category, "category = %q, want %q", d.Category, CatInput)
+	assert.False(t, wantSymbol != "" && !strings.Contains(d.Symbol, wantSymbol),
+		"symbol = %q, want it to contain %q", d.Symbol, wantSymbol)
 	return d
 }
 
@@ -201,26 +183,16 @@ func TestLoadCInputPositive(t *testing.T) {
 	registerTestProfile(t, testProfileFromFiles(files))
 
 	input := testLoadCInput(t, dir)
-	if input.Dir != dir {
-		t.Errorf("Dir = %q, want %q", input.Dir, dir)
-	}
-	if len(input.Contents) != 5 {
-		t.Fatalf("Contents has %d files, want 5", len(input.Contents))
-	}
-	if string(input.Contents[FileAsstCaller]) != files[FileAsstCaller] {
-		t.Error("caller content mismatch")
-	}
-	if _, ok := input.Contents[FileAsstMsg]; ok {
-		t.Error("file absent from the manifest must not be read")
-	}
+	assert.Equal(t, dir, input.Dir, "Dir = %q, want %q", input.Dir, dir)
+	require.Len(t, input.Contents, 5, "Contents has %d files, want 5", len(input.Contents))
+	assert.Equal(t, files[FileAsstCaller], string(input.Contents[FileAsstCaller]), "caller content mismatch")
+	assert.NotContains(t, input.Contents, FileAsstMsg, "file absent from the manifest must not be read")
 }
 
 func TestLoadCInputFileFailures(t *testing.T) {
 	t.Run("missing file", func(t *testing.T) {
 		dir, _ := writeCInput(t, positiveFiles(t))
-		if err := os.Remove(filepath.Join(dir, filepath.FromSlash(FileAsstPort))); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.Remove(filepath.Join(dir, filepath.FromSlash(FileAsstPort))))
 		wantLoadFail(t, dir, "file")
 	})
 	t.Run("empty file", func(t *testing.T) {
@@ -233,25 +205,17 @@ func TestLoadCInputFileFailures(t *testing.T) {
 		dir, _ := writeCInput(t, positiveFiles(t))
 		full := filepath.Join(dir, filepath.FromSlash(FileAsstCaller))
 		orig, err := os.ReadFile(full)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, append(orig, '\n'), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(full, append(orig, '\n'), 0o644))
 		wantLoadFail(t, dir, "size")
 	})
 	t.Run("sha mismatch", func(t *testing.T) {
 		dir, _ := writeCInput(t, positiveFiles(t))
 		full := filepath.Join(dir, filepath.FromSlash(FileAsstCaller))
 		orig, err := os.ReadFile(full)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		orig[0] ^= 0x10 // 同长度改写:只破坏摘要
-		if err := os.WriteFile(full, orig, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(full, orig, 0o644))
 		wantLoadFail(t, dir, "sha256")
 	})
 }
@@ -338,9 +302,7 @@ func TestLoadCInputPathValidation(t *testing.T) {
 				}
 			})
 			d := wantLoadFail(t, dir, "archive_path")
-			if d.Line != 0 {
-				t.Errorf("manifest-level diagnostic should not carry a line, got %d", d.Line)
-			}
+			assert.Zero(t, d.Line, "manifest-level diagnostic should not carry a line, got %d", d.Line)
 		})
 	}
 	t.Run("duplicate entry", func(t *testing.T) {
@@ -357,14 +319,12 @@ func TestLoadCInputPathValidation(t *testing.T) {
 // TestValidateRelPathUnits 直接覆盖路径校验的接受与拒绝集合。
 func TestValidateRelPathUnits(t *testing.T) {
 	for _, good := range []string{"upstream/AsstCaller.h", "a/b/c.h", "upstream/LICENSE"} {
-		if d := validateRelPath(good); d != nil {
-			t.Errorf("validateRelPath(%q) = %v, want nil", good, d)
-		}
+		d := validateRelPath(good)
+		assert.Nil(t, d, "validateRelPath(%q) = %v, want nil", good, d)
 	}
 	for i, bad := range []string{"", "/abs", "../x", "a/../b", "./a", "a//b", "a\\b", "a:b"} {
-		if d := validateRelPath(bad); d == nil {
-			t.Errorf("case %d: validateRelPath(%q) = nil, want failure", i, bad)
-		}
+		d := validateRelPath(bad)
+		assert.NotNil(t, d, "case %d: validateRelPath(%q) = nil, want failure", i, bad)
 	}
 }
 
@@ -374,10 +334,6 @@ func TestLoadCInputMissingManifest(t *testing.T) {
 	registerTestProfile(t, testProfileFromFiles(files))
 	dir := t.TempDir()
 	d := wantLoadFail(t, dir, "inputs.json")
-	if !strings.Contains(d.File, "inputs.json") {
-		t.Errorf("diag file = %q, want it to reference the manifest path", d.File)
-	}
-	if strconv.Itoa(manifestSchemaVersion) != "1" {
-		t.Fatalf("frozen schema version changed: %d", manifestSchemaVersion)
-	}
+	assert.Contains(t, d.File, "inputs.json", "diag file = %q, want it to reference the manifest path", d.File)
+	require.Equal(t, "1", strconv.Itoa(manifestSchemaVersion), "frozen schema version changed: %d", manifestSchemaVersion)
 }

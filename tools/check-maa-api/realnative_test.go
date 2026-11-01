@@ -17,6 +17,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // copyRealNative 读取真实仓库 native 目录的全部.go 文件内容(键为
@@ -25,18 +28,14 @@ func copyRealNative(t *testing.T) map[string]string {
 	t.Helper()
 	dir := filepath.Join(repoRoot(t), filepath.FromSlash(goNativeRelPath))
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	files := map[string]string{}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		files[e.Name()] = string(b)
 	}
 	return files
@@ -48,12 +47,8 @@ func writeMutatedGoRoot(t *testing.T, files map[string]string) string {
 	root := t.TempDir()
 	for name, content := range files {
 		full := filepath.Join(root, filepath.FromSlash(goNativeRelPath), name)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
 	}
 	return root
 }
@@ -77,9 +72,7 @@ func realNativeNames(t *testing.T) []string {
 func fmtJSON(t *testing.T, v any) string {
 	t.Helper()
 	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return string(b)
 }
 
@@ -203,23 +196,15 @@ func TestRealNativeVariantsFailThroughCLI(t *testing.T) {
 				"--goos", tc.goos, "--goarch", "amd64",
 				"--c-input", cInput, "--go-root", goRoot,
 			}, &stdout, &stderr)
-			if code == 0 {
-				t.Fatalf("mutated variant unexpectedly passed:\n%s", stdout.String())
-			}
-			if stdout.Len() != 0 || strings.Contains(stdout.String()+stderr.String(), "PASS") {
-				t.Errorf("failure output must stay on stderr without PASS:\nstdout=%q stderr=%q",
-					stdout.String(), stderr.String())
-			}
+			require.NotEqual(t, 0, code, "mutated variant unexpectedly passed:\n%s", stdout.String())
+			assert.True(t, stdout.Len() == 0 && !strings.Contains(stdout.String()+stderr.String(), "PASS"),
+				"failure output must stay on stderr without PASS:\nstdout=%q stderr=%q",
+				stdout.String(), stderr.String())
 			errOut := stderr.String()
-			if !strings.Contains(errOut, tc.wantCat) {
-				t.Errorf("stderr must carry category %q:\n%s", tc.wantCat, errOut)
-			}
-			if !strings.Contains(errOut, tc.wantLoc) {
-				t.Errorf("stderr must locate %q:\n%s", tc.wantLoc, errOut)
-			}
-			if !strings.Contains(errOut, testProfileID) || !strings.Contains(errOut, "("+tc.goos+", amd64)") {
-				t.Errorf("stderr must print the profile and target header:\n%s", errOut)
-			}
+			assert.Contains(t, errOut, tc.wantCat, "stderr must carry category %q:\n%s", tc.wantCat, errOut)
+			assert.Contains(t, errOut, tc.wantLoc, "stderr must locate %q:\n%s", tc.wantLoc, errOut)
+			assert.True(t, strings.Contains(errOut, testProfileID) && strings.Contains(errOut, "("+tc.goos+", amd64)"),
+				"stderr must print the profile and target header:\n%s", errOut)
 		})
 	}
 }
@@ -242,34 +227,23 @@ func TestRealNativePolicyExpectationBaseline(t *testing.T) {
 			"--goos", goos, "--goarch", "amd64",
 			"--c-input", cInput, "--go-root", repoRoot(t),
 		}, &stdout, &stderr)
-		if code != 0 {
-			t.Fatalf("%s baseline unexpectedly failed:\n%s", goos, stderr.String())
-		}
+		require.Equal(t, 0, code, "%s baseline unexpectedly failed:\n%s", goos, stderr.String())
 		var report reportJSON
-		if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-			t.Fatalf("%s baseline stdout is not JSON: %v", goos, err)
-		}
+		err := json.Unmarshal(stdout.Bytes(), &report)
+		require.NoError(t, err, "%s baseline stdout is not JSON: %v", goos, err)
 		reports[goos] = report
-		if len(report.Expect.Symbols) != 30 {
-			t.Fatalf("%s expect entries = %d, want 30", goos, len(report.Expect.Symbols))
-		}
+		require.Equal(t, 30, len(report.Expect.Symbols), "%s expect entries = %d, want 30", goos, len(report.Expect.Symbols))
 		for i, e := range report.Expect.Symbols {
 			wantSym := sortedExpectationSymbols()[i]
-			if e.Symbol != wantSym {
-				t.Errorf("%s expect[%d].Symbol = %q, want %q (must be sorted)", goos, i, e.Symbol, wantSym)
-			}
+			assert.Equal(t, wantSym, e.Symbol, "%s expect[%d].Symbol = %q, want %q (must be sorted)", goos, i, e.Symbol, wantSym)
 			want := policyExpectations[e.Symbol]
-			if e.Expected.Policy != want.Policy || e.Expected.Platform != want.Platform {
-				t.Errorf("%s expect[%d] expected = %+v, want %+v", goos, i, e.Expected, want)
-			}
-			if e.Actual != e.Expected {
-				t.Errorf("%s expect[%s] actual = %+v, want %+v", goos, e.Symbol, e.Actual, e.Expected)
-			}
+			assert.True(t, e.Expected.Policy == want.Policy && e.Expected.Platform == want.Platform,
+				"%s expect[%d] expected = %+v, want %+v", goos, i, e.Expected, want)
+			assert.Equal(t, e.Expected, e.Actual, "%s expect[%s] actual = %+v, want %+v", goos, e.Symbol, e.Actual, e.Expected)
 		}
 	}
-	if fmtJSON(t, reports["linux"].Expect) != fmtJSON(t, reports["windows"].Expect) {
-		t.Error("expect section must be identical across targets")
-	}
+	assert.Equal(t, fmtJSON(t, reports["linux"].Expect), fmtJSON(t, reports["windows"].Expect),
+		"expect section must be identical across targets")
 }
 
 // TestRealNativeSelectionBaseline 真实目录在两个目标下经完整命令入口
@@ -284,13 +258,10 @@ func TestRealNativeSelectionBaseline(t *testing.T) {
 			"--goos", goos, "--goarch", "amd64",
 			"--c-input", cInput, "--go-root", repoRoot(t),
 		}, &stdout, &stderr)
-		if code != 0 {
-			t.Fatalf("%s baseline unexpectedly failed:\n%s", goos, stderr.String())
-		}
+		require.Equal(t, 0, code, "%s baseline unexpectedly failed:\n%s", goos, stderr.String())
 		var report reportJSON
-		if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-			t.Fatalf("%s baseline stdout is not JSON: %v", goos, err)
-		}
+		err := json.Unmarshal(stdout.Bytes(), &report)
+		require.NoError(t, err, "%s baseline stdout is not JSON: %v", goos, err)
 		want := realNativeNames(t)
 		want = withoutName(want, "loader_other.go")
 		// 平台条件文件按目标切换;callback trampoline 只选择目标的
@@ -305,9 +276,8 @@ func TestRealNativeSelectionBaseline(t *testing.T) {
 			want = withoutName(want, "callback_linux.go")
 			want = withoutName(want, "callback_darwin.go")
 		}
-		if strings.Join(report.Go.Files, ",") != strings.Join(want, ",") {
-			t.Errorf("%s selected files = %v, want %v", goos, report.Go.Files, want)
-		}
+		assert.Equal(t, strings.Join(want, ","), strings.Join(report.Go.Files, ","),
+			"%s selected files = %v, want %v", goos, report.Go.Files, want)
 	}
 }
 

@@ -5,13 +5,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestCoreExpectationsAreNotHiddenByMissingInput(t *testing.T) {
 	root, err := resolveRoot("")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for _, name := range []string{"MAA_CORE_LIB_PATH", "MAA_CORE_RESOURCE_ROOT", "MAA_CORE_TARBALL", "MAA_CORE_EXPECTED_VERSION", "MAA_CORE_EXPECTED_LIBRARY_SHA256", "MAA_CORE_EXPECTED_TARBALL_SHA256", "MAA_CORE_EXPECTED_VERSION_SHA256"} {
 		t.Setenv(name, "")
 	}
@@ -35,11 +35,9 @@ func TestCoreExpectationsAreNotHiddenByMissingInput(t *testing.T) {
 					})
 				},
 			})
-			if res.Status != tc.status {
-				t.Fatalf("core status = %q, want %q (%s)", res.Status, tc.status, res.Detail)
-			}
-			if tc.status == statusUnverified && res.Skipped == 0 {
-				t.Fatalf("valid expectation did not reach the acceptance tests: %+v", res)
+			require.Equal(t, tc.status, res.Status, "core status = %q, want %q (%s)", res.Status, tc.status, res.Detail)
+			if tc.status == statusUnverified {
+				require.NotZero(t, res.Skipped, "valid expectation did not reach the acceptance tests: %+v", res)
 			}
 		})
 	}

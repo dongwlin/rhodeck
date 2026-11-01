@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestVendoredInputRun(t *testing.T) {
@@ -29,35 +31,22 @@ func TestVendoredInputRun(t *testing.T) {
 				"--c-input", input,
 				"--go-root", root,
 			}, &stdout, &stderr)
-			if code != 0 {
-				t.Fatalf("Run(%s) exit = %d, want 0; stderr:\n%s", tc.goos, code, stderr.String())
-			}
+			require.Equal(t, 0, code, "Run(%s) exit = %d, want 0; stderr:\n%s", tc.goos, code, stderr.String())
 			var rep reportJSON
-			if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
-				t.Fatalf("decode report: %v", err)
-			}
-			if rep.Input.SnapshotID != "maacore-headers" {
-				t.Fatalf("profile = %q, want maacore-headers", rep.Input.SnapshotID)
-			}
-			if rep.Target.GOOS != tc.goos || rep.Target.GOARCH != "amd64" {
-				t.Fatalf("target = %s/%s, want %s/amd64", rep.Target.GOOS, rep.Target.GOARCH, tc.goos)
-			}
-			if len(rep.Link.Bound) != tc.bound {
-				t.Fatalf("bound = %d, want %d", len(rep.Link.Bound), tc.bound)
-			}
-			if len(rep.Link.NonTarget) != tc.nonTarget {
-				t.Fatalf("nontarget bindings = %d, want %d", len(rep.Link.NonTarget), tc.nonTarget)
-			}
-			if len(rep.Link.Excluded) != 2 {
-				t.Fatalf("excluded = %d, want 2", len(rep.Link.Excluded))
-			}
-			if len(rep.Signatures.Symbols) != 28 || len(rep.Signatures.Callbacks) != 2 {
-				t.Fatalf("signatures = %d symbols/%d callbacks, want 28/2",
-					len(rep.Signatures.Symbols), len(rep.Signatures.Callbacks))
-			}
-			if len(rep.Expect.Symbols) != 30 {
-				t.Fatalf("expect symbols = %d, want 30", len(rep.Expect.Symbols))
-			}
+			err := json.Unmarshal(stdout.Bytes(), &rep)
+			require.NoError(t, err, "decode report: %v", err)
+			require.Equal(t, "maacore-headers", rep.Input.SnapshotID,
+				"profile = %q, want maacore-headers", rep.Input.SnapshotID)
+			require.True(t, rep.Target.GOOS == tc.goos && rep.Target.GOARCH == "amd64",
+				"target = %s/%s, want %s/amd64", rep.Target.GOOS, rep.Target.GOARCH, tc.goos)
+			require.Equal(t, tc.bound, len(rep.Link.Bound), "bound = %d, want %d", len(rep.Link.Bound), tc.bound)
+			require.Equal(t, tc.nonTarget, len(rep.Link.NonTarget),
+				"nontarget bindings = %d, want %d", len(rep.Link.NonTarget), tc.nonTarget)
+			require.Equal(t, 2, len(rep.Link.Excluded), "excluded = %d, want 2", len(rep.Link.Excluded))
+			require.True(t, len(rep.Signatures.Symbols) == 28 && len(rep.Signatures.Callbacks) == 2,
+				"signatures = %d symbols/%d callbacks, want 28/2",
+				len(rep.Signatures.Symbols), len(rep.Signatures.Callbacks))
+			require.Equal(t, 30, len(rep.Expect.Symbols), "expect symbols = %d, want 30", len(rep.Expect.Symbols))
 		})
 	}
 }

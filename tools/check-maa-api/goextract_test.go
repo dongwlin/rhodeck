@@ -10,6 +10,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // syntheticNativeDir 是符合冻结形式的最小 native 包:四个 raw
@@ -120,12 +123,8 @@ func writeGoRoot(t *testing.T, files map[string]string) string {
 	root := t.TempDir()
 	for name, content := range files {
 		full := filepath.Join(root, filepath.FromSlash(goNativeRelPath), name)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
 	}
 	return root
 }
@@ -134,9 +133,7 @@ func writeGoRoot(t *testing.T, files map[string]string) string {
 func mustSelect(t *testing.T, goRoot string, target Target) *GoSelection {
 	t.Helper()
 	sel, diags := SelectGoFiles(goRoot, target)
-	if len(diags) != 0 {
-		t.Fatalf("SelectGoFiles unexpectedly failed: %v", diags)
-	}
+	require.Empty(t, diags, "SelectGoFiles unexpectedly failed: %v", diags)
 	return sel
 }
 
@@ -163,9 +160,7 @@ func mustExtractGo(t *testing.T, files map[string]string) *GoExtraction {
 	t.Helper()
 	sel := mustSelect(t, writeGoRoot(t, files), linuxTarget)
 	ext, diags := ExtractGo(sel)
-	if len(diags) != 0 {
-		t.Fatalf("ExtractGo unexpectedly failed: %v", diags)
-	}
+	require.Empty(t, diags, "ExtractGo unexpectedly failed: %v", diags)
 	return ext
 }
 
@@ -174,13 +169,9 @@ func mustExtractGo(t *testing.T, files map[string]string) *GoExtraction {
 func replaceGoBlock(t *testing.T, content, header, newBlock string) string {
 	t.Helper()
 	i := strings.Index(content, header)
-	if i < 0 {
-		t.Fatalf("block header %q not found", header)
-	}
+	require.True(t, i >= 0, "block header %q not found", header)
 	j := strings.Index(content[i:], "\n}\n")
-	if j < 0 {
-		t.Fatalf("block closing brace after %q not found", header)
-	}
+	require.True(t, j >= 0, "block closing brace after %q not found", header)
 	return content[:i] + newBlock + content[i+j+len("\n}\n"):]
 }
 
@@ -197,65 +188,47 @@ func copySynthetic() map[string]string {
 // callback 与来源位置。
 func TestExtractGoPositive(t *testing.T) {
 	ext := mustExtractGo(t, copySynthetic())
-	if ext.PackageName != "native" {
-		t.Errorf("package = %q, want native", ext.PackageName)
-	}
-	if len(ext.Fields) != 4 {
-		t.Fatalf("fields = %d, want 4", len(ext.Fields))
-	}
+	assert.Equal(t, "native", ext.PackageName, "package = %q, want native", ext.PackageName)
+	require.Len(t, ext.Fields, 4, "fields = %d, want 4", len(ext.Fields))
 	ce := ext.Fields[0]
-	if ce.Name != "CreateEx" || ce.File != "api.go" || ce.Line <= 0 {
-		t.Errorf("CreateEx record = %+v", ce)
-	}
-	if len(ce.Params) != 2 || ce.Params[0].Name != "callback" || ce.Params[0].Type != "uintptr" ||
-		ce.Params[1].Name != "customArg" || ce.Result != "uintptr" {
-		t.Errorf("CreateEx signature = %+v", ce)
-	}
+	assert.False(t, ce.Name != "CreateEx" || ce.File != "api.go" || ce.Line <= 0,
+		"CreateEx record = %+v", ce)
+	assert.False(t, len(ce.Params) != 2 || ce.Params[0].Name != "callback" || ce.Params[0].Type != "uintptr" ||
+		ce.Params[1].Name != "customArg" || ce.Result != "uintptr",
+		"CreateEx signature = %+v", ce)
 	gi := ext.Fields[1]
-	if gi.Params[1].Type != GoTypeUnsafePointer || gi.Result != "uint64" {
-		t.Errorf("GetImage signature = %+v", gi)
-	}
+	assert.False(t, gi.Params[1].Type != GoTypeUnsafePointer || gi.Result != "uint64",
+		"GetImage signature = %+v", gi)
 	lg := ext.Fields[2]
-	if lg.Result != "" || lg.Params[0].Type != "*byte" {
-		t.Errorf("Log signature = %+v (result %q)", lg, lg.Result)
-	}
+	assert.False(t, lg.Result != "" || lg.Params[0].Type != "*byte",
+		"Log signature = %+v (result %q)", lg, lg.Result)
 
-	if len(ext.Specs) != 4 {
-		t.Fatalf("specs = %d, want 4", len(ext.Specs))
-	}
+	require.Len(t, ext.Specs, 4, "specs = %d, want 4", len(ext.Specs))
 	first := ext.Specs[0]
-	if first.Name != "AsstCreateEx" || first.Field != "CreateEx" ||
+	assert.False(t, first.Name != "AsstCreateEx" || first.Field != "CreateEx" ||
 		first.Policy != "required" || first.Platform != "allPlatforms" ||
-		first.File != "symbols.go" || first.Line <= 0 {
-		t.Errorf("first spec = %+v", first)
-	}
+		first.File != "symbols.go" || first.Line <= 0,
+		"first spec = %+v", first)
 	last := ext.Specs[3]
-	if last.Name != "AsstAsyncAttachWindow" || last.Policy != "optional" || last.Platform != "windowsOnly" {
-		t.Errorf("last spec = %+v", last)
-	}
-	if len(ext.Exclusions) != 3 || ext.Exclusions[0].Name != "AsstConnect" ||
-		ext.Exclusions[0].Header != "AsstCaller.h" || ext.Exclusions[0].Reason == "" {
-		t.Errorf("exclusions = %+v", ext.Exclusions)
-	}
-	if ext.UnixCallback == nil || ext.UnixCallback.Result != "" ||
-		len(ext.UnixCallback.Params) != 3 || ext.UnixCallback.Params[1].Type != "*byte" {
-		t.Errorf("unixCallback = %+v", ext.UnixCallback)
-	}
-	if ext.WindowsCallback == nil || ext.WindowsCallback.Result != "uintptr" {
-		t.Errorf("windowsCallback = %+v", ext.WindowsCallback)
-	}
+	assert.False(t, last.Name != "AsstAsyncAttachWindow" || last.Policy != "optional" || last.Platform != "windowsOnly",
+		"last spec = %+v", last)
+	assert.False(t, len(ext.Exclusions) != 3 || ext.Exclusions[0].Name != "AsstConnect" ||
+		ext.Exclusions[0].Header != "AsstCaller.h" || ext.Exclusions[0].Reason == "",
+		"exclusions = %+v", ext.Exclusions)
+	assert.False(t, ext.UnixCallback == nil || ext.UnixCallback.Result != "" ||
+		len(ext.UnixCallback.Params) != 3 || ext.UnixCallback.Params[1].Type != "*byte",
+		"unixCallback = %+v", ext.UnixCallback)
+	assert.False(t, ext.WindowsCallback == nil || ext.WindowsCallback.Result != "uintptr",
+		"windowsCallback = %+v", ext.WindowsCallback)
 	mlk := ext.MapLevelKey
-	if mlk == nil || mlk.Name != "mapLevelKey" || mlk.File != "api.go" || mlk.Line <= 0 ||
-		len(mlk.Fields) != 4 {
-		t.Fatalf("mapLevelKey record = %+v", mlk)
-	}
+	require.False(t, mlk == nil || mlk.Name != "mapLevelKey" || mlk.File != "api.go" || mlk.Line <= 0 ||
+		len(mlk.Fields) != 4, "mapLevelKey record = %+v", mlk)
 	for i, want := range []struct {
 		name string
 		typ  GoSourceType
 	}{{"StageID", "*byte"}, {"Code", "*byte"}, {"LevelID", "*byte"}, {"Name", "*byte"}} {
-		if mlk.Fields[i].Name != want.name || mlk.Fields[i].Type != want.typ {
-			t.Errorf("mapLevelKey field %d = %+v, want %s %s", i, mlk.Fields[i], want.name, want.typ)
-		}
+		assert.False(t, mlk.Fields[i].Name != want.name || mlk.Fields[i].Type != want.typ,
+			"mapLevelKey field %d = %+v, want %s %s", i, mlk.Fields[i], want.name, want.typ)
 	}
 }
 
@@ -491,21 +464,17 @@ func TestExtractGoFormFailures(t *testing.T) {
 				sel = mustSelect(t, writeGoRoot(t, files), linuxTarget)
 			}
 			ext, diags := ExtractGo(sel)
+			// 失败路径的 ext 为 nil,形状计数须留在原 if 守卫内惰性求值。
 			if len(diags) == 0 {
-				t.Fatalf("ExtractGo unexpectedly passed (fields=%d specs=%d); want failure mentioning %q",
+				require.FailNowf(t, "ExtractGo unexpectedly passed",
+					"ExtractGo unexpectedly passed (fields=%d specs=%d); want failure mentioning %q",
 					len(ext.Fields), len(ext.Specs), tc.expect)
 			}
 			d := diags[0]
-			if d.Category != CatGoSyntax {
-				t.Errorf("category = %q, want %q", d.Category, CatGoSyntax)
-			}
-			if d.File == "" {
-				t.Errorf("diagnostic must locate a file, got %+v", d)
-			}
+			assert.Equal(t, CatGoSyntax, d.Category, "category = %q, want %q", d.Category, CatGoSyntax)
+			assert.NotEmpty(t, d.File, "diagnostic must locate a file, got %+v", d)
 			joined := d.Symbol + "\n" + d.Expected + "\n" + d.Actual + "\n" + d.Message
-			if !strings.Contains(joined, tc.expect) {
-				t.Errorf("diagnostic %+v does not mention %q", d, tc.expect)
-			}
+			assert.Contains(t, joined, tc.expect, "diagnostic %+v does not mention %q", d, tc.expect)
 		})
 	}
 }
@@ -516,10 +485,7 @@ func TestExtractGoEmptyAPIStruct(t *testing.T) {
 	files["api.go"] = replaceGoBlock(t, files["api.go"], "type api struct {", "type api struct {}")
 	sel := manualSelection(t, files)
 	_, diags := ExtractGo(sel)
-	if len(diags) == 0 || diags[0].Category != CatGoSyntax {
-		t.Fatalf("empty api struct must fail with go-syntax, got %v", diags)
-	}
-	if !strings.Contains(diags[0].Actual, "empty struct") {
-		t.Errorf("diagnostic = %+v", diags[0])
-	}
+	require.False(t, len(diags) == 0 || diags[0].Category != CatGoSyntax,
+		"empty api struct must fail with go-syntax, got %v", diags)
+	assert.Contains(t, diags[0].Actual, "empty struct", "diagnostic = %+v", diags[0])
 }

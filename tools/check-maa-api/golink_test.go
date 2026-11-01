@@ -8,6 +8,9 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // linkCExtraction 构造与合成 Go 包对应的 C 提取结果:4 个 all 平台
@@ -45,9 +48,7 @@ func linkCExtraction(target Target) *CExtraction {
 func mustLink(t *testing.T, c *CExtraction, g *GoExtraction, target Target) *LinkResult {
 	t.Helper()
 	res, diags := LinkCGo(c, g, target)
-	if len(diags) != 0 {
-		t.Fatalf("LinkCGo unexpectedly failed: %v", diags)
-	}
+	require.Empty(t, diags, "LinkCGo unexpectedly failed: %v", diags)
 	return res
 }
 
@@ -61,41 +62,34 @@ func TestLinkPositive(t *testing.T) {
 	for _, b := range linuxRes.Bound {
 		bound = append(bound, b.Symbol)
 	}
-	if strings.Join(bound, ",") != "AsstCreateEx,AsstGetImage,AsstLog" {
-		t.Errorf("linux bound = %v", bound)
-	}
-	if strings.Join(linuxRes.NonTarget, ",") != "AsstAsyncAttachWindow" {
-		t.Errorf("linux nontarget = %v", linuxRes.NonTarget)
-	}
-	if strings.Join(linuxRes.Excluded, ",") != "AsstConnect,AsstGetItemName,AsstGetMapLevelKey" {
-		t.Errorf("linux excluded = %v", linuxRes.Excluded)
-	}
-	if linuxRes.Bound[0].Policy != "required" || linuxRes.Bound[0].Field != "CreateEx" {
-		t.Errorf("bound record = %+v", linuxRes.Bound[0])
-	}
+	assert.Equal(t, "AsstCreateEx,AsstGetImage,AsstLog", strings.Join(bound, ","),
+		"linux bound = %v", bound)
+	assert.Equal(t, "AsstAsyncAttachWindow", strings.Join(linuxRes.NonTarget, ","),
+		"linux nontarget = %v", linuxRes.NonTarget)
+	assert.Equal(t, "AsstConnect,AsstGetItemName,AsstGetMapLevelKey", strings.Join(linuxRes.Excluded, ","),
+		"linux excluded = %v", linuxRes.Excluded)
+	assert.False(t, linuxRes.Bound[0].Policy != "required" || linuxRes.Bound[0].Field != "CreateEx",
+		"bound record = %+v", linuxRes.Bound[0])
 
 	winRes := mustLink(t, linkCExtraction(windowsTarget), g, windowsTarget)
-	if len(winRes.Bound) != 4 || strings.Join(winRes.NonTarget, ",") != "" {
-		t.Errorf("windows result = bound %d nontarget %v", len(winRes.Bound), winRes.NonTarget)
-	}
+	assert.False(t, len(winRes.Bound) != 4 || strings.Join(winRes.NonTarget, ",") != "",
+		"windows result = bound %d nontarget %v", len(winRes.Bound), winRes.NonTarget)
 }
 
 // mustLinkFail 断言关联以 relation 类诊断失败且诊断指向期望片段。
 func mustLinkFail(t *testing.T, c *CExtraction, g *GoExtraction, target Target, want string) Diagnostic {
 	t.Helper()
 	res, diags := LinkCGo(c, g, target)
+	// 失败路径的 res 为 nil,绑定计数须留在原 if 守卫内惰性求值。
 	if len(diags) == 0 {
-		t.Fatalf("LinkCGo unexpectedly passed (bound=%d); want failure mentioning %q",
+		require.FailNowf(t, "LinkCGo unexpectedly passed",
+			"LinkCGo unexpectedly passed (bound=%d); want failure mentioning %q",
 			len(res.Bound), want)
 	}
 	d := diags[0]
-	if d.Category != CatRelation {
-		t.Errorf("category = %q, want %q", d.Category, CatRelation)
-	}
+	assert.Equal(t, CatRelation, d.Category, "category = %q, want %q", d.Category, CatRelation)
 	joined := d.Symbol + "\n" + d.Expected + "\n" + d.Message
-	if !strings.Contains(joined, want) {
-		t.Errorf("diagnostic %+v does not mention %q", d, want)
-	}
+	assert.Contains(t, joined, want, "diagnostic %+v does not mention %q", d, want)
 	return d
 }
 
@@ -266,21 +260,18 @@ func TestLinkExperimentalOptionalBinding(t *testing.T) {
 		for _, b := range res.Bound {
 			bound = append(bound, b.Symbol)
 		}
-		if strings.Join(res.Excluded, ",") != "AsstConnect" {
-			t.Errorf("%s excluded = %v, want only AsstConnect", target.GOOS, res.Excluded)
-		}
+		assert.Equal(t, "AsstConnect", strings.Join(res.Excluded, ","),
+			"%s excluded = %v, want only AsstConnect", target.GOOS, res.Excluded)
 		want := "AsstCreateEx,AsstGetImage,AsstGetItemName,AsstGetMapLevelKey,AsstLog"
 		if target.GOOS == "windows" {
 			want = "AsstAsyncAttachWindow," + want
 		}
-		if strings.Join(bound, ",") != want {
-			t.Errorf("%s bound = %v, want %v", target.GOOS, bound, want)
-		}
+		assert.Equal(t, want, strings.Join(bound, ","),
+			"%s bound = %v, want %v", target.GOOS, bound, want)
 		for _, b := range res.Bound {
 			if b.Symbol == "AsstGetMapLevelKey" || b.Symbol == "AsstGetItemName" {
-				if b.Policy != "optional" || b.Platform != "allPlatforms" {
-					t.Errorf("%s experimental bound record = %+v", target.GOOS, b)
-				}
+				assert.False(t, b.Policy != "optional" || b.Platform != "allPlatforms",
+					"%s experimental bound record = %+v", target.GOOS, b)
 			}
 		}
 	}
@@ -288,7 +279,7 @@ func TestLinkExperimentalOptionalBinding(t *testing.T) {
 
 // TestLinkNilInputs 空输入以 relation 诊断失败。
 func TestLinkNilInputs(t *testing.T) {
-	if _, diags := LinkCGo(nil, nil, linuxTarget); len(diags) == 0 || diags[0].Category != CatRelation {
-		t.Fatalf("nil inputs must fail with relation diagnostic, got %v", diags)
-	}
+	_, diags := LinkCGo(nil, nil, linuxTarget)
+	require.False(t, len(diags) == 0 || diags[0].Category != CatRelation,
+		"nil inputs must fail with relation diagnostic, got %v", diags)
 }

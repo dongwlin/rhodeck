@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestRunAcceptsCallerInputWithoutVersionRegistry(t *testing.T) {
@@ -16,20 +18,15 @@ func TestRunAcceptsCallerInputWithoutVersionRegistry(t *testing.T) {
 		m.Source.Commit = ""
 	})
 	code, out, errOut := mustRun(t, []string{"--goos", "linux", "--goarch", "amd64", "--c-input", dir, "--go-root", repoRoot(t)})
-	if code != 0 {
-		t.Fatalf("caller-selected input rejected: %s", errOut)
-	}
+	require.Equal(t, 0, code, "caller-selected input rejected: %s", errOut)
 	var report reportJSON
-	if err := json.Unmarshal([]byte(out), &report); err != nil {
-		t.Fatal(err)
-	}
-	if report.Input.SnapshotID != "caller-selected-snapshot" || report.Input.Source.Tag != "candidate-at-execution" || len(report.Input.Files) != 3 {
-		t.Fatalf("input provenance missing from report: %+v", report.Input)
-	}
+	require.NoError(t, json.Unmarshal([]byte(out), &report))
+	require.False(t, report.Input.SnapshotID != "caller-selected-snapshot" ||
+		report.Input.Source.Tag != "candidate-at-execution" || len(report.Input.Files) != 3,
+		"input provenance missing from report: %+v", report.Input)
 	for _, file := range report.Input.Files {
-		if len(file.SHA256) != 64 || file.SizeBytes <= 0 {
-			t.Fatalf("input digest missing: %+v", file)
-		}
+		require.False(t, len(file.SHA256) != 64 || file.SizeBytes <= 0,
+			"input digest missing: %+v", file)
 	}
 }
 
@@ -47,9 +44,8 @@ func TestRunRejectsIncompleteInputProvenance(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeCInputDir(t, positiveFiles(t), tc.mutate)
 			code, out, errOut := mustRun(t, []string{"--goos", "linux", "--goarch", "amd64", "--c-input", dir, "--go-root", repoRoot(t)})
-			if code == 0 || out != "" || !strings.Contains(errOut, tc.symbol) {
-				t.Fatalf("invalid input admitted: code=%d stdout=%q stderr=%q", code, out, errOut)
-			}
+			require.False(t, code == 0 || out != "" || !strings.Contains(errOut, tc.symbol),
+				"invalid input admitted: code=%d stdout=%q stderr=%q", code, out, errOut)
 		})
 	}
 }

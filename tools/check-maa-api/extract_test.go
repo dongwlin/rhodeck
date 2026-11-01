@@ -9,6 +9,9 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -28,9 +31,7 @@ func functionByName(fns []CFunction, name string) *CFunction {
 func findFunction(t *testing.T, fns []CFunction, name string) CFunction {
 	t.Helper()
 	f := functionByName(fns, name)
-	if f == nil {
-		t.Fatalf("function %s not found", name)
-	}
+	require.NotNil(t, f, "function %s not found", name)
 	return *f
 }
 
@@ -41,7 +42,7 @@ func findTypedef(t *testing.T, tds []CTypedef, name string) CTypedef {
 			return td
 		}
 	}
-	t.Fatalf("typedef %s not found", name)
+	require.FailNowf(t, "typedef not found", "typedef %s not found", name)
 	return CTypedef{}
 }
 
@@ -52,7 +53,7 @@ func findEnum(t *testing.T, enums []CEnum, tag string) CEnum {
 			return e
 		}
 	}
-	t.Fatalf("enum %s not found", tag)
+	require.FailNowf(t, "enum not found", "enum %s not found", tag)
 	return CEnum{}
 }
 
@@ -61,9 +62,7 @@ func mustExtract(t *testing.T, files map[string]string, target Target) *CExtract
 	dir, _ := writeCInput(t, files)
 	input := testLoadCInput(t, dir)
 	res, diags := ExtractC(input, target)
-	if len(diags) != 0 {
-		t.Fatalf("ExtractC unexpectedly failed: %v", diags)
-	}
+	require.Empty(t, diags, "ExtractC unexpectedly failed: %v", diags)
 	return res
 }
 
@@ -74,165 +73,117 @@ func TestExtractLinuxPositive(t *testing.T) {
 		"AsstHandle ASSTAPI AsstCreate();", "AsstHandle ASSTAPI AsstCreate(void);")
 	res := mustExtract(t, files, linuxTarget)
 
-	if len(res.Functions) != 30 {
-		t.Fatalf("full set has %d functions, want 30", len(res.Functions))
-	}
-	if len(res.Applicable) != 26 {
-		t.Fatalf("applicable set on linux has %d functions, want 26", len(res.Applicable))
-	}
-	if len(res.Discovery) != 2 {
-		t.Fatalf("discovery has %d entries, want 2", len(res.Discovery))
-	}
-	if len(res.Typedefs) != 11 {
-		t.Fatalf("typedefs = %d, want 11", len(res.Typedefs))
-	}
-	if len(res.Enums) != 2 {
-		t.Fatalf("enums = %d, want 2", len(res.Enums))
-	}
-	if len(res.Structs) != 1 {
-		t.Fatalf("structs = %d, want 1", len(res.Structs))
-	}
+	require.Len(t, res.Functions, 30, "full set has %d functions, want 30", len(res.Functions))
+	require.Len(t, res.Applicable, 26, "applicable set on linux has %d functions, want 26", len(res.Applicable))
+	require.Len(t, res.Discovery, 2, "discovery has %d entries, want 2", len(res.Discovery))
+	require.Len(t, res.Typedefs, 11, "typedefs = %d, want 11", len(res.Typedefs))
+	require.Len(t, res.Enums, 2, "enums = %d, want 2", len(res.Enums))
+	require.Len(t, res.Structs, 1, "structs = %d, want 1", len(res.Structs))
 
 	// AsstSetUserDir:AsstBool→uint8 保留原名;const char* 参数;
 	// linux 下调用约定为空、导出修饰为 visibility(default)。
 	sud := findFunction(t, res.Functions, "AsstSetUserDir")
-	if sud.Header != FileAsstCaller || sud.Line <= 0 {
-		t.Errorf("AsstSetUserDir header/line = %s/%d", sud.Header, sud.Line)
-	}
-	if sud.Platform != PlatformAll {
-		t.Errorf("AsstSetUserDir platform = %q, want all", sud.Platform)
-	}
-	if sud.CallConv != CallConvNone || sud.Linkage != LinkageVisibilityDefault {
-		t.Errorf("linux modifiers = %q/%q, want empty/%q", sud.CallConv, sud.Linkage, LinkageVisibilityDefault)
-	}
+	assert.False(t, sud.Header != FileAsstCaller || sud.Line <= 0,
+		"AsstSetUserDir header/line = %s/%d", sud.Header, sud.Line)
+	assert.Equal(t, PlatformAll, sud.Platform, "AsstSetUserDir platform = %q, want all", sud.Platform)
+	assert.False(t, sud.CallConv != CallConvNone || sud.Linkage != LinkageVisibilityDefault,
+		"linux modifiers = %q/%q, want empty/%q", sud.CallConv, sud.Linkage, LinkageVisibilityDefault)
 	wantRet := CType{Kind: CKindScalar, Name: "uint8", Bits: 8, Via: "AsstBool"}
-	if !sud.Ret.Equal(wantRet) {
-		t.Errorf("AsstSetUserDir ret = %s (via %s), want uint8 via AsstBool", sud.Ret.String(), sud.Ret.Via)
-	}
-	if len(sud.Params) != 1 || sud.Params[0].Name != "path" {
-		t.Fatalf("AsstSetUserDir params = %+v", sud.Params)
-	}
+	assert.True(t, sud.Ret.Equal(wantRet),
+		"AsstSetUserDir ret = %s (via %s), want uint8 via AsstBool", sud.Ret.String(), sud.Ret.Via)
+	require.False(t, len(sud.Params) != 1 || sud.Params[0].Name != "path",
+		"AsstSetUserDir params = %+v", sud.Params)
 	wantParam := CParam{Name: "path", Type: CType{Kind: CKindPointer,
 		Pointee: &CType{Kind: CKindScalar, Name: "char", Bits: 8, Const: true}}}
-	if !sud.Params[0].Equal(wantParam) || sud.Params[0].Type.String() != "const char*" {
-		t.Errorf("AsstSetUserDir param = %s, want const char* path", sud.Params[0].Type.String())
-	}
+	assert.False(t, !sud.Params[0].Equal(wantParam) || sud.Params[0].Type.String() != "const char*",
+		"AsstSetUserDir param = %s, want const char* path", sud.Params[0].Type.String())
 
 	// 多行声明与 deprecated 注释:注释不得误作属性。
 	sio := findFunction(t, res.Functions, "AsstSetInstanceOption")
-	if len(sio.Params) != 3 || sio.Params[1].Name != "key" {
-		t.Errorf("AsstSetInstanceOption params = %+v", sio.Params)
-	}
+	assert.False(t, len(sio.Params) != 3 || sio.Params[1].Name != "key",
+		"AsstSetInstanceOption params = %+v", sio.Params)
 	con := findFunction(t, res.Functions, "AsstConnect")
-	if len(con.Params) != 4 || con.Params[1].Name != "adb_path" {
-		t.Errorf("AsstConnect params = %+v", con.Params)
-	}
+	assert.False(t, len(con.Params) != 4 || con.Params[1].Name != "adb_path",
+		"AsstConnect params = %+v", con.Params)
 
 	// AsstCreateEx:函数指针参数与回调签名。
 	ce := findFunction(t, res.Functions, "AsstCreateEx")
-	if len(ce.Params) != 2 || ce.Params[0].Name != "callback" || ce.Params[1].Name != "custom_arg" {
-		t.Fatalf("AsstCreateEx params = %+v", ce.Params)
-	}
+	require.False(t, len(ce.Params) != 2 || ce.Params[0].Name != "callback" || ce.Params[1].Name != "custom_arg",
+		"AsstCreateEx params = %+v", ce.Params)
 	cbType := ce.Params[0].Type
-	if cbType.Kind != CKindFuncPtr || cbType.Via != "AsstApiCallback" {
-		t.Fatalf("callback param kind/via = %v/%q", cbType.Kind, cbType.Via)
-	}
+	require.False(t, cbType.Kind != CKindFuncPtr || cbType.Via != "AsstApiCallback",
+		"callback param kind/via = %v/%q", cbType.Kind, cbType.Via)
 	sig := cbType.Sig
-	if sig.Ret.Kind != CKindVoid || sig.CallConv != CallConvNone || len(sig.Params) != 3 {
-		t.Fatalf("callback signature = %+v", sig)
-	}
-	if sig.Params[0].Name != "msg" || sig.Params[0].Type.String() != "int32" || sig.Params[0].Type.Via != "AsstMsgId" {
-		t.Errorf("callback msg param = %+v (%s)", sig.Params[0], sig.Params[0].Type.String())
-	}
-	if sig.Params[1].Name != "details_json" || sig.Params[1].Type.String() != "const char*" {
-		t.Errorf("callback details param = %+v", sig.Params[1])
-	}
-	if sig.Params[2].Name != "custom_arg" || sig.Params[2].Type.String() != "void*" {
-		t.Errorf("callback custom_arg param = %+v", sig.Params[2])
-	}
+	require.False(t, sig.Ret.Kind != CKindVoid || sig.CallConv != CallConvNone || len(sig.Params) != 3,
+		"callback signature = %+v", sig)
+	assert.False(t, sig.Params[0].Name != "msg" || sig.Params[0].Type.String() != "int32" ||
+		sig.Params[0].Type.Via != "AsstMsgId",
+		"callback msg param = %+v (%s)", sig.Params[0], sig.Params[0].Type.String())
+	assert.False(t, sig.Params[1].Name != "details_json" || sig.Params[1].Type.String() != "const char*",
+		"callback details param = %+v", sig.Params[1])
+	assert.False(t, sig.Params[2].Name != "custom_arg" || sig.Params[2].Type.String() != "void*",
+		"callback custom_arg param = %+v", sig.Params[2])
 
 	// 输出缓冲区角色:void*、AsstSize、char*、AsstTaskId*。
 	gi := findFunction(t, res.Functions, "AsstGetImage")
-	if gi.Params[1].Type.String() != "void*" || gi.Params[1].Name != "buff" {
-		t.Errorf("AsstGetImage buff = %+v", gi.Params[1])
-	}
-	if gi.Params[2].Type.String() != "uint64" || gi.Params[2].Type.Via != "AsstSize" {
-		t.Errorf("AsstGetImage buff_size = %+v", gi.Params[2])
-	}
-	if gi.Ret.String() != "uint64" || gi.Ret.Via != "AsstSize" {
-		t.Errorf("AsstGetImage ret = %s (via %s)", gi.Ret.String(), gi.Ret.Via)
-	}
+	assert.False(t, gi.Params[1].Type.String() != "void*" || gi.Params[1].Name != "buff",
+		"AsstGetImage buff = %+v", gi.Params[1])
+	assert.False(t, gi.Params[2].Type.String() != "uint64" || gi.Params[2].Type.Via != "AsstSize",
+		"AsstGetImage buff_size = %+v", gi.Params[2])
+	assert.False(t, gi.Ret.String() != "uint64" || gi.Ret.Via != "AsstSize",
+		"AsstGetImage ret = %s (via %s)", gi.Ret.String(), gi.Ret.Via)
 	gl := findFunction(t, res.Functions, "AsstGetTasksList")
-	if gl.Params[1].Type.String() != "int32*" ||
-		gl.Params[1].Type.Pointee == nil || gl.Params[1].Type.Pointee.Via != "AsstTaskId" {
-		t.Errorf("AsstGetTasksList buff = %s (pointee via %s)", gl.Params[1].Type.String(),
-			gl.Params[1].Type.Pointee.Via)
-	}
+	assert.False(t, gl.Params[1].Type.String() != "int32*" ||
+		gl.Params[1].Type.Pointee == nil || gl.Params[1].Type.Pointee.Via != "AsstTaskId",
+		"AsstGetTasksList buff = %s (pointee via %s)", gl.Params[1].Type.String(),
+		gl.Params[1].Type.Pointee.Via)
 
 	// void 返回。
 	de := findFunction(t, res.Functions, "AsstDestroy")
-	if de.Ret.Kind != CKindVoid {
-		t.Errorf("AsstDestroy ret kind = %v, want void", de.Ret.Kind)
-	}
+	assert.Equal(t, CKindVoid, de.Ret.Kind, "AsstDestroy ret kind = %v, want void", de.Ret.Kind)
 	lg := findFunction(t, res.Functions, "AsstLog")
-	if lg.Ret.Kind != CKindVoid || lg.CallConv != CallConvNone {
-		t.Errorf("AsstLog ret/callconv = %v/%q", lg.Ret.Kind, lg.CallConv)
-	}
+	assert.False(t, lg.Ret.Kind != CKindVoid || lg.CallConv != CallConvNone,
+		"AsstLog ret/callconv = %v/%q", lg.Ret.Kind, lg.CallConv)
 
 	// GetVersion 特殊拼写。
 	gv := findFunction(t, res.Functions, "AsstGetVersion")
-	if gv.Linkage != LinkageVisibilityDefault || gv.CallConv != CallConvNone || len(gv.Params) != 0 {
-		t.Errorf("AsstGetVersion linkage/callconv/params = %q/%q/%d",
-			gv.Linkage, gv.CallConv, len(gv.Params))
-	}
-	if gv.Ret.String() != "const char*" || gv.Spelling != frozenGetVersionCanon {
-		t.Errorf("AsstGetVersion ret/spelling = %s/%q", gv.Ret.String(), gv.Spelling)
-	}
+	assert.False(t, gv.Linkage != LinkageVisibilityDefault || gv.CallConv != CallConvNone || len(gv.Params) != 0,
+		"AsstGetVersion linkage/callconv/params = %q/%q/%d",
+		gv.Linkage, gv.CallConv, len(gv.Params))
+	assert.False(t, gv.Ret.String() != "const char*" || gv.Spelling != frozenGetVersionCanon,
+		"AsstGetVersion ret/spelling = %s/%q", gv.Ret.String(), gv.Spelling)
 
 	// Windows 符号:在完整集合中标注 windows,Linux 适用集合不含它们。
 	for _, name := range []string{"AsstAttachWindow", "AsstAsyncAttachWindow"} {
 		aw := findFunction(t, res.Functions, name)
-		if aw.Platform != PlatformWindows {
-			t.Errorf("%s platform = %q, want windows", name, aw.Platform)
-		}
-		if functionByName(res.Applicable, name) != nil {
-			t.Errorf("%s must not be applicable on linux", name)
-		}
+		assert.Equal(t, PlatformWindows, aw.Platform, "%s platform = %q, want windows", name, aw.Platform)
+		assert.Nil(t, functionByName(res.Applicable, name), "%s must not be applicable on linux", name)
 	}
 	aw := findFunction(t, res.Functions, "AsstAttachWindow")
-	if len(aw.Params) != 5 || aw.Params[1].Type.String() != "void*" ||
-		aw.Params[2].Type.String() != "uint64" || aw.Params[2].Type.Via != "" {
-		t.Errorf("AsstAttachWindow params = %+v", aw.Params)
-	}
+	assert.False(t, len(aw.Params) != 5 || aw.Params[1].Type.String() != "void*" ||
+		aw.Params[2].Type.String() != "uint64" || aw.Params[2].Type.Via != "",
+		"AsstAttachWindow params = %+v", aw.Params)
 
 	// 实验发现:恰为两个实验导出,平台 extra,不在适用集合。
-	if res.Discovery[0].Name != "AsstGetMapLevelKey" || res.Discovery[1].Name != "AsstGetItemName" {
-		t.Fatalf("discovery = %v", discoveryNames(res.Discovery))
-	}
+	require.False(t, res.Discovery[0].Name != "AsstGetMapLevelKey" || res.Discovery[1].Name != "AsstGetItemName",
+		"discovery = %v", discoveryNames(res.Discovery))
 	mlk := res.Discovery[0]
-	if mlk.Platform != PlatformExtra {
-		t.Errorf("AsstGetMapLevelKey platform = %q, want extra", mlk.Platform)
-	}
-	if mlk.Ret.Kind != CKindStruct || mlk.Ret.Tag != frozenStructTag {
-		t.Errorf("AsstGetMapLevelKey ret = %+v, want struct %s by value", mlk.Ret, frozenStructTag)
-	}
-	if len(mlk.Params) != 1 || mlk.Params[0].Name != "key" || mlk.Params[0].Type.String() != "const char*" {
-		t.Errorf("AsstGetMapLevelKey params = %+v", mlk.Params)
-	}
-	if functionByName(res.Applicable, "AsstGetMapLevelKey") != nil {
-		t.Error("experimental export must not be in the applicable set")
-	}
+	assert.Equal(t, PlatformExtra, mlk.Platform, "AsstGetMapLevelKey platform = %q, want extra", mlk.Platform)
+	assert.False(t, mlk.Ret.Kind != CKindStruct || mlk.Ret.Tag != frozenStructTag,
+		"AsstGetMapLevelKey ret = %+v, want struct %s by value", mlk.Ret, frozenStructTag)
+	assert.False(t, len(mlk.Params) != 1 || mlk.Params[0].Name != "key" || mlk.Params[0].Type.String() != "const char*",
+		"AsstGetMapLevelKey params = %+v", mlk.Params)
+	assert.Nil(t, functionByName(res.Applicable, "AsstGetMapLevelKey"),
+		"experimental export must not be in the applicable set")
 
 	// Extra 结构体核验:四个 const char* 成员,顺序固定。
 	st := res.Structs[0]
-	if st.Tag != frozenStructTag || st.Platform != PlatformExtra || len(st.Members) != 4 {
-		t.Fatalf("struct = %+v", st)
-	}
+	require.False(t, st.Tag != frozenStructTag || st.Platform != PlatformExtra || len(st.Members) != 4,
+		"struct = %+v", st)
 	for i, want := range frozenStructMembers {
-		if st.Members[i].Name != want || st.Members[i].Type.String() != "const char*" {
-			t.Errorf("member %d = %+v (%s), want const char* %s",
-				i, st.Members[i], st.Members[i].Type.String(), want)
-		}
+		assert.False(t, st.Members[i].Name != want || st.Members[i].Type.String() != "const char*",
+			"member %d = %+v (%s), want const char* %s",
+			i, st.Members[i], st.Members[i].Type.String(), want)
 	}
 
 	// Windows enum 命名值提取(1 << n 展开,尾逗号容忍)。
@@ -243,76 +194,55 @@ func TestExtractLinuxPositive(t *testing.T) {
 		{"AsstWin32ScreencapMethod_DXGI_DesktopDup_Window", 8},
 		{"AsstWin32ScreencapMethod_PrintWindow", 16}, {"AsstWin32ScreencapMethod_ScreenDC", 32},
 	}
-	if len(sc.Values) != len(wantScreencap) {
-		t.Fatalf("screencap enum has %d values, want %d", len(sc.Values), len(wantScreencap))
-	}
+	require.Len(t, sc.Values, len(wantScreencap),
+		"screencap enum has %d values, want %d", len(sc.Values), len(wantScreencap))
 	for i, w := range wantScreencap {
-		if sc.Values[i] != w {
-			t.Errorf("screencap value %d = %+v, want %+v", i, sc.Values[i], w)
-		}
+		assert.Equal(t, w, sc.Values[i], "screencap value %d = %+v, want %+v", i, sc.Values[i], w)
 	}
 	im := findEnum(t, res.Enums, "AsstWin32InputMethodEnum")
-	if len(im.Values) != 12 {
-		t.Fatalf("input enum has %d values, want 12", len(im.Values))
-	}
+	require.Len(t, im.Values, 12, "input enum has %d values, want 12", len(im.Values))
 	last := im.Values[len(im.Values)-1]
-	if last.Name != "AsstWin32InputMethod_AnchoredTouch" || last.Value != 1024 {
-		t.Errorf("last input value = %+v, want AnchoredTouch=1024", last)
-	}
+	assert.False(t, last.Name != "AsstWin32InputMethod_AnchoredTouch" || last.Value != 1024,
+		"last input value = %+v, want AnchoredTouch=1024", last)
 
 	// typedef 链与指针语义。
 	td := findTypedef(t, res.Typedefs, "AsstTaskId")
-	if !td.Type.Equal(CType{Kind: CKindScalar, Name: "int32", Bits: 32, Signed: true, Via: "AsstId"}) {
-		t.Errorf("AsstTaskId type = %s (via %s), want int32 via AsstId", td.Type.String(), td.Type.Via)
-	}
+	assert.True(t, td.Type.Equal(CType{Kind: CKindScalar, Name: "int32", Bits: 32, Signed: true, Via: "AsstId"}),
+		"AsstTaskId type = %s (via %s), want int32 via AsstId", td.Type.String(), td.Type.Via)
 	h := findTypedef(t, res.Typedefs, "AsstHandle")
-	if h.Type.Kind != CKindPointer || h.Type.Pointee == nil ||
-		h.Type.Pointee.Kind != CKindStruct || h.Type.Pointee.Tag != "AsstExtAPI" {
-		t.Errorf("AsstHandle type = %s, want pointer to struct AsstExtAPI", h.Type.String())
-	}
-	if h.Type.String() != "struct AsstExtAPI*" {
-		t.Errorf("AsstHandle String() = %q", h.Type.String())
-	}
+	assert.False(t, h.Type.Kind != CKindPointer || h.Type.Pointee == nil ||
+		h.Type.Pointee.Kind != CKindStruct || h.Type.Pointee.Tag != "AsstExtAPI",
+		"AsstHandle type = %s, want pointer to struct AsstExtAPI", h.Type.String())
+	assert.Equal(t, "struct AsstExtAPI*", h.Type.String(), "AsstHandle String() = %q", h.Type.String())
 	cbtd := findTypedef(t, res.Typedefs, "AsstApiCallback")
-	if cbtd.Type.Kind != CKindFuncPtr || cbtd.Type.Sig == nil {
-		t.Fatalf("AsstApiCallback typedef = %+v", cbtd.Type)
-	}
-	if !cbtd.Type.Sig.Equal(*cbType.Sig) {
-		t.Error("AsstApiCallback typedef signature differs from the callback parameter type")
-	}
+	require.False(t, cbtd.Type.Kind != CKindFuncPtr || cbtd.Type.Sig == nil,
+		"AsstApiCallback typedef = %+v", cbtd.Type)
+	assert.True(t, cbtd.Type.Sig.Equal(*cbType.Sig),
+		"AsstApiCallback typedef signature differs from the callback parameter type")
 }
 
 func TestExtractWindowsPositive(t *testing.T) {
 	res := mustExtract(t, positiveFiles(t), windowsTarget)
 
-	if len(res.Functions) != 30 {
-		t.Fatalf("full set has %d functions, want 30", len(res.Functions))
-	}
-	if len(res.Applicable) != 28 {
-		t.Fatalf("applicable set on windows has %d functions, want 28", len(res.Applicable))
-	}
+	require.Len(t, res.Functions, 30, "full set has %d functions, want 30", len(res.Functions))
+	require.Len(t, res.Applicable, 28, "applicable set on windows has %d functions, want 28", len(res.Applicable))
 	for _, name := range []string{"AsstAttachWindow", "AsstAsyncAttachWindow"} {
-		if functionByName(res.Applicable, name) == nil {
-			t.Errorf("%s must be applicable on windows", name)
-		}
+		assert.NotNil(t, functionByName(res.Applicable, name), "%s must be applicable on windows", name)
 	}
 
 	sud := findFunction(t, res.Functions, "AsstSetUserDir")
-	if sud.CallConv != CallConvStdcall || sud.Linkage != LinkageDLLImport {
-		t.Errorf("windows modifiers = %q/%q, want __stdcall/%q", sud.CallConv, sud.Linkage, LinkageDLLImport)
-	}
+	assert.False(t, sud.CallConv != CallConvStdcall || sud.Linkage != LinkageDLLImport,
+		"windows modifiers = %q/%q, want __stdcall/%q", sud.CallConv, sud.Linkage, LinkageDLLImport)
 	gv := findFunction(t, res.Functions, "AsstGetVersion")
-	if gv.CallConv != CallConvStdcall || gv.Linkage != LinkageDLLImport {
-		t.Errorf("AsstGetVersion windows modifiers = %q/%q", gv.CallConv, gv.Linkage)
-	}
+	assert.False(t, gv.CallConv != CallConvStdcall || gv.Linkage != LinkageDLLImport,
+		"AsstGetVersion windows modifiers = %q/%q", gv.CallConv, gv.Linkage)
 	ce := findFunction(t, res.Functions, "AsstCreateEx")
-	if sig := ce.Params[0].Type.Sig; sig.CallConv != CallConvStdcall {
-		t.Errorf("windows callback callconv = %q, want __stdcall", sig.CallConv)
-	}
+	sig := ce.Params[0].Type.Sig
+	assert.Equal(t, CallConvStdcall, sig.CallConv,
+		"windows callback callconv = %q, want __stdcall", sig.CallConv)
 	// discovery 与 linux 一致:与目标无关。
-	if len(res.Discovery) != 2 || res.Discovery[0].Name != "AsstGetMapLevelKey" {
-		t.Fatalf("discovery = %v", discoveryNames(res.Discovery))
-	}
+	require.False(t, len(res.Discovery) != 2 || res.Discovery[0].Name != "AsstGetMapLevelKey",
+		"discovery = %v", discoveryNames(res.Discovery))
 }
 
 // TestPassZeroAndHostileEnv 验证 =0 pass 恰含 28 项且无实验导出,以及
@@ -322,16 +252,11 @@ func TestPassZeroAndHostileEnv(t *testing.T) {
 	input := testLoadCInput(t, dir)
 
 	res, d := runParsePass(input, newMacroEnv(linuxTarget, 0))
-	if d != nil {
-		t.Fatalf("pass0 failed: %v", d)
-	}
-	if len(res.Functions) != 28 {
-		t.Fatalf("pass0 functions = %d, want 28", len(res.Functions))
-	}
+	require.Nil(t, d, "pass0 failed: %v", d)
+	require.Len(t, res.Functions, 28, "pass0 functions = %d, want 28", len(res.Functions))
 	for _, f := range res.Functions {
-		if frozenExperimental[f.Name] {
-			t.Errorf("pass0 unexpectedly contains experimental export %s", f.Name)
-		}
+		assert.False(t, frozenExperimental[f.Name],
+			"pass0 unexpectedly contains experimental export %s", f.Name)
 	}
 
 	// ASST_CALL 在进入 AsstPort.h 前已被定义:Port 分支被跳过,声明
@@ -341,12 +266,9 @@ func TestPassZeroAndHostileEnv(t *testing.T) {
 		ints:    map[string]int64{"__GNUC__": 4, "ASST_WITH_EXTRA_CALLERS": 0},
 	}
 	_, d = runParsePass(input, bad)
-	if d == nil {
-		t.Fatal("runParsePass unexpectedly passed with externally predefined ASST_CALL")
-	}
-	if d.Category != CatCSyntax || !strings.Contains(d.Symbol, "ASST_CALL") {
-		t.Errorf("hostile env diagnostic = %+v", d)
-	}
+	require.NotNil(t, d, "runParsePass unexpectedly passed with externally predefined ASST_CALL")
+	assert.False(t, d.Category != CatCSyntax || !strings.Contains(d.Symbol, "ASST_CALL"),
+		"hostile env diagnostic = %+v", d)
 }
 
 // TestExtractFailures 是的 C 提取失败向量:每条都必须以
@@ -441,9 +363,8 @@ func TestExtractFailures(t *testing.T) {
 			extra := fs[FileAsstCallerExtra]
 			extra = strings.Replace(extra, "#if ASST_WITH_EXTRA_CALLERS\n\n", "", 1)
 			extra = strings.Replace(extra, "#endif // ASST_WITH_EXTRA_CALLERS\n", "", 1)
-			if strings.Contains(extra, "ASST_WITH_EXTRA_CALLERS") {
-				t.Fatal("guard removal mutation did not apply")
-			}
+			require.False(t, strings.Contains(extra, "ASST_WITH_EXTRA_CALLERS"),
+				"guard removal mutation did not apply")
 			fs[FileAsstCallerExtra] = extra
 		}, "AsstGetMapLevelKey", true},
 		{"unknown include", linuxTarget, func(t *testing.T, fs map[string]string) {
@@ -479,23 +400,18 @@ func TestExtractFailures(t *testing.T) {
 			dir, _ := writeCInput(t, files)
 			input := testLoadCInput(t, dir)
 			res, diags := ExtractC(input, tc.target)
+			// 失败路径的 res 为 nil,函数计数须留在原 if 守卫内惰性求值。
 			if len(diags) == 0 {
-				t.Fatalf("ExtractC unexpectedly passed; want failure mentioning %q (result: %d functions)",
+				require.FailNowf(t, "ExtractC unexpectedly passed",
+					"ExtractC unexpectedly passed; want failure mentioning %q (result: %d functions)",
 					tc.sym, len(res.Functions))
 			}
 			d := diags[0]
-			if d.Category != CatCSyntax {
-				t.Errorf("category = %q, want %q", d.Category, CatCSyntax)
-			}
-			if d.File == "" {
-				t.Errorf("diagnostic must locate a file, got %+v", d)
-			}
-			if tc.wantLine && d.Line <= 0 {
-				t.Errorf("syntax diagnostic must carry a line, got %+v", d)
-			}
-			if !strings.Contains(d.Symbol, tc.sym) {
-				t.Errorf("symbol = %q, want it to contain %q", d.Symbol, tc.sym)
-			}
+			assert.Equal(t, CatCSyntax, d.Category, "category = %q, want %q", d.Category, CatCSyntax)
+			assert.NotEmpty(t, d.File, "diagnostic must locate a file, got %+v", d)
+			assert.False(t, tc.wantLine && d.Line <= 0,
+				"syntax diagnostic must carry a line, got %+v", d)
+			assert.Contains(t, d.Symbol, tc.sym, "symbol = %q, want it to contain %q", d.Symbol, tc.sym)
 		})
 	}
 }
@@ -505,12 +421,9 @@ func TestExtractUnknownTarget(t *testing.T) {
 	dir, _ := writeCInput(t, positiveFiles(t))
 	input := testLoadCInput(t, dir)
 	res, diags := ExtractC(input, Target{GOOS: "darwin", GOARCH: "arm64"})
-	if res != nil || len(diags) != 1 || diags[0].Category != CatInput {
-		t.Fatalf("ExtractC with unknown target = %+v, %v", res, diags)
-	}
-	if !strings.Contains(diags[0].Symbol, "target") {
-		t.Errorf("symbol = %q, want it to mention target", diags[0].Symbol)
-	}
+	require.False(t, res != nil || len(diags) != 1 || diags[0].Category != CatInput,
+		"ExtractC with unknown target = %+v, %v", res, diags)
+	assert.Contains(t, diags[0].Symbol, "target", "symbol = %q, want it to mention target", diags[0].Symbol)
 }
 
 // TestExtractCTypeString 覆盖规范化类型的可读拼写。
@@ -527,8 +440,7 @@ func TestExtractCTypeString(t *testing.T) {
 		"struct AsstMapLevelKey": {Kind: CKindStruct, Tag: "AsstMapLevelKey"},
 	}
 	for want, ct := range cases {
-		if got := ct.String(); got != want {
-			t.Errorf("String() = %q, want %q", got, want)
-		}
+		got := ct.String()
+		assert.Equal(t, want, got, "String() = %q, want %q", got, want)
 	}
 }

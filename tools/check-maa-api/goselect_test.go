@@ -7,6 +7,9 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSelectRealNativeDir 使用仓库真实 native 目录验证两个目标的入选
@@ -21,21 +24,17 @@ func TestSelectRealNativeDir(t *testing.T) {
 	windowsNames := strings.Join(windowsSel.names(), ",")
 
 	for _, shared := range sharedDeclFiles {
-		if !linuxSel.contains(shared) || !windowsSel.contains(shared) {
-			t.Errorf("shared file %s must be selected on both targets", shared)
-		}
+		assert.True(t, linuxSel.contains(shared) && windowsSel.contains(shared),
+			"shared file %s must be selected on both targets", shared)
 	}
-	if !linuxSel.contains("loader_unix.go") || linuxSel.contains("loader_other.go") || linuxSel.contains("loader_windows.go") {
-		t.Errorf("linux selection = %s", linuxNames)
-	}
-	if !windowsSel.contains("loader_windows.go") || windowsSel.contains("loader_other.go") || windowsSel.contains("loader_unix.go") {
-		t.Errorf("windows selection = %s", windowsNames)
-	}
+	assert.True(t, linuxSel.contains("loader_unix.go") && !linuxSel.contains("loader_other.go") && !linuxSel.contains("loader_windows.go"),
+		"linux selection = %s", linuxNames)
+	assert.True(t, windowsSel.contains("loader_windows.go") && !windowsSel.contains("loader_other.go") && !windowsSel.contains("loader_unix.go"),
+		"windows selection = %s", windowsNames)
 	for _, sel := range []*GoSelection{linuxSel, windowsSel} {
 		for _, name := range sel.names() {
-			if strings.HasSuffix(name, "_test.go") || strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") {
-				t.Errorf("file %s must not participate in the build", name)
-			}
+			assert.True(t, !strings.HasSuffix(name, "_test.go") && !strings.HasPrefix(name, "_") && !strings.HasPrefix(name, "."),
+				"file %s must not participate in the build", name)
 		}
 	}
 }
@@ -45,15 +44,12 @@ func TestSelectMissingSharedFile(t *testing.T) {
 	files := copySynthetic()
 	delete(files, "symbols.go")
 	sel, diags := SelectGoFiles(writeGoRoot(t, files), linuxTarget)
-	if len(diags) != 1 || sel != nil {
-		t.Fatalf("expected one diagnostic, got sel=%v diags=%v", sel, diags)
-	}
-	if diags[0].Category != CatInput || !strings.Contains(diags[0].Message, "missing") {
-		t.Errorf("diagnostic = %+v", diags[0])
-	}
-	if !strings.Contains(diags[0].File, "symbols.go") {
-		t.Errorf("diagnostic must locate symbols.go, got %+v", diags[0])
-	}
+	require.True(t, len(diags) == 1 && sel == nil,
+		"expected one diagnostic, got sel=%v diags=%v", sel, diags)
+	assert.True(t, diags[0].Category == CatInput && strings.Contains(diags[0].Message, "missing"),
+		"diagnostic = %+v", diags[0])
+	assert.Contains(t, diags[0].File, "symbols.go",
+		"diagnostic must locate symbols.go, got %+v", diags[0])
 }
 
 // TestSelectHiddenSharedFile 共用文件被约束隐藏(存在于目录但未入选)
@@ -62,12 +58,10 @@ func TestSelectHiddenSharedFile(t *testing.T) {
 	files := copySynthetic()
 	files["api.go"] = "//go:build windows\n\n" + files["api.go"]
 	sel, diags := SelectGoFiles(writeGoRoot(t, files), linuxTarget)
-	if len(diags) != 1 || sel != nil {
-		t.Fatalf("expected one diagnostic, got sel=%v diags=%v", sel, diags)
-	}
-	if diags[0].Category != CatInput || !strings.Contains(diags[0].Actual, "hidden") {
-		t.Errorf("diagnostic = %+v", diags[0])
-	}
+	require.True(t, len(diags) == 1 && sel == nil,
+		"expected one diagnostic, got sel=%v diags=%v", sel, diags)
+	assert.True(t, diags[0].Category == CatInput && strings.Contains(diags[0].Actual, "hidden"),
+		"diagnostic = %+v", diags[0])
 }
 
 // TestSelectConstrainedSharedFile 共用文件即使对当前目标被选中,自带
@@ -76,15 +70,12 @@ func TestSelectConstrainedSharedFile(t *testing.T) {
 	files := copySynthetic()
 	files["api.go"] = "//go:build windows\n\n" + files["api.go"]
 	sel, diags := SelectGoFiles(writeGoRoot(t, files), windowsTarget)
-	if len(diags) != 1 || sel != nil {
-		t.Fatalf("expected one diagnostic, got sel=%v diags=%v", sel, diags)
-	}
-	if diags[0].Category != CatGoSyntax {
-		t.Errorf("category = %q, want %q", diags[0].Category, CatGoSyntax)
-	}
-	if diags[0].Line <= 0 || !strings.Contains(diags[0].Actual, "go:build") {
-		t.Errorf("diagnostic must locate the constraint line, got %+v", diags[0])
-	}
+	require.True(t, len(diags) == 1 && sel == nil,
+		"expected one diagnostic, got sel=%v diags=%v", sel, diags)
+	assert.Equal(t, CatGoSyntax, diags[0].Category,
+		"category = %q, want %q", diags[0].Category, CatGoSyntax)
+	assert.True(t, diags[0].Line > 0 && strings.Contains(diags[0].Actual, "go:build"),
+		"diagnostic must locate the constraint line, got %+v", diags[0])
 }
 
 // TestSelectConstrainedPlusBuild 旧 +build 行同样视为约束注释。
@@ -92,22 +83,18 @@ func TestSelectConstrainedPlusBuild(t *testing.T) {
 	files := copySynthetic()
 	files["symbols.go"] = "// +build windows\n\n" + files["symbols.go"]
 	_, diags := SelectGoFiles(writeGoRoot(t, files), windowsTarget)
-	if len(diags) != 1 || diags[0].Category != CatGoSyntax {
-		t.Fatalf("expected one go-syntax diagnostic, got %v", diags)
-	}
-	if !strings.Contains(diags[0].Actual, "+build") {
-		t.Errorf("diagnostic must locate the +build line, got %+v", diags[0])
-	}
+	require.True(t, len(diags) == 1 && diags[0].Category == CatGoSyntax,
+		"expected one go-syntax diagnostic, got %v", diags)
+	assert.Contains(t, diags[0].Actual, "+build",
+		"diagnostic must locate the +build line, got %+v", diags[0])
 }
 
 // TestSelectMissingGoRoot go-root 下没有 native 目录以 input 类诊断
 // 失败并指向冻结的相对路径。
 func TestSelectMissingGoRoot(t *testing.T) {
 	_, diags := SelectGoFiles(t.TempDir(), linuxTarget)
-	if len(diags) != 1 || diags[0].Category != CatInput {
-		t.Fatalf("expected one input diagnostic, got %v", diags)
-	}
-	if !strings.Contains(diags[0].Symbol, goNativeRelPath) && !strings.Contains(diags[0].Message, goNativeRelPath) {
-		t.Errorf("diagnostic must mention the frozen relative path, got %+v", diags[0])
-	}
+	require.True(t, len(diags) == 1 && diags[0].Category == CatInput,
+		"expected one input diagnostic, got %v", diags)
+	assert.True(t, strings.Contains(diags[0].Symbol, goNativeRelPath) || strings.Contains(diags[0].Message, goNativeRelPath),
+		"diagnostic must mention the frozen relative path, got %+v", diags[0])
 }

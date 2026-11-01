@@ -10,15 +10,16 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // repoRoot 经 runtime.Caller 定位仓库根,不硬编码任何用户绝对路径。
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate the test source file")
-	}
+	require.True(t, ok, "cannot locate the test source file")
 	// thisFile = <root>/tools/check-maa-api/main_test.go
 	return filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
 }
@@ -53,85 +54,50 @@ func TestRunSuccessBothTargets(t *testing.T) {
 	}
 
 	linux := run("linux")
-	if linux.code != 0 {
-		t.Fatalf("linux run exited %d:\n%s", linux.code, linux.err)
-	}
-	if strings.Contains(linux.out, "PASS") || linux.err != "" {
-		t.Errorf("linux output must be JSON only without PASS:\n%s\n%s", linux.out, linux.err)
-	}
+	require.Equal(t, 0, linux.code, "linux run exited %d:\n%s", linux.code, linux.err)
+	assert.False(t, strings.Contains(linux.out, "PASS") || linux.err != "",
+		"linux output must be JSON only without PASS:\n%s\n%s", linux.out, linux.err)
 	var report reportJSON
-	if err := json.Unmarshal([]byte(linux.out), &report); err != nil {
-		t.Fatalf("linux stdout is not valid JSON: %v\n%s", err, linux.out)
-	}
-	if report.Input.SnapshotID != testProfileID || report.Target.GOOS != "linux" || report.Target.GOARCH != "amd64" {
-		t.Errorf("report header = %+v", report.Target)
-	}
-	if len(report.C.Full) != 30 || len(report.C.Discovery) != 2 {
-		t.Errorf("full=%d discovery=%d, want 30/2", len(report.C.Full), len(report.C.Discovery))
-	}
-	if len(report.C.Applicable) != 26 {
-		t.Errorf("linux applicable = %d, want 26", len(report.C.Applicable))
-	}
+	require.NoError(t, json.Unmarshal([]byte(linux.out), &report), "linux stdout is not valid JSON:\n%s", linux.out)
+	assert.False(t, report.Input.SnapshotID != testProfileID || report.Target.GOOS != "linux" || report.Target.GOARCH != "amd64",
+		"report header = %+v", report.Target)
+	assert.False(t, len(report.C.Full) != 30 || len(report.C.Discovery) != 2,
+		"full=%d discovery=%d, want 30/2", len(report.C.Full), len(report.C.Discovery))
+	assert.Len(t, report.C.Applicable, 26, "linux applicable = %d, want 26", len(report.C.Applicable))
 	for _, name := range []string{"AsstAttachWindow", "AsstAsyncAttachWindow"} {
-		for _, s := range report.C.Applicable {
-			if s == name {
-				t.Errorf("%s must not be applicable on linux", name)
-			}
-		}
+		assert.NotContains(t, report.C.Applicable, name, "%s must not be applicable on linux", name)
 	}
-	if len(report.Go.Fields) != 28 || len(report.Go.Specs) != 28 || len(report.Go.Exclusions) != 2 {
-		t.Errorf("go summary = fields %d specs %d exclusions %d, want 28/28/2",
-			len(report.Go.Fields), len(report.Go.Specs), len(report.Go.Exclusions))
-	}
-	if report.Go.Callbacks["unixCallback"].Result != "" ||
-		report.Go.Callbacks["windowsCallback"].Result != "uintptr" {
-		t.Errorf("callbacks = %+v", report.Go.Callbacks)
-	}
-	if len(report.Link.Bound) != 27 || len(report.Link.Excluded) != 2 {
-		t.Errorf("linux link = bound %d excluded %d, want 27/2",
-			len(report.Link.Bound), len(report.Link.Excluded))
-	}
-	if strings.Join(report.Link.NonTarget, ",") != "AsstAsyncAttachWindow" {
-		t.Errorf("linux nontarget = %v", report.Link.NonTarget)
-	}
+	assert.False(t, len(report.Go.Fields) != 28 || len(report.Go.Specs) != 28 || len(report.Go.Exclusions) != 2,
+		"go summary = fields %d specs %d exclusions %d, want 28/28/2",
+		len(report.Go.Fields), len(report.Go.Specs), len(report.Go.Exclusions))
+	assert.False(t, report.Go.Callbacks["unixCallback"].Result != "" ||
+		report.Go.Callbacks["windowsCallback"].Result != "uintptr",
+		"callbacks = %+v", report.Go.Callbacks)
+	assert.False(t, len(report.Link.Bound) != 27 || len(report.Link.Excluded) != 2,
+		"linux link = bound %d excluded %d, want 27/2",
+		len(report.Link.Bound), len(report.Link.Excluded))
+	assert.Equal(t, "AsstAsyncAttachWindow", strings.Join(report.Link.NonTarget, ","),
+		"linux nontarget = %v", report.Link.NonTarget)
 
 	windows := run("windows")
-	if windows.code != 0 {
-		t.Fatalf("windows run exited %d:\n%s", windows.code, windows.err)
-	}
+	require.Equal(t, 0, windows.code, "windows run exited %d:\n%s", windows.code, windows.err)
 	var winReport reportJSON
-	if err := json.Unmarshal([]byte(windows.out), &winReport); err != nil {
-		t.Fatalf("windows stdout is not valid JSON: %v", err)
-	}
-	if len(winReport.C.Applicable) != 28 || len(winReport.Link.Bound) != 28 {
-		t.Errorf("windows applicable=%d bound=%d, want 28/28",
-			len(winReport.C.Applicable), len(winReport.Link.Bound))
-	}
-	if len(winReport.Link.NonTarget) != 0 {
-		t.Errorf("windows nontarget = %v, want empty", winReport.Link.NonTarget)
-	}
+	require.NoError(t, json.Unmarshal([]byte(windows.out), &winReport), "windows stdout is not valid JSON")
+	assert.False(t, len(winReport.C.Applicable) != 28 || len(winReport.Link.Bound) != 28,
+		"windows applicable=%d bound=%d, want 28/28",
+		len(winReport.C.Applicable), len(winReport.Link.Bound))
+	assert.Empty(t, winReport.Link.NonTarget, "windows nontarget = %v, want empty", winReport.Link.NonTarget)
 	for _, name := range []string{"AsstAttachWindow", "AsstAsyncAttachWindow"} {
-		found := false
-		for _, s := range winReport.C.Applicable {
-			if s == name {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("%s must be applicable on windows", name)
-		}
+		assert.Contains(t, winReport.C.Applicable, name, "%s must be applicable on windows", name)
 	}
 	// 完整集合与发现与目标无关。
-	if strings.Join(report.C.Full, ",") != strings.Join(winReport.C.Full, ",") ||
-		strings.Join(report.C.Discovery, ",") != strings.Join(winReport.C.Discovery, ",") {
-		t.Errorf("full set/discovery must be identical across targets")
-	}
+	assert.False(t, strings.Join(report.C.Full, ",") != strings.Join(winReport.C.Full, ",") ||
+		strings.Join(report.C.Discovery, ",") != strings.Join(winReport.C.Discovery, ","),
+		"full set/discovery must be identical across targets")
 
 	// 确定性:同参数两次运行输出逐字节一致。
 	again := run("linux")
-	if again.out != linux.out {
-		t.Error("success output must be deterministic across runs")
-	}
+	assert.Equal(t, linux.out, again.out, "success output must be deterministic across runs")
 }
 
 // TestRunArgumentFailures 参数层失败:缺 flag、未知 flag、多余位置
@@ -163,19 +129,11 @@ func TestRunArgumentFailures(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			code, out, errOut := mustRun(t, tc.args)
-			if code == 0 {
-				t.Fatalf("expected nonzero exit, stdout:\n%s", out)
-			}
-			if out != "" {
-				t.Errorf("failure must not write to stdout, got:\n%s", out)
-			}
-			if strings.Contains(out+errOut, "PASS") {
-				t.Error("failure output must never contain PASS")
-			}
+			require.NotEqual(t, 0, code, "expected nonzero exit, stdout:\n%s", out)
+			assert.Empty(t, out, "failure must not write to stdout, got:\n%s", out)
+			assert.NotContains(t, out+errOut, "PASS", "failure output must never contain PASS")
 			for _, want := range tc.want {
-				if !strings.Contains(errOut, want) {
-					t.Errorf("stderr = %q, want it to contain %q", errOut, want)
-				}
+				assert.Contains(t, errOut, want, "stderr = %q, want it to contain %q", errOut, want)
 			}
 		})
 	}
@@ -190,31 +148,24 @@ func TestRunInputFailures(t *testing.T) {
 
 	t.Run("missing AsstPort.h on disk", func(t *testing.T) {
 		dir := writeCInputDir(t, files, nil)
-		if err := os.Remove(filepath.Join(dir, filepath.FromSlash(FileAsstPort))); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.Remove(filepath.Join(dir, filepath.FromSlash(FileAsstPort))))
 		code, out, errOut := mustRun(t, []string{
 			"--goos", "linux", "--goarch", "amd64",
 			"--c-input", dir, "--go-root", goRoot,
 		})
-		if code == 0 || out != "" || strings.Contains(out+errOut, "PASS") {
-			t.Fatalf("expected failed run without PASS: code=%d out=%q err=%q", code, out, errOut)
-		}
-		if !strings.Contains(errOut, "input") || !strings.Contains(errOut, "AsstPort.h") {
-			t.Errorf("stderr must carry the input category and file location:\n%s", errOut)
-		}
+		require.False(t, code == 0 || out != "" || strings.Contains(out+errOut, "PASS"),
+			"expected failed run without PASS: code=%d out=%q err=%q", code, out, errOut)
+		assert.True(t, strings.Contains(errOut, "input") && strings.Contains(errOut, "AsstPort.h"),
+			"stderr must carry the input category and file location:\n%s", errOut)
 	})
 	t.Run("missing inputs.json", func(t *testing.T) {
 		code, out, errOut := mustRun(t, []string{
 			"--goos", "linux", "--goarch", "amd64",
 			"--c-input", t.TempDir(), "--go-root", goRoot,
 		})
-		if code == 0 || out != "" || strings.Contains(out+errOut, "PASS") {
-			t.Fatalf("expected failed run without PASS: code=%d out=%q err=%q", code, out, errOut)
-		}
-		if !strings.Contains(errOut, "inputs.json") {
-			t.Errorf("stderr must locate inputs.json:\n%s", errOut)
-		}
+		require.False(t, code == 0 || out != "" || strings.Contains(out+errOut, "PASS"),
+			"expected failed run without PASS: code=%d out=%q err=%q", code, out, errOut)
+		assert.Contains(t, errOut, "inputs.json", "stderr must locate inputs.json:\n%s", errOut)
 	})
 	t.Run("go-root without native package", func(t *testing.T) {
 		dir := writeCInputDir(t, files, nil)
@@ -222,11 +173,8 @@ func TestRunInputFailures(t *testing.T) {
 			"--goos", "linux", "--goarch", "amd64",
 			"--c-input", dir, "--go-root", t.TempDir(),
 		})
-		if code == 0 || out != "" || strings.Contains(out+errOut, "PASS") {
-			t.Fatalf("expected failed run without PASS: code=%d out=%q err=%q", code, out, errOut)
-		}
-		if !strings.Contains(errOut, goNativeRelPath) {
-			t.Errorf("stderr must mention the frozen relative path:\n%s", errOut)
-		}
+		require.False(t, code == 0 || out != "" || strings.Contains(out+errOut, "PASS"),
+			"expected failed run without PASS: code=%d out=%q err=%q", code, out, errOut)
+		assert.Contains(t, errOut, goNativeRelPath, "stderr must mention the frozen relative path:\n%s", errOut)
 	})
 }

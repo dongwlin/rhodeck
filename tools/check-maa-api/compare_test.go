@@ -16,6 +16,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ---- 直接构造用的规范化 C 类型小构造器 ----
@@ -49,9 +52,7 @@ func mustSignatureBase(t *testing.T) (*CExtraction, *GoExtraction, *LinkResult) 
 	c := mustExtract(t, positiveFiles(t), linuxTarget)
 	g := mustExtractGo(t, copyRealNative(t))
 	link, diags := LinkCGo(c, g, linuxTarget)
-	if len(diags) != 0 {
-		t.Fatalf("LinkCGo unexpectedly failed: %v", diags)
-	}
+	require.Empty(t, diags, "LinkCGo unexpectedly failed: %v", diags)
 	return c, g, link
 }
 
@@ -63,7 +64,7 @@ func sigField(t *testing.T, g *GoExtraction, name string) *GoField {
 			return &g.Fields[i]
 		}
 	}
-	t.Fatalf("api field %s not found", name)
+	require.FailNowf(t, "api field not found", "api field %s not found", name)
 	return nil
 }
 
@@ -83,7 +84,7 @@ func mutateCFunc(t *testing.T, c *CExtraction, name string, f func(*CFunction)) 
 			return
 		}
 	}
-	t.Fatalf("c function %s not found", name)
+	require.FailNowf(t, "c function not found", "c function %s not found", name)
 }
 
 // mustSigFail 断言签名比对以 signature 类诊断失败,且诊断定位到期望
@@ -92,25 +93,20 @@ func mustSigFail(t *testing.T, c *CExtraction, g *GoExtraction, link *LinkResult
 	wantFile string, wantLine int, wantSymbol string, wantTexts ...string) Diagnostic {
 	t.Helper()
 	res, diags := CompareSignatures(c, g, link)
+	// 失败路径的 res 为 nil,符号计数须留在原 if 守卫内惰性求值。
 	if len(diags) == 0 {
-		t.Fatalf("CompareSignatures unexpectedly passed (%d symbols); want failure mentioning %v",
+		require.FailNowf(t, "CompareSignatures unexpectedly passed",
+			"CompareSignatures unexpectedly passed (%d symbols); want failure mentioning %v",
 			len(res.Symbols), wantTexts)
 	}
 	d := diags[0]
-	if d.Category != CatSignature {
-		t.Errorf("category = %q, want %q", d.Category, CatSignature)
-	}
-	if d.File != wantFile || (wantLine > 0 && d.Line != wantLine) {
-		t.Errorf("location = %s:%d, want %s:%d", d.File, d.Line, wantFile, wantLine)
-	}
-	if d.Symbol != wantSymbol {
-		t.Errorf("symbol = %q, want %q", d.Symbol, wantSymbol)
-	}
+	assert.Equal(t, CatSignature, d.Category, "category = %q, want %q", d.Category, CatSignature)
+	assert.False(t, d.File != wantFile || (wantLine > 0 && d.Line != wantLine),
+		"location = %s:%d, want %s:%d", d.File, d.Line, wantFile, wantLine)
+	assert.Equal(t, wantSymbol, d.Symbol, "symbol = %q, want %q", d.Symbol, wantSymbol)
 	joined := d.Expected + "\n" + d.Actual + "\n" + d.Message
 	for _, want := range wantTexts {
-		if !strings.Contains(joined, want) {
-			t.Errorf("diagnostic %s does not mention %q", d.String(), want)
-		}
+		assert.Contains(t, joined, want, "diagnostic %s does not mention %q", d.String(), want)
 	}
 	return d
 }
@@ -130,21 +126,18 @@ func TestApprovedParamNameMapping(t *testing.T) {
 		"mouse_method":     "mouseMethod",
 		"keyboard_method":  "keyboardMethod",
 	}
-	if len(approvedParamNames) != len(want) {
-		t.Fatalf("approved param names = %d entries, want %d", len(approvedParamNames), len(want))
-	}
+	require.Len(t, approvedParamNames, len(want),
+		"approved param names = %d entries, want %d", len(approvedParamNames), len(want))
 	for c, g := range want {
-		if got := approvedParamName(c); got != g {
-			t.Errorf("approvedParamName(%q) = %q, want %q", c, got, g)
-		}
+		got := approvedParamName(c)
+		assert.Equal(t, g, got, "approvedParamName(%q) = %q, want %q", c, got, g)
 	}
 	// 未批准重命名的名字必须原样同名。
 	for _, c := range []string{"handle", "path", "key", "value", "id", "params", "block",
 		"x", "y", "buff", "name", "level", "message", "msg", "address", "config",
 		"callback", "hwnd", "screencap", "details", "customArg"} {
-		if got := approvedParamName(c); got != c {
-			t.Errorf("approvedParamName(%q) = %q, want the identity mapping", c, got)
-		}
+		got := approvedParamName(c)
+		assert.Equal(t, c, got, "approvedParamName(%q) = %q, want the identity mapping", c, got)
 	}
 }
 
@@ -208,13 +201,10 @@ func TestPermittedGoTypesTable(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := permittedGoTypes(tc.symbol, tc.param, tc.ct())
-			if len(got) != len(tc.want) {
-				t.Fatalf("permittedGoTypes = %v, want %v", got, tc.want)
-			}
+			require.Len(t, got, len(tc.want), "permittedGoTypes = %v, want %v", got, tc.want)
 			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Fatalf("permittedGoTypes = %v, want %v (order is part of the frozen table)", got, tc.want)
-				}
+				require.Equal(t, tc.want[i], got[i],
+					"permittedGoTypes = %v, want %v (order is part of the frozen table)", got, tc.want)
 			}
 		})
 	}
@@ -230,32 +220,25 @@ func TestPermittedGoTypesTable(t *testing.T) {
 func TestCompareSignaturesPositiveRealNative(t *testing.T) {
 	c, g, link := mustSignatureBase(t)
 	res, diags := CompareSignatures(c, g, link)
-	if len(diags) != 0 {
-		t.Fatalf("CompareSignatures unexpectedly failed: %v", diags)
-	}
-	if len(res.Symbols) != len(link.Bound)+len(link.NonTarget) {
-		t.Fatalf("symbols = %d, want %d (one entry per binding, including non-target windowsOnly bindings)",
-			len(res.Symbols), len(link.Bound)+len(link.NonTarget))
-	}
+	require.Empty(t, diags, "CompareSignatures unexpectedly failed: %v", diags)
+	require.Len(t, res.Symbols, len(link.Bound)+len(link.NonTarget),
+		"symbols = %d, want %d (one entry per binding, including non-target windowsOnly bindings)",
+		len(res.Symbols), len(link.Bound)+len(link.NonTarget))
 	covered := map[string]bool{}
 	for i, e := range res.Symbols {
-		if i > 0 && e.Symbol <= res.Symbols[i-1].Symbol {
-			t.Fatalf("symbols must be strictly sorted: %q after %q", e.Symbol, res.Symbols[i-1].Symbol)
+		if i > 0 {
+			// res.Symbols[i-1] 须留在 i>0 守卫内,避免越界求值。
+			require.False(t, e.Symbol <= res.Symbols[i-1].Symbol,
+				"symbols must be strictly sorted: %q after %q", e.Symbol, res.Symbols[i-1].Symbol)
 		}
-		if covered[e.Symbol] {
-			t.Fatalf("symbol %s compared more than once", e.Symbol)
-		}
+		require.False(t, covered[e.Symbol], "symbol %s compared more than once", e.Symbol)
 		covered[e.Symbol] = true
 	}
 	for _, b := range link.Bound {
-		if !covered[b.Symbol] {
-			t.Errorf("bound symbol %s missing from the signature result", b.Symbol)
-		}
+		assert.True(t, covered[b.Symbol], "bound symbol %s missing from the signature result", b.Symbol)
 	}
 	for _, n := range link.NonTarget {
-		if !covered[n] {
-			t.Errorf("non-target windowsOnly binding %s missing from the signature result", n)
-		}
+		assert.True(t, covered[n], "non-target windowsOnly binding %s missing from the signature result", n)
 	}
 	entry := func(symbol string) SignatureEntry {
 		t.Helper()
@@ -264,145 +247,108 @@ func TestCompareSignaturesPositiveRealNative(t *testing.T) {
 				return e
 			}
 		}
-		t.Fatalf("signature entry %s not found", symbol)
+		require.FailNowf(t, "signature entry not found", "signature entry %s not found", symbol)
 		return SignatureEntry{}
 	}
 
 	// 图像缓冲区:C void* ↔ unsafe.Pointer;容量/返回 uint64。
 	gi := entry("AsstGetImage")
-	if gi.Field != "GetImage" || gi.GoFile != "api.go" || gi.GoLine <= 0 ||
-		gi.Header != FileAsstCaller || gi.CLine <= 0 {
-		t.Errorf("AsstGetImage record = %+v", gi)
-	}
-	if p := gi.Params[1]; p.Position != 2 || p.CName != "buff" || p.GoName != "buff" ||
-		p.CType != "void*" || p.GoType != "unsafe.Pointer" {
-		t.Errorf("AsstGetImage buff = %+v", p)
-	}
-	if p := gi.Params[2]; p.CName != "buff_size" || p.GoName != "buffSize" ||
-		p.CType != "uint64" || p.GoType != "uint64" {
-		t.Errorf("AsstGetImage buff_size = %+v", p)
-	}
-	if gi.Return != (SignatureReturn{CType: "uint64", GoType: "uint64"}) {
-		t.Errorf("AsstGetImage return = %+v", gi.Return)
-	}
+	assert.False(t, gi.Field != "GetImage" || gi.GoFile != "api.go" || gi.GoLine <= 0 ||
+		gi.Header != FileAsstCaller || gi.CLine <= 0, "AsstGetImage record = %+v", gi)
+	assert.False(t, gi.Params[1].Position != 2 || gi.Params[1].CName != "buff" || gi.Params[1].GoName != "buff" ||
+		gi.Params[1].CType != "void*" || gi.Params[1].GoType != "unsafe.Pointer",
+		"AsstGetImage buff = %+v", gi.Params[1])
+	assert.False(t, gi.Params[2].CName != "buff_size" || gi.Params[2].GoName != "buffSize" ||
+		gi.Params[2].CType != "uint64" || gi.Params[2].GoType != "uint64",
+		"AsstGetImage buff_size = %+v", gi.Params[2])
+	assert.Equal(t, SignatureReturn{CType: "uint64", GoType: "uint64"}, gi.Return,
+		"AsstGetImage return = %+v", gi.Return)
 	// 批准重命名:type→taskType;opaque handle 与 callback 函数指针。
 	at := entry("AsstAppendTask")
-	if p := at.Params[1]; p.CName != "type" || p.GoName != "taskType" ||
-		p.CType != "const char*" || p.GoType != "*byte" {
-		t.Errorf("AsstAppendTask type = %+v", p)
-	}
+	assert.False(t, at.Params[1].CName != "type" || at.Params[1].GoName != "taskType" ||
+		at.Params[1].CType != "const char*" || at.Params[1].GoType != "*byte",
+		"AsstAppendTask type = %+v", at.Params[1])
 	ce := entry("AsstCreateEx")
-	if p := ce.Params[0]; p.CName != "callback" || p.GoName != "callback" ||
-		p.GoType != "uintptr" || !strings.HasPrefix(p.CType, "void(") {
-		t.Errorf("AsstCreateEx callback = %+v", p)
-	}
-	if p := ce.Params[1]; p.CName != "custom_arg" || p.GoName != "customArg" ||
-		p.CType != "void*" || p.GoType != "uintptr" {
-		t.Errorf("AsstCreateEx custom_arg = %+v", p)
-	}
-	if ce.Return.GoType != "uintptr" {
-		t.Errorf("AsstCreateEx return = %+v", ce.Return)
-	}
+	assert.False(t, ce.Params[0].CName != "callback" || ce.Params[0].GoName != "callback" ||
+		ce.Params[0].GoType != "uintptr" || !strings.HasPrefix(ce.Params[0].CType, "void("),
+		"AsstCreateEx callback = %+v", ce.Params[0])
+	assert.False(t, ce.Params[1].CName != "custom_arg" || ce.Params[1].GoName != "customArg" ||
+		ce.Params[1].CType != "void*" || ce.Params[1].GoType != "uintptr",
+		"AsstCreateEx custom_arg = %+v", ce.Params[1])
+	assert.Equal(t, "uintptr", ce.Return.GoType, "AsstCreateEx return = %+v", ce.Return)
 	de := entry("AsstDestroy")
-	if p := de.Params[0]; p.CName != "handle" || p.GoName != "handle" ||
-		p.CType != "struct AsstExtAPI*" || p.GoType != "uintptr" {
-		t.Errorf("AsstDestroy handle = %+v", p)
-	}
+	assert.False(t, de.Params[0].CName != "handle" || de.Params[0].GoName != "handle" ||
+		de.Params[0].CType != "struct AsstExtAPI*" || de.Params[0].GoType != "uintptr",
+		"AsstDestroy handle = %+v", de.Params[0])
 	tl := entry("AsstGetTasksList")
-	if p := tl.Params[1]; p.CType != "int32*" || p.GoType != "*int32" {
-		t.Errorf("AsstGetTasksList buff = %+v", p)
-	}
+	assert.False(t, tl.Params[1].CType != "int32*" || tl.Params[1].GoType != "*int32",
+		"AsstGetTasksList buff = %+v", tl.Params[1])
 	// void 返回与 const char* 返回。
 	lg := entry("AsstLog")
-	if lg.Return != (SignatureReturn{CType: "void", GoType: ""}) {
-		t.Errorf("AsstLog return = %+v", lg.Return)
-	}
+	assert.Equal(t, SignatureReturn{CType: "void", GoType: ""}, lg.Return, "AsstLog return = %+v", lg.Return)
 	gv := entry("AsstGetVersion")
-	if gv.Return != (SignatureReturn{CType: "const char*", GoType: "*byte"}) {
-		t.Errorf("AsstGetVersion return = %+v", gv.Return)
-	}
+	assert.Equal(t, SignatureReturn{CType: "const char*", GoType: "*byte"}, gv.Return,
+		"AsstGetVersion return = %+v", gv.Return)
 
 	// callback 平台适配:unix 原样 void,windows 许可适配 uintptr;
 	// 参数逐位置核验(批准映射 details_json→detailsJSON、
 	// custom_arg→customArg)。
-	if len(res.Callbacks) != 2 {
-		t.Fatalf("callbacks = %d, want 2", len(res.Callbacks))
-	}
+	require.Len(t, res.Callbacks, 2, "callbacks = %d, want 2", len(res.Callbacks))
 	uc, wc := res.Callbacks[0], res.Callbacks[1]
-	if uc.Name != "unixCallback" || uc.GoFile != "callback_types.go" || uc.GoLine <= 0 {
-		t.Errorf("unixCallback record = %+v", uc)
-	}
+	assert.False(t, uc.Name != "unixCallback" || uc.GoFile != "callback_types.go" || uc.GoLine <= 0,
+		"unixCallback record = %+v", uc)
 	wantParams := []SignatureParam{
 		{Position: 1, CName: "msg", GoName: "msg", CType: "int32", GoType: "int32"},
 		{Position: 2, CName: "details_json", GoName: "detailsJSON", CType: "const char*", GoType: "*byte"},
 		{Position: 3, CName: "custom_arg", GoName: "customArg", CType: "void*", GoType: "uintptr"},
 	}
 	for i, w := range wantParams {
-		if uc.Params[i] != w {
-			t.Errorf("unixCallback param %d = %+v, want %+v", i, uc.Params[i], w)
-		}
-		if wc.Params[i] != w {
-			t.Errorf("windowsCallback param %d = %+v, want %+v", i, wc.Params[i], w)
-		}
+		assert.Equal(t, w, uc.Params[i], "unixCallback param %d = %+v, want %+v", i, uc.Params[i], w)
+		assert.Equal(t, w, wc.Params[i], "windowsCallback param %d = %+v, want %+v", i, wc.Params[i], w)
 	}
-	if uc.Return != (SignatureReturn{CType: "void", GoType: ""}) {
-		t.Errorf("unixCallback return = %+v", uc.Return)
-	}
-	if wc.Name != "windowsCallback" || wc.Return != (SignatureReturn{CType: "void", GoType: "uintptr"}) {
-		t.Errorf("windowsCallback record = %+v", wc)
-	}
+	assert.Equal(t, SignatureReturn{CType: "void", GoType: ""}, uc.Return,
+		"unixCallback return = %+v", uc.Return)
+	assert.False(t, wc.Name != "windowsCallback" || wc.Return != (SignatureReturn{CType: "void", GoType: "uintptr"}),
+		"windowsCallback record = %+v", wc)
 
 	// byte 别名接受:把 uint8 位置的拼写换成 byte 仍通过。
 	mutateField(t, g, "SetUserDir", func(f *GoField) { f.Result = "byte" })
 	mutateField(t, g, "AsyncClick", func(f *GoField) { f.Params[3].Type = "byte" })
-	if _, diags := CompareSignatures(c, g, link); len(diags) != 0 {
-		t.Fatalf("byte alias must be accepted: %v", diags)
-	}
+	_, diags = CompareSignatures(c, g, link)
+	require.Empty(t, diags, "byte alias must be accepted: %v", diags)
 
 	// linux 目标:窗口符号属 NonTarget 的 windowsOnly 绑定,同样被
 	// 逐参数核验并出现在核验记录里(hwnd 与 method 映射与 windows
 	// 目标一致)。
 	awl := entry("AsstAsyncAttachWindow")
-	if p := awl.Params[1]; p.CName != "hwnd" || p.GoName != "hwnd" ||
-		p.CType != "void*" || p.GoType != "uintptr" {
-		t.Errorf("linux AsstAsyncAttachWindow hwnd = %+v", p)
-	}
-	if p := awl.Params[2]; p.CName != "screencap_method" || p.GoName != "screencapMethod" ||
-		p.CType != "uint64" || p.GoType != "uint64" {
-		t.Errorf("linux AsstAsyncAttachWindow screencap_method = %+v", p)
-	}
+	assert.False(t, awl.Params[1].CName != "hwnd" || awl.Params[1].GoName != "hwnd" ||
+		awl.Params[1].CType != "void*" || awl.Params[1].GoType != "uintptr",
+		"linux AsstAsyncAttachWindow hwnd = %+v", awl.Params[1])
+	assert.False(t, awl.Params[2].CName != "screencap_method" || awl.Params[2].GoName != "screencapMethod" ||
+		awl.Params[2].CType != "uint64" || awl.Params[2].GoType != "uint64",
+		"linux AsstAsyncAttachWindow screencap_method = %+v", awl.Params[2])
 
 	// windows 目标:26 条绑定全部通过,窗口符号经 Bound 分类核验,
 	// hwnd/method 映射同上,不得重复报错或行为回退。
 	cw := mustExtract(t, positiveFiles(t), windowsTarget)
 	linkw, diags := LinkCGo(cw, g, windowsTarget)
-	if len(diags) != 0 {
-		t.Fatalf("windows LinkCGo unexpectedly failed: %v", diags)
-	}
+	require.Empty(t, diags, "windows LinkCGo unexpectedly failed: %v", diags)
 	resw, diags := CompareSignatures(cw, g, linkw)
-	if len(diags) != 0 {
-		t.Fatalf("windows CompareSignatures unexpectedly failed: %v", diags)
-	}
-	if len(resw.Symbols) != 28 {
-		t.Fatalf("windows symbols = %d, want 28", len(resw.Symbols))
-	}
+	require.Empty(t, diags, "windows CompareSignatures unexpectedly failed: %v", diags)
+	require.Len(t, resw.Symbols, 28, "windows symbols = %d, want 28", len(resw.Symbols))
 	var aw *SignatureEntry
 	for i := range resw.Symbols {
 		if resw.Symbols[i].Symbol == "AsstAsyncAttachWindow" {
 			aw = &resw.Symbols[i]
 		}
 	}
-	if aw == nil {
-		t.Fatal("windows signatures must cover AsstAsyncAttachWindow")
-	}
-	if p := aw.Params[1]; p.CName != "hwnd" || p.GoName != "hwnd" ||
-		p.CType != "void*" || p.GoType != "uintptr" {
-		t.Errorf("AsstAsyncAttachWindow hwnd = %+v", p)
-	}
-	if p := aw.Params[2]; p.CName != "screencap_method" || p.GoName != "screencapMethod" ||
-		p.CType != "uint64" || p.GoType != "uint64" {
-		t.Errorf("AsstAsyncAttachWindow screencap_method = %+v", p)
-	}
+	require.NotNil(t, aw, "windows signatures must cover AsstAsyncAttachWindow")
+	assert.False(t, aw.Params[1].CName != "hwnd" || aw.Params[1].GoName != "hwnd" ||
+		aw.Params[1].CType != "void*" || aw.Params[1].GoType != "uintptr",
+		"AsstAsyncAttachWindow hwnd = %+v", aw.Params[1])
+	assert.False(t, aw.Params[2].CName != "screencap_method" || aw.Params[2].GoName != "screencapMethod" ||
+		aw.Params[2].CType != "uint64" || aw.Params[2].GoType != "uint64",
+		"AsstAsyncAttachWindow screencap_method = %+v", aw.Params[2])
 }
 
 // ---- 失败向量:Go 侧改动定位到 Go 声明,C 侧定位到 C 声明 ----
@@ -506,9 +452,7 @@ func TestCompareSignatureGoSideFailures(t *testing.T) {
 		c := mustExtract(t, positiveFiles(t), windowsTarget)
 		g := mustExtractGo(t, copyRealNative(t))
 		link, diags := LinkCGo(c, g, windowsTarget)
-		if len(diags) != 0 {
-			t.Fatalf("LinkCGo unexpectedly failed: %v", diags)
-		}
+		require.Empty(t, diags, "LinkCGo unexpectedly failed: %v", diags)
 		mutateField(t, g, "AsyncAttachWindow", func(f *GoField) {
 			f.Params[2].Name, f.Params[3].Name = f.Params[3].Name, f.Params[2].Name
 		})
@@ -627,10 +571,9 @@ func TestCompareSignatureCharPointeeConstFailures(t *testing.T) {
 			cf := findFunction(t, c.Functions, tc.symbol)
 			d := mustSigFail(t, c, g, link, FileAsstCaller, cf.Line, tc.symbol,
 				tc.wantExpected, tc.wantActual, "char pointee constness")
-			if d.Expected != tc.wantExpected || d.Actual != tc.wantActual {
-				t.Errorf("expected/actual = %q/%q, want %q/%q",
-					d.Expected, d.Actual, tc.wantExpected, tc.wantActual)
-			}
+			assert.False(t, d.Expected != tc.wantExpected || d.Actual != tc.wantActual,
+				"expected/actual = %q/%q, want %q/%q",
+				d.Expected, d.Actual, tc.wantExpected, tc.wantActual)
 		})
 	}
 
@@ -642,15 +585,12 @@ func TestCompareSignatureCharPointeeConstFailures(t *testing.T) {
 				td = &c.Typedefs[i]
 			}
 		}
-		if td == nil {
-			t.Fatal("AsstApiCallback typedef missing from the c extraction")
-		}
+		require.NotNil(t, td, "AsstApiCallback typedef missing from the c extraction")
 		td.Type.Sig.Params[1].Type.Pointee.Const = false
 		d := mustSigFail(t, c, g, link, FileAsstCaller, td.Line, "unixCallback",
 			"const char*", "char*", "parameter 2 (details_json)", "char pointee constness")
-		if d.Expected != "const char*" || d.Actual != "char*" {
-			t.Errorf("expected/actual = %q/%q, want %q/%q", d.Expected, d.Actual, "const char*", "char*")
-		}
+		assert.False(t, d.Expected != "const char*" || d.Actual != "char*",
+			"expected/actual = %q/%q, want %q/%q", d.Expected, d.Actual, "const char*", "char*")
 	})
 }
 
@@ -728,12 +668,13 @@ func TestCompareSignatureNilInputs(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			res, diags := fn()
+			// 失败路径的 res 为 nil,符号计数须留在原 if 守卫内惰性求值。
 			if len(diags) == 0 {
-				t.Fatalf("%s unexpectedly passed with %d symbols", name, len(res.Symbols))
+				require.FailNowf(t, "unexpectedly passed",
+					"%s unexpectedly passed with %d symbols", name, len(res.Symbols))
 			}
-			if diags[0].Category != CatSignature {
-				t.Errorf("category = %q, want %q", diags[0].Category, CatSignature)
-			}
+			assert.Equal(t, CatSignature, diags[0].Category,
+				"category = %q, want %q", diags[0].Category, CatSignature)
 		})
 	}
 }
@@ -748,7 +689,7 @@ func reportSignatureSymbol(t *testing.T, r reportJSON, symbol string) signatureS
 			return s
 		}
 	}
-	t.Fatalf("signature symbol %s missing from the report", symbol)
+	require.FailNowf(t, "signature symbol missing", "signature symbol %s missing from the report", symbol)
 	return signatureSymbolJSON{}
 }
 
@@ -760,7 +701,7 @@ func reportSignatureCallback(t *testing.T, r reportJSON, name string) signatureC
 			return c
 		}
 	}
-	t.Fatalf("signature callback %s missing from the report", name)
+	require.FailNowf(t, "signature callback missing", "signature callback %s missing from the report", name)
 	return signatureCallbackJSON{}
 }
 
@@ -770,9 +711,7 @@ func assertReportParam(t *testing.T, owner string, p signatureParamJSON,
 	t.Helper()
 	want := signatureParamJSON{Position: position, CName: cName, GoName: goName,
 		CType: cType, GoType: goType}
-	if p != want {
-		t.Errorf("%s param %d = %+v, want %+v", owner, position, p, want)
-	}
+	assert.Equal(t, want, p, "%s param %d = %+v, want %+v", owner, position, p, want)
 }
 
 // TestRealNativeSignatureBaseline 通过完整命令入口核验成功报告的
@@ -790,47 +729,39 @@ func TestRealNativeSignatureBaseline(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		code := Run([]string{"--goos", goos, "--goarch", "amd64",
 			"--c-input", cInput, "--go-root", goRoot}, &stdout, &stderr)
-		if code != 0 {
-			t.Fatalf("%s run exited %d:\n%s", goos, code, stderr.String())
-		}
+		require.Equal(t, 0, code, "%s run exited %d:\n%s", goos, code, stderr.String())
 		return stdout.String()
 	}
 	parse := func(out, goos string) reportJSON {
 		t.Helper()
 		var r reportJSON
-		if err := json.Unmarshal([]byte(out), &r); err != nil {
-			t.Fatalf("%s stdout is not valid JSON: %v", goos, err)
-		}
+		require.NoError(t, json.Unmarshal([]byte(out), &r), "%s stdout is not valid JSON", goos)
 		return r
 	}
 
 	linuxOut := run("linux")
-	if again := run("linux"); again != linuxOut {
-		t.Error("success output including the signatures section must be byte-identical across runs")
-	}
+	again := run("linux")
+	assert.Equal(t, linuxOut, again,
+		"success output including the signatures section must be byte-identical across runs")
 	linuxRep := parse(linuxOut, "linux")
-	if len(linuxRep.Signatures.Symbols) != 28 {
-		t.Fatalf("linux signature symbols = %d, want 28 (all bindings, including the non-target windowsOnly binding)", len(linuxRep.Signatures.Symbols))
-	}
+	require.Len(t, linuxRep.Signatures.Symbols, 28,
+		"linux signature symbols = %d, want 28 (all bindings, including the non-target windowsOnly binding)",
+		len(linuxRep.Signatures.Symbols))
 	for i := 1; i < len(linuxRep.Signatures.Symbols); i++ {
-		if linuxRep.Signatures.Symbols[i-1].Symbol >= linuxRep.Signatures.Symbols[i].Symbol {
-			t.Errorf("signature symbols must be strictly sorted: %q >= %q",
-				linuxRep.Signatures.Symbols[i-1].Symbol, linuxRep.Signatures.Symbols[i].Symbol)
-		}
+		assert.False(t, linuxRep.Signatures.Symbols[i-1].Symbol >= linuxRep.Signatures.Symbols[i].Symbol,
+			"signature symbols must be strictly sorted: %q >= %q",
+			linuxRep.Signatures.Symbols[i-1].Symbol, linuxRep.Signatures.Symbols[i].Symbol)
 	}
 	gi := reportSignatureSymbol(t, linuxRep, "AsstGetImage")
 	assertReportParam(t, "AsstGetImage", gi.Params[1], 2, "buff", "buff", "void*", "unsafe.Pointer")
 	assertReportParam(t, "AsstGetImage", gi.Params[2], 3, "buff_size", "buffSize", "uint64", "uint64")
-	if gi.Return != (signatureReturnJSON{CType: "uint64", GoType: "uint64"}) {
-		t.Errorf("AsstGetImage return = %+v", gi.Return)
-	}
-	if gi.CHeader != FileAsstCaller || gi.CLine <= 0 || gi.GoFile != "api.go" || gi.GoLine <= 0 {
-		t.Errorf("AsstGetImage locations = %+v", gi)
-	}
+	assert.Equal(t, signatureReturnJSON{CType: "uint64", GoType: "uint64"}, gi.Return,
+		"AsstGetImage return = %+v", gi.Return)
+	assert.False(t, gi.CHeader != FileAsstCaller || gi.CLine <= 0 || gi.GoFile != "api.go" || gi.GoLine <= 0,
+		"AsstGetImage locations = %+v", gi)
 	lg := reportSignatureSymbol(t, linuxRep, "AsstLog")
-	if lg.Return != (signatureReturnJSON{CType: "void", GoType: ""}) {
-		t.Errorf("AsstLog return = %+v", lg.Return)
-	}
+	assert.Equal(t, signatureReturnJSON{CType: "void", GoType: ""}, lg.Return,
+		"AsstLog return = %+v", lg.Return)
 
 	// linux 目标:窗口符号属 NonTarget 的 windowsOnly 绑定,同样被
 	// 逐参数核验并出现在核验记录里。
@@ -839,24 +770,20 @@ func TestRealNativeSignatureBaseline(t *testing.T) {
 	assertReportParam(t, "AsstAsyncAttachWindow", awl.Params[2], 3,
 		"screencap_method", "screencapMethod", "uint64", "uint64")
 
-	if len(linuxRep.Signatures.Callbacks) != 2 {
-		t.Fatalf("callbacks = %d, want 2", len(linuxRep.Signatures.Callbacks))
-	}
+	require.Len(t, linuxRep.Signatures.Callbacks, 2,
+		"callbacks = %d, want 2", len(linuxRep.Signatures.Callbacks))
 	uc := reportSignatureCallback(t, linuxRep, "unixCallback")
 	assertReportParam(t, "unixCallback", uc.Params[1], 2, "details_json", "detailsJSON", "const char*", "*byte")
 	assertReportParam(t, "unixCallback", uc.Params[2], 3, "custom_arg", "customArg", "void*", "uintptr")
-	if uc.Return != (signatureReturnJSON{CType: "void", GoType: ""}) {
-		t.Errorf("unixCallback return = %+v", uc.Return)
-	}
+	assert.Equal(t, signatureReturnJSON{CType: "void", GoType: ""}, uc.Return,
+		"unixCallback return = %+v", uc.Return)
 	wc := reportSignatureCallback(t, linuxRep, "windowsCallback")
-	if wc.Return != (signatureReturnJSON{CType: "void", GoType: "uintptr"}) {
-		t.Errorf("windowsCallback return = %+v", wc.Return)
-	}
+	assert.Equal(t, signatureReturnJSON{CType: "void", GoType: "uintptr"}, wc.Return,
+		"windowsCallback return = %+v", wc.Return)
 
 	winRep := parse(run("windows"), "windows")
-	if len(winRep.Signatures.Symbols) != 28 {
-		t.Fatalf("windows signature symbols = %d, want 28", len(winRep.Signatures.Symbols))
-	}
+	require.Len(t, winRep.Signatures.Symbols, 28,
+		"windows signature symbols = %d, want 28", len(winRep.Signatures.Symbols))
 	aw := reportSignatureSymbol(t, winRep, "AsstAsyncAttachWindow")
 	assertReportParam(t, "AsstAsyncAttachWindow", aw.Params[1], 2, "hwnd", "hwnd", "void*", "uintptr")
 	assertReportParam(t, "AsstAsyncAttachWindow", aw.Params[2], 3,
@@ -918,23 +845,15 @@ func TestRealNativeSignatureVariantsFailThroughCLI(t *testing.T) {
 				"--goos", "linux", "--goarch", "amd64",
 				"--c-input", cInput, "--go-root", goRoot,
 			}, &stdout, &stderr)
-			if code == 0 {
-				t.Fatalf("mutated variant unexpectedly passed:\n%s", stdout.String())
-			}
-			if stdout.Len() != 0 || strings.Contains(stdout.String()+stderr.String(), "PASS") {
-				t.Errorf("failure output must stay on stderr without PASS:\nstdout=%q stderr=%q",
-					stdout.String(), stderr.String())
-			}
+			require.NotEqual(t, 0, code, "mutated variant unexpectedly passed:\n%s", stdout.String())
+			assert.False(t, stdout.Len() != 0 || strings.Contains(stdout.String()+stderr.String(), "PASS"),
+				"failure output must stay on stderr without PASS:\nstdout=%q stderr=%q",
+				stdout.String(), stderr.String())
 			errOut := stderr.String()
-			if !strings.Contains(errOut, CatSignature) {
-				t.Errorf("stderr must carry the %q category:\n%s", CatSignature, errOut)
-			}
-			if !strings.Contains(errOut, tc.wantLoc) {
-				t.Errorf("stderr must locate %q:\n%s", tc.wantLoc, errOut)
-			}
-			if !strings.Contains(errOut, testProfileID) || !strings.Contains(errOut, "(linux, amd64)") {
-				t.Errorf("stderr must print the profile and target header:\n%s", errOut)
-			}
+			assert.Contains(t, errOut, CatSignature, "stderr must carry the %q category:\n%s", CatSignature, errOut)
+			assert.Contains(t, errOut, tc.wantLoc, "stderr must locate %q:\n%s", tc.wantLoc, errOut)
+			assert.True(t, strings.Contains(errOut, testProfileID) && strings.Contains(errOut, "(linux, amd64)"),
+				"stderr must print the profile and target header:\n%s", errOut)
 		})
 	}
 }
@@ -965,12 +884,9 @@ func TestCallbackCVariantsRejectedAtCSyntax(t *testing.T) {
 			dir, _ := writeCInput(t, files)
 			input := testLoadCInput(t, dir)
 			_, diags := ExtractC(input, linuxTarget)
-			if len(diags) == 0 {
-				t.Fatal("ExtractC unexpectedly passed; the c callback variant must be rejected")
-			}
-			if diags[0].Category != CatCSyntax {
-				t.Errorf("category = %q, want %q", diags[0].Category, CatCSyntax)
-			}
+			require.NotEmpty(t, diags, "ExtractC unexpectedly passed; the c callback variant must be rejected")
+			assert.Equal(t, CatCSyntax, diags[0].Category,
+				"category = %q, want %q", diags[0].Category, CatCSyntax)
 		})
 	}
 }
