@@ -4,11 +4,11 @@ package main
 import (
 	"os"
 
-	"github.com/dongwlin/rhodeck/apps/cli/internal/cli"
+	"github.com/dongwlin/rhodeck/apps/cli/internal/app"
 )
 
 var version = "dev"
 
 func main() {
-	os.Exit(cli.Run(version))
+	os.Exit(app.Run(version))
 }

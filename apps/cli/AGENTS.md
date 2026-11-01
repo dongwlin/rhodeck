@@ -2,7 +2,7 @@
 
 ## 维护边界
 
-- `main.go` 只保留版本注入与入口委托；实现和测试放在 `internal/cli`。`Run` 处理进程信号，`runCLI` 接收显式参数、context 和标准流。运行状态、任务关联、停止与记录恢复留在 control，参数编译和业务结果解释留在相应 adapter。
+- `main.go` 只保留版本注入与入口委托；实现和测试放在 `internal/app`。`Run` 处理进程信号，`runCLI` 接收显式参数、context 和标准流。运行状态、任务关联、停止与记录恢复留在 control，参数编译和业务结果解释留在相应 adapter。
 - 计划读取复用 `control.DecodePlan`；`run` 与 `dry-run` 共用适配器注册表和 `control.PreparePlan`。前置输入校验必须早于目录创建、加锁和 worker 启动，不能在 CLI 另建计划或适配器校验规则。
 - 适配器仅由精确的 `task.adapter` 选择，不能按熟悉的任务类型自动启用。修改 `cliAdapterSpecs` 时同步输入说明、策略选择和未验证条件；help 与 capabilities 的名称、版本从 `Descriptor()` 派生，逐任务 `objective_policy` 从准备结果读取。
 - 保持命令的副作用边界：help、version、capabilities 不检查安装；dry-run（含 `run --dry-run`）不创建目录、加锁或启动 worker；doctor 不准备适配器或提交设备动作，但可以初始化 Core、创建目录、加锁与恢复记录。路径检查须保留“ADB 不可用但仍可诊断 Core”的分支。

@@ -9,7 +9,7 @@ Rhodeck 是一个 Go module，提供 MaaCore 动态绑定、独立 Core worker�
 | 路径 | 职责 |
 | --- | --- |
 | `packages/maa-go/` | 包名 `maa`；公开 Go API、输入校验、生命周期、事件与异步操作；`internal/native/` 封装 loader、ABI 和 callback |
-| `apps/core-worker/` | 可执行程序；入口只有 `main.go`，实现位于 `internal/worker`，在子进程内持有绑定，把命令和观察转换为 JSONL |
+| `apps/core-worker/` | 可执行程序；入口只有 `main.go`，实现位于 `internal/app`，在子进程内持有绑定，把命令和观察转换为 JSONL |
 | `apps/cli/` | 独立 `rhodeck-cli`；调用 control 服务，提供通用任务、dry-run 和无设备诊断 |
 | `packages/control/` | 应用运行时；运行身份、任务结果、停止、目录互斥与最小执行记录 |
 | `packages/control/adapters/` | 按任务分包的显式类型适配器；严格输入编译、目标选择与回调结果解释 |

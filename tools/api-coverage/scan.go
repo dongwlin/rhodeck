@@ -60,7 +60,7 @@ const (
 	bindingDir      = "packages/maa-go"
 	nativeDir       = "packages/maa-go/internal/native"
 	protocolDir     = "packages/control/worker/protocol"
-	workerDir       = "apps/core-worker/internal/worker"
+	workerDir       = "apps/core-worker/internal/app"
 	clientDir       = "packages/control/worker"
 	entryRecvTypes  = "Runtime,Instance,Operation"
 	capabilityRecv  = "Capabilities"

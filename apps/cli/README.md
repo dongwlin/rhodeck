@@ -7,7 +7,7 @@ desktop host. Only the worker loads MaaCore. The caller supplies the worker,
 Core library and its native dependencies, resources, ADB and writable directories.
 
 `main.go` is the executable entry point. Command handling, input parsing, path
-checks, adapter registration, JSON output and exit codes live in `internal/cli`,
+checks, adapter registration, JSON output and exit codes live in `internal/app`,
 alongside their tests.
 
 Build the two executables from the repository root:
