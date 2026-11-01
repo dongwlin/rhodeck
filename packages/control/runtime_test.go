@@ -19,6 +19,9 @@ import (
 
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("RHODECK_TEST_CONTROL_WORKER"); mode != "" {
+		if mode == "copilot-preparation" {
+			os.Exit(copilotPreparationWorkerHelper())
+		}
 		os.Exit(controlWorkerHelper(mode))
 	}
 	os.Exit(m.Run())

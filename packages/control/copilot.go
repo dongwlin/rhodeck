@@ -36,8 +36,10 @@ type copilotEntry struct {
 // allows 1. Unknown fields, nulls, duplicate keys at any depth and input or
 // compiled JSON over 64 KiB are rejected with ErrInvalidPlan.
 //
-// Preparation only compiles input and uses ObjectiveNone. It does not interpret
-// task-chain completion as a clear, or establish any device-readiness claim.
+// Single-file and loop preparation uses ObjectiveNone. Lists use ObjectiveAll
+// with one target per compiled entry ID. Only explicitly associated settlement
+// nodes establish a clear or failure; chain completion does not. Preparation
+// makes no device-readiness claim. See typed-adapters.md for the result scope.
 func NewCopilotAdapter() TaskAdapter { return copilotAdapter{} }
 
 type copilotAdapter struct{}
@@ -50,11 +52,18 @@ func (copilotAdapter) Prepare(task Task) (PreparedTask, error) {
 	if task.Type != copilotTaskType {
 		return PreparedTask{}, copilotReject("adapter requires Core type %q", copilotTaskType)
 	}
-	params, _, err := compileCopilot(task.Params)
+	params, entries, err := compileCopilot(task.Params)
 	if err != nil {
 		return PreparedTask{}, err
 	}
-	return PreparedTask{Params: params, Policy: ObjectiveNone}, nil
+	if len(entries) == 0 {
+		return PreparedTask{Params: params, Policy: ObjectiveNone}, nil
+	}
+	targets := make([]string, len(entries))
+	for i, entry := range entries {
+		targets[i] = copilotTargetID(entry.ID)
+	}
+	return PreparedTask{Params: params, Policy: ObjectiveAll, Targets: targets, Reducer: newCopilotReducer(entries)}, nil
 }
 
 func copilotReject(format string, args ...any) error {

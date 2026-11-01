@@ -12,11 +12,13 @@ launch workers, load native code or connect devices. Each adapter must implement
 deterministic preparation without side effects, reject incompatible task types,
 and create a fresh reducer for each task with interpreted targets. Input-only
 adapters return no reducer. Adapters may be prepared concurrently.
-The package bundles two strict adapters: `NewOperProgressAdapter`
-(`oper_progress`, version 1) and `NewSwitchThemeAdapter` (`switch_theme`,
-version 1). The [standalone CLI](../../apps/cli/README.md) registers both
+The package bundles three strict adapters: `NewOperProgressAdapter`
+(`oper_progress`, version 1), `NewSwitchThemeAdapter` (`switch_theme`,
+version 1) and `NewCopilotAdapter` (`copilot`, version 1). The
+[standalone CLI](../../apps/cli/README.md) currently registers OperProgress and SwitchTheme
 explicitly for `run` and `dry-run`; a task still selects one only through
-`Task.Adapter`. Neither adapter has authorized device acceptance. The CLI
+`Task.Adapter`. Copilot is available to callers that register it with control;
+the CLI does not register it yet. These adapters have no authorized device acceptance. The CLI
 capability report keeps the reviewed MAA source revision, the rolling Core
 version policy, the uninspected installation and the missing device acceptance
 separate. Actual versions and digests come from doctor/run/record; the host
@@ -61,6 +63,92 @@ Unknown fields, explicit nulls, duplicate keys at any depth, unpaired UTF-16
 surrogate escapes and duplicate candidates are rejected with `ErrInvalidPlan`.
 See `ExampleNewSwitchThemeAdapter` for a deterministic preview.
 
+## Copilot input and stage results
+
+Select `adapter: {"name":"copilot","version":1}` with Core type `Copilot`.
+The strict input accepts exactly one source:
+
+```json
+{"copilot_list":[{"filename":"job.json"},{"filename":"job.json","is_raid":true}],"formation":true,"operbox_data_path":"box.json","user_additional":[{"name":"Example","skill":3}]}
+```
+
+| Field | Accepted values |
+| --- | --- |
+| `filename` | Nonempty path string, mutually exclusive with `copilot_list` |
+| `copilot_list` | 1–128 objects with required nonempty `filename`, optional unique signed 32-bit integer `id`, string `nav_name_override` (may be empty), boolean `is_raid` (default false) |
+| `formation` | Boolean, default false |
+| `formation_index` | Integer 0–4; 0 leaves selection unspecified |
+| `add_trust`, `ignore_requirements`, `use_sanity_potion` | Boolean |
+| `support_unit_usage` | Integer 0–3; 2 requires `support_unit_name` |
+| `support_unit_name` | Optional nonempty string |
+| `loop_times` | Integer 1–2147483647; lists only allow omission or 1 |
+| `operbox_data_path` | Optional nonempty path string; requires `formation=true` |
+| `user_additional` | Array of objects with unique nonempty `name` and required integer `skill` 0–3; requires `formation=true` |
+
+Strings must be valid UTF-8 without NUL; unpaired surrogate escapes are rejected.
+Unknown fields, explicit nulls, duplicate keys at any depth and input or compiled
+JSON over 64 KiB are rejected. `is_paradox` and list-entry `stage_name` are not
+supported; use `nav_name_override` for a navigation override. Omitted options
+other than `formation`, `id` and `is_raid` retain Core defaults. Preparation
+does not open files, check their contents or existence, normalize paths or fetch
+network jobs. It validates structure, not whether the installation or device
+can execute the requested job.
+
+Compilation first reserves all explicit IDs, then assigns omitted IDs from
+zero in list order while skipping reserved values. A filename is a source,
+not an identity: normal/raid variants and repeated executions of the same file
+remain separate entries. Each list target is `copilot:<compiled id>` and uses
+policy `all`. Single-file inputs, including loops, use `none` and produce no
+typed results or typed events. Their chain success does not establish a clear
+or a safe device handoff; battle actions may still be in progress.
+
+For lists, `CopilotListLoadTaskFileSuccess` extra-info from `MultiCopilotTask`
+must name the exact compiled `details.id` and matching `details.file_name`.
+It only establishes an entry scope. On Windows the association accounts for
+Core converting backslashes to slashes; it does not clean paths, fold case or
+change submitted params. A `MultiCopilotTask` start or unusable load boundary
+clears the previous scope. Re-entering an entry whose scope was left is not
+interpreted as another execution. Callbacks without an explicit usable scope
+leave targets unobserved, including installations that omit the entry ID.
+
+Core can emit Box prechecks and file/parameter rejection diagnostics while
+appending tasks, before it allocates a task ID. The runtime ignores only
+recognized preparation diagnostics with explicit `taskid=0` and exact Copilot
+chain, subtask and diagnostic identifiers; they create no typed facts or entry
+scope. Append acceptance or rejection remains authoritative for that phase.
+Unknown diagnostics, missing IDs and unassociated settlement callbacks retain
+the normal conservative error handling. Duplicate keys are never exempted.
+
+Only `SubTaskStart` from the same accepted Core task, `taskchain=Copilot`,
+`subtask=ProcessTask` and exact `first=["Copilot@WaitUntilEndOfAction"]`
+can establish these facts within that scope:
+
+| Exact `details.task` | Outcome / code |
+| --- | --- |
+| `StageDrops-Stars-3` | `achieved` / `three_star_clear` |
+| `StageDrops-Stars-Adverse` | `achieved` / `adverse_clear` |
+| `FightMissionFailed` | `failed` / `mission_failed` |
+
+Core strips the namespace from `details.task`; prefixed or suffix lookalikes
+are not matched. The adverse marker is also mapped to three stars by Core;
+there is no supported non-three-star clear fact. Typed details expose only
+`entry_id`, zero-based `entry_index` and `is_raid`, without file paths or raw
+recognition data. Loading, `CopilotAction`, acceptance and chain completion
+do not manufacture clears. Missing evidence remains `typed_incomplete` even
+after chain success. Identical facts are idempotent; contradictory facts
+preserve the first fact and trigger `typed_conflict`.
+
+This scope relies on Core's synchronous list execution and FIFO callbacks,
+reviewed at upstream revision `9b75f9f7b103079458414c6e20216c8c531d6987`;
+it does not pin or guarantee compatibility with a Core version. Local tests
+cover preparation, interpretation, lifecycle faults and durable recovery.
+Actual installation callbacks and device behavior remain unverified. Result
+integration can describe lists as `stage_results` with policy `all`, and
+single-file/loop inputs as `none`; the CLI capability report has not added
+Copilot yet.
+
+## Preparation and policies
+
 `PreparedTask.Params` is the final Core object; `PreparedTask.Targets` contains
 stable, unique target IDs. `PreparedTask.Policy` selects `ObjectiveAll` (`all`,
 also the default when omitted), `ObjectiveAny` (`any`) or `ObjectiveNone`
@@ -75,8 +163,8 @@ return `PreparedTask{Params: compiled, Policy: ObjectiveNone}`.
 `TypedResult.Policy`, so each typed event carries its own aggregation contract.
 Input-only tasks carry `objective_policy: "none"` and omit `typed`; they publish
 no typed events. Their run outcome follows native chain facts and makes no
-business-objective claim. Raw task results omit both fields. The two bundled
-adapters continue to use `all`. Policy selection belongs to the adapter; it is
+business-objective claim. Raw task results omit both fields. OperProgress and
+SwitchTheme use `all`. Policy selection belongs to the adapter; it is
 not an additional caller-controlled plan field.
 
 `PreparedPlan.Plan` contains the compiled parameters.

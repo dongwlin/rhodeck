@@ -33,7 +33,14 @@ func TestCopilotPrepareAcceptsStrictInputs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !validObject(prepared.Params, MaxAdapterParamsBytes) || prepared.Policy != ObjectiveNone || len(prepared.Targets) != 0 || prepared.Reducer != nil {
+			if !validObject(prepared.Params, MaxAdapterParamsBytes) {
+				t.Fatalf("compiled params are invalid: %s", prepared.Params)
+			}
+			if strings.Contains(params, `"copilot_list"`) {
+				if prepared.Policy != ObjectiveAll || len(prepared.Targets) == 0 || prepared.Reducer == nil {
+					t.Fatalf("list preparation = %+v", prepared)
+				}
+			} else if prepared.Policy != ObjectiveNone || len(prepared.Targets) != 0 || prepared.Reducer != nil {
 				t.Fatalf("input-only preparation = %+v", prepared)
 			}
 		})
