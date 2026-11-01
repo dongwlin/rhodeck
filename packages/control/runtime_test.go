@@ -33,7 +33,7 @@ func controlWorkerHelper(mode string) int {
 	// Tests that verify process reaping record the fixture PID before any other
 	// work; a missing marker is a fixture failure, not a pass.
 	if path := os.Getenv("RHODECK_TEST_CONTROL_WORKER_PID"); path != "" {
-		if err := os.WriteFile(path, []byte(fmt.Sprintf("%d", os.Getpid())), 0600); err != nil {
+		if err := os.WriteFile(path, fmt.Appendf(nil, "%d", os.Getpid()), 0600); err != nil {
 			return 7
 		}
 	}

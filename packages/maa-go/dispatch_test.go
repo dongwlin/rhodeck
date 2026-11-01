@@ -330,7 +330,7 @@ func TestEventDispatchBoundedWhenConsumerStopsReading(t *testing.T) {
 
 	const total = 12
 	for i := 0; i < total; i++ {
-		enqueue(t, d, MessageID(210), []byte(fmt.Sprintf(`{"n":%d}`, i)))
+		enqueue(t, d, MessageID(210), fmt.Appendf(nil, `{"n":%d}`, i))
 	}
 	// 入口与投递全程在主 goroutine 内完成:消费者停读既不阻塞入口也
 	// 不阻塞分发器;若实现违反有界性,mustDrain 在防挂死上限处失败,
@@ -381,7 +381,7 @@ func TestEventDispatchLedgerReconcilesAfterConsumerReads(t *testing.T) {
 
 		// 前 2 条装满公开缓冲,随后被消费者读走。
 		for i := 0; i < 2; i++ {
-			enqueue(t, d, MessageID(240), []byte(fmt.Sprintf(`{"i":%d}`, i)))
+			enqueue(t, d, MessageID(240), fmt.Appendf(nil, `{"i":%d}`, i))
 		}
 		for i := 0; i < 2; i++ {
 			ev := mustReadEvent(t, d.events())
@@ -392,7 +392,7 @@ func TestEventDispatchLedgerReconcilesAfterConsumerReads(t *testing.T) {
 		// 缓冲已空;账本仍保守计费这 2 条,直到下次投递前对账回收。
 		// 续投 2 条必须全部成功:对账删除最老 2 条长度记录并扣减字节。
 		for i := 2; i < 4; i++ {
-			enqueue(t, d, MessageID(240), []byte(fmt.Sprintf(`{"i":%d}`, i)))
+			enqueue(t, d, MessageID(240), fmt.Appendf(nil, `{"i":%d}`, i))
 		}
 		closeAndDrain(t, d)
 
@@ -846,7 +846,7 @@ func TestEventDispatchDrainAndTerminate(t *testing.T) {
 
 		payloads := make([][]byte, 4)
 		for i := range payloads {
-			payloads[i] = []byte(fmt.Sprintf(`{"i":%d}`, i))
+			payloads[i] = fmt.Appendf(nil, `{"i":%d}`, i)
 		}
 		for i, p := range payloads {
 			enqueue(t, d, MessageID(230)+MessageID(i), p)
@@ -995,7 +995,7 @@ func TestEventDispatchSlotDiscipline(t *testing.T) {
 		d, s := newTestDispatcher(t, nil, generousBudgets())
 		d.start()
 		for i := 0; i < 3; i++ {
-			enqueue(t, d, MessageID(302)+MessageID(i), []byte(fmt.Sprintf(`{"i":%d}`, i)))
+			enqueue(t, d, MessageID(302)+MessageID(i), fmt.Appendf(nil, `{"i":%d}`, i))
 		}
 		for i := 0; i < 3; i++ {
 			ev := mustReadEvent(t, d.events())
@@ -1186,7 +1186,7 @@ func TestEventDispatchConcurrentAdmitAndConsume(t *testing.T) {
 		go func(w int) {
 			defer wg.Done()
 			for i := 0; i < perWorker; i++ {
-				payload := []byte(fmt.Sprintf(`{"w":%d,"i":%d}`, w, i))
+				payload := fmt.Appendf(nil, `{"w":%d,"i":%d}`, w, i)
 				slot, err := d.admit(MessageID(400)+MessageID(w), len(payload))
 				if err != nil {
 					t.Errorf("concurrent admission must not fail: %v", err)

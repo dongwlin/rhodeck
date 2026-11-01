@@ -601,7 +601,7 @@ func TestControlledNativeEventFloodIsBounded(t *testing.T) {
 			if callback.MessageID != 777 || callback.CoreSequence != uint64(i+1) {
 				t.Fatalf("flood event %d: %+v", i, callback)
 			}
-			if !bytes.Contains(callback.JSON, []byte(fmt.Sprintf(`"n":%d`, i+1))) || !bytes.Contains(callback.JSON, []byte(asyncfxBig)) {
+			if !bytes.Contains(callback.JSON, fmt.Appendf(nil, `"n":%d`, i+1)) || !bytes.Contains(callback.JSON, []byte(asyncfxBig)) {
 				t.Fatalf("flood event %d lost its payload: %s", i, callback.JSON)
 			}
 		}

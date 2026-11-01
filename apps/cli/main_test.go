@@ -45,7 +45,7 @@ func cliWorker(mode string) int {
 	// other work, so a missing marker is a fixture failure rather than a false
 	// pass.
 	if path := os.Getenv("RHODECK_CLI_WORKER_PID"); path != "" {
-		if err := os.WriteFile(path, []byte(fmt.Sprintf("%d", os.Getpid())), 0600); err != nil {
+		if err := os.WriteFile(path, fmt.Appendf(nil, "%d", os.Getpid()), 0600); err != nil {
 			return 18
 		}
 	}

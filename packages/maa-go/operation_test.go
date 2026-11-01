@@ -72,7 +72,7 @@ func waitGuarded(t *testing.T, op *operation, ctx context.Context) (AsyncResult,
 // asyncCallInfoPayload 构造一条 AsyncCallInfo 回调消息原文:details
 // 是消息中 details 子对象的原始文本,逐字节嵌入(含内部空白)。
 func asyncCallInfoPayload(id AsyncID, what, details string) []byte {
-	return []byte(fmt.Sprintf(`{"what":%q,"async_call_id":%d,"details":%s}`, what, int32(id), details))
+	return fmt.Appendf(nil, `{"what":%q,"async_call_id":%d,"details":%s}`, what, int32(id), details)
 }
 
 // TestOperationSettlesExactlyOnceUnderRaces 验证 1「多个完
