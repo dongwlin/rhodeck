@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/worker"
+	"github.com/stretchr/testify/require"
 )
 
 type typedTerminal struct {
@@ -25,9 +25,10 @@ func runTypedTerminal(t *testing.T, args []string, input []byte) (int, typedTerm
 	t.Helper()
 	code, text, lines, diagnostics := runMachine(t, args, input)
 	var terminal envelope
-	if len(lines) == 0 || json.Unmarshal(lines[len(lines)-1], &terminal) != nil || terminal.Type != "terminal" || terminal.Result == nil {
-		t.Fatalf("missing terminal record: exit=%d %s (%s)", code, text, diagnostics)
-	}
+	require.NotEmpty(t, lines, "missing terminal record: exit=%d %s (%s)", code, text, diagnostics)
+	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal record: exit=%d %s (%s)", code, text, diagnostics)
+	require.Equal(t, "terminal", terminal.Type, "missing terminal record: exit=%d %s (%s)", code, text, diagnostics)
+	require.NotNil(t, terminal.Result, "missing terminal record: exit=%d %s (%s)", code, text, diagnostics)
 	return code, typedTerminal{envelope: terminal, lines: lines, text: text}, diagnostics
 }
 
@@ -43,46 +44,37 @@ func TestTypedSameTypeTasksStayIsolatedAcrossWorker(t *testing.T) {
 		switchThemeTask("theme-b", `{"themes":["Theme Three"]}`),
 	)
 	code, terminal, diagnostics := runTypedTerminal(t, cliArgs("run", executable, dir), encodePlan(t, plan))
-	if code != exitSuccess {
-		t.Fatalf("exit = %d: %s (%s)", code, terminal.text, diagnostics)
-	}
+	require.Equal(t, exitSuccess, code, "%s (%s)", terminal.text, diagnostics)
 	result := terminal.Result
-	if result.State != control.Succeeded || result.Cleanup != "complete" {
-		t.Fatalf("result = %+v", result)
-	}
+	require.Equal(t, control.Succeeded, result.State, "result: %+v", result)
+	require.Equal(t, "complete", result.Cleanup, "result: %+v", result)
 
 	growA := taskResult(t, result.Tasks, "grow-a")
-	if growA.State != control.Succeeded || growA.Typed == nil || growA.Typed.State != control.Succeeded {
-		t.Fatalf("grow-a = %+v", growA)
-	}
-	if target := growA.Typed.Targets[0]; target.ID != "op-0001" || target.Outcome != control.TargetAchieved ||
-		target.Code != "completed" || !strings.Contains(string(target.Details), `"reported":2`) {
-		t.Fatalf("grow-a target = %+v", target)
-	}
+	require.Equal(t, control.Succeeded, growA.State, "grow-a: %+v", growA)
+	require.NotNil(t, growA.Typed, "grow-a: %+v", growA)
+	require.Equal(t, control.Succeeded, growA.Typed.State, "grow-a: %+v", growA)
+	require.Equal(t, "op-0001", growA.Typed.Targets[0].ID, "grow-a target: %+v", growA.Typed.Targets[0])
+	require.Equal(t, control.TargetAchieved, growA.Typed.Targets[0].Outcome, "grow-a target: %+v", growA.Typed.Targets[0])
+	require.Equal(t, "completed", growA.Typed.Targets[0].Code, "grow-a target: %+v", growA.Typed.Targets[0])
+	require.Contains(t, string(growA.Typed.Targets[0].Details), `"reported":2`, "grow-a target: %+v", growA.Typed.Targets[0])
 	growB := taskResult(t, result.Tasks, "grow-b")
-	if growB.State != control.Succeeded || growB.Typed == nil || growB.Typed.State != control.Succeeded {
-		t.Fatalf("grow-b = %+v", growB)
-	}
-	if target := growB.Typed.Targets[0]; target.Outcome != control.TargetAchieved ||
-		target.Code != "completed" || !strings.Contains(string(target.Details), `"reported":7`) {
-		t.Fatalf("grow-b target = %+v", target)
-	}
+	require.Equal(t, control.Succeeded, growB.State, "grow-b: %+v", growB)
+	require.NotNil(t, growB.Typed, "grow-b: %+v", growB)
+	require.Equal(t, control.Succeeded, growB.Typed.State, "grow-b: %+v", growB)
+	require.Equal(t, control.TargetAchieved, growB.Typed.Targets[0].Outcome, "grow-b target: %+v", growB.Typed.Targets[0])
+	require.Equal(t, "completed", growB.Typed.Targets[0].Code, "grow-b target: %+v", growB.Typed.Targets[0])
+	require.Contains(t, string(growB.Typed.Targets[0].Details), `"reported":7`, "grow-b target: %+v", growB.Typed.Targets[0])
 	themeA := taskResult(t, result.Tasks, "theme-a")
-	if target := themeA.Typed.Targets[0]; target.Outcome != control.TargetAlreadySet || !bytes.Equal(target.Details, json.RawMessage(`{"theme":"Theme One"}`)) {
-		t.Fatalf("theme-a target = %+v", target)
-	}
+	require.Equal(t, control.TargetAlreadySet, themeA.Typed.Targets[0].Outcome, "theme-a target: %+v", themeA.Typed.Targets[0])
+	require.True(t, bytes.Equal(themeA.Typed.Targets[0].Details, json.RawMessage(`{"theme":"Theme One"}`)), "theme-a target: %+v", themeA.Typed.Targets[0])
 	themeB := taskResult(t, result.Tasks, "theme-b")
-	if target := themeB.Typed.Targets[0]; target.Outcome != control.TargetAlreadySet || !bytes.Equal(target.Details, json.RawMessage(`{"theme":"Theme Three"}`)) {
-		t.Fatalf("theme-b target = %+v", target)
-	}
+	require.Equal(t, control.TargetAlreadySet, themeB.Typed.Targets[0].Outcome, "theme-b target: %+v", themeB.Typed.Targets[0])
+	require.True(t, bytes.Equal(themeB.Typed.Targets[0].Details, json.RawMessage(`{"theme":"Theme Three"}`)), "theme-b target: %+v", themeB.Typed.Targets[0])
 	for _, task := range result.Tasks {
-		if task.CoreTaskID == 0 {
-			t.Fatalf("task %q lacks a Core task ID", task.ID)
-		}
+		require.NotEqual(t, int32(0), task.CoreTaskID, "task %q lacks a Core task ID", task.ID)
 	}
-	if growA.CoreTaskID == growB.CoreTaskID || themeA.CoreTaskID == themeB.CoreTaskID {
-		t.Fatalf("same-type tasks shared a Core task ID: %+v", result.Tasks)
-	}
+	require.NotEqual(t, growA.CoreTaskID, growB.CoreTaskID, "same-type tasks shared a Core task ID: %+v", result.Tasks)
+	require.NotEqual(t, themeA.CoreTaskID, themeB.CoreTaskID, "same-type tasks shared a Core task ID: %+v", result.Tasks)
 
 	// Every typed event names one accepted task and the latest event agrees with
 	// the terminal result; no event mixes facts between tasks.
@@ -95,37 +87,27 @@ func TestTypedSameTypeTasksStayIsolatedAcrossWorker(t *testing.T) {
 			CoreTaskID int32                `json:"core_task_id"`
 			Typed      *control.TypedResult `json:"typed"`
 		}
-		if err := json.Unmarshal(line, &event); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, json.Unmarshal(line, &event))
 		if event.Type != "typed" {
 			continue
 		}
-		if event.TaskID == "" || event.CoreTaskID == 0 || event.Typed == nil {
-			t.Fatalf("typed event lacks association: %s", line)
-		}
+		require.NotEmpty(t, event.TaskID, "typed event lacks association: %s", line)
+		require.NotEqual(t, int32(0), event.CoreTaskID, "typed event lacks association: %s", line)
+		require.NotNil(t, event.Typed, "typed event lacks association: %s", line)
 		counts[event.TaskID]++
 		latest[event.TaskID] = event.Typed
 	}
 	wantCounts := map[string]int{"grow-a": 2, "grow-b": 2, "theme-a": 1, "theme-b": 1}
 	for id, want := range wantCounts {
-		if counts[id] != want {
-			t.Fatalf("typed events for %s = %d, want %d (all: %v)", id, counts[id], want, counts)
-		}
+		require.Equal(t, want, counts[id], "typed events for %s (all: %v)", id, counts)
 	}
 	for id, want := range latest {
-		if got := taskResult(t, result.Tasks, id).Typed; !reflect.DeepEqual(got, want) {
-			t.Fatalf("%s final event and terminal disagree: %+v vs %+v", id, want, got)
-		}
+		require.Equal(t, want, taskResult(t, result.Tasks, id).Typed, "%s final event and terminal disagree", id)
 	}
 
 	record, err := control.ReadRecord(dir, result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(record.Result.Tasks, result.Tasks) {
-		t.Fatalf("record and terminal disagree: %+v vs %+v", record.Result.Tasks, result.Tasks)
-	}
+	require.NoError(t, err)
+	require.Equal(t, result.Tasks, record.Result.Tasks, "record and terminal disagree: %+v vs %+v", record.Result.Tasks, result.Tasks)
 }
 
 // A summary cannot fill in a target that never received its own detail, and a
@@ -136,37 +118,25 @@ func TestTypedPartialObservationRemainsIncomplete(t *testing.T) {
 		operProgressTask("grow-1", `{"plans":[{"role":"Warrior","name":"Alpha","elite":2},{"role":"Caster","name":"Beta","skill_level":7}]}`),
 	)
 	code, terminal, diagnostics := runTypedTerminal(t, cliArgs("run", executable, dir), encodePlan(t, plan))
-	if code != exitUnknown {
-		t.Fatalf("exit = %d: %s (%s)", code, terminal.text, diagnostics)
-	}
+	require.Equal(t, exitUnknown, code, "%s (%s)", terminal.text, diagnostics)
 	result := terminal.Result
-	if result.State != control.Unknown || result.Code != "typed_incomplete" || result.Cleanup != "complete" {
-		t.Fatalf("result = %+v", result)
-	}
+	require.Equal(t, control.Unknown, result.State, "result: %+v", result)
+	require.Equal(t, "typed_incomplete", result.Code, "result: %+v", result)
+	require.Equal(t, "complete", result.Cleanup, "result: %+v", result)
 	grow := taskResult(t, result.Tasks, "grow-1")
-	if grow.State != control.Succeeded {
-		t.Fatalf("partial typed payload rewrote the chain fact: %+v", grow)
-	}
-	if grow.Typed.State != control.Unknown || grow.Typed.Code != "typed_incomplete" {
-		t.Fatalf("typed aggregate = %+v", grow.Typed)
-	}
-	if target := grow.Typed.Targets[0]; target.Outcome != control.TargetAchieved {
-		t.Fatalf("observed target = %+v", target)
-	}
-	if target := grow.Typed.Targets[1]; target.Outcome != control.TargetUnobserved || target.Code != "" || len(target.Details) != 0 {
-		t.Fatalf("missing detail was filled in: %+v", target)
-	}
+	require.Equal(t, control.Succeeded, grow.State, "partial typed payload rewrote the chain fact: %+v", grow)
+	require.Equal(t, control.Unknown, grow.Typed.State, "typed aggregate: %+v", grow.Typed)
+	require.Equal(t, "typed_incomplete", grow.Typed.Code, "typed aggregate: %+v", grow.Typed)
+	require.Equal(t, control.TargetAchieved, grow.Typed.Targets[0].Outcome, "observed target: %+v", grow.Typed.Targets[0])
+	require.Equal(t, control.TargetUnobserved, grow.Typed.Targets[1].Outcome, "missing detail was filled in: %+v", grow.Typed.Targets[1])
+	require.Empty(t, grow.Typed.Targets[1].Code, "missing detail was filled in: %+v", grow.Typed.Targets[1])
+	require.Empty(t, grow.Typed.Targets[1].Details, "missing detail was filled in: %+v", grow.Typed.Targets[1])
 	summary := string(grow.Typed.Summary)
-	if !strings.Contains(summary, `"observed":1`) || !strings.Contains(summary, `"unobserved":1`) {
-		t.Fatalf("summary = %s", summary)
-	}
+	require.Contains(t, summary, `"observed":1`, "summary: %s", summary)
+	require.Contains(t, summary, `"unobserved":1`, "summary: %s", summary)
 	record, err := control.ReadRecord(dir, result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(record.Result.Tasks, result.Tasks) {
-		t.Fatalf("record lost the partial facts: %+v", record.Result.Tasks)
-	}
+	require.NoError(t, err)
+	require.Equal(t, result.Tasks, record.Result.Tasks, "record lost the partial facts: %+v", record.Result.Tasks)
 }
 
 // A mastery Completed report means training at the target level started. It is
@@ -178,34 +148,23 @@ func TestTypedMasteryCompletionReportsStartupOnly(t *testing.T) {
 		operProgressTask("grow-1", `{"plans":[{"role":"Warrior","name":"Alpha","elite":2},{"role":"Caster","name":"Beta","skill_mastery":[0,0,3]}]}`),
 	)
 	code, terminal, diagnostics := runTypedTerminal(t, cliArgs("run", executable, dir), encodePlan(t, plan))
-	if code != exitUnknown {
-		t.Fatalf("exit = %d: %s (%s)", code, terminal.text, diagnostics)
-	}
+	require.Equal(t, exitUnknown, code, "%s (%s)", terminal.text, diagnostics)
 	result := terminal.Result
-	if result.State != control.Unknown || result.Code != "typed_incomplete" || result.Cleanup != "complete" {
-		t.Fatalf("result = %+v", result)
-	}
+	require.Equal(t, control.Unknown, result.State, "result: %+v", result)
+	require.Equal(t, "typed_incomplete", result.Code, "result: %+v", result)
+	require.Equal(t, "complete", result.Cleanup, "result: %+v", result)
 	grow := taskResult(t, result.Tasks, "grow-1")
-	if grow.State != control.Succeeded || grow.Typed.State != control.Unknown || grow.Typed.Code != "typed_incomplete" {
-		t.Fatalf("task = %+v", grow)
-	}
-	if target := grow.Typed.Targets[0]; target.Outcome != control.TargetAchieved {
-		t.Fatalf("elite target = %+v", target)
-	}
+	require.Equal(t, control.Succeeded, grow.State, "task: %+v", grow)
+	require.Equal(t, control.Unknown, grow.Typed.State, "task: %+v", grow)
+	require.Equal(t, "typed_incomplete", grow.Typed.Code, "task: %+v", grow)
+	require.Equal(t, control.TargetAchieved, grow.Typed.Targets[0].Outcome, "elite target: %+v", grow.Typed.Targets[0])
 	mastery := grow.Typed.Targets[1]
-	if mastery.Outcome != control.TargetReportedTrainingStarted || mastery.Code != "mastery_training_started" {
-		t.Fatalf("mastery target = %+v", mastery)
-	}
-	if !strings.Contains(string(mastery.Details), `"reported":3`) {
-		t.Fatalf("mastery detail = %s", mastery.Details)
-	}
+	require.Equal(t, control.TargetReportedTrainingStarted, mastery.Outcome, "mastery target: %+v", mastery)
+	require.Equal(t, "mastery_training_started", mastery.Code, "mastery target: %+v", mastery)
+	require.Contains(t, string(mastery.Details), `"reported":3`, "mastery detail: %s", mastery.Details)
 	record, err := control.ReadRecord(dir, result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := record.Result.Tasks[0].Typed.Targets[1]; got.Outcome != control.TargetReportedTrainingStarted {
-		t.Fatalf("record = %+v", got)
-	}
+	require.NoError(t, err)
+	require.Equal(t, control.TargetReportedTrainingStarted, record.Result.Tasks[0].Typed.Targets[1].Outcome, "record: %+v", record.Result.Tasks[0].Typed.Targets[1])
 }
 
 // A Core append rejection rejects the run before Start. The typed targets stay
@@ -218,35 +177,23 @@ func TestTypedCoreRejectionDoesNotBecomeTypedSuccess(t *testing.T) {
 		operProgressTask("grow-1", `{"plans":[{"role":"Warrior","name":"Alpha","elite":2}]}`),
 	)
 	code, terminal, diagnostics := runTypedTerminal(t, cliArgs("run", executable, dir), encodePlan(t, plan))
-	if code != exitRejected {
-		t.Fatalf("exit = %d: %s (%s)", code, terminal.text, diagnostics)
-	}
+	require.Equal(t, exitRejected, code, "%s (%s)", terminal.text, diagnostics)
 	result := terminal.Result
-	if result.State != control.Rejected || result.Code != "native_rejected" || result.Cleanup != "complete" {
-		t.Fatalf("rejection result = %+v", result)
-	}
+	require.Equal(t, control.Rejected, result.State, "rejection result: %+v", result)
+	require.Equal(t, "native_rejected", result.Code, "rejection result: %+v", result)
+	require.Equal(t, "complete", result.Cleanup, "rejection result: %+v", result)
 	grow := taskResult(t, result.Tasks, "grow-1")
-	if grow.State != control.Rejected {
-		t.Fatalf("chain fact = %+v", grow)
-	}
-	if grow.Typed == nil || grow.Typed.State != control.Unknown || grow.Typed.Code != "typed_incomplete" {
-		t.Fatalf("typed aggregate = %+v", grow.Typed)
-	}
-	if target := grow.Typed.Targets[0]; target.Outcome != control.TargetUnobserved {
-		t.Fatalf("rejection created a fact: %+v", target)
-	}
+	require.Equal(t, control.Rejected, grow.State, "chain fact: %+v", grow)
+	require.NotNil(t, grow.Typed, "typed aggregate: %+v", grow.Typed)
+	require.Equal(t, control.Unknown, grow.Typed.State, "typed aggregate: %+v", grow.Typed)
+	require.Equal(t, "typed_incomplete", grow.Typed.Code, "typed aggregate: %+v", grow.Typed)
+	require.Equal(t, control.TargetUnobserved, grow.Typed.Targets[0].Outcome, "rejection created a fact: %+v", grow.Typed.Targets[0])
 	commands, err := os.ReadFile(trace)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for _, forbidden := range []string{"start\n"} {
-		if bytes.Contains(commands, []byte(forbidden)) {
-			t.Fatalf("rejection issued %q: %s", forbidden, commands)
-		}
+		require.False(t, bytes.Contains(commands, []byte(forbidden)), "rejection issued %q: %s", forbidden, commands)
 	}
-	if !bytes.Contains(commands, []byte("append_task\n")) {
-		t.Fatalf("fixture did not receive the rejected append: %s", commands)
-	}
+	require.True(t, bytes.Contains(commands, []byte("append_task\n")), "fixture did not receive the rejected append: %s", commands)
 }
 
 // A deadline is not a successful stop. Confirmed target facts survive and the
@@ -260,24 +207,19 @@ func TestTypedDeadlineKeepsConfirmedFacts(t *testing.T) {
 	)
 	args := append(cliArgs("run", executable, dir), "--timeout", "3s")
 	code, terminal, diagnostics := runTypedTerminal(t, args, encodePlan(t, plan))
-	if code != exitUnknown {
-		t.Fatalf("exit = %d: %s (%s)", code, terminal.text, diagnostics)
-	}
+	require.Equal(t, exitUnknown, code, "%s (%s)", terminal.text, diagnostics)
 	result := terminal.Result
-	if result.State != control.Stopped || result.Code != "deadline_exceeded" || result.Cleanup != "complete" {
-		t.Fatalf("deadline result = %+v", result)
-	}
+	require.Equal(t, control.Stopped, result.State, "deadline result: %+v", result)
+	require.Equal(t, "deadline_exceeded", result.Code, "deadline result: %+v", result)
+	require.Equal(t, "complete", result.Cleanup, "deadline result: %+v", result)
 	grow := taskResult(t, result.Tasks, "grow-1")
-	if grow.Typed == nil || grow.Typed.State != control.Succeeded || grow.Typed.Targets[0].Outcome != control.TargetAchieved {
-		t.Fatalf("deadline lost the confirmed fact: %+v", grow)
-	}
+	require.NotNil(t, grow.Typed, "deadline lost the confirmed fact: %+v", grow)
+	require.Equal(t, control.Succeeded, grow.Typed.State, "deadline lost the confirmed fact: %+v", grow)
+	require.Equal(t, control.TargetAchieved, grow.Typed.Targets[0].Outcome, "deadline lost the confirmed fact: %+v", grow)
 	record, err := control.ReadRecord(dir, result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Result.State != control.Stopped || record.Result.Tasks[0].Typed.Targets[0].Outcome != control.TargetAchieved {
-		t.Fatalf("record = %+v", record.Result)
-	}
+	require.NoError(t, err)
+	require.Equal(t, control.Stopped, record.Result.State, "record: %+v", record.Result)
+	require.Equal(t, control.TargetAchieved, record.Result.Tasks[0].Typed.Targets[0].Outcome, "record: %+v", record.Result)
 	requireWorkerExited(t, pidFile)
 }
 
@@ -300,43 +242,31 @@ func TestTypedWorkerCrashKeepsConfirmedFacts(t *testing.T) {
 	var diagnostics bytes.Buffer
 	args := append(cliArgs("run", executable, dir), "--timeout", "20s")
 	code := runCLI("dev", ctx, args, bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
-	if code != exitUnknown {
-		t.Fatalf("exit = %d: %s", code, diagnostics.String())
-	}
+	require.Equal(t, exitUnknown, code, "diagnostics: %s", diagnostics.String())
 	lines := decodeLines(t, out.Bytes())
 	var terminal envelope
-	if err := json.Unmarshal(lines[len(lines)-1], &terminal); err != nil || terminal.Result == nil {
-		t.Fatalf("missing terminal record: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal record")
+	require.NotNil(t, terminal.Result, "missing terminal record")
 	result := terminal.Result
 	// The worker process disappearing is reported as a transport failure. Both
 	// stable codes mean the same thing here: the run is unknown, never success.
-	if result.State != control.Unknown || (result.Code != "worker_exited" && result.Code != "disconnected") ||
-		result.Cleanup != "failed" || result.CleanupCode == "" {
-		t.Fatalf("crash result = %+v", result)
-	}
+	require.Equal(t, control.Unknown, result.State, "crash result: %+v", result)
+	require.True(t, result.Code == "worker_exited" || result.Code == "disconnected", "crash result: %+v", result)
+	require.Equal(t, "failed", result.Cleanup, "crash result: %+v", result)
+	require.NotEmpty(t, result.CleanupCode, "crash result: %+v", result)
 	grow := taskResult(t, result.Tasks, "grow-1")
-	if grow.Typed == nil || grow.Typed.State != control.Succeeded || grow.Typed.Targets[0].Outcome != control.TargetAchieved {
-		t.Fatalf("crash lost the confirmed fact: %+v", grow)
-	}
+	require.NotNil(t, grow.Typed, "crash lost the confirmed fact: %+v", grow)
+	require.Equal(t, control.Succeeded, grow.Typed.State, "crash lost the confirmed fact: %+v", grow)
+	require.Equal(t, control.TargetAchieved, grow.Typed.Targets[0].Outcome, "crash lost the confirmed fact: %+v", grow)
 	record, err := control.ReadRecord(dir, result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Result.Tasks[0].Typed.Targets[0].Outcome != control.TargetAchieved {
-		t.Fatalf("record lost the confirmed fact: %+v", record.Result.Tasks[0])
-	}
+	require.NoError(t, err)
+	require.Equal(t, control.TargetAchieved, record.Result.Tasks[0].Typed.Targets[0].Outcome, "record lost the confirmed fact: %+v", record.Result.Tasks[0])
 	requireWorkerExited(t, pidFile)
 	commands, err := os.ReadFile(trace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Count(string(commands), "initialize\n"); got != 1 {
-		t.Fatalf("worker lifecycle restarted after crash: %d initializes\n%s", got, commands)
-	}
-	if !bytes.Contains(commands, []byte("stop\n")) {
-		t.Fatalf("crash was not triggered by a stop request: %s", commands)
-	}
+	require.NoError(t, err)
+	initializes := strings.Count(string(commands), "initialize\n")
+	require.Equal(t, 1, initializes, "worker lifecycle restarted after crash: %d initializes\n%s", initializes, commands)
+	require.True(t, bytes.Contains(commands, []byte("stop\n")), "crash was not triggered by a stop request: %s", commands)
 }
 
 // Context cancellation is a confirmed stop: the typed fact survives, cleanup is
@@ -355,28 +285,20 @@ func TestTypedCancellationKeepsConfirmedFacts(t *testing.T) {
 	out := &markerCancelWriter{cancel: cancel, marker: []byte(`"type":"typed"`)}
 	var diagnostics bytes.Buffer
 	code := runCLI("dev", ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
-	if code != exitStopped {
-		t.Fatalf("exit = %d: %s", code, diagnostics.String())
-	}
+	require.Equal(t, exitStopped, code, "diagnostics: %s", diagnostics.String())
 	lines := decodeLines(t, out.Bytes())
 	var terminal envelope
-	if err := json.Unmarshal(lines[len(lines)-1], &terminal); err != nil || terminal.Result == nil {
-		t.Fatalf("missing terminal record: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "missing terminal record")
+	require.NotNil(t, terminal.Result, "missing terminal record")
 	result := terminal.Result
-	if result.State != control.Stopped || result.Code != "stop_confirmed" || result.Cleanup != "complete" {
-		t.Fatalf("cancellation result = %+v", result)
-	}
-	if got := taskResult(t, result.Tasks, "grow-1").Typed.Targets[0].Outcome; got != control.TargetAchieved {
-		t.Fatalf("cancellation lost the confirmed fact: %q", got)
-	}
+	require.Equal(t, control.Stopped, result.State, "cancellation result: %+v", result)
+	require.Equal(t, "stop_confirmed", result.Code, "cancellation result: %+v", result)
+	require.Equal(t, "complete", result.Cleanup, "cancellation result: %+v", result)
+	require.Equal(t, control.TargetAchieved, taskResult(t, result.Tasks, "grow-1").Typed.Targets[0].Outcome,
+		"cancellation lost the confirmed fact")
 	commands, err := os.ReadFile(trace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.HasSuffix(commands, []byte("stop\nclose\n")) {
-		t.Fatalf("worker was not stopped and closed: %s", commands)
-	}
+	require.NoError(t, err)
+	require.True(t, bytes.HasSuffix(commands, []byte("stop\nclose\n")), "worker was not stopped and closed: %s", commands)
 	requireWorkerExited(t, pidFile)
 }
 
@@ -401,44 +323,32 @@ func TestTypedBlockedTerminalOutputKeepsRecordFacts(t *testing.T) {
 	select {
 	case <-out.started:
 	case <-time.After(10 * time.Second):
-		t.Fatal("CLI did not reach the blocked terminal write")
+		require.FailNow(t, "CLI did not reach the blocked terminal write")
 	}
 	select {
 	case code := <-finished:
-		if code != exitUnknown {
-			t.Fatalf("blocked output exit = %d", code)
-		}
+		require.Equal(t, exitUnknown, code, "blocked output exit")
 	case <-time.After(10 * time.Second):
-		t.Fatal("blocked output retained the CLI beyond its cleanup deadline")
+		require.FailNow(t, "blocked output retained the CLI beyond its cleanup deadline")
 	}
-	if !strings.Contains(diagnostics.String(), "output_timeout") {
-		t.Fatalf("output deadline diagnostic missing: %s", diagnostics.String())
-	}
+	require.Contains(t, diagnostics.String(), "output_timeout", "output deadline diagnostic missing: %s", diagnostics.String())
 	rt, err := control.New(control.Config{DataDir: dir, Worker: worker.Config{Executable: executable}})
-	if err != nil {
-		t.Fatalf("data directory was not released: %v", err)
-	}
-	if err := rt.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "data directory was not released")
+	require.NoError(t, rt.Close(context.Background()))
 	entries, err := os.ReadDir(filepath.Join(dir, "runs"))
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("run record missing: %v %v", entries, err)
-	}
+	require.NoError(t, err, "run record missing")
+	require.Len(t, entries, 1, "run record missing: %v", entries)
 	record, err := control.ReadRecord(dir, strings.TrimSuffix(entries[0].Name(), ".json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Result.State != control.Succeeded || record.Result.Cleanup != "complete" ||
-		record.Result.Tasks[0].Typed.Targets[0].Outcome != control.TargetAchieved {
-		t.Fatalf("output failure changed confirmed facts: %+v", record.Result)
-	}
+	require.NoError(t, err)
+	require.Equal(t, control.Succeeded, record.Result.State, "output failure changed confirmed facts: %+v", record.Result)
+	require.Equal(t, "complete", record.Result.Cleanup, "output failure changed confirmed facts: %+v", record.Result)
+	require.Equal(t, control.TargetAchieved, record.Result.Tasks[0].Typed.Targets[0].Outcome, "output failure changed confirmed facts: %+v", record.Result)
 	requireWorkerExited(t, pidFile)
 	out.unblock()
 	select {
 	case <-out.returned:
 	case <-time.After(5 * time.Second):
-		t.Fatal("test output writer did not terminate after release")
+		require.FailNow(t, "test output writer did not terminate after release")
 	}
 }
 
@@ -454,44 +364,27 @@ func TestTypedDiagnosticsOptInIsBusinessNeutral(t *testing.T) {
 	)
 	input := encodePlan(t, plan)
 	code, plain, diagnostics := runTypedTerminal(t, cliArgs("run", executable, dir), input)
-	if code != exitSuccess {
-		t.Fatalf("default run exit = %d: %s (%s)", code, plain.text, diagnostics)
-	}
+	require.Equal(t, exitSuccess, code, "default run: %s (%s)", plain.text, diagnostics)
 	for _, forbidden := range []string{"private-secret", `"rect"`, `"score"`} {
-		if strings.Contains(plain.text, forbidden) {
-			t.Fatalf("default output disclosed %q", forbidden)
-		}
+		require.NotContains(t, plain.text, forbidden, "default output disclosed %q", forbidden)
 	}
-	if grow := taskResult(t, plain.Result.Tasks, "grow-1"); grow.Typed == nil || grow.Typed.State != control.Succeeded {
-		t.Fatalf("default typed result = %+v", grow)
-	}
+	grow := taskResult(t, plain.Result.Tasks, "grow-1")
+	require.NotNil(t, grow.Typed, "default typed result: %+v", grow)
+	require.Equal(t, control.Succeeded, grow.Typed.State, "default typed result: %+v", grow)
 	for _, id := range []string{"raw-1", "raw-2"} {
-		if task := taskResult(t, plain.Result.Tasks, id); task.Typed != nil {
-			t.Fatalf("%s gained typed facts without an adapter: %+v", id, task.Typed)
-		}
+		task := taskResult(t, plain.Result.Tasks, id)
+		require.Nil(t, task.Typed, "%s gained typed facts without an adapter: %+v", id, task.Typed)
 	}
 
 	rawArgs := append(cliArgs("run", executable, filepath.Join(dir, "raw")), "--include-raw-events")
 	code, withRaw, diagnostics := runTypedTerminal(t, rawArgs, input)
-	if code != exitSuccess {
-		t.Fatalf("raw run exit = %d: %s (%s)", code, withRaw.text, diagnostics)
-	}
-	if !strings.Contains(withRaw.text, "private-secret") {
-		t.Fatalf("explicit raw callback missing: %s", withRaw.text)
-	}
-	if !reflect.DeepEqual(withRaw.Result.Tasks, plain.Result.Tasks) {
-		t.Fatalf("raw diagnostics changed task results: %+v vs %+v", withRaw.Result.Tasks, plain.Result.Tasks)
-	}
+	require.Equal(t, exitSuccess, code, "raw run: %s (%s)", withRaw.text, diagnostics)
+	require.Contains(t, withRaw.text, "private-secret", "explicit raw callback missing: %s", withRaw.text)
+	require.Equal(t, plain.Result.Tasks, withRaw.Result.Tasks, "raw diagnostics changed task results: %+v vs %+v", withRaw.Result.Tasks, plain.Result.Tasks)
 
 	record, err := control.ReadRecord(dir, plain.Result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(record.Plan.Tasks[1].Params), "900719925474099312345") ||
-		!strings.Contains(string(record.Plan.Tasks[2].Params), "900719925474099312345") {
-		t.Fatalf("record raw parameters changed: %+v", record.Plan.Tasks)
-	}
-	if !bytes.Contains(record.Plan.Tasks[0].Params, []byte(`"name":"Alpha","role":"Warrior"`)) {
-		t.Fatalf("record lost the original strict input: %s", record.Plan.Tasks[0].Params)
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(record.Plan.Tasks[1].Params), "900719925474099312345", "record raw parameters changed: %+v", record.Plan.Tasks)
+	require.Contains(t, string(record.Plan.Tasks[2].Params), "900719925474099312345", "record raw parameters changed: %+v", record.Plan.Tasks)
+	require.True(t, bytes.Contains(record.Plan.Tasks[0].Params, []byte(`"name":"Alpha","role":"Warrior"`)), "record lost the original strict input: %s", record.Plan.Tasks[0].Params)
 }

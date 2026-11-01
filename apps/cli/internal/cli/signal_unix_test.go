@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/control"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSignalsConfirmStopAndReapWorker(t *testing.T) {
@@ -31,12 +32,8 @@ func TestSignalsConfirmStopAndReapWorker(t *testing.T) {
 			var diagnostics bytes.Buffer
 			cmd.Stderr = &diagnostics
 			stdout, err := cmd.StdoutPipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err = cmd.Start(); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+			require.NoError(t, cmd.Start())
 			// done releases the reader on failure paths. Without it a t.Fatal that
 			// stops consuming lines leaves the goroutine blocked on a full channel
 			// for the rest of the test binary.
@@ -78,39 +75,30 @@ func TestSignalsConfirmStopAndReapWorker(t *testing.T) {
 						break loop
 					}
 					var event control.Event
-					if err := json.Unmarshal(line, &event); err != nil {
-						t.Fatalf("invalid CLI output %q: %v", line, err)
-					}
+					require.NoError(t, json.Unmarshal(line, &event), "invalid CLI output %q", line)
 					if event.State == control.Started && !sent {
-						if err := cmd.Process.Signal(signal); err != nil {
-							t.Fatalf("send %s: %v", signal, err)
-						}
+						require.NoError(t, cmd.Process.Signal(signal), "send %s", signal)
 						sent = true
 					}
 					if event.Type == "terminal" {
-						if err := json.Unmarshal(line, &terminal); err != nil {
-							t.Fatalf("invalid terminal envelope %q: %v", line, err)
-						}
+						require.NoError(t, json.Unmarshal(line, &terminal), "invalid terminal envelope %q", line)
 					}
 				case <-ctx.Done():
-					t.Fatal("signal did not finish the CLI within its cleanup deadline")
+					require.FailNow(t, "signal did not finish the CLI within its cleanup deadline")
 				}
 			}
 			err = cmd.Wait()
-			if scanErr != nil {
-				t.Fatalf("read CLI output: %v diagnostics=%s", scanErr, diagnostics.String())
-			}
-			if cmd.ProcessState == nil {
-				t.Fatalf("CLI did not exit: %v diagnostics=%s", err, diagnostics.String())
-			}
+			require.NoError(t, scanErr, "read CLI output: diagnostics=%s", diagnostics.String())
+			require.NotNil(t, cmd.ProcessState, "CLI did not exit: %v diagnostics=%s", err, diagnostics.String())
 			exit := cmd.ProcessState.ExitCode()
-			if !sent || exit != exitStopped || terminal.Result == nil || terminal.Result.State != control.Stopped || terminal.Result.Cleanup != "complete" {
-				t.Fatalf("signal result: sent=%t exit=%d terminal=%+v err=%v diagnostics=%s", sent, exit, terminal.Result, err, diagnostics.String())
-			}
+			require.True(t, sent, "signal result: sent=%t exit=%d terminal=%+v err=%v diagnostics=%s", sent, exit, terminal.Result, err, diagnostics.String())
+			require.Equal(t, exitStopped, exit, "signal result: exit=%d terminal=%+v err=%v diagnostics=%s", exit, terminal.Result, err, diagnostics.String())
+			require.NotNil(t, terminal.Result, "signal result: terminal=%+v err=%v diagnostics=%s", terminal.Result, err, diagnostics.String())
+			require.Equal(t, control.Stopped, terminal.Result.State, "signal result: terminal=%+v err=%v diagnostics=%s", terminal.Result, err, diagnostics.String())
+			require.Equal(t, "complete", terminal.Result.Cleanup, "signal result: terminal=%+v err=%v diagnostics=%s", terminal.Result, err, diagnostics.String())
 			commands, err := os.ReadFile(trace)
-			if err != nil || !bytes.HasSuffix(commands, []byte("stop\nclose\n")) {
-				t.Fatalf("worker was not stopped and closed: %s (%v)", commands, err)
-			}
+			require.NoError(t, err, "worker was not stopped and closed")
+			require.True(t, bytes.HasSuffix(commands, []byte("stop\nclose\n")), "worker was not stopped and closed: %s", commands)
 		})
 	}
 }

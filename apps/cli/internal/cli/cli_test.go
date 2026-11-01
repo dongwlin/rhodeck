@@ -19,6 +19,7 @@ import (
 	"github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/worker"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMain(m *testing.M) {
@@ -349,13 +350,9 @@ func testPlan(t *testing.T) (control.Plan, string, string) {
 	t.Helper()
 	root := t.TempDir()
 	library := filepath.Join(root, "library")
-	if err := os.WriteFile(library, []byte("fixture"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(library, []byte("fixture"), 0600))
 	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return control.Plan{SchemaVersion: control.SchemaVersion, HostRunID: "host-run",
 		Initialize: protocol.InitializeRequest{SnapshotID: "fixture", LibraryPath: library, UserDir: filepath.Join(root, "user"), ResourceRoots: []string{root}},
 		Connection: protocol.ConnectRequest{ADBPath: executable, Address: "explicit-device", Config: "General"},
@@ -370,9 +367,7 @@ func cliArgs(command, executable, dir string) []string {
 func encodePlan(t *testing.T, p control.Plan) []byte {
 	t.Helper()
 	raw, err := json.Marshal(p)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return raw
 }
 
@@ -382,18 +377,18 @@ func decodeLines(t *testing.T, output []byte) []json.RawMessage {
 	decoder := json.NewDecoder(bytes.NewReader(output))
 	for {
 		var raw json.RawMessage
-		if err := decoder.Decode(&raw); errors.Is(err, io.EOF) {
+		err := decoder.Decode(&raw)
+		if errors.Is(err, io.EOF) {
 			return lines
-		} else if err != nil {
-			t.Fatalf("invalid machine output: %v", err)
 		}
+		require.NoError(t, err, "invalid machine output")
 		var metadata struct {
 			SchemaVersion int    `json:"schema_version"`
 			Type          string `json:"type"`
 		}
-		if err := json.Unmarshal(raw, &metadata); err != nil || metadata.SchemaVersion != 1 || metadata.Type == "" {
-			t.Fatalf("unversioned output: %s", raw)
-		}
+		require.NoError(t, json.Unmarshal(raw, &metadata), "unversioned output: %s", raw)
+		require.Equal(t, 1, metadata.SchemaVersion, "unversioned output: %s", raw)
+		require.NotEmpty(t, metadata.Type, "unversioned output: %s", raw)
 		lines = append(lines, raw)
 	}
 }
@@ -402,15 +397,10 @@ func TestDiscoveryHasNoInstallationDependency(t *testing.T) {
 	for _, command := range []string{"capabilities", "version", "help"} {
 		t.Run(command, func(t *testing.T) {
 			var out, diagnostics bytes.Buffer
-			if code := runCLI("dev", context.Background(), []string{command}, strings.NewReader("invalid"), &out, &diagnostics); code != 0 {
-				t.Fatalf("exit = %d: %s", code, diagnostics.String())
-			}
-			if got := len(decodeLines(t, out.Bytes())); got != 1 {
-				t.Fatalf("records = %d", got)
-			}
-			if diagnostics.Len() != 0 {
-				t.Fatalf("unexpected diagnostics: %s", diagnostics.String())
-			}
+			code := runCLI("dev", context.Background(), []string{command}, strings.NewReader("invalid"), &out, &diagnostics)
+			require.Equal(t, 0, code, "diagnostics: %s", diagnostics.String())
+			require.Len(t, decodeLines(t, out.Bytes()), 1)
+			require.Empty(t, diagnostics.String(), "unexpected diagnostics")
 		})
 	}
 }
@@ -419,20 +409,18 @@ func TestDryRunPreservesOpenParametersWithoutEffects(t *testing.T) {
 	plan, _, dir := testPlan(t)
 	missingWorker := filepath.Join(t.TempDir(), "not-installed")
 	var out, diagnostics bytes.Buffer
-	if code := runCLI("dev", context.Background(), cliArgs("dry-run", missingWorker, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != 0 {
-		t.Fatalf("exit = %d: %s", code, diagnostics.String())
-	}
-	if !bytes.Contains(out.Bytes(), []byte("900719925474099312345")) || !bytes.Contains(out.Bytes(), []byte("FutureTask")) {
-		t.Fatalf("raw parameters changed: %s", out.String())
-	}
-	if _, err := os.Stat(dir); !os.IsNotExist(err) {
-		t.Fatalf("dry-run created data directory: %v", err)
-	}
+	code := runCLI("dev", context.Background(), cliArgs("dry-run", missingWorker, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
+	require.Equal(t, 0, code, "diagnostics: %s", diagnostics.String())
+	require.True(t, bytes.Contains(out.Bytes(), []byte("900719925474099312345")), "raw parameters changed: %s", out.String())
+	require.True(t, bytes.Contains(out.Bytes(), []byte("FutureTask")), "raw parameters changed: %s", out.String())
+	_, err := os.Stat(dir)
+	require.ErrorIs(t, err, os.ErrNotExist, "dry-run created data directory")
 	lines := decodeLines(t, out.Bytes())
 	var preview envelope
-	if len(lines) != 1 || json.Unmarshal(lines[0], &preview) != nil || preview.Type != "plan" || len(preview.Unverified) == 0 {
-		t.Fatalf("missing unverified plan: %s", out.String())
-	}
+	require.Len(t, lines, 1, "missing unverified plan: %s", out.String())
+	require.NoError(t, json.Unmarshal(lines[0], &preview), "missing unverified plan: %s", out.String())
+	require.Equal(t, "plan", preview.Type, "missing unverified plan: %s", out.String())
+	require.NotEmpty(t, preview.Unverified, "missing unverified plan: %s", out.String())
 }
 
 func TestInputRejectionsHaveStablePrivateOutput(t *testing.T) {
@@ -440,19 +428,16 @@ func TestInputRejectionsHaveStablePrivateOutput(t *testing.T) {
 	valid := encodePlan(t, plan)
 	for _, input := range [][]byte{[]byte(`{"private-secret":true}`), append(bytes.Clone(valid), []byte(` {"secret":1}`)...)} {
 		var out, diagnostics bytes.Buffer
-		if code := runCLI("dev", context.Background(), cliArgs("dry-run", executable, dir), bytes.NewReader(input), &out, &diagnostics); code != exitRejected {
-			t.Fatalf("exit = %d", code)
-		}
+		code := runCLI("dev", context.Background(), cliArgs("dry-run", executable, dir), bytes.NewReader(input), &out, &diagnostics)
+		require.Equal(t, exitRejected, code)
 		decodeLines(t, out.Bytes())
-		if bytes.Contains(out.Bytes(), []byte("private-secret")) || strings.Contains(diagnostics.String(), "secret") {
-			t.Fatal("input escaped into error diagnostics")
-		}
+		require.False(t, bytes.Contains(out.Bytes(), []byte("private-secret")), "input escaped into error diagnostics: %s", out.String())
+		require.NotContains(t, diagnostics.String(), "secret", "input escaped into error diagnostics: %s", diagnostics.String())
 	}
 	for _, args := range [][]string{nil, {"unknown"}, {"version", "secret"}, {"run", "--input", "secret"}, {"dry-run", "--timeout=-1s"}} {
 		var out, diagnostics bytes.Buffer
-		if code := runCLI("dev", context.Background(), args, bytes.NewReader(valid), &out, &diagnostics); code != exitRejected {
-			t.Fatalf("arguments %q: exit = %d", args, code)
-		}
+		code := runCLI("dev", context.Background(), args, bytes.NewReader(valid), &out, &diagnostics)
+		require.Equal(t, exitRejected, code, "arguments %q", args)
 	}
 }
 
@@ -469,23 +454,21 @@ func TestRunMachineTerminalAndExitCodes(t *testing.T) {
 			t.Setenv("RHODECK_CLI_WORKER_MODE", tc.mode)
 			plan, executable, dir := testPlan(t)
 			var out, diagnostics bytes.Buffer
-			if code := runCLI("dev", context.Background(), cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != tc.code {
-				t.Fatalf("exit = %d, want %d: %s (%s)", code, tc.code, out.String(), diagnostics.String())
-			}
+			code := runCLI("dev", context.Background(), cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
+			require.Equal(t, tc.code, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
 			lines := decodeLines(t, out.Bytes())
 			var last envelope
-			if len(lines) == 0 || json.Unmarshal(lines[len(lines)-1], &last) != nil || last.Type != "terminal" || last.Result == nil || last.Result.State != tc.state {
-				t.Fatalf("missing authoritative terminal: %s", out.String())
-			}
+			require.NotEmpty(t, lines, "missing authoritative terminal: %s", out.String())
+			require.NoError(t, json.Unmarshal(lines[len(lines)-1], &last), "missing authoritative terminal: %s", out.String())
+			require.Equal(t, "terminal", last.Type, "missing authoritative terminal: %s", out.String())
+			require.NotNil(t, last.Result, "missing authoritative terminal: %s", out.String())
+			require.Equal(t, tc.state, last.Result.State, "missing authoritative terminal: %s", out.String())
 			checkInstallationMetadata(t, last.Result.RuntimeInfo, plan)
 			record, err := control.ReadRecord(dir, last.Result.RunID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			checkInstallationMetadata(t, record.Result.RuntimeInfo, plan)
-			if bytes.Contains(out.Bytes(), []byte("private-secret")) || strings.Contains(diagnostics.String(), "private-secret") {
-				t.Fatalf("raw diagnostics leaked: %s (%s)", out.String(), diagnostics.String())
-			}
+			require.False(t, bytes.Contains(out.Bytes(), []byte("private-secret")), "raw diagnostics leaked: %s (%s)", out.String(), diagnostics.String())
+			require.NotContains(t, diagnostics.String(), "private-secret", "raw diagnostics leaked: %s (%s)", out.String(), diagnostics.String())
 		})
 	}
 }
@@ -496,21 +479,14 @@ func TestDoctorDoesNotSubmitDeviceActions(t *testing.T) {
 	t.Setenv("RHODECK_CLI_TRACE", trace)
 	plan, executable, dir := testPlan(t)
 	var out, diagnostics bytes.Buffer
-	if code := runCLI("dev", context.Background(), cliArgs("doctor", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitSuccess {
-		t.Fatalf("exit = %d: %s (%s)", code, out.String(), diagnostics.String())
-	}
+	code := runCLI("dev", context.Background(), cliArgs("doctor", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
+	require.Equal(t, exitSuccess, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
 	commands, err := os.ReadFile(trace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(commands) != "initialize\nclose\n" {
-		t.Fatalf("doctor commands: %s", commands)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "initialize\nclose\n", string(commands), "doctor commands: %s", commands)
 	decodeLines(t, out.Bytes())
 	var report envelope
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
 	checkInstallationMetadata(t, report.RuntimeInfo, plan)
 }
 
@@ -518,11 +494,13 @@ func TestDoctorDoesNotSubmitDeviceActions(t *testing.T) {
 // across diagnosis, terminal output and durable records, without a fixed release.
 func checkInstallationMetadata(t *testing.T, info *protocol.RuntimeInfo, plan control.Plan) {
 	t.Helper()
-	if info == nil || info.SnapshotID != plan.Initialize.SnapshotID || info.CoreVersion != "fixture-core" ||
-		info.LibrarySHA256 != strings.Repeat("a", 64) || len(info.Resources) != 1 ||
-		info.Resources[0].Root != plan.Initialize.ResourceRoots[0] || info.Resources[0].VersionSHA256 != strings.Repeat("b", 64) {
-		t.Fatalf("installation metadata was lost: %+v", info)
-	}
+	require.NotNil(t, info, "installation metadata was lost: %+v", info)
+	require.Equal(t, plan.Initialize.SnapshotID, info.SnapshotID, "installation metadata was lost: %+v", info)
+	require.Equal(t, "fixture-core", info.CoreVersion, "installation metadata was lost: %+v", info)
+	require.Equal(t, strings.Repeat("a", 64), info.LibrarySHA256, "installation metadata was lost: %+v", info)
+	require.Len(t, info.Resources, 1, "installation metadata was lost: %+v", info)
+	require.Equal(t, plan.Initialize.ResourceRoots[0], info.Resources[0].Root, "installation metadata was lost: %+v", info)
+	require.Equal(t, strings.Repeat("b", 64), info.Resources[0].VersionSHA256, "installation metadata was lost: %+v", info)
 }
 
 func TestDoctorMissingADBStillReportsCoreSnapshot(t *testing.T) {
@@ -530,19 +508,17 @@ func TestDoctorMissingADBStillReportsCoreSnapshot(t *testing.T) {
 	plan, executable, dir := testPlan(t)
 	plan.Connection.ADBPath = filepath.Join(t.TempDir(), "missing-adb")
 	var out, diagnostics bytes.Buffer
-	if code := runCLI("dev", context.Background(), cliArgs("doctor", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitRejected {
-		t.Fatalf("exit = %d: %s", code, out.String())
-	}
+	code := runCLI("dev", context.Background(), cliArgs("doctor", executable, dir), bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
+	require.Equal(t, exitRejected, code, "out: %s", out.String())
 	var report envelope
-	if json.Unmarshal(out.Bytes(), &report) != nil || report.RuntimeInfo == nil {
-		t.Fatalf("missing native snapshot: %s", out.String())
-	}
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report), "missing native snapshot: %s", out.String())
+	require.NotNil(t, report.RuntimeInfo, "missing native snapshot: %s", out.String())
 	for _, check := range report.Checks {
 		if check.Field == "connection.adb_path" && !check.OK && check.Code == "file_unavailable" {
 			return
 		}
 	}
-	t.Fatalf("missing field-level ADB rejection: %s", out.String())
+	require.FailNow(t, "missing field-level ADB rejection: %s", out.String())
 }
 
 func TestRawEventsRequireExplicitOptIn(t *testing.T) {
@@ -550,12 +526,9 @@ func TestRawEventsRequireExplicitOptIn(t *testing.T) {
 	plan, executable, dir := testPlan(t)
 	var out, diagnostics bytes.Buffer
 	args := append(cliArgs("run", executable, dir), "--include-raw-events")
-	if code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitSuccess {
-		t.Fatalf("exit = %d: %s", code, out.String())
-	}
-	if !bytes.Contains(out.Bytes(), []byte("private-secret")) {
-		t.Fatalf("explicit raw callback missing: %s", out.String())
-	}
+	code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
+	require.Equal(t, exitSuccess, code, "out: %s", out.String())
+	require.True(t, bytes.Contains(out.Bytes(), []byte("private-secret")), "explicit raw callback missing: %s", out.String())
 }
 
 type brokenWriter struct{}
@@ -566,16 +539,11 @@ func TestBrokenOutputStillClosesRuntime(t *testing.T) {
 	t.Setenv("RHODECK_CLI_WORKER_MODE", "wait")
 	plan, executable, dir := testPlan(t)
 	var diagnostics bytes.Buffer
-	if code := runCLI("dev", context.Background(), cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), brokenWriter{}, &diagnostics); code != exitUnknown {
-		t.Fatalf("exit = %d", code)
-	}
+	code := runCLI("dev", context.Background(), cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), brokenWriter{}, &diagnostics)
+	require.Equal(t, exitUnknown, code)
 	rt, err := control.New(control.Config{DataDir: dir, Worker: worker.Config{Executable: executable}})
-	if err != nil {
-		t.Fatalf("data directory was not released after output failure: %v", err)
-	}
-	if err := rt.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "data directory was not released after output failure")
+	require.NoError(t, rt.Close(context.Background()))
 }
 
 type stopWriter struct {
@@ -600,13 +568,12 @@ func TestCancellationUsesControlStopAndCleanup(t *testing.T) {
 	defer cancel()
 	out := &stopWriter{cancel: cancel}
 	var diagnostics bytes.Buffer
-	if code := runCLI("dev", ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics); code != exitStopped {
-		t.Fatalf("exit = %d: %s (%s)", code, out.String(), diagnostics.String())
-	}
+	code := runCLI("dev", ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
+	require.Equal(t, exitStopped, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
 	commands, err := os.ReadFile(trace)
-	if err != nil || !bytes.Contains(commands, []byte("stop\n")) || !bytes.HasSuffix(commands, []byte("close\n")) {
-		t.Fatalf("stop/cleanup missing: %s (%v)", commands, err)
-	}
+	require.NoError(t, err, "stop/cleanup missing")
+	require.True(t, bytes.Contains(commands, []byte("stop\n")), "stop/cleanup missing: %s", commands)
+	require.True(t, bytes.HasSuffix(commands, []byte("close\n")), "stop/cleanup missing: %s", commands)
 }
 
 func TestDeadlineRemainsDistinctFromSignalStop(t *testing.T) {
@@ -614,20 +581,17 @@ func TestDeadlineRemainsDistinctFromSignalStop(t *testing.T) {
 	plan, executable, dir := testPlan(t)
 	var out, diagnostics bytes.Buffer
 	args := append(cliArgs("run", executable, dir), "--timeout", "1s")
-	if code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitUnknown {
-		t.Fatalf("exit = %d: %s (%s)", code, out.String(), diagnostics.String())
-	}
+	code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
+	require.Equal(t, exitUnknown, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
 	lines := decodeLines(t, out.Bytes())
 	var terminal envelope
-	if json.Unmarshal(lines[len(lines)-1], &terminal) != nil || terminal.Result == nil || terminal.Result.Code != "deadline_exceeded" {
-		t.Fatalf("deadline reason missing: %s", out.String())
-	}
+	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "deadline reason missing: %s", out.String())
+	require.NotNil(t, terminal.Result, "deadline reason missing: %s", out.String())
+	require.Equal(t, "deadline_exceeded", terminal.Result.Code, "deadline reason missing: %s", out.String())
 }
 
 func TestConfirmedTasksDoNotHideCleanupFailure(t *testing.T) {
-	if code := resultExit(control.Result{State: control.Succeeded, Cleanup: "failed"}); code != exitUnknown {
-		t.Fatalf("exit = %d", code)
-	}
+	require.Equal(t, exitUnknown, resultExit(control.Result{State: control.Succeeded, Cleanup: "failed"}))
 }
 
 func TestStartupTimeoutUsesTimeoutExitCode(t *testing.T) {
@@ -635,14 +599,14 @@ func TestStartupTimeoutUsesTimeoutExitCode(t *testing.T) {
 	plan, executable, dir := testPlan(t)
 	var out, diagnostics bytes.Buffer
 	args := append(cliArgs("run", executable, dir), "--startup-timeout", "50ms")
-	if code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics); code != exitUnknown {
-		t.Fatalf("startup timeout exit = %d: %s (%s)", code, out.String(), diagnostics.String())
-	}
+	code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
+	require.Equal(t, exitUnknown, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
 	lines := decodeLines(t, out.Bytes())
 	var terminal envelope
-	if json.Unmarshal(lines[len(lines)-1], &terminal) != nil || terminal.Result == nil || terminal.Result.State != control.Rejected || terminal.Result.Code != "startup_timeout" {
-		t.Fatalf("startup timeout reason missing: %s", out.String())
-	}
+	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "startup timeout reason missing: %s", out.String())
+	require.NotNil(t, terminal.Result, "startup timeout reason missing: %s", out.String())
+	require.Equal(t, control.Rejected, terminal.Result.State, "startup timeout reason missing: %s", out.String())
+	require.Equal(t, "startup_timeout", terminal.Result.Code, "startup timeout reason missing: %s", out.String())
 }
 
 type blockingWriter struct {
@@ -697,49 +661,38 @@ func TestBlockedOutputReleasesRuntimeAfterCancellationOrCompletion(t *testing.T)
 			select {
 			case <-out.started:
 			case <-time.After(5 * time.Second):
-				t.Fatal("CLI did not reach the blocked output writer")
+				require.FailNow(t, "CLI did not reach the blocked output writer")
 			}
 			if tc.cancel {
 				cancel()
 			}
 			select {
 			case code := <-finished:
-				if code != exitUnknown {
-					t.Fatalf("blocked output exit = %d", code)
-				}
+				require.Equal(t, exitUnknown, code, "blocked output exit")
 			case <-time.After(10 * time.Second):
-				t.Fatal("blocked output retained the CLI beyond its cleanup deadlines")
+				require.FailNow(t, "blocked output retained the CLI beyond its cleanup deadlines")
 			}
-			if !strings.Contains(diagnostics.String(), "output_timeout") {
-				t.Fatalf("output deadline diagnostic missing: %s", diagnostics.String())
-			}
+			require.Contains(t, diagnostics.String(), "output_timeout", "output deadline diagnostic missing: %s", diagnostics.String())
 			rt, err := control.New(control.Config{DataDir: dir, Worker: worker.Config{Executable: executable}})
-			if err != nil {
-				t.Fatalf("blocked output retained the directory lock: %v", err)
-			}
-			if err := rt.Close(context.Background()); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err, "blocked output retained the directory lock")
+			require.NoError(t, rt.Close(context.Background()))
 			if !tc.cancel {
 				entries, err := os.ReadDir(filepath.Join(dir, "runs"))
-				if err != nil || len(entries) != 1 {
-					t.Fatalf("completed run record missing: %v", err)
-				}
+				require.NoError(t, err, "completed run record missing")
+				require.Len(t, entries, 1, "completed run record missing")
 				record, err := control.ReadRecord(dir, strings.TrimSuffix(entries[0].Name(), ".json"))
-				if err != nil || record.Result.State != control.Succeeded || record.Result.Cleanup != "complete" {
-					t.Fatalf("output failure changed confirmed native facts: %+v (%v)", record.Result, err)
-				}
+				require.NoError(t, err, "output failure changed confirmed native facts")
+				require.Equal(t, control.Succeeded, record.Result.State, "output failure changed confirmed native facts: %+v", record.Result)
+				require.Equal(t, "complete", record.Result.Cleanup, "output failure changed confirmed native facts: %+v", record.Result)
 			}
 			writesBeforeRelease := out.writes.Load()
 			out.unblock()
 			select {
 			case <-out.returned:
 			case <-time.After(5 * time.Second):
-				t.Fatal("test output writer did not terminate after release")
+				require.FailNow(t, "test output writer did not terminate after release")
 			}
-			if out.writes.Load() != writesBeforeRelease {
-				t.Fatalf("output was retried after abort: %d writes", out.writes.Load())
-			}
+			require.Equal(t, writesBeforeRelease, out.writes.Load(), "output was retried after abort: %d writes", out.writes.Load())
 		})
 	}
 }

@@ -3,9 +3,10 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestOutputAbortNeverStartsAnotherWrite(t *testing.T) {
@@ -19,19 +20,16 @@ func TestOutputAbortNeverStartsAnotherWrite(t *testing.T) {
 	select {
 	case <-sink.started:
 	case <-time.After(5 * time.Second):
-		t.Fatal("output write never started")
+		require.FailNow(t, "output write never started")
 	}
-	if err := <-result; !errors.Is(err, errOutputTimeout) {
-		t.Fatalf("write = %v, want output timeout", err)
-	}
+	err := <-result
+	require.ErrorIs(t, err, errOutputTimeout, "want output timeout")
 	writer.close()
 	sink.unblock()
 	select {
 	case <-writer.done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("output goroutine did not finish after abort and writer release")
+		require.FailNow(t, "output goroutine did not finish after abort and writer release")
 	}
-	if got := sink.writes.Load(); got != 1 {
-		t.Fatalf("write count = %d, want one in-flight write", got)
-	}
+	require.Equal(t, int32(1), sink.writes.Load(), "want one in-flight write")
 }

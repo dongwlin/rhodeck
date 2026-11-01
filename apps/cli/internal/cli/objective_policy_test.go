@@ -1,10 +1,10 @@
 package cli
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/dongwlin/rhodeck/packages/control"
+	"github.com/stretchr/testify/require"
 )
 
 type inputOnlyCapabilityAdapter struct{}
@@ -23,11 +23,10 @@ func TestInputOnlyCapabilityMakesNoResultInterpretationClaim(t *testing.T) {
 		objectivePolicies: []control.ObjectivePolicy{control.ObjectiveNone},
 		newAdapter:        func() control.TaskAdapter { return inputOnlyCapabilityAdapter{} },
 	})
-	if len(got.ObjectivePolicies) != 1 || got.ObjectivePolicies[0] != control.ObjectiveNone ||
-		got.ResultInterpretation != "none" ||
-		!strings.Contains(got.Acceptance, "local preparation only") ||
-		!strings.Contains(got.Acceptance, "device acceptance: none") ||
-		strings.Contains(got.Acceptance, "preparation and result interpretation") {
-		t.Fatalf("input-only capability claims interpreted results: %+v", got)
-	}
+	require.Len(t, got.ObjectivePolicies, 1, "input-only capability claims interpreted results: %+v", got)
+	require.Equal(t, control.ObjectiveNone, got.ObjectivePolicies[0], "input-only capability claims interpreted results: %+v", got)
+	require.Equal(t, "none", got.ResultInterpretation, "input-only capability claims interpreted results: %+v", got)
+	require.Contains(t, got.Acceptance, "local preparation only", "input-only capability claims interpreted results: %+v", got)
+	require.Contains(t, got.Acceptance, "device acceptance: none", "input-only capability claims interpreted results: %+v", got)
+	require.NotContains(t, got.Acceptance, "preparation and result interpretation", "input-only capability claims interpreted results: %+v", got)
 }
