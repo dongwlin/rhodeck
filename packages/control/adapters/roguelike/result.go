@@ -1,9 +1,13 @@
-package control
+package roguelike
 
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strconv"
+
+	"github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/internal/strictjson"
 )
 
 // Core callback message kinds. SubTaskStart (20001) carries the settlement
@@ -98,7 +102,7 @@ func roguelikeInvestmentCanStop(cfg roguelikeConfig) bool {
 // the compiled input. It is pure: the same configuration always yields the
 // same preparation, and configurations without a reachable business fact stay
 // input-only instead of declaring targets that could never leave unobserved.
-func roguelikeObjective(cfg roguelikeConfig) (ObjectivePolicy, []string, TaskReducer) {
+func roguelikeObjective(cfg roguelikeConfig) (control.ObjectivePolicy, []string, control.TaskReducer) {
 	switch cfg.Mode {
 	case roguelikeModeExp:
 		// The BlackFlow theme runs a burn-style strategy profile whose runs are
@@ -110,19 +114,19 @@ func roguelikeObjective(cfg roguelikeConfig) (ObjectivePolicy, []string, TaskRed
 		// or full callback stops mid-runs the same way, which would leave the
 		// remaining runs unprovable.
 		if cfg.Theme == roguelikeThemeBlackFlow {
-			return ObjectiveNone, nil, nil
+			return control.ObjectiveNone, nil, nil
 		}
-		if cfg.StartsCount < 1 || cfg.StartsCount > MaxTypedTargetsPerTask ||
+		if cfg.StartsCount < 1 || cfg.StartsCount > control.MaxTypedTargetsPerTask ||
 			cfg.StopAtFinalBoss || cfg.StopAtMaxLevel || roguelikeInvestmentCanStop(cfg) {
-			return ObjectiveNone, nil, nil
+			return control.ObjectiveNone, nil, nil
 		}
 		targets := make([]string, cfg.StartsCount)
 		for i := range targets {
 			targets[i] = roguelikeRunTargetID(i + 1)
 		}
-		policy := ObjectiveAny
+		policy := control.ObjectiveAny
 		if cfg.StartsCount == 1 {
-			policy = ObjectiveAll
+			policy = control.ObjectiveAll
 		}
 		return policy, targets, &roguelikeReducer{mode: cfg.Mode, runs: cfg.StartsCount}
 	case roguelikeModeInvestment:
@@ -131,17 +135,17 @@ func roguelikeObjective(cfg roguelikeConfig) (ObjectivePolicy, []string, TaskRed
 		// limit or full callback stays input-only instead of declaring a target
 		// that could never leave unobserved.
 		if cfg.Theme == roguelikeThemeBlackFlow || !roguelikeInvestmentCanStop(cfg) {
-			return ObjectiveNone, nil, nil
+			return control.ObjectiveNone, nil, nil
 		}
 		return roguelikeSingleObjective(cfg.Mode, roguelikeTargetInvestment)
 	case roguelikeModeSquad:
 		if !cfg.MonthlySquadAutoIterate {
-			return ObjectiveNone, nil, nil
+			return control.ObjectiveNone, nil, nil
 		}
 		return roguelikeSingleObjective(cfg.Mode, roguelikeTargetMonthlySquad)
 	case roguelikeModeExploration:
 		if !cfg.DeepExplorationAutoIterate {
-			return ObjectiveNone, nil, nil
+			return control.ObjectiveNone, nil, nil
 		}
 		return roguelikeSingleObjective(cfg.Mode, roguelikeTargetDeepExploration)
 	case roguelikeModeFindPlaytime:
@@ -150,13 +154,13 @@ func roguelikeObjective(cfg roguelikeConfig) (ObjectivePolicy, []string, TaskRed
 		return roguelikeSingleObjective(cfg.Mode, roguelikeTargetStartRun)
 	default:
 		// Modes 4, 5, 10001 and 30001 have no stable terminal callback.
-		return ObjectiveNone, nil, nil
+		return control.ObjectiveNone, nil, nil
 	}
 }
 
 // roguelikeSingleObjective prepares the one-target interpretations.
-func roguelikeSingleObjective(mode int, target string) (ObjectivePolicy, []string, TaskReducer) {
-	return ObjectiveAll, []string{target}, &roguelikeReducer{mode: mode, target: target}
+func roguelikeSingleObjective(mode int, target string) (control.ObjectivePolicy, []string, control.TaskReducer) {
+	return control.ObjectiveAll, []string{target}, &roguelikeReducer{mode: mode, target: target}
 }
 
 // roguelikeReducer interprets callbacks for one prepared roguelike task. The
@@ -184,16 +188,16 @@ type roguelikeReducer struct {
 func roguelikeCallbackFields(raw json.RawMessage) (map[string]json.RawMessage, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, typedError("roguelike: callback must be a JSON object")
+		return nil, fmt.Errorf("%w: %s", control.ErrTypedResult, "roguelike: callback must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(trimmed))
 	dec.UseNumber()
-	if err := checkTypedKeys(dec); err != nil {
-		return nil, typedError("roguelike: ambiguous or malformed callback fields")
+	if err := strictjson.CheckKeys(dec); err != nil {
+		return nil, fmt.Errorf("%w: %s", control.ErrTypedResult, "roguelike: ambiguous or malformed callback fields")
 	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &top); err != nil {
-		return nil, typedError("roguelike: callback must be a JSON object")
+		return nil, fmt.Errorf("%w: %s", control.ErrTypedResult, "roguelike: callback must be a JSON object")
 	}
 	return top, nil
 }
@@ -204,27 +208,27 @@ func roguelikeCallbackFields(raw json.RawMessage) (map[string]json.RawMessage, e
 // TaskChainCompleted establish no business fact. Only an unusable callback
 // object (malformed JSON or duplicate keys at any depth) returns an error,
 // which the runtime maps to typed_invalid_event without admitting an update.
-func (r *roguelikeReducer) Observe(o Observation) (TypedUpdate, error) {
+func (r *roguelikeReducer) Observe(o control.Observation) (control.TypedUpdate, error) {
 	if o.MessageID != roguelikeMessageSubTaskStart && o.MessageID != roguelikeMessageSubTaskExtraInfo || len(o.JSON) == 0 {
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	top, err := roguelikeCallbackFields(o.JSON)
 	if err != nil {
-		return TypedUpdate{}, err
+		return control.TypedUpdate{}, err
 	}
-	if chain, ok := operProgressFieldString(top, "taskchain"); !ok || chain != roguelikeTaskType {
-		return TypedUpdate{}, nil
+	if chain, ok := strictjson.FieldString(top, "taskchain"); !ok || chain != roguelikeTaskType {
+		return control.TypedUpdate{}, nil
 	}
 	var coreID int32
 	if json.Unmarshal(top["taskid"], &coreID) != nil || coreID <= 0 {
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	if r.coreID == 0 {
 		r.coreID = coreID
 	} else if r.coreID != coreID {
 		// Only the accepted submission's callbacks contribute; a different
 		// task id is never re-associated.
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	if o.MessageID == roguelikeMessageSubTaskStart {
 		return r.observeNodeStart(o, top), nil
@@ -237,39 +241,39 @@ func (r *roguelikeReducer) Observe(o Observation) (TypedUpdate, error) {
 // continue into the next run, so FIFO arrival order pairs the k-th settlement
 // with the k-th run without timestamps. Settlements beyond the declared run
 // count cannot name a prepared target and are ignored.
-func (r *roguelikeReducer) observeNodeStart(o Observation, top map[string]json.RawMessage) TypedUpdate {
+func (r *roguelikeReducer) observeNodeStart(o control.Observation, top map[string]json.RawMessage) control.TypedUpdate {
 	if r.runs == 0 {
-		return TypedUpdate{}
+		return control.TypedUpdate{}
 	}
-	if subtask, ok := operProgressFieldString(top, "subtask"); !ok || subtask != roguelikeSubtaskProcessTask {
-		return TypedUpdate{}
+	if subtask, ok := strictjson.FieldString(top, "subtask"); !ok || subtask != roguelikeSubtaskProcessTask {
+		return control.TypedUpdate{}
 	}
-	fields, ok := operProgressDetailFields(top)
+	fields, ok := strictjson.ObjectField(top, "details")
 	if !ok {
-		return TypedUpdate{}
+		return control.TypedUpdate{}
 	}
-	node, _ := operProgressFieldString(fields, "task")
-	var outcome TargetOutcome
+	node, _ := strictjson.FieldString(fields, "task")
+	var outcome control.TargetOutcome
 	var code string
 	switch node {
 	case roguelikeNodeGamePass:
-		outcome, code = TargetAchieved, roguelikeCodeGamePass
+		outcome, code = control.TargetAchieved, roguelikeCodeGamePass
 	case roguelikeNodeMissionFailedFlag2:
-		outcome, code = TargetFailed, roguelikeCodeMissionFailed
+		outcome, code = control.TargetFailed, roguelikeCodeMissionFailed
 	default:
-		return TypedUpdate{}
+		return control.TypedUpdate{}
 	}
 	if r.runSeqs[o.CoreSequence] {
-		return TypedUpdate{}
+		return control.TypedUpdate{}
 	}
 	if len(r.runSeqs) >= r.runs {
-		return TypedUpdate{}
+		return control.TypedUpdate{}
 	}
 	if r.runSeqs == nil {
 		r.runSeqs = make(map[uint64]bool, r.runs)
 	}
 	r.runSeqs[o.CoreSequence] = true
-	return TypedUpdate{Targets: []TargetResult{{
+	return control.TypedUpdate{Targets: []control.TargetResult{{
 		ID:      roguelikeRunTargetID(len(r.runSeqs)),
 		Outcome: outcome,
 		Code:    code,
@@ -279,43 +283,43 @@ func (r *roguelikeReducer) observeNodeStart(o Observation, top map[string]json.R
 // observeExtraInfo interprets the extra-info facts of the single-target modes.
 // An extra-info event needs a what and a details object; a missing or unusable
 // one leaves the target unobserved instead of inventing a fact.
-func (r *roguelikeReducer) observeExtraInfo(top map[string]json.RawMessage) TypedUpdate {
+func (r *roguelikeReducer) observeExtraInfo(top map[string]json.RawMessage) control.TypedUpdate {
 	if r.target == "" {
-		return TypedUpdate{}
+		return control.TypedUpdate{}
 	}
-	what, ok := operProgressFieldString(top, "what")
+	what, ok := strictjson.FieldString(top, "what")
 	if !ok {
-		return TypedUpdate{}
+		return control.TypedUpdate{}
 	}
-	if _, ok := operProgressDetailFields(top); !ok {
-		return TypedUpdate{}
+	if _, ok := strictjson.ObjectField(top, "details"); !ok {
+		return control.TypedUpdate{}
 	}
 	switch r.mode {
 	case roguelikeModeInvestment:
 		switch what {
 		case roguelikeWhatInvestmentLimit:
-			return r.singleFact(TargetAchieved, roguelikeCodeInvestmentLimit, nil)
+			return r.singleFact(control.TargetAchieved, roguelikeCodeInvestmentLimit, nil)
 		case roguelikeWhatInvestmentFull:
-			return r.singleFact(TargetAchieved, roguelikeCodeInvestmentFull, nil)
+			return r.singleFact(control.TargetAchieved, roguelikeCodeInvestmentFull, nil)
 		}
 	case roguelikeModeSquad:
 		if what == roguelikeWhatMonthlySquad {
-			return r.singleFact(TargetAchieved, roguelikeCodeRotationDone, nil)
+			return r.singleFact(control.TargetAchieved, roguelikeCodeRotationDone, nil)
 		}
 	case roguelikeModeExploration:
 		if what == roguelikeWhatDeepExploration {
-			return r.singleFact(TargetAchieved, roguelikeCodeRotationDone, nil)
+			return r.singleFact(control.TargetAchieved, roguelikeCodeRotationDone, nil)
 		}
 	case roguelikeModeFindPlaytime:
 		if what == roguelikeWhatJieGardenFound {
-			return r.singleFact(TargetAchieved, roguelikeCodeTargetFound, roguelikeSubtypeDetails(top))
+			return r.singleFact(control.TargetAchieved, roguelikeCodeTargetFound, roguelikeSubtypeDetails(top))
 		}
 	case roguelikeModeBlackFlowStartRun:
 		if what == roguelikeWhatStartRun {
 			return r.startRunFact(top)
 		}
 	}
-	return TypedUpdate{}
+	return control.TypedUpdate{}
 }
 
 // startRunFact reads the start-run lifecycle status. completed proves the
@@ -323,22 +327,22 @@ func (r *roguelikeReducer) observeExtraInfo(top map[string]json.RawMessage) Type
 // and Core stopped the chain. preparing, target_run, reward_missed and any
 // unknown status establish no target fact and never preempt a later
 // completion of the same target.
-func (r *roguelikeReducer) startRunFact(top map[string]json.RawMessage) TypedUpdate {
-	fields, ok := operProgressDetailFields(top)
+func (r *roguelikeReducer) startRunFact(top map[string]json.RawMessage) control.TypedUpdate {
+	fields, ok := strictjson.ObjectField(top, "details")
 	if !ok {
-		return TypedUpdate{}
+		return control.TypedUpdate{}
 	}
-	status, ok := operProgressFieldString(fields, "status")
+	status, ok := strictjson.FieldString(fields, "status")
 	if !ok {
-		return TypedUpdate{}
+		return control.TypedUpdate{}
 	}
 	switch status {
 	case roguelikeStartRunCompleted:
-		return r.singleFact(TargetAchieved, roguelikeCodeStartRunDone, nil)
+		return r.singleFact(control.TargetAchieved, roguelikeCodeStartRunDone, nil)
 	case roguelikeStartRunRewardPageMissing, roguelikeStartRunRecognitionFailed, roguelikeStartRunUnrecognized:
-		return r.singleFact(TargetFailed, status, nil)
+		return r.singleFact(control.TargetFailed, status, nil)
 	default:
-		return TypedUpdate{}
+		return control.TypedUpdate{}
 	}
 }
 
@@ -346,8 +350,8 @@ func (r *roguelikeReducer) startRunFact(top map[string]json.RawMessage) TypedUpd
 // fact is harmless: the shared typed update treats byte-equal facts as
 // idempotent, and a different fact for the recorded target is a conflict the
 // runtime rejects while preserving the original.
-func (r *roguelikeReducer) singleFact(outcome TargetOutcome, code string, details json.RawMessage) TypedUpdate {
-	return TypedUpdate{Targets: []TargetResult{{
+func (r *roguelikeReducer) singleFact(outcome control.TargetOutcome, code string, details json.RawMessage) control.TypedUpdate {
+	return control.TypedUpdate{Targets: []control.TargetResult{{
 		ID:      r.target,
 		Outcome: outcome,
 		Code:    code,
@@ -359,12 +363,12 @@ func (r *roguelikeReducer) singleFact(outcome TargetOutcome, code string, detail
 // The found fact comes from the what itself, so a missing, non-string or
 // invalid subtype cannot unprove it and is simply not published.
 func roguelikeSubtypeDetails(top map[string]json.RawMessage) json.RawMessage {
-	fields, ok := operProgressDetailFields(top)
+	fields, ok := strictjson.ObjectField(top, "details")
 	if !ok {
 		return nil
 	}
-	subtype, ok := operProgressFieldString(fields, "target_subtype")
-	if !ok || !validText(subtype, roguelikeMaxSubtypeBytes, true) {
+	subtype, ok := strictjson.FieldString(fields, "target_subtype")
+	if !ok || !strictjson.ValidText(subtype, roguelikeMaxSubtypeBytes, true) {
 		return nil
 	}
 	encoded, err := json.Marshal(struct {
@@ -378,7 +382,7 @@ func roguelikeSubtypeDetails(top map[string]json.RawMessage) json.RawMessage {
 	return encoded
 }
 
-// preparationProgress classifies the BlackFlow port's internal callbacks. The
+// IsUnassociatedProgress classifies the BlackFlow port's internal callbacks. The
 // BlackFlow theme drives map routing and inventory cleanup through an internal
 // AbstractTask that never receives a task id, so its subtask callbacks carry
 // taskid 0 on the same Roguelike chain while an adapted task is being
@@ -386,7 +390,7 @@ func roguelikeSubtypeDetails(top map[string]json.RawMessage) json.RawMessage {
 // business fact; recognizing exactly that shape keeps them from being misread
 // as lost execution associations while every other unassociated event stays on
 // the runtime's strict path.
-func (r *roguelikeReducer) preparationProgress(o Observation) bool {
+func (r *roguelikeReducer) IsUnassociatedProgress(o control.Observation) bool {
 	if o.MessageID < 20000 || o.MessageID > 20004 || len(o.JSON) == 0 {
 		return false
 	}
@@ -394,7 +398,7 @@ func (r *roguelikeReducer) preparationProgress(o Observation) bool {
 	if err != nil {
 		return false
 	}
-	if chain, ok := operProgressFieldString(top, "taskchain"); !ok || chain != roguelikeTaskType {
+	if chain, ok := strictjson.FieldString(top, "taskchain"); !ok || chain != roguelikeTaskType {
 		return false
 	}
 	if !bytes.Equal(bytes.TrimSpace(top["taskid"]), []byte("0")) {
@@ -402,3 +406,5 @@ func (r *roguelikeReducer) preparationProgress(o Observation) bool {
 	}
 	return true
 }
+
+var _ control.UnassociatedObservationClassifier = (*roguelikeReducer)(nil)

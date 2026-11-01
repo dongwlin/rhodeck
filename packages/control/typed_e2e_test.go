@@ -1,4 +1,4 @@
-package control
+package control_test
 
 import (
 	"bytes"
@@ -8,6 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	. "github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/adapters/operprogress"
+	"github.com/dongwlin/rhodeck/packages/control/adapters/switchtheme"
 )
 
 // typedAcceptanceSourcePlan is a realistic current-schema plan: two explicit
@@ -33,7 +37,7 @@ func typedAcceptanceSourcePlan(t *testing.T) Plan {
 func typedAcceptanceRecord(t *testing.T) Record {
 	t.Helper()
 	plan := typedAcceptanceSourcePlan(t)
-	prepared, err := PreparePlan(plan, NewOperProgressAdapter(), NewSwitchThemeAdapter())
+	prepared, err := PreparePlan(plan, operprogress.New(), switchtheme.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +84,7 @@ func TestTypedSchemaBoundaryAcceptsCurrentAndRejectsFutureVersions(t *testing.T)
 	if _, err := DecodePlan(bytes.NewReader(raw)); err != nil {
 		t.Fatalf("current mixed plan rejected: %v", err)
 	}
-	prepared, err := PreparePlan(plan, NewOperProgressAdapter(), NewSwitchThemeAdapter())
+	prepared, err := PreparePlan(plan, operprogress.New(), switchtheme.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +135,7 @@ func TestTypedSchemaBoundaryAcceptsCurrentAndRejectsFutureVersions(t *testing.T)
 				t.Fatal("read accepted unsupported or inconsistent evidence")
 			}
 			if s, err := openStore(dir); err == nil {
-				_ = s.close()
+				_ = s.Close()
 				t.Fatal("directory startup accepted unsupported or inconsistent evidence")
 			}
 		})
@@ -159,7 +163,7 @@ func TestTypedRecordRejectsCorruptionAndBrokenAssociations(t *testing.T) {
 				t.Fatal("read accepted a corrupt record")
 			}
 			if s, err := openStore(dir); err == nil {
-				_ = s.close()
+				_ = s.Close()
 				t.Fatal("startup accepted a corrupt record")
 			}
 		})
@@ -176,10 +180,10 @@ func TestTypedRecordRecoveryRetainsConfirmedFactsWithoutPreparation(t *testing.T
 		t.Fatal(err)
 	}
 	rec := typedAcceptanceRecord(t)
-	if err := s.save(rec); err != nil {
+	if err := s.Save(rec); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.close(); err != nil {
+	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -188,7 +192,7 @@ func TestTypedRecordRecoveryRetainsConfirmedFactsWithoutPreparation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.close()
+	defer s.Close()
 	got, err := ReadRecord(dir, rec.Result.RunID)
 	if err != nil {
 		t.Fatal(err)
@@ -224,14 +228,14 @@ func TestTypedRecordRecoveryRetainsConfirmedFactsWithoutPreparation(t *testing.T
 	}
 
 	// A second startup sees a terminal recovered record and leaves it alone.
-	if err := s.close(); err != nil {
+	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
 	s, err = openStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.close()
+	defer s.Close()
 	again, err := ReadRecord(dir, rec.Result.RunID)
 	if err != nil {
 		t.Fatal(err)

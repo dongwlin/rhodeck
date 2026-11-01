@@ -1,9 +1,11 @@
-package control
+package control_test
 
 import (
 	"encoding/json"
 	"testing"
 
+	. "github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/adapters/roguelike"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
 
@@ -15,13 +17,13 @@ func sendRoguelikeCallback(t *testing.T, r *Run, messageID int32, sequence uint6
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.observe(m)
+	ObserveRunForTest(r, m)
 }
 
 func roguelikeRuntimePlan(t *testing.T, params string) Plan {
 	t.Helper()
 	plan := runtimePlan(t)
-	ref := NewRoguelikeAdapter().Descriptor()
+	ref := roguelike.New().Descriptor()
 	plan.Tasks = []Task{{ID: "roguelike-0", Type: "Roguelike", Adapter: &ref, Params: json.RawMessage(params)}}
 	return plan
 }
@@ -33,11 +35,11 @@ func roguelikeRuntimePlan(t *testing.T, params string) Plan {
 func TestRoguelikeRuntimeAbsorbsBlackFlowEnvironment(t *testing.T) {
 	run := newPreparedTypedHarness(t,
 		roguelikeRuntimePlan(t, `{"theme":"BlackFlow","mode":30003,"blackflow_start_animals":["swaddled_cat"],"blackflow_start_rewards":1}`),
-		[]int32{101}, true, NewRoguelikeAdapter())
+		[]int32{101}, true, roguelike.New())
 	sendRoguelikeCallback(t, run, 20001, 1, `{"taskchain":"Roguelike","taskid":0,"subtask":"ProcessTask","details":{"task":"RolesDefault"}}`)
 	sendRoguelikeCallback(t, run, 20003, 2, `{"taskchain":"Roguelike","taskid":0,"subtask":"BlackFlowTask","what":"BlackFlowInventoryCleanup","details":{"status":"cleaned"}}`)
-	if run.fatal != "" {
-		t.Fatalf("environmental callback faulted the run: %s", run.fatal)
+	if InspectRunForTest(run).Fatal != "" {
+		t.Fatalf("environmental callback faulted the run: %s", InspectRunForTest(run).Fatal)
 	}
 	// Strategy results and running statuses are progress, not the objective.
 	sendRoguelikeCallback(t, run, 20003, 3, `{"taskchain":"Roguelike","taskid":101,"subtask":"BlackFlowTask","what":"BlackFlowStrategyResult","details":{"outcome":"start_run_prepared","succeeded":true}}`)
@@ -61,8 +63,8 @@ func TestRoguelikeRuntimeAbsorbsBlackFlowEnvironment(t *testing.T) {
 	}
 	sendRoguelikeCallback(t, run, 10002, 6, `{"taskchain":"Roguelike","taskid":101}`)
 	sendRoguelikeCallback(t, run, 3, 7, `{"finished_tasks":[101]}`)
-	if run.proof != Succeeded || run.proofCode != "" {
-		t.Fatalf("proof = %s/%s, want succeeded", run.proof, run.proofCode)
+	if InspectRunForTest(run).Proof != Succeeded || InspectRunForTest(run).ProofCode != "" {
+		t.Fatalf("proof = %s/%s, want succeeded", InspectRunForTest(run).Proof, InspectRunForTest(run).ProofCode)
 	}
 }
 
@@ -71,7 +73,7 @@ func TestRoguelikeRuntimeAbsorbsBlackFlowEnvironment(t *testing.T) {
 func TestRoguelikeRuntimeCountsRunsUnderAny(t *testing.T) {
 	run := newPreparedTypedHarness(t,
 		roguelikeRuntimePlan(t, `{"theme":"Phantom","mode":0,"starts_count":2}`),
-		[]int32{101}, true, NewRoguelikeAdapter())
+		[]int32{101}, true, roguelike.New())
 	sendRoguelikeCallback(t, run, 20001, 1, roguelikeSettlement(101, "MissionFailedFlag2"))
 	sendRoguelikeCallback(t, run, 20001, 2, roguelikeSettlement(101, "GamePass"))
 	// A duplicate delivery of the same callback is one settlement.
@@ -88,7 +90,7 @@ func TestRoguelikeRuntimeCountsRunsUnderAny(t *testing.T) {
 	// The chain fact arrives separately and stays separate from the objective.
 	sendRoguelikeCallback(t, run, 10002, 3, `{"taskchain":"Roguelike","taskid":101}`)
 	sendRoguelikeCallback(t, run, 3, 4, `{"finished_tasks":[101]}`)
-	if run.proof != Succeeded || run.fatal != "" {
-		t.Fatalf("proof = %s/%s, fatal = %s", run.proof, run.proofCode, run.fatal)
+	if InspectRunForTest(run).Proof != Succeeded || InspectRunForTest(run).Fatal != "" {
+		t.Fatalf("proof = %s/%s, fatal = %s", InspectRunForTest(run).Proof, InspectRunForTest(run).ProofCode, InspectRunForTest(run).Fatal)
 	}
 }

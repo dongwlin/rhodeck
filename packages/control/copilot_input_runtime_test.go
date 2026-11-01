@@ -1,9 +1,12 @@
-package control
+package control_test
 
 import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	. "github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/adapters/copilot"
 )
 
 func TestRuntimeCopilotInputOnlyUsesChainFacts(t *testing.T) {
@@ -14,10 +17,10 @@ func TestRuntimeCopilotInputOnlyUsesChainFacts(t *testing.T) {
 		for _, loop := range []string{"", `,"loop_times":2`} {
 			t.Run(test.mode+loop, func(t *testing.T) {
 				cfg := runtimeConfig(t, test.mode)
-				cfg.Adapters = []TaskAdapter{NewCopilotAdapter()}
+				cfg.Adapters = []TaskAdapter{copilot.New()}
 				rt := newRuntime(t, cfg)
 				plan := runtimePlan(t)
-				ref := NewCopilotAdapter().Descriptor()
+				ref := copilot.New().Descriptor()
 				plan.Tasks[0] = Task{ID: "battle", Type: "Copilot", Adapter: &ref, Params: json.RawMessage(`{"filename":"9007199254740993.json"` + loop + `}`)}
 				run, err := rt.Run(context.Background(), plan)
 				if err != nil {

@@ -7,8 +7,8 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
-	"unicode/utf8"
 
+	"github.com/dongwlin/rhodeck/packages/control/internal/strictjson"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
 
@@ -92,7 +92,7 @@ func ValidatePlan(p Plan) error {
 	if p.SchemaVersion != SchemaVersion {
 		return bad("unsupported schema version")
 	}
-	if !validText(p.HostRunID, 256, true) {
+	if !strictjson.ValidText(p.HostRunID, 256, true) {
 		return bad("invalid host run ID")
 	}
 	if err := validateInitialize(p.Initialize); err != nil {
@@ -100,7 +100,7 @@ func ValidatePlan(p Plan) error {
 	}
 	strMax, jsonMax, configMax, _ := inputBudgets(p.Initialize)
 	c := p.Connection
-	if !validPath(c.ADBPath, strMax) || !validText(c.Address, strMax, false) || !validText(c.Config, strMax, true) {
+	if !validPath(c.ADBPath, strMax) || !strictjson.ValidText(c.Address, strMax, false) || !strictjson.ValidText(c.Config, strMax, true) {
 		return bad("invalid connection")
 	}
 	if uint64(len(c.ADBPath))+uint64(len(c.Address))+uint64(len(c.Config)) > configMax {
@@ -114,7 +114,7 @@ func ValidatePlan(p Plan) error {
 	}
 	seen := make(map[string]bool, len(p.Tasks))
 	for _, t := range p.Tasks {
-		if !validText(t.ID, 128, false) || seen[t.ID] {
+		if !strictjson.ValidText(t.ID, 128, false) || seen[t.ID] {
 			return bad("invalid or duplicate task ID")
 		}
 		seen[t.ID] = true
@@ -126,7 +126,7 @@ func ValidatePlan(p Plan) error {
 				return bad("adapter params exceed byte limit")
 			}
 		}
-		if !validText(t.Type, strMax, false) || !validObject(t.Params, jsonMax) {
+		if !strictjson.ValidText(t.Type, strMax, false) || !strictjson.ValidObject(t.Params, jsonMax) {
 			return bad("invalid task input")
 		}
 		if uint64(len(t.Type))+uint64(len(t.Params)) > configMax {
@@ -164,10 +164,10 @@ func validateInitialize(i protocol.InitializeRequest) error {
 	if strMax == 0 || jsonMax == 0 || configMax == 0 || entries == 0 {
 		return bad("zero input budget")
 	}
-	if !validText(i.SnapshotID, 256, false) || !validPath(i.LibraryPath, strMax) || !validPath(i.UserDir, strMax) || len(i.ResourceRoots) == 0 {
+	if !strictjson.ValidText(i.SnapshotID, 256, false) || !validPath(i.LibraryPath, strMax) || !validPath(i.UserDir, strMax) || len(i.ResourceRoots) == 0 {
 		return bad("invalid installation paths or snapshot ID")
 	}
-	if !validText(i.ExpectedCoreVersion, strMax, true) {
+	if !strictjson.ValidText(i.ExpectedCoreVersion, strMax, true) {
 		return bad("invalid expected Core version")
 	}
 	if i.ExpectedLibrarySHA256 != "" {
@@ -182,7 +182,7 @@ func validateInitialize(i protocol.InitializeRequest) error {
 	}
 	var total uint64
 	add := func(s string) bool {
-		if !validText(s, strMax, true) {
+		if !strictjson.ValidText(s, strMax, true) {
 			return false
 		}
 		total += uint64(len(s))
@@ -209,7 +209,7 @@ func validateInitialize(i protocol.InitializeRequest) error {
 	}
 	seenExtras := make(map[string]bool, len(i.ConnectionExtras))
 	for _, extra := range i.ConnectionExtras {
-		if !validText(extra.Name, strMax, false) || seenExtras[extra.Name] || !validObject(extra.JSON, jsonMax) || !add(extra.Name) {
+		if !strictjson.ValidText(extra.Name, strMax, false) || seenExtras[extra.Name] || !strictjson.ValidObject(extra.JSON, jsonMax) || !add(extra.Name) {
 			return bad("invalid connection extra")
 		}
 		seenExtras[extra.Name] = true
@@ -224,14 +224,10 @@ func validateInitialize(i protocol.InitializeRequest) error {
 	return checkFrame(protocol.Initialize, i)
 }
 
-func validText(s string, max uint64, empty bool) bool {
-	return (empty || len(s) > 0) && uint64(len(s)) <= max && utf8.ValidString(s) && !strings.ContainsRune(s, 0)
+func validPath(s string, max uint64) bool {
+	return strictjson.ValidText(s, max, false) && filepath.IsAbs(s)
 }
-func validPath(s string, max uint64) bool { return validText(s, max, false) && filepath.IsAbs(s) }
-func validObject(raw json.RawMessage, max uint64) bool {
-	b := bytes.TrimSpace(raw)
-	return uint64(len(raw)) <= max && len(b) > 0 && b[0] == '{' && utf8.Valid(raw) && json.Valid(raw)
-}
+
 func checkFrame(name string, payload any) error {
 	m, err := protocol.NewMessage(protocol.Request, name, 1, payload)
 	if err == nil {

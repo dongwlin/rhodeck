@@ -17,16 +17,6 @@ import (
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
 
-func TestMain(m *testing.M) {
-	if mode := os.Getenv("RHODECK_TEST_CONTROL_WORKER"); mode != "" {
-		if mode == "copilot-preparation" {
-			os.Exit(copilotPreparationWorkerHelper())
-		}
-		os.Exit(controlWorkerHelper(mode))
-	}
-	os.Exit(m.Run())
-}
-
 // The helper is a real child, so deadlines, broken pipes, pending operations,
 // process waiting and late cleanup all cross the production supervisor boundary.
 func controlWorkerHelper(mode string) int {

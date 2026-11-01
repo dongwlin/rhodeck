@@ -5,20 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
-)
 
-const (
-	MaxAdapterParamsBytes      = 64 << 10
-	MaxTypedTargetsPerTask     = 128
-	MaxTypedTargetsPerRun      = 512
-	MaxTypedTaskBytes          = 64 << 10
-	MaxTypedResultBytes        = 512 << 10
-	MaxTypedDetailBytes        = 4096
-	MaxTypedSummaryBytes       = 8192
-	MaxTypedEventBytes         = 64 << 10
-	MaxTypedEventMessages      = 32
-	MaxTypedEventRetainedBytes = 256 << 10
+	"github.com/dongwlin/rhodeck/packages/control/internal/strictjson"
 )
 
 var (
@@ -26,66 +14,6 @@ var (
 	ErrTypedConflict = errors.New("control: conflicting typed fact")
 	ErrTypedBudget   = errors.New("control: typed budget exceeded")
 )
-
-// AdapterRef explicitly selects one locally registered adapter version.
-// Recognizing Task.Type never enables an adapter on the generic input path.
-type AdapterRef struct {
-	Name    string `json:"name"`
-	Version int    `json:"version"`
-}
-
-// ObjectivePolicy selects how independent target facts establish a task's
-// objective. It never establishes the native task-chain or cleanup result.
-type ObjectivePolicy string
-
-const (
-	ObjectiveAll  ObjectivePolicy = "all"
-	ObjectiveAny  ObjectivePolicy = "any"
-	ObjectiveNone ObjectivePolicy = "none"
-)
-
-// TaskAdapter validates a task and creates a fresh, task-local reducer. Prepare
-// must be deterministic and have no filesystem, native or device side effects.
-// Implementations must reject task types they do not understand and export only
-// selected business facts, never an unfiltered native callback as typed details.
-// An adapter may be reused concurrently by separate PreparePlan calls.
-type TaskAdapter interface {
-	Descriptor() AdapterRef
-	Prepare(Task) (PreparedTask, error)
-}
-
-// PreparedTask bridges adapter input to the open Core task contract. Params is
-// the final Core JSON object. Targets are stable caller-visible correlation IDs.
-// Reducer is fresh per preparation and receives callbacks serially for one task.
-// An omitted Policy defaults to ObjectiveAll. ObjectiveNone is input-only and
-// requires no targets or reducer; the runtime retains only native chain facts.
-type PreparedTask struct {
-	Params  json.RawMessage
-	Policy  ObjectivePolicy
-	Targets []string
-	Reducer TaskReducer
-}
-
-// TaskReducer observes only callbacks associated with its submitted Core task.
-// Returning an empty update ignores a callback. Reducers must bound their own
-// scratch state; the runtime bounds every retained result and emitted update.
-type TaskReducer interface {
-	Observe(Observation) (TypedUpdate, error)
-}
-
-type Observation struct {
-	MessageID    int32
-	CoreSequence uint64
-	JSON         json.RawMessage
-}
-
-// TypedUpdate adds immutable target facts and an optional immutable summary.
-// Repeating the identical fact is harmless; a different fact for the same
-// target is a conflict. Targets absent from the update remain unchanged.
-type TypedUpdate struct {
-	Targets []TargetResult
-	Summary json.RawMessage
-}
 
 type TargetOutcome string
 
@@ -119,114 +47,6 @@ type TypedResult struct {
 	Code          string          `json:"code,omitempty"`
 	Targets       []TargetResult  `json:"targets"`
 	Summary       json.RawMessage `json:"summary,omitempty"`
-}
-
-// PreparedPlan is a detached, side-effect-free preview. Runtime.Run prepares
-// again so mutating this preview can never change an admitted run or reducer.
-type PreparedPlan struct {
-	Plan     Plan         `json:"plan"`
-	Tasks    []TaskResult `json:"tasks"`
-	reducers map[int]TaskReducer
-}
-
-// PreparePlan validates explicit adapter selections and compiles final Core
-// parameters. A raw task never invokes an adapter, even for a familiar type.
-func PreparePlan(p Plan, adapters ...TaskAdapter) (PreparedPlan, error) {
-	bad := func(s string) (PreparedPlan, error) {
-		return PreparedPlan{}, fmt.Errorf("%w: %s", ErrInvalidPlan, s)
-	}
-	if err := ValidatePlan(p); err != nil {
-		return PreparedPlan{}, err
-	}
-	registry := make(map[AdapterRef]TaskAdapter, len(adapters))
-	for _, adapter := range adapters {
-		if nilInterface(adapter) {
-			return bad("nil adapter")
-		}
-		ref := adapter.Descriptor()
-		if !validAdapterRef(ref) || registry[ref] != nil {
-			return bad("invalid or duplicate registered adapter")
-		}
-		registry[ref] = adapter
-	}
-	out := PreparedPlan{Plan: clonePlan(p), Tasks: make([]TaskResult, len(p.Tasks)), reducers: make(map[int]TaskReducer)}
-	for i, task := range out.Plan.Tasks {
-		out.Tasks[i] = TaskResult{ID: task.ID, State: Admitted}
-		if task.Adapter == nil {
-			continue
-		}
-		adapter, ok := registry[*task.Adapter]
-		if !ok {
-			return bad("unsupported adapter or version")
-		}
-		// Prepare receives an independent copy of every mutable input field.
-		input := clonePlan(Plan{Tasks: []Task{task}}).Tasks[0]
-		prepared, err := adapter.Prepare(input)
-		if err != nil {
-			return PreparedPlan{}, fmt.Errorf("%w: adapter rejected task: %w", ErrInvalidPlan, err)
-		}
-		policy := prepared.Policy
-		if policy == "" {
-			policy = ObjectiveAll
-		}
-		switch policy {
-		case ObjectiveNone:
-			if len(prepared.Targets) != 0 || !nilInterface(prepared.Reducer) {
-				return bad("input-only adapter returned targets or a reducer")
-			}
-		case ObjectiveAll, ObjectiveAny:
-			if nilInterface(prepared.Reducer) {
-				return bad("adapter returned a nil reducer")
-			}
-			if len(prepared.Targets) == 0 {
-				return bad("adapter returned no targets")
-			}
-		default:
-			return bad("adapter returned an unsupported objective policy")
-		}
-		if len(prepared.Targets) > MaxTypedTargetsPerTask {
-			return PreparedPlan{}, fmt.Errorf("%w: %w", ErrInvalidPlan, typedBudget("too many prepared targets"))
-		}
-		if !validObject(prepared.Params, MaxAdapterParamsBytes) {
-			return bad("adapter returned invalid Core params")
-		}
-		out.Plan.Tasks[i].Params = bytes.Clone(prepared.Params)
-		out.Tasks[i].Policy = policy
-		if policy == ObjectiveNone {
-			continue
-		}
-		typed := &TypedResult{SchemaVersion: SchemaVersion, Adapter: *task.Adapter, Policy: policy}
-		for _, id := range prepared.Targets {
-			typed.Targets = append(typed.Targets, TargetResult{ID: id, Outcome: TargetUnobserved})
-		}
-		typed.State, typed.Code = typedState(typed)
-		out.Tasks[i].Typed = typed
-		out.reducers[i] = prepared.Reducer
-	}
-	if err := ValidatePlan(out.Plan); err != nil {
-		return PreparedPlan{}, err
-	}
-	if err := validateTypedResults(out.Tasks); err != nil {
-		return PreparedPlan{}, fmt.Errorf("%w: %w", ErrInvalidPlan, err)
-	}
-	return out, nil
-}
-
-func nilInterface(v any) bool {
-	if v == nil {
-		return true
-	}
-	r := reflect.ValueOf(v)
-	switch r.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return r.IsNil()
-	default:
-		return false
-	}
-}
-
-func validAdapterRef(ref AdapterRef) bool {
-	return validText(ref.Name, 128, false) && ref.Version > 0
 }
 
 func cloneTypedResult(in *TypedResult) *TypedResult {
@@ -291,7 +111,7 @@ func typedBudget(message string) error {
 }
 
 func validateTarget(target TargetResult) error {
-	if !validText(target.ID, 128, false) || !validOutcome(target.Outcome) || !validText(target.Code, 128, true) {
+	if !strictjson.ValidText(target.ID, 128, false) || !validOutcome(target.Outcome) || !strictjson.ValidText(target.Code, 128, true) {
 		return typedError("invalid target identity, outcome or code")
 	}
 	if target.Outcome == TargetUnobserved && (target.Code != "" || len(target.Details) != 0) {
@@ -369,56 +189,15 @@ func validateTypedObject(raw json.RawMessage, limit int) error {
 	if len(raw) > limit {
 		return typedBudget("typed object exceeds byte limit")
 	}
-	if !validObject(raw, uint64(limit)) {
+	if !strictjson.ValidObject(raw, uint64(limit)) {
 		return typedError("typed detail or summary must be a JSON object")
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
-	if err := checkTypedKeys(d); err != nil {
+	if err := strictjson.CheckKeys(d); err != nil {
 		return typedError("duplicate or malformed typed object field")
 	}
 	return nil
-}
-
-// Unlike control-key validation, every nested object is strict here, including
-// fields named params or json. Numbers are tokenized without a float64 roundtrip.
-func checkTypedKeys(d *json.Decoder) error {
-	tok, err := d.Token()
-	if err != nil {
-		return err
-	}
-	delim, ok := tok.(json.Delim)
-	if !ok {
-		return nil
-	}
-	switch delim {
-	case '{':
-		seen := make(map[string]bool)
-		for d.More() {
-			key, err := d.Token()
-			if err != nil {
-				return err
-			}
-			name, ok := key.(string)
-			if !ok || seen[name] {
-				return ErrTypedResult
-			}
-			seen[name] = true
-			if err := checkTypedKeys(d); err != nil {
-				return err
-			}
-		}
-	case '[':
-		for d.More() {
-			if err := checkTypedKeys(d); err != nil {
-				return err
-			}
-		}
-	default:
-		return ErrTypedResult
-	}
-	_, err = d.Token()
-	return err
 }
 
 func sameTarget(a, b TargetResult) bool {

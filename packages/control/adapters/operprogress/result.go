@@ -1,8 +1,12 @@
-package control
+package operprogress
 
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+
+	"github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/internal/strictjson"
 )
 
 // Core emits OperProgress training facts as AsstMsg::SubTaskExtraInfo (20003)
@@ -62,7 +66,7 @@ type operProgressReducer struct {
 	exact map[string][]int
 	// facts and factSet record the first non-unobserved fact emitted for each
 	// target so the summary can be derived without retaining callback history.
-	facts   []TargetOutcome
+	facts   []control.TargetOutcome
 	factSet []bool
 	// skipped marks targets whose mastery attempt was skipped because the
 	// training room was busy. A skip is summary evidence, never a target fact.
@@ -73,11 +77,11 @@ type operProgressReducer struct {
 
 // newOperProgressReducer binds a fresh reducer to a detached copy of the target
 // mapping prepared for exactly one task.
-func newOperProgressReducer(targets []operProgressTarget) TaskReducer {
+func newOperProgressReducer(targets []operProgressTarget) control.TaskReducer {
 	r := &operProgressReducer{
 		targets: append([]operProgressTarget(nil), targets...),
 		exact:   make(map[string][]int, len(targets)),
-		facts:   make([]TargetOutcome, len(targets)),
+		facts:   make([]control.TargetOutcome, len(targets)),
 		factSet: make([]bool, len(targets)),
 		skipped: make([]bool, len(targets)),
 	}
@@ -94,32 +98,32 @@ func newOperProgressReducer(targets []operProgressTarget) TaskReducer {
 // fabricated fact. Only an unusable callback object (malformed JSON or duplicate
 // keys at any depth) returns an error, which the runtime maps to
 // typed_invalid_event without admitting the update.
-func (r *operProgressReducer) Observe(o Observation) (TypedUpdate, error) {
+func (r *operProgressReducer) Observe(o control.Observation) (control.TypedUpdate, error) {
 	if o.MessageID != operProgressMessageSubTaskExtraInfo || len(o.JSON) == 0 {
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	trimmed := bytes.TrimSpace(o.JSON)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return TypedUpdate{}, typedError("oper_progress: callback must be a JSON object")
+		return control.TypedUpdate{}, fmt.Errorf("%w: %s", control.ErrTypedResult, "oper_progress: callback must be a JSON object")
 	}
 	// Duplicate keys would make every consumed field ambiguous. The runtime
 	// already rejects duplicate top-level fields; nested detail objects are
 	// checked here before any field is interpreted.
 	dec := json.NewDecoder(bytes.NewReader(trimmed))
 	dec.UseNumber()
-	if err := checkTypedKeys(dec); err != nil {
-		return TypedUpdate{}, typedError("oper_progress: ambiguous or malformed callback fields")
+	if err := strictjson.CheckKeys(dec); err != nil {
+		return control.TypedUpdate{}, fmt.Errorf("%w: %s", control.ErrTypedResult, "oper_progress: ambiguous or malformed callback fields")
 	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &top); err != nil {
-		return TypedUpdate{}, typedError("oper_progress: callback must be a JSON object")
+		return control.TypedUpdate{}, fmt.Errorf("%w: %s", control.ErrTypedResult, "oper_progress: callback must be a JSON object")
 	}
-	if chain, ok := operProgressFieldString(top, "taskchain"); !ok || chain != operProgressTaskType {
-		return TypedUpdate{}, nil
+	if chain, ok := strictjson.FieldString(top, "taskchain"); !ok || chain != operProgressTaskType {
+		return control.TypedUpdate{}, nil
 	}
-	what, ok := operProgressFieldString(top, "what")
+	what, ok := strictjson.FieldString(top, "what")
 	if !ok {
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	switch what {
 	case operProgressWhatDetail:
@@ -127,63 +131,30 @@ func (r *operProgressReducer) Observe(o Observation) (TypedUpdate, error) {
 	case operProgressWhatSummary:
 		return r.observeSummary(top)
 	default:
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 }
 
-// operProgressFieldString decodes one exact JSON string literal. A missing,
-// null, non-string or malformed field reports false; callers treat that as an
-// unusable association field rather than guessing a value.
-func operProgressFieldString(fields map[string]json.RawMessage, key string) (string, bool) {
-	raw, ok := fields[key]
+func (r *operProgressReducer) observeDetail(top map[string]json.RawMessage) (control.TypedUpdate, error) {
+	fields, ok := strictjson.ObjectField(top, "details")
 	if !ok {
-		return "", false
+		return control.TypedUpdate{}, nil
 	}
-	value, err := operProgressDecodeString(raw)
-	if err != nil {
-		return "", false
-	}
-	return value, true
-}
-
-// operProgressDetailFields returns the decoded details object. Missing, null or
-// non-object details cannot carry a business fact and are ignored.
-func operProgressDetailFields(top map[string]json.RawMessage) (map[string]json.RawMessage, bool) {
-	raw, ok := top["details"]
-	if !ok {
-		return nil, false
-	}
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, false
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(trimmed, &fields); err != nil {
-		return nil, false
-	}
-	return fields, true
-}
-
-func (r *operProgressReducer) observeDetail(top map[string]json.RawMessage) (TypedUpdate, error) {
-	fields, ok := operProgressDetailFields(top)
-	if !ok {
-		return TypedUpdate{}, nil
-	}
-	role, roleOK := operProgressFieldString(fields, "role")
-	name, nameOK := operProgressFieldString(fields, "name")
-	result, resultOK := operProgressFieldString(fields, "result")
-	detail, detailOK := operProgressFieldString(fields, "result_detail")
+	role, roleOK := strictjson.FieldString(fields, "role")
+	name, nameOK := strictjson.FieldString(fields, "name")
+	result, resultOK := strictjson.FieldString(fields, "result")
+	detail, detailOK := strictjson.FieldString(fields, "result_detail")
 
 	// Exact (role, name) identity is the only association that may carry a
 	// success or failure fact. Arrival order and input order are never used.
 	if roleOK && nameOK {
 		if !operProgressValidRole(role) || name == "" {
-			return TypedUpdate{}, nil
+			return control.TypedUpdate{}, nil
 		}
 		matches := r.exact[role+"\x00"+name]
 		switch len(matches) {
 		case 0:
-			return TypedUpdate{}, nil
+			return control.TypedUpdate{}, nil
 		case 1:
 			return r.associatedDetail(matches[0], result, resultOK, detail, detailOK, fields)
 		default:
@@ -193,15 +164,15 @@ func (r *operProgressReducer) observeDetail(top map[string]json.RawMessage) (Typ
 	}
 	if roleOK && !operProgressValidRole(role) {
 		// A concrete role that a strict plan cannot carry names no target.
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	if nameOK && name == "" {
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	if resultOK && result == operProgressResultSkipped {
 		// A skip is summary evidence only. Without a unique target it cannot
 		// even be counted, and it never creates a target fact.
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	// A missing or malformed role or name cannot be repaired by guessing. Mark
 	// every still-unobserved candidate named by the remaining field ambiguous
@@ -226,9 +197,9 @@ func (r *operProgressReducer) observeDetail(top map[string]json.RawMessage) (Typ
 
 // associatedDetail interprets one detail event whose (role, name) identifies
 // exactly one prepared target.
-func (r *operProgressReducer) associatedDetail(index int, result string, resultOK bool, detail string, detailOK bool, fields map[string]json.RawMessage) (TypedUpdate, error) {
+func (r *operProgressReducer) associatedDetail(index int, result string, resultOK bool, detail string, detailOK bool, fields map[string]json.RawMessage) (control.TypedUpdate, error) {
 	if !resultOK {
-		return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncomplete, nil), nil
+		return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncomplete, nil), nil
 	}
 	switch result {
 	case operProgressResultSuccess:
@@ -239,34 +210,34 @@ func (r *operProgressReducer) associatedDetail(index int, result string, resultO
 		if detailOK && detail == operProgressDetailTrainingRoomBusy {
 			r.countTrainingRoomBusy(index)
 		}
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	default:
 		// Future result tokens cannot establish either success or failure.
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 }
 
 // successDetail requires a recognized completion reason and a reported value
 // compatible with the planned action before it admits any success evidence.
-func (r *operProgressReducer) successDetail(index int, detail string, detailOK bool, fields map[string]json.RawMessage) (TypedUpdate, error) {
+func (r *operProgressReducer) successDetail(index int, detail string, detailOK bool, fields map[string]json.RawMessage) (control.TypedUpdate, error) {
 	if !detailOK {
-		return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncomplete, nil), nil
+		return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncomplete, nil), nil
 	}
 	switch detail {
 	case operProgressDetailCompleted, operProgressDetailAlreadySatisfied, operProgressDetailPrerequisiteTraining:
 		return r.successFact(index, detail, fields)
 	case operProgressDetailTrainingRoomBusy:
-		return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
+		return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
 	default:
 		if _, known := operProgressFailureCodes[detail]; known {
-			return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
+			return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
 		}
 		// Unknown future success reason: derive nothing.
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 }
 
-func (r *operProgressReducer) successFact(index int, detail string, fields map[string]json.RawMessage) (TypedUpdate, error) {
+func (r *operProgressReducer) successFact(index int, detail string, fields map[string]json.RawMessage) (control.TypedUpdate, error) {
 	target := r.targets[index]
 	present := 0
 	for _, key := range []string{"elite", "skill_level", "skill_mastery"} {
@@ -275,10 +246,10 @@ func (r *operProgressReducer) successFact(index int, detail string, fields map[s
 		}
 	}
 	if present == 0 {
-		return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncomplete, nil), nil
+		return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncomplete, nil), nil
 	}
 	if present > 1 {
-		return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
+		return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
 	}
 
 	var level int
@@ -291,57 +262,57 @@ func (r *operProgressReducer) successFact(index int, detail string, fields map[s
 		raw, ok := fields[key]
 		if !ok {
 			// The reported action does not match the planned action.
-			return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
+			return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
 		}
-		n, err := operProgressInteger(raw)
+		n, err := strictjson.Integer(raw)
 		if err != nil || n < 1 || n > limit {
-			return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailMalformed, nil), nil
+			return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailMalformed, nil), nil
 		}
 		level = n
 	case operProgressActionSkillMastery:
 		raw, ok := fields["skill_mastery"]
 		if !ok {
-			return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
+			return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
 		}
 		values, ok := operProgressMasteryValues(raw)
 		if !ok || target.MasterySlot < 1 || target.MasterySlot > 3 {
-			return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailMalformed, nil), nil
+			return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailMalformed, nil), nil
 		}
 		for i, value := range values {
 			if i != target.MasterySlot-1 && value != 0 {
-				return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
+				return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
 			}
 		}
 		level = values[target.MasterySlot-1]
 		if level == 0 {
-			return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
+			return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
 		}
 	default:
-		return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailMalformed, nil), nil
+		return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailMalformed, nil), nil
 	}
 
-	outcome, code := TargetAchieved, operProgressCodeCompleted
+	outcome, code := control.TargetAchieved, operProgressCodeCompleted
 	switch detail {
 	case operProgressDetailCompleted:
 		if level != target.Expected {
-			return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
+			return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
 		}
 		if target.Action == operProgressActionSkillMastery {
 			// Core reports that training at the target mastery level started.
 			// It does not prove training finished or was independently checked.
-			outcome, code = TargetReportedTrainingStarted, operProgressCodeMasteryTrainingStarted
+			outcome, code = control.TargetReportedTrainingStarted, operProgressCodeMasteryTrainingStarted
 		}
 	case operProgressDetailAlreadySatisfied:
 		if level < target.Expected {
-			return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
+			return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
 		}
 		code = operProgressCodeAlreadySatisfied
 	case operProgressDetailPrerequisiteTraining:
 		if target.Action != operProgressActionSkillMastery || level >= target.Expected {
-			return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
+			return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncompatible, nil), nil
 		}
 		// The array reports the started prerequisite level, not the final target.
-		outcome, code = TargetReportedPrerequisiteStarted, operProgressCodeMasteryPrerequisiteStarted
+		outcome, code = control.TargetReportedPrerequisiteStarted, operProgressCodeMasteryPrerequisiteStarted
 	}
 	details, err := json.Marshal(operProgressTargetFact{
 		Action:   string(target.Action),
@@ -350,7 +321,7 @@ func (r *operProgressReducer) successFact(index int, detail string, fields map[s
 		Reported: level,
 	})
 	if err != nil {
-		return TypedUpdate{}, typedError("oper_progress: cannot encode target fact")
+		return control.TypedUpdate{}, fmt.Errorf("%w: %s", control.ErrTypedResult, "oper_progress: cannot encode target fact")
 	}
 	return r.factUpdate(index, outcome, code, details), nil
 }
@@ -359,33 +330,33 @@ func (r *operProgressReducer) successFact(index int, detail string, fields map[s
 // action or value, so the exact (role, name) identity is sufficient. A known
 // reason becomes a stable lowercase code; an unknown or missing reason keeps the
 // failure but reports that no specific reason was understood.
-func (r *operProgressReducer) failedFact(index int, detail string, detailOK bool) TypedUpdate {
+func (r *operProgressReducer) failedFact(index int, detail string, detailOK bool) control.TypedUpdate {
 	code := operProgressCodeUnspecifiedFailure
 	if detailOK {
 		switch detail {
 		case operProgressDetailCompleted, operProgressDetailAlreadySatisfied,
 			operProgressDetailPrerequisiteTraining, operProgressDetailTrainingRoomBusy:
 			// A success or skip reason cannot describe a failed result.
-			return r.factUpdate(index, TargetAmbiguous, operProgressCodeDetailIncompatible, nil)
+			return r.factUpdate(index, control.TargetAmbiguous, operProgressCodeDetailIncompatible, nil)
 		default:
 			if mapped, ok := operProgressFailureCodes[detail]; ok {
 				code = mapped
 			}
 		}
 	}
-	return r.factUpdate(index, TargetFailed, code, nil)
+	return r.factUpdate(index, control.TargetFailed, code, nil)
 }
 
 // operProgressMasteryValues accepts exactly three integer levels in 0-3 without
 // a float64 roundtrip.
 func operProgressMasteryValues(raw json.RawMessage) ([3]int, bool) {
 	var values [3]int
-	items, err := operProgressJSONArray(raw)
+	items, err := strictjson.Array(raw)
 	if err != nil || len(items) != 3 {
 		return values, false
 	}
 	for i, item := range items {
-		n, err := operProgressInteger(item)
+		n, err := strictjson.Integer(item)
 		if err != nil || n < 0 || n > 3 {
 			return values, false
 		}
@@ -398,7 +369,7 @@ func operProgressMasteryValues(raw json.RawMessage) ([3]int, bool) {
 // target update. A later different fact is still returned so the runtime can
 // report typed_conflict and preserve the original; the reducer keeps counting
 // the original fact because the runtime rejects the conflicting update.
-func (r *operProgressReducer) factUpdate(index int, outcome TargetOutcome, code string, details json.RawMessage) TypedUpdate {
+func (r *operProgressReducer) factUpdate(index int, outcome control.TargetOutcome, code string, details json.RawMessage) control.TypedUpdate {
 	if !r.factSet[index] {
 		r.factSet[index], r.facts[index] = true, outcome
 		if r.skipped[index] {
@@ -406,29 +377,29 @@ func (r *operProgressReducer) factUpdate(index int, outcome TargetOutcome, code 
 			r.trainingRoomBusy--
 		}
 	}
-	return TypedUpdate{Targets: []TargetResult{{ID: r.targets[index].ID, Outcome: outcome, Code: code, Details: details}}}
+	return control.TypedUpdate{Targets: []control.TargetResult{{ID: r.targets[index].ID, Outcome: outcome, Code: code, Details: details}}}
 }
 
 // ambiguousUpdate marks still-unobserved candidates as association-ambiguous.
 // Targets that already hold a fact keep it; an unconfirmed event must not
 // replace confirmed evidence.
-func (r *operProgressReducer) ambiguousUpdate(indexes []int) TypedUpdate {
-	var targets []TargetResult
+func (r *operProgressReducer) ambiguousUpdate(indexes []int) control.TypedUpdate {
+	var targets []control.TargetResult
 	for _, index := range indexes {
 		if r.factSet[index] {
 			continue
 		}
-		r.factSet[index], r.facts[index] = true, TargetAmbiguous
+		r.factSet[index], r.facts[index] = true, control.TargetAmbiguous
 		if r.skipped[index] {
 			r.skipped[index] = false
 			r.trainingRoomBusy--
 		}
-		targets = append(targets, TargetResult{ID: r.targets[index].ID, Outcome: TargetAmbiguous, Code: operProgressCodeAssociationAmbiguous})
+		targets = append(targets, control.TargetResult{ID: r.targets[index].ID, Outcome: control.TargetAmbiguous, Code: operProgressCodeAssociationAmbiguous})
 	}
 	if len(targets) == 0 {
-		return TypedUpdate{}
+		return control.TypedUpdate{}
 	}
-	return TypedUpdate{Targets: targets}
+	return control.TypedUpdate{Targets: targets}
 }
 
 // countTrainingRoomBusy records a skipped mastery attempt once per target. A
@@ -468,16 +439,16 @@ type operProgressSummary struct {
 	SkippedTrainingRoomBusy             int `json:"skipped_training_room_busy"`
 }
 
-func (r *operProgressReducer) observeSummary(top map[string]json.RawMessage) (TypedUpdate, error) {
+func (r *operProgressReducer) observeSummary(top map[string]json.RawMessage) (control.TypedUpdate, error) {
 	if r.summaryIssued {
 		// The first summary is immutable. A duplicate or late summary cannot
 		// replace it and must not be reported as a conflicting update.
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	if raw, ok := top["details"]; ok {
 		trimmed := bytes.TrimSpace(raw)
 		if len(trimmed) == 0 || trimmed[0] != '{' {
-			return TypedUpdate{}, nil
+			return control.TypedUpdate{}, nil
 		}
 	}
 	summary := operProgressSummary{Targets: len(r.targets), SkippedTrainingRoomBusy: r.trainingRoomBusy}
@@ -487,23 +458,23 @@ func (r *operProgressReducer) observeSummary(top map[string]json.RawMessage) (Ty
 		}
 		summary.Observed++
 		switch r.facts[i] {
-		case TargetAchieved:
+		case control.TargetAchieved:
 			summary.Achieved++
-		case TargetReportedTrainingStarted:
+		case control.TargetReportedTrainingStarted:
 			summary.ReportedTargetTrainingStarted++
-		case TargetReportedPrerequisiteStarted:
+		case control.TargetReportedPrerequisiteStarted:
 			summary.ReportedPrerequisiteTrainingStarted++
-		case TargetFailed:
+		case control.TargetFailed:
 			summary.Failed++
-		case TargetAmbiguous:
+		case control.TargetAmbiguous:
 			summary.Ambiguous++
 		}
 	}
 	summary.Unobserved = summary.Targets - summary.Observed
 	raw, err := json.Marshal(summary)
 	if err != nil {
-		return TypedUpdate{}, typedError("oper_progress: cannot encode summary")
+		return control.TypedUpdate{}, fmt.Errorf("%w: %s", control.ErrTypedResult, "oper_progress: cannot encode summary")
 	}
 	r.summaryIssued = true
-	return TypedUpdate{Summary: raw}, nil
+	return control.TypedUpdate{Summary: raw}, nil
 }

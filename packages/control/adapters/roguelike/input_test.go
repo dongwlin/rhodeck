@@ -1,4 +1,4 @@
-package control
+package roguelike
 
 import (
 	"bytes"
@@ -8,10 +8,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/internal/strictjson"
 )
 
-func roguelikeTask(params string) Task {
-	return Task{ID: "roguelike-task", Type: roguelikeTaskType, Params: json.RawMessage(params)}
+func roguelikeTask(params string) control.Task {
+	return control.Task{ID: "roguelike-task", Type: roguelikeTaskType, Params: json.RawMessage(params)}
 }
 
 func TestRoguelikePrepareAcceptsStrictInputs(t *testing.T) {
@@ -45,23 +48,23 @@ func TestRoguelikePrepareAcceptsStrictInputs(t *testing.T) {
 		`{"theme":"BlackFlow","mode":30003,"blackflow_start_animals":["swaddled_cat"],"blackflow_start_rewards":1,"blackflow_start_reward_priority":["pegasus"]}`,
 	} {
 		t.Run(params, func(t *testing.T) {
-			prepared, err := NewRoguelikeAdapter().Prepare(roguelikeTask(params))
+			prepared, err := New().Prepare(roguelikeTask(params))
 			if err != nil {
 				t.Fatal(err)
 			}
 			switch prepared.Policy {
-			case ObjectiveNone:
+			case control.ObjectiveNone:
 				if len(prepared.Targets) != 0 || prepared.Reducer != nil {
 					t.Fatalf("input-only preparation = %+v", prepared)
 				}
-			case ObjectiveAll, ObjectiveAny:
+			case control.ObjectiveAll, control.ObjectiveAny:
 				if len(prepared.Targets) == 0 || prepared.Reducer == nil {
 					t.Fatalf("interpreted preparation = %+v", prepared)
 				}
 			default:
 				t.Fatalf("unexpected objective policy %q", prepared.Policy)
 			}
-			if !validObject(prepared.Params, MaxAdapterParamsBytes) {
+			if !strictjson.ValidObject(prepared.Params, control.MaxAdapterParamsBytes) {
 				t.Fatalf("compiled params are invalid: %s", prepared.Params)
 			}
 		})
@@ -205,7 +208,7 @@ func TestRoguelikePrepareRejectsInvalidInputs(t *testing.T) {
 		"invalid utf8":              "{\"theme\":\"Phantom\",\"mode\":0,\"squad\":\"\xff\"}",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := NewRoguelikeAdapter().Prepare(roguelikeTask(params)); !errors.Is(err, ErrInvalidPlan) {
+			if _, err := New().Prepare(roguelikeTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
 				t.Fatalf("invalid input accepted: %v", err)
 			}
 		})
@@ -225,7 +228,7 @@ func TestRoguelikePrepareRejectsInvalidInputs(t *testing.T) {
 			default:
 				params = `{"theme":"Phantom","mode":0,"` + field + `":null}`
 			}
-			if _, err := NewRoguelikeAdapter().Prepare(roguelikeTask(params)); !errors.Is(err, ErrInvalidPlan) {
+			if _, err := New().Prepare(roguelikeTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
 				t.Fatalf("null input accepted: %v", err)
 			}
 		})
@@ -247,7 +250,7 @@ func TestRoguelikeModeMatrix(t *testing.T) {
 		"BlackFlow": {0: true, 1: true, 30001: true, 30003: true},
 	}
 	probes := []int{0, 1, 2, 3, 4, 5, 6, 7, 9, -1, 10001, 20001, 30001, 30003}
-	adapter := NewRoguelikeAdapter()
+	adapter := New()
 	for _, theme := range roguelikeThemes {
 		for _, mode := range probes {
 			params := fmt.Sprintf(`{"theme":%q,"mode":%d%s}`, theme, mode, requires[mode])
@@ -258,7 +261,7 @@ func TestRoguelikeModeMatrix(t *testing.T) {
 				}
 				continue
 			}
-			if !errors.Is(err, ErrInvalidPlan) {
+			if !errors.Is(err, control.ErrInvalidPlan) {
 				t.Fatalf("theme %s mode %d accepted: %v", theme, mode, err)
 			}
 		}
@@ -345,11 +348,11 @@ func TestRoguelikeCompileCapturesObjectiveSwitches(t *testing.T) {
 
 func TestRoguelikePrepareBudgets(t *testing.T) {
 	for name, params := range map[string]string{
-		"input bytes":    `{"theme":"Phantom","mode":0,"squad":"` + strings.Repeat("x", MaxAdapterParamsBytes) + `"}`,
-		"compiled bytes": `{"theme":"Phantom","mode":0,"squad":"` + strings.Repeat("<", MaxAdapterParamsBytes/6) + `"}`,
+		"input bytes":    `{"theme":"Phantom","mode":0,"squad":"` + strings.Repeat("x", control.MaxAdapterParamsBytes) + `"}`,
+		"compiled bytes": `{"theme":"Phantom","mode":0,"squad":"` + strings.Repeat("<", control.MaxAdapterParamsBytes/6) + `"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := NewRoguelikeAdapter().Prepare(roguelikeTask(params)); !errors.Is(err, ErrInvalidPlan) {
+			if _, err := New().Prepare(roguelikeTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
 				t.Fatalf("over-budget input accepted: %v", err)
 			}
 		})
@@ -358,8 +361,8 @@ func TestRoguelikePrepareBudgets(t *testing.T) {
 
 func TestRoguelikePrepareIsDetachedAndConcurrent(t *testing.T) {
 	const input = `{"theme":"Sami","mode":4,"start_foldartal_list":["远见"]}`
-	adapter := NewRoguelikeAdapter()
-	if got := adapter.Descriptor(); got != (AdapterRef{Name: "roguelike", Version: 1}) {
+	adapter := New()
+	if got := adapter.Descriptor(); got != (control.AdapterRef{Name: "roguelike", Version: 1}) {
 		t.Fatalf("descriptor = %+v", got)
 	}
 	task := roguelikeTask(input)
@@ -383,34 +386,34 @@ func TestRoguelikePrepareIsDetachedAndConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if _, err := adapter.Prepare(Task{Type: "RoguelikeSpoils", Params: json.RawMessage(input)}); !errors.Is(err, ErrInvalidPlan) {
+	if _, err := adapter.Prepare(control.Task{Type: "RoguelikeSpoils", Params: json.RawMessage(input)}); !errors.Is(err, control.ErrInvalidPlan) {
 		t.Fatalf("wrong Core task type accepted: %v", err)
 	}
 }
 
 func TestRoguelikeRawPlanRemainsOpen(t *testing.T) {
 	plan := validTestPlan(t)
-	ref := NewRoguelikeAdapter().Descriptor()
+	ref := New().Descriptor()
 	const raw = `{"theme":"Phantom","mode":9,"future":{"n":9007199254740993}}`
-	plan.Tasks = []Task{
+	plan.Tasks = []control.Task{
 		{ID: "raw", Type: "Roguelike", Params: json.RawMessage(raw)},
 		{ID: "strict", Type: "Roguelike", Adapter: &ref, Params: json.RawMessage(`{"theme":"Phantom","mode":0}`)},
 	}
-	prepared, err := PreparePlan(plan, NewRoguelikeAdapter())
+	prepared, err := control.PreparePlan(plan, New())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(prepared.Plan.Tasks[0].Params) != raw || prepared.Tasks[0].Policy != "" || prepared.Tasks[0].Typed != nil {
 		t.Fatalf("raw task changed: %+v", prepared.Tasks[0])
 	}
-	if prepared.Tasks[1].Policy != ObjectiveNone || prepared.Tasks[1].Typed != nil || len(prepared.reducers) != 0 {
+	if prepared.Tasks[1].Policy != control.ObjectiveNone || prepared.Tasks[1].Typed != nil {
 		t.Fatalf("input-only preview = %+v", prepared.Tasks[1])
 	}
 }
 
-func ExampleNewRoguelikeAdapter() {
-	adapter := NewRoguelikeAdapter()
-	prepared, err := adapter.Prepare(Task{ID: "burn", Type: "Roguelike", Params: json.RawMessage(`{"theme":"BlackFlow","mode":1,"blackflow_strategy":"investment"}`)})
+func ExampleNew() {
+	adapter := New()
+	prepared, err := adapter.Prepare(control.Task{ID: "burn", Type: "Roguelike", Params: json.RawMessage(`{"theme":"BlackFlow","mode":1,"blackflow_strategy":"investment"}`)})
 	if err != nil {
 		fmt.Println(err)
 		return

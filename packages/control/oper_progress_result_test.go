@@ -1,4 +1,4 @@
-package control
+package control_test
 
 import (
 	"bytes"
@@ -7,25 +7,28 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	. "github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/adapters/operprogress"
 )
 
 // operProgressHarness applies reducer updates to a TypedResult so tests assert
 // the same immutable-fact and aggregate behavior the runtime enforces.
 type operProgressHarness struct {
 	t       *testing.T
-	reducer *operProgressReducer
+	reducer TaskReducer
 	typed   *TypedResult
 }
 
 func newOperProgressHarness(t *testing.T, params string) *operProgressHarness {
 	t.Helper()
-	prepared, err := NewOperProgressAdapter().Prepare(operProgressTask(params))
+	prepared, err := operprogress.New().Prepare(operProgressTask(params))
 	if err != nil {
 		t.Fatalf("prepare %s: %v", params, err)
 	}
-	reducer, ok := prepared.Reducer.(*operProgressReducer)
-	if !ok {
-		t.Fatalf("reducer has type %T", prepared.Reducer)
+	reducer := prepared.Reducer
+	if reducer == nil {
+		t.Fatal("interpreted preparation has no reducer")
 	}
 	typed := &TypedResult{SchemaVersion: SchemaVersion, Adapter: AdapterRef{Name: operProgressAdapterName, Version: operProgressVersion}, Policy: ObjectiveAll}
 	for _, id := range prepared.Targets {

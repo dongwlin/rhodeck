@@ -1,11 +1,15 @@
-package control
+package copilot
 
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/internal/strictjson"
 )
 
 const (
@@ -39,7 +43,7 @@ type copilotReducer struct {
 	coreID  int32
 }
 
-func newCopilotReducer(entries []copilotEntry) TaskReducer {
+func newCopilotReducer(entries []copilotEntry) control.TaskReducer {
 	r := &copilotReducer{
 		entries: append([]copilotEntry(nil), entries...),
 		byID:    make(map[int32]int, len(entries)),
@@ -52,39 +56,39 @@ func newCopilotReducer(entries []copilotEntry) TaskReducer {
 	return r
 }
 
-// preparationProgress recognizes only source-reviewed pre-admission diagnostics.
+// IsUnassociatedProgress recognizes only source-reviewed pre-admission diagnostics.
 // Core emits these during set_params, before assigning a task ID. Its message
 // thread can deliver them after Start, so arrival time cannot identify them.
 // They neither establish an entry scope nor decide native AppendTask acceptance.
-func (*copilotReducer) preparationProgress(o Observation) bool {
+func (*copilotReducer) IsUnassociatedProgress(o control.Observation) bool {
 	if o.MessageID != copilotMessageExtra && o.MessageID != 20000 || !json.Valid(o.JSON) {
 		return false
 	}
 	d := json.NewDecoder(bytes.NewReader(o.JSON))
 	d.UseNumber()
-	if checkTypedKeys(d) != nil {
+	if strictjson.CheckKeys(d) != nil {
 		return false
 	}
 	var top map[string]json.RawMessage
 	if json.Unmarshal(o.JSON, &top) != nil || !bytes.Equal(bytes.TrimSpace(top["taskid"]), []byte("0")) {
 		return false
 	}
-	chain, _ := operProgressFieldString(top, "taskchain")
+	chain, _ := strictjson.FieldString(top, "taskchain")
 	if chain != copilotTaskType {
 		return false
 	}
-	if _, ok := operProgressDetailFields(top); !ok {
+	if _, ok := strictjson.ObjectField(top, "details"); !ok {
 		return false
 	}
-	subtask, _ := operProgressFieldString(top, "subtask")
-	what, _ := operProgressFieldString(top, "what")
+	subtask, _ := strictjson.FieldString(top, "subtask")
+	what, _ := strictjson.FieldString(top, "what")
 	if o.MessageID == copilotMessageExtra {
 		return subtask == "CopilotTask" && what == "CopilotPrecheckFile" ||
 			subtask == "BattleFormationTask" && (what == "BattleFormationOperboxMatched" || what == "BattleFormationOperbox1Unmatched") ||
 			subtask == "BattleProcessTask" && what == "UnsupportedLevel"
 	}
 	if subtask == "BattleFormationTask" {
-		why, _ := operProgressFieldString(top, "why")
+		why, _ := strictjson.FieldString(top, "why")
 		_, hasWhat := top["what"]
 		return !hasWhat && why == "OperatorMissing"
 	}
@@ -97,76 +101,76 @@ func (*copilotReducer) preparationProgress(o Observation) bool {
 	return false
 }
 
-func (r *copilotReducer) Observe(o Observation) (TypedUpdate, error) {
+func (r *copilotReducer) Observe(o control.Observation) (control.TypedUpdate, error) {
 	if o.MessageID != copilotMessageStart && o.MessageID != copilotMessageExtra || len(o.JSON) == 0 {
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	if !json.Valid(o.JSON) || len(bytes.TrimSpace(o.JSON)) == 0 || bytes.TrimSpace(o.JSON)[0] != '{' {
-		return TypedUpdate{}, typedError("copilot: callback must be a JSON object")
+		return control.TypedUpdate{}, fmt.Errorf("%w: %s", control.ErrTypedResult, "copilot: callback must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(o.JSON))
 	dec.UseNumber()
-	if err := checkTypedKeys(dec); err != nil {
-		return TypedUpdate{}, typedError("copilot: ambiguous or malformed callback fields")
+	if err := strictjson.CheckKeys(dec); err != nil {
+		return control.TypedUpdate{}, fmt.Errorf("%w: %s", control.ErrTypedResult, "copilot: ambiguous or malformed callback fields")
 	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(o.JSON, &top); err != nil {
-		return TypedUpdate{}, typedError("copilot: callback must be a JSON object")
+		return control.TypedUpdate{}, fmt.Errorf("%w: %s", control.ErrTypedResult, "copilot: callback must be a JSON object")
 	}
-	chain, _ := operProgressFieldString(top, "taskchain")
+	chain, _ := strictjson.FieldString(top, "taskchain")
 	if chain != copilotTaskType {
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	var coreID int32
 	if json.Unmarshal(top["taskid"], &coreID) != nil || coreID <= 0 || r.coreID != 0 && r.coreID != coreID {
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	r.coreID = coreID
-	subtask, _ := operProgressFieldString(top, "subtask")
+	subtask, _ := strictjson.FieldString(top, "subtask")
 	if o.MessageID == copilotMessageStart && subtask == "MultiCopilotTask" {
 		// A new entry has begun even if its later file-load callback is absent.
 		// Its settlement must not inherit the preceding entry's association.
 		r.active = -1
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	if o.MessageID == copilotMessageExtra {
-		what, _ := operProgressFieldString(top, "what")
+		what, _ := strictjson.FieldString(top, "what")
 		if what == copilotWhatLoaded {
 			// Even an unusable load boundary invalidates the previous scope;
 			// a missing id must never attribute the next stage to that entry.
 			previous := r.active
 			r.active = -1
-			fields, ok := operProgressDetailFields(top)
+			fields, ok := strictjson.ObjectField(top, "details")
 			if !ok || subtask != "MultiCopilotTask" {
-				return TypedUpdate{}, nil
+				return control.TypedUpdate{}, nil
 			}
 			var id int32
 			if json.Unmarshal(fields["id"], &id) != nil || bytes.Equal(bytes.TrimSpace(fields["id"]), []byte("null")) {
-				return TypedUpdate{}, nil
+				return control.TypedUpdate{}, nil
 			}
 			index, known := r.byID[id]
-			filename, named := operProgressFieldString(fields, "file_name")
+			filename, named := strictjson.FieldString(fields, "file_name")
 			if !known || !named || filename != copilotCallbackFilename(r.entries[index].Filename, runtime.GOOS == "windows") || r.seen[index] && previous != index {
-				return TypedUpdate{}, nil
+				return control.TypedUpdate{}, nil
 			}
 			r.active = index
 			r.seen[index] = true
 		}
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	if r.active < 0 || subtask != "ProcessTask" {
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	var first []string
 	if json.Unmarshal(top["first"], &first) != nil || len(first) != 1 || first[0] != copilotSettlementFirst {
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
-	fields, ok := operProgressDetailFields(top)
+	fields, ok := strictjson.ObjectField(top, "details")
 	if !ok {
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
-	node, _ := operProgressFieldString(fields, "task")
-	outcome, code := TargetAchieved, ""
+	node, _ := strictjson.FieldString(fields, "task")
+	outcome, code := control.TargetAchieved, ""
 	switch node {
 	case "StageDrops-Stars-3":
 		code = "three_star_clear"
@@ -175,9 +179,9 @@ func (r *copilotReducer) Observe(o Observation) (TypedUpdate, error) {
 		// stars. It is not evidence of a non-three-star clear.
 		code = "adverse_clear"
 	case "FightMissionFailed":
-		outcome, code = TargetFailed, "mission_failed"
+		outcome, code = control.TargetFailed, "mission_failed"
 	default:
-		return TypedUpdate{}, nil
+		return control.TypedUpdate{}, nil
 	}
 	entry := r.entries[r.active]
 	details, err := json.Marshal(struct {
@@ -186,7 +190,9 @@ func (r *copilotReducer) Observe(o Observation) (TypedUpdate, error) {
 		Raid  bool  `json:"is_raid"`
 	}{entry.ID, entry.SourceIndex, entry.IsRaid})
 	if err != nil {
-		return TypedUpdate{}, typedError("copilot: cannot encode entry identity")
+		return control.TypedUpdate{}, fmt.Errorf("%w: %s", control.ErrTypedResult, "copilot: cannot encode entry identity")
 	}
-	return TypedUpdate{Targets: []TargetResult{{ID: copilotTargetID(entry.ID), Outcome: outcome, Code: code, Details: details}}}, nil
+	return control.TypedUpdate{Targets: []control.TargetResult{{ID: copilotTargetID(entry.ID), Outcome: outcome, Code: code, Details: details}}}, nil
 }
+
+var _ control.UnassociatedObservationClassifier = (*copilotReducer)(nil)

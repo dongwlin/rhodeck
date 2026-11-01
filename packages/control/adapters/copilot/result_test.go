@@ -1,4 +1,4 @@
-package control
+package copilot
 
 import (
 	"bytes"
@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+
+	"github.com/dongwlin/rhodeck/packages/control"
 )
 
 func copilotResultEntries() []copilotEntry {
@@ -25,16 +27,16 @@ func copilotResultNode(node string) string {
 	return fmt.Sprintf(`{"taskchain":"Copilot","taskid":101,"subtask":"ProcessTask","first":["Copilot@WaitUntilEndOfAction"],"details":{"task":%q}}`, node)
 }
 
-func observeCopilotResult(t *testing.T, reducer TaskReducer, messageID int32, raw string) TypedUpdate {
+func observeCopilotResult(t *testing.T, reducer control.TaskReducer, messageID int32, raw string) control.TypedUpdate {
 	t.Helper()
-	update, err := reducer.Observe(Observation{MessageID: messageID, JSON: json.RawMessage(raw)})
+	update, err := reducer.Observe(control.Observation{MessageID: messageID, JSON: json.RawMessage(raw)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return update
 }
 
-func requireNoCopilotFacts(t *testing.T, update TypedUpdate) {
+func requireNoCopilotFacts(t *testing.T, update control.TypedUpdate) {
 	t.Helper()
 	if len(update.Targets) != 0 || len(update.Summary) != 0 {
 		t.Fatalf("callback manufactured business facts: %+v", update)
@@ -62,19 +64,19 @@ func mutateCopilotResultField(t *testing.T, source, field, value string) string 
 func TestCopilotReducerInterpretsOnlyAssociatedStageFacts(t *testing.T) {
 	for _, test := range []struct {
 		node    string
-		outcome TargetOutcome
+		outcome control.TargetOutcome
 		code    string
 	}{
-		{"StageDrops-Stars-3", TargetAchieved, "three_star_clear"},
-		{"StageDrops-Stars-Adverse", TargetAchieved, "adverse_clear"},
-		{"FightMissionFailed", TargetFailed, "mission_failed"},
+		{"StageDrops-Stars-3", control.TargetAchieved, "three_star_clear"},
+		{"StageDrops-Stars-Adverse", control.TargetAchieved, "adverse_clear"},
+		{"FightMissionFailed", control.TargetFailed, "mission_failed"},
 	} {
 		t.Run(test.node, func(t *testing.T) {
 			reducer := newCopilotReducer(copilotResultEntries())
 			requireNoCopilotFacts(t, observeCopilotResult(t, reducer, 20003, copilotResultLoad(7, "same.json")))
 			raw := copilotResultNode(test.node)
 			update := observeCopilotResult(t, reducer, 20001, raw)
-			want := TypedUpdate{Targets: []TargetResult{{ID: "copilot:7", Outcome: test.outcome, Code: test.code, Details: json.RawMessage(`{"entry_id":7,"entry_index":1,"is_raid":true}`)}}}
+			want := control.TypedUpdate{Targets: []control.TargetResult{{ID: "copilot:7", Outcome: test.outcome, Code: test.code, Details: json.RawMessage(`{"entry_id":7,"entry_index":1,"is_raid":true}`)}}}
 			if !reflect.DeepEqual(update, want) {
 				t.Fatalf("associated stage fact = %+v, want %+v", update, want)
 			}
@@ -259,8 +261,8 @@ func TestCopilotReducerRejectsMalformedAndDuplicateCallbacks(t *testing.T) {
 		for _, messageID := range []int32{20001, 20003} {
 			t.Run(fmt.Sprint(messageID)+raw, func(t *testing.T) {
 				reducer := newCopilotReducer(copilotResultEntries())
-				update, err := reducer.Observe(Observation{MessageID: messageID, JSON: json.RawMessage(raw)})
-				if !errors.Is(err, ErrTypedResult) {
+				update, err := reducer.Observe(control.Observation{MessageID: messageID, JSON: json.RawMessage(raw)})
+				if !errors.Is(err, control.ErrTypedResult) {
 					t.Fatalf("malformed callback error = %v", err)
 				}
 				requireNoCopilotFacts(t, update)

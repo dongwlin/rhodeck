@@ -1,17 +1,20 @@
-package control
+package copilot
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
+
+	"github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/internal/strictjson"
 )
 
 const (
 	copilotTaskType    = "Copilot"
 	copilotAdapterName = "copilot"
 	copilotVersion     = 1
-	copilotMaxEntries  = MaxTypedTargetsPerTask
+	copilotMaxEntries  = control.MaxTypedTargetsPerTask
 )
 
 // copilotEntry keeps the submitted identity separate from the source file.
@@ -24,7 +27,7 @@ type copilotEntry struct {
 	NavNameOverride *string
 }
 
-// NewCopilotAdapter returns the strict, explicitly selected copilot@1 adapter
+// New returns the strict, explicitly selected copilot@1 adapter
 // for the Copilot Core task. Raw Copilot tasks remain open Core inputs.
 //
 // Prepare requires exactly one of filename or a nonempty copilot_list. It
@@ -39,46 +42,46 @@ type copilotEntry struct {
 // Single-file and loop preparation uses ObjectiveNone. Lists use ObjectiveAll
 // with one target per compiled entry ID. Only explicitly associated settlement
 // nodes establish a clear or failure; chain completion does not. Preparation
-// makes no device-readiness claim. See typed-adapters.md for the result scope.
-func NewCopilotAdapter() TaskAdapter { return copilotAdapter{} }
+// makes no device-readiness claim. See the control package typed-adapter documentation for the result scope.
+func New() control.TaskAdapter { return copilotAdapter{} }
 
 type copilotAdapter struct{}
 
-func (copilotAdapter) Descriptor() AdapterRef {
-	return AdapterRef{Name: copilotAdapterName, Version: copilotVersion}
+func (copilotAdapter) Descriptor() control.AdapterRef {
+	return control.AdapterRef{Name: copilotAdapterName, Version: copilotVersion}
 }
 
-func (copilotAdapter) Prepare(task Task) (PreparedTask, error) {
+func (copilotAdapter) Prepare(task control.Task) (control.PreparedTask, error) {
 	if task.Type != copilotTaskType {
-		return PreparedTask{}, copilotReject("adapter requires Core type %q", copilotTaskType)
+		return control.PreparedTask{}, copilotReject("adapter requires Core type %q", copilotTaskType)
 	}
 	params, entries, err := compileCopilot(task.Params)
 	if err != nil {
-		return PreparedTask{}, err
+		return control.PreparedTask{}, err
 	}
 	if len(entries) == 0 {
-		return PreparedTask{Params: params, Policy: ObjectiveNone}, nil
+		return control.PreparedTask{Params: params, Policy: control.ObjectiveNone}, nil
 	}
 	targets := make([]string, len(entries))
 	for i, entry := range entries {
 		targets[i] = copilotTargetID(entry.ID)
 	}
-	return PreparedTask{Params: params, Policy: ObjectiveAll, Targets: targets, Reducer: newCopilotReducer(entries)}, nil
+	return control.PreparedTask{Params: params, Policy: control.ObjectiveAll, Targets: targets, Reducer: newCopilotReducer(entries)}, nil
 }
 
 func copilotReject(format string, args ...any) error {
-	return fmt.Errorf("%w: copilot: %s", ErrInvalidPlan, fmt.Sprintf(format, args...))
+	return fmt.Errorf("%w: copilot: %s", control.ErrInvalidPlan, fmt.Sprintf(format, args...))
 }
 
 // compileCopilot returns detached Core params and the stable list mapping for
 // task-local result interpretation. It has no file, native or device effects.
 func compileCopilot(raw json.RawMessage) (json.RawMessage, []copilotEntry, error) {
-	if !validObject(raw, MaxAdapterParamsBytes) {
-		return nil, nil, copilotReject("params must be a JSON object of at most %d bytes", MaxAdapterParamsBytes)
+	if !strictjson.ValidObject(raw, control.MaxAdapterParamsBytes) {
+		return nil, nil, copilotReject("params must be a JSON object of at most %d bytes", control.MaxAdapterParamsBytes)
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
-	if err := checkTypedKeys(d); err != nil {
+	if err := strictjson.CheckKeys(d); err != nil {
 		return nil, nil, copilotReject("params contain duplicate or malformed fields")
 	}
 	var fields map[string]json.RawMessage
@@ -125,7 +128,7 @@ func compileCopilot(raw json.RawMessage) (json.RawMessage, []copilotEntry, error
 		max  int
 	}{{"formation_index", 4}, {"support_unit_usage", 3}} {
 		if value, ok := fields[option.name]; ok {
-			n, err := operProgressInteger(value)
+			n, err := strictjson.Integer(value)
 			if err != nil || n < 0 || n > option.max {
 				return nil, nil, copilotReject("%s must be an integer 0-%d", option.name, option.max)
 			}
@@ -180,8 +183,8 @@ func compileCopilot(raw json.RawMessage) (json.RawMessage, []copilotEntry, error
 		}
 	}
 	params, err := json.Marshal(fields)
-	if err != nil || len(params) > MaxAdapterParamsBytes {
-		return nil, nil, copilotReject("compiled params exceed %d bytes", MaxAdapterParamsBytes)
+	if err != nil || len(params) > control.MaxAdapterParamsBytes {
+		return nil, nil, copilotReject("compiled params exceed %d bytes", control.MaxAdapterParamsBytes)
 	}
 	return params, entries, nil
 }
@@ -194,7 +197,7 @@ type copilotCoreEntry struct {
 }
 
 func decodeCopilotEntries(raw json.RawMessage) ([]copilotEntry, error) {
-	items, err := operProgressJSONArray(raw)
+	items, err := strictjson.Array(raw)
 	if err != nil || len(items) == 0 || len(items) > copilotMaxEntries {
 		return nil, copilotReject("copilot_list must contain 1-%d objects", copilotMaxEntries)
 	}
@@ -203,7 +206,7 @@ func decodeCopilotEntries(raw json.RawMessage) ([]copilotEntry, error) {
 	used := make(map[int32]bool, len(items))
 	for i, raw := range items {
 		var fields map[string]json.RawMessage
-		if !validObject(raw, MaxAdapterParamsBytes) || json.Unmarshal(raw, &fields) != nil {
+		if !strictjson.ValidObject(raw, control.MaxAdapterParamsBytes) || json.Unmarshal(raw, &fields) != nil {
 			return nil, copilotReject("copilot_list entry %d must be an object", i)
 		}
 		entry := copilotEntry{SourceIndex: i}
@@ -223,7 +226,7 @@ func decodeCopilotEntries(raw json.RawMessage) ([]copilotEntry, error) {
 		}
 		entry.Filename = filename
 		if value, ok := fields["id"]; ok {
-			id, err := operProgressInteger(value)
+			id, err := strictjson.Integer(value)
 			if err != nil || int64(id) < -1<<31 || int64(id) > 1<<31-1 {
 				return nil, copilotReject("copilot_list entry %d id must be a signed 32-bit integer", i)
 			}
@@ -265,14 +268,14 @@ func decodeCopilotEntries(raw json.RawMessage) ([]copilotEntry, error) {
 }
 
 func validateCopilotAdditional(raw json.RawMessage) error {
-	items, err := operProgressJSONArray(raw)
+	items, err := strictjson.Array(raw)
 	if err != nil {
 		return copilotReject("user_additional must be an array")
 	}
 	seen := make(map[string]bool, len(items))
 	for i, raw := range items {
 		var fields map[string]json.RawMessage
-		if !validObject(raw, MaxAdapterParamsBytes) || json.Unmarshal(raw, &fields) != nil {
+		if !strictjson.ValidObject(raw, control.MaxAdapterParamsBytes) || json.Unmarshal(raw, &fields) != nil {
 			return copilotReject("user_additional entry %d must be an object", i)
 		}
 		for name := range fields {
@@ -285,7 +288,7 @@ func validateCopilotAdditional(raw json.RawMessage) error {
 			return copilotReject("user_additional entry %d requires a unique nonempty name without NUL", i)
 		}
 		seen[name] = true
-		skill, err := operProgressInteger(fields["skill"])
+		skill, err := strictjson.Integer(fields["skill"])
 		if err != nil || skill < 0 || skill > 3 {
 			return copilotReject("user_additional entry %d skill must be an integer 0-3", i)
 		}
@@ -294,8 +297,8 @@ func validateCopilotAdditional(raw json.RawMessage) error {
 }
 
 func copilotString(raw json.RawMessage, empty bool) (string, error) {
-	s, err := operProgressDecodeString(raw)
-	if err != nil || !validText(s, MaxAdapterParamsBytes, empty) {
+	s, err := strictjson.String(raw)
+	if err != nil || !strictjson.ValidText(s, control.MaxAdapterParamsBytes, empty) {
 		return "", copilotReject("invalid string")
 	}
 	return s, nil

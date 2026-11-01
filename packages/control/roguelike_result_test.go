@@ -1,4 +1,4 @@
-package control
+package control_test
 
 import (
 	"encoding/json"
@@ -7,6 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	. "github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/adapters/roguelike"
 )
 
 func roguelikeSettlement(taskid int32, node string) string {
@@ -57,12 +60,18 @@ func roguelikeMutateField(t *testing.T, source, field, value string) string {
 
 // roguelikePreparedPlan prepares one roguelike task and returns its preview
 // with the unobserved typed skeleton, mirroring what a dry-run shows.
-func roguelikePreparedPlan(t *testing.T, params string) PreparedPlan {
+type roguelikePreparedPreview struct {
+	PreparedPlan
+	reducers map[int]TaskReducer
+}
+
+func roguelikePreparedPlan(t *testing.T, params string) roguelikePreparedPreview {
 	t.Helper()
 	plan := validTestPlan(t)
-	ref := NewRoguelikeAdapter().Descriptor()
+	ref := roguelike.New().Descriptor()
 	plan.Tasks = []Task{{ID: "roguelike-task", Type: "Roguelike", Adapter: &ref, Params: json.RawMessage(params)}}
-	prepared, err := PreparePlan(plan, NewRoguelikeAdapter())
+	preview, err := PreparePlan(plan, roguelike.New())
+	prepared := roguelikePreparedPreview{PreparedPlan: preview, reducers: PreparedReducersForTest(preview)}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +143,7 @@ func TestRoguelikeObjectivePolicyMatrix(t *testing.T) {
 		{"mode 30001", `{"theme":"BlackFlow","mode":30001,"blackflow_strategy":"baby_animal"}`, ObjectiveNone, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			prepared, err := NewRoguelikeAdapter().Prepare(roguelikeTask(test.params))
+			prepared, err := roguelike.New().Prepare(roguelikeTask(test.params))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -150,7 +159,7 @@ func TestRoguelikeObjectivePolicyMatrix(t *testing.T) {
 			if !reflect.DeepEqual(prepared.Targets, test.targets) || prepared.Reducer == nil {
 				t.Fatalf("targets = %v, want %v with a reducer", prepared.Targets, test.targets)
 			}
-			again, err := NewRoguelikeAdapter().Prepare(roguelikeTask(test.params))
+			again, err := roguelike.New().Prepare(roguelikeTask(test.params))
 			if err != nil || again.Policy != prepared.Policy || !reflect.DeepEqual(again.Targets, prepared.Targets) {
 				t.Fatalf("preparation was not deterministic: %+v, %v", again, err)
 			}
@@ -160,12 +169,12 @@ func TestRoguelikeObjectivePolicyMatrix(t *testing.T) {
 
 func TestRoguelikeObjectiveSelectionIsVisibleInPreview(t *testing.T) {
 	plan := validTestPlan(t)
-	ref := NewRoguelikeAdapter().Descriptor()
+	ref := roguelike.New().Descriptor()
 	plan.Tasks = []Task{
 		{ID: "runs", Type: "Roguelike", Adapter: &ref, Params: json.RawMessage(`{"theme":"Phantom","mode":0,"starts_count":2}`)},
 		{ID: "plain", Type: "Roguelike", Adapter: &ref, Params: json.RawMessage(`{"theme":"Phantom","mode":4}`)},
 	}
-	prepared, err := PreparePlan(plan, NewRoguelikeAdapter())
+	prepared, err := PreparePlan(plan, roguelike.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +497,8 @@ func TestRoguelikeReducerRejectsMalformedAndDuplicateCallbacks(t *testing.T) {
 
 func TestRoguelikeReducerClassifiesBlackFlowEnvironment(t *testing.T) {
 	prepared := roguelikePreparedPlan(t, `{"theme":"BlackFlow","mode":30003,"blackflow_start_animals":["swaddled_cat"],"blackflow_start_rewards":1}`)
-	reducer := prepared.reducers[0].(*roguelikeReducer)
+	reducer := prepared.reducers[0]
+	classifier := reducer.(UnassociatedObservationClassifier)
 	for _, test := range []struct {
 		messageID int32
 		raw       string
@@ -498,7 +508,7 @@ func TestRoguelikeReducerClassifiesBlackFlowEnvironment(t *testing.T) {
 		{20002, `{"taskchain":"Roguelike","taskid":0,"subtask":"ProcessTask","details":{"task":"RolesDefault"}}`},
 		{20003, `{"taskchain":"Roguelike","taskid":0,"subtask":"BlackFlowTask","what":"BlackFlowInventoryCleanup","details":{"status":"cleaned","name":"Cell"}}`},
 	} {
-		if !reducer.preparationProgress(Observation{MessageID: test.messageID, JSON: json.RawMessage(test.raw)}) {
+		if !classifier.IsUnassociatedProgress(Observation{MessageID: test.messageID, JSON: json.RawMessage(test.raw)}) {
 			t.Fatalf("internal callback was not classified as environment: %d %s", test.messageID, test.raw)
 		}
 	}
@@ -512,7 +522,7 @@ func TestRoguelikeReducerClassifiesBlackFlowEnvironment(t *testing.T) {
 		{20001, `{"taskchain":"Roguelike","taskid":0,"subtask":"ProcessTask","details":{"task":"a","task":"b"}}`},
 		{20001, `{"taskchain":"Roguelike"}`},
 	} {
-		if reducer.preparationProgress(Observation{MessageID: test.messageID, JSON: json.RawMessage(test.raw)}) {
+		if classifier.IsUnassociatedProgress(Observation{MessageID: test.messageID, JSON: json.RawMessage(test.raw)}) {
 			t.Fatalf("associated or malformed callback was absorbed: %d %s", test.messageID, test.raw)
 		}
 	}

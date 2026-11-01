@@ -5,6 +5,10 @@ import (
 	"strings"
 
 	"github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/adapters/copilot"
+	"github.com/dongwlin/rhodeck/packages/control/adapters/operprogress"
+	"github.com/dongwlin/rhodeck/packages/control/adapters/roguelike"
+	"github.com/dongwlin/rhodeck/packages/control/adapters/switchtheme"
 )
 
 // adapterBasis records the implementation review behind the bundled adapters.
@@ -75,7 +79,7 @@ func cliAdapterSpecs() []cliAdapterSpec {
 				"oper_progress: target achievements and training-start reports have no authorized device acceptance",
 				"oper_progress: a mastery Completed report means training at the target level started; it does not prove training finished or was independently confirmed",
 			},
-			newAdapter: control.NewOperProgressAdapter,
+			newAdapter: operprogress.New,
 		},
 		{
 			coreType:             "SwitchTheme",
@@ -88,7 +92,7 @@ func cliAdapterSpecs() []cliAdapterSpec {
 				"switch_theme: already-set, locked, not-found and confirmation observations have no authorized device acceptance",
 				"switch_theme: multiple candidates are a single random selection, not a sequential retry, progressive-switch list or failure fallback; this is not device-verified",
 			},
-			newAdapter: control.NewSwitchThemeAdapter,
+			newAdapter: switchtheme.New,
 		},
 		{
 			coreType:             "Copilot",
@@ -102,7 +106,7 @@ func cliAdapterSpecs() []cliAdapterSpec {
 				"copilot: per-entry clear and failure facts have no authorized device acceptance",
 				"copilot: load success, append acceptance and chain completion do not establish stage facts; a completed single-file or loop chain does not prove a clear or a safe device handoff",
 			},
-			newAdapter: control.NewCopilotAdapter,
+			newAdapter: copilot.New,
 		},
 		{
 			coreType:             "Roguelike",
@@ -116,7 +120,7 @@ func cliAdapterSpecs() []cliAdapterSpec {
 				"roguelike: run settlement, investment, rotation, target-found and start-run facts have no authorized device acceptance",
 				"roguelike: missing settlement evidence stays unobserved even after chain completion and is never inferred from finished tasks",
 			},
-			newAdapter: control.NewRoguelikeAdapter,
+			newAdapter: roguelike.New,
 		},
 	}
 }

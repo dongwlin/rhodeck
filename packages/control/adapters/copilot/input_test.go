@@ -1,4 +1,4 @@
-package control
+package copilot
 
 import (
 	"bytes"
@@ -9,10 +9,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/internal/strictjson"
 )
 
-func copilotTask(params string) Task {
-	return Task{ID: "copilot-task", Type: copilotTaskType, Params: json.RawMessage(params)}
+func copilotTask(params string) control.Task {
+	return control.Task{ID: "copilot-task", Type: copilotTaskType, Params: json.RawMessage(params)}
 }
 
 func TestCopilotPrepareAcceptsStrictInputs(t *testing.T) {
@@ -29,18 +32,18 @@ func TestCopilotPrepareAcceptsStrictInputs(t *testing.T) {
 		`{"filename":"\ud83d\ude00.json"}`,
 	} {
 		t.Run(params, func(t *testing.T) {
-			prepared, err := NewCopilotAdapter().Prepare(copilotTask(params))
+			prepared, err := New().Prepare(copilotTask(params))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !validObject(prepared.Params, MaxAdapterParamsBytes) {
+			if !strictjson.ValidObject(prepared.Params, control.MaxAdapterParamsBytes) {
 				t.Fatalf("compiled params are invalid: %s", prepared.Params)
 			}
 			if strings.Contains(params, `"copilot_list"`) {
-				if prepared.Policy != ObjectiveAll || len(prepared.Targets) == 0 || prepared.Reducer == nil {
+				if prepared.Policy != control.ObjectiveAll || len(prepared.Targets) == 0 || prepared.Reducer == nil {
 					t.Fatalf("list preparation = %+v", prepared)
 				}
-			} else if prepared.Policy != ObjectiveNone || len(prepared.Targets) != 0 || prepared.Reducer != nil {
+			} else if prepared.Policy != control.ObjectiveNone || len(prepared.Targets) != 0 || prepared.Reducer != nil {
 				t.Fatalf("input-only preparation = %+v", prepared)
 			}
 		})
@@ -112,7 +115,7 @@ func TestCopilotPrepareRejectsInvalidInputs(t *testing.T) {
 		"trailing input":          `{"filename":"x"}{}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := NewCopilotAdapter().Prepare(copilotTask(params)); !errors.Is(err, ErrInvalidPlan) {
+			if _, err := New().Prepare(copilotTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
 				t.Fatalf("invalid input accepted: %v", err)
 			}
 		})
@@ -123,7 +126,7 @@ func TestCopilotPrepareRejectsInvalidInputs(t *testing.T) {
 			if field == "filename" {
 				params = `{"filename":null}`
 			}
-			if _, err := NewCopilotAdapter().Prepare(copilotTask(params)); !errors.Is(err, ErrInvalidPlan) {
+			if _, err := New().Prepare(copilotTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
 				t.Fatalf("null input accepted: %v", err)
 			}
 		})
@@ -134,7 +137,7 @@ func TestCopilotPrepareRejectsInvalidInputs(t *testing.T) {
 			if field == "filename" {
 				params = `{"copilot_list":[{"filename":null}]}`
 			}
-			if _, err := NewCopilotAdapter().Prepare(copilotTask(params)); !errors.Is(err, ErrInvalidPlan) {
+			if _, err := New().Prepare(copilotTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
 				t.Fatalf("null list input accepted: %v", err)
 			}
 		})
@@ -184,26 +187,26 @@ func TestCopilotCompilePreservesFieldsAndEntryIdentity(t *testing.T) {
 
 func TestCopilotPrepareBudgets(t *testing.T) {
 	for name, params := range map[string]string{
-		"input bytes":    `{"filename":"` + strings.Repeat("x", MaxAdapterParamsBytes) + `"}`,
-		"compiled bytes": `{"filename":"` + strings.Repeat("<", MaxAdapterParamsBytes/6) + `"}`,
+		"input bytes":    `{"filename":"` + strings.Repeat("x", control.MaxAdapterParamsBytes) + `"}`,
+		"compiled bytes": `{"filename":"` + strings.Repeat("<", control.MaxAdapterParamsBytes/6) + `"}`,
 		"entry count":    `{"copilot_list":[` + strings.TrimSuffix(strings.Repeat(`{"filename":"x"},`, copilotMaxEntries+1), ",") + `]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := NewCopilotAdapter().Prepare(copilotTask(params)); !errors.Is(err, ErrInvalidPlan) {
+			if _, err := New().Prepare(copilotTask(params)); !errors.Is(err, control.ErrInvalidPlan) {
 				t.Fatalf("over-budget input accepted: %v", err)
 			}
 		})
 	}
 	params := `{"copilot_list":[` + strings.TrimSuffix(strings.Repeat(`{"filename":"x"},`, copilotMaxEntries), ",") + `]}`
-	if _, err := NewCopilotAdapter().Prepare(copilotTask(params)); err != nil {
+	if _, err := New().Prepare(copilotTask(params)); err != nil {
 		t.Fatalf("entry limit rejected: %v", err)
 	}
 }
 
 func TestCopilotPrepareIsDetachedAndConcurrent(t *testing.T) {
 	const input = `{"copilot_list":[{"filename":"not-present/../job.json","is_raid":true}]}`
-	adapter := NewCopilotAdapter()
-	if got := adapter.Descriptor(); got != (AdapterRef{Name: "copilot", Version: 1}) {
+	adapter := New()
+	if got := adapter.Descriptor(); got != (control.AdapterRef{Name: "copilot", Version: 1}) {
 		t.Fatalf("descriptor = %+v", got)
 	}
 	task := copilotTask(input)
@@ -227,27 +230,27 @@ func TestCopilotPrepareIsDetachedAndConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if _, err := adapter.Prepare(Task{Type: "ParadoxCopilot", Params: json.RawMessage(input)}); !errors.Is(err, ErrInvalidPlan) {
+	if _, err := adapter.Prepare(control.Task{Type: "ParadoxCopilot", Params: json.RawMessage(input)}); !errors.Is(err, control.ErrInvalidPlan) {
 		t.Fatalf("wrong Core task type accepted: %v", err)
 	}
 }
 
 func TestCopilotRawPlanRemainsOpen(t *testing.T) {
 	plan := validTestPlan(t)
-	ref := NewCopilotAdapter().Descriptor()
+	ref := New().Descriptor()
 	const raw = `{"future":{"n":9007199254740993},"is_paradox":true}`
-	plan.Tasks = []Task{
+	plan.Tasks = []control.Task{
 		{ID: "raw", Type: "Copilot", Params: json.RawMessage(raw)},
 		{ID: "strict", Type: "Copilot", Adapter: &ref, Params: json.RawMessage(`{"filename":"unavailable/../job.json"}`)},
 	}
-	prepared, err := PreparePlan(plan, NewCopilotAdapter())
+	prepared, err := control.PreparePlan(plan, New())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(prepared.Plan.Tasks[0].Params) != raw || prepared.Tasks[0].Policy != "" || prepared.Tasks[0].Typed != nil {
 		t.Fatalf("raw task changed: %+v", prepared.Tasks[0])
 	}
-	if prepared.Tasks[1].Policy != ObjectiveNone || prepared.Tasks[1].Typed != nil || len(prepared.reducers) != 0 {
+	if prepared.Tasks[1].Policy != control.ObjectiveNone || prepared.Tasks[1].Typed != nil {
 		t.Fatalf("input-only preview = %+v", prepared.Tasks[1])
 	}
 	if !bytes.Contains(prepared.Plan.Tasks[1].Params, []byte(`"filename":"unavailable/../job.json"`)) {
@@ -255,9 +258,9 @@ func TestCopilotRawPlanRemainsOpen(t *testing.T) {
 	}
 }
 
-func ExampleNewCopilotAdapter() {
-	adapter := NewCopilotAdapter()
-	prepared, err := adapter.Prepare(Task{ID: "battle", Type: "Copilot", Params: json.RawMessage(`{"filename":"job.json","loop_times":2}`)})
+func ExampleNew() {
+	adapter := New()
+	prepared, err := adapter.Prepare(control.Task{ID: "battle", Type: "Copilot", Params: json.RawMessage(`{"filename":"job.json","loop_times":2}`)})
 	if err != nil {
 		fmt.Println(err)
 		return

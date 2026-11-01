@@ -1,4 +1,4 @@
-package control
+package control_test
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	. "github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/adapters/copilot"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
 
@@ -137,7 +139,7 @@ func TestCopilotPreparationCallbacksBeforeAppendResponse(t *testing.T) {
 	} {
 		t.Run(params, func(t *testing.T) {
 			cfg := runtimeConfig(t, "copilot-preparation")
-			cfg.Adapters = []TaskAdapter{NewCopilotAdapter()}
+			cfg.Adapters = []TaskAdapter{copilot.New()}
 			rt := newRuntime(t, cfg)
 			run, err := rt.Run(context.Background(), copilotRuntimePlan(t, params))
 			if err != nil {
@@ -181,7 +183,7 @@ func TestCopilotPreparationErrorsLeaveAppendResponseAuthoritative(t *testing.T) 
 		t.Run(reason, func(t *testing.T) {
 			cfg := runtimeConfig(t, "copilot-preparation")
 			cfg.Worker.Env = append(cfg.Worker.Env, "RHODECK_TEST_COPILOT_PREPARATION_REJECT="+reason)
-			cfg.Adapters = []TaskAdapter{NewCopilotAdapter()}
+			cfg.Adapters = []TaskAdapter{copilot.New()}
 			rt := newRuntime(t, cfg)
 			run, err := rt.Run(context.Background(), copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"}]}`))
 			if err != nil {
@@ -205,7 +207,7 @@ func TestCopilotPreparationErrorsInMixedInputOnlyTask(t *testing.T) {
 		t.Run(reason, func(t *testing.T) {
 			cfg := runtimeConfig(t, "copilot-preparation")
 			cfg.Worker.Env = append(cfg.Worker.Env, "RHODECK_TEST_COPILOT_PREPARATION_REJECT="+reason, "RHODECK_TEST_COPILOT_PREPARATION_REJECT_AT=2")
-			cfg.Adapters = []TaskAdapter{NewCopilotAdapter()}
+			cfg.Adapters = []TaskAdapter{copilot.New()}
 			rt := newRuntime(t, cfg)
 			plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"}]}`, `{"filename":"same.json"}`)
 			run, err := rt.Run(context.Background(), plan)
@@ -227,7 +229,7 @@ func TestCopilotPreparationErrorsInMixedInputOnlyTask(t *testing.T) {
 
 func TestCopilotPreparationLateProgressPreservesActiveEntryScope(t *testing.T) {
 	plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"}]}`)
-	run := newPreparedTypedHarness(t, plan, []int32{101}, true, NewCopilotAdapter())
+	run := newPreparedTypedHarness(t, plan, []int32{101}, true, copilot.New())
 	sendTypedCallback(t, run, 20003, copilotRuntimeLoad(101, 7, "same.json"))
 	for _, callback := range []string{
 		copilotPreparationCallback("CopilotTask", "CopilotPrecheckFile", ""),
@@ -236,12 +238,12 @@ func TestCopilotPreparationLateProgressPreservesActiveEntryScope(t *testing.T) {
 	} {
 		sendTypedCallback(t, run, 20003, callback)
 	}
-	if run.fatal != "" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved || len(typedEventsIn(run)) != 0 {
-		t.Fatalf("late preparation progress became a target fact: fatal=%s, result=%+v", run.fatal, run.Snapshot())
+	if InspectRunForTest(run).Fatal != "" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved || len(typedEventsIn(run)) != 0 {
+		t.Fatalf("late preparation progress became a target fact: fatal=%s, result=%+v", InspectRunForTest(run).Fatal, run.Snapshot())
 	}
 	sendTypedCallback(t, run, 20001, copilotRuntimeNode(101, "StageDrops-Stars-3"))
-	if run.fatal != "" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || len(typedEventsIn(run)) != 1 {
-		t.Fatalf("late preparation progress cleared entry scope: fatal=%s, result=%+v", run.fatal, run.Snapshot())
+	if InspectRunForTest(run).Fatal != "" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || len(typedEventsIn(run)) != 1 {
+		t.Fatalf("late preparation progress cleared entry scope: fatal=%s, result=%+v", InspectRunForTest(run).Fatal, run.Snapshot())
 	}
 }
 
@@ -267,10 +269,10 @@ func TestCopilotPreparationExceptionRejectsUnassociatedEvidence(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"}]}`)
-			run := newPreparedTypedHarness(t, plan, []int32{101}, false, NewCopilotAdapter())
+			run := newPreparedTypedHarness(t, plan, []int32{101}, false, copilot.New())
 			sendTypedCallback(t, run, test.messageID, test.raw)
-			if run.fatal != "typed_invalid_event" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved || len(typedEventsIn(run)) != 0 {
-				t.Fatalf("invalid pre-acceptance evidence was admitted: fatal=%s, result=%+v", run.fatal, run.Snapshot())
+			if InspectRunForTest(run).Fatal != "typed_invalid_event" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved || len(typedEventsIn(run)) != 0 {
+				t.Fatalf("invalid pre-acceptance evidence was admitted: fatal=%s, result=%+v", InspectRunForTest(run).Fatal, run.Snapshot())
 			}
 		})
 	}

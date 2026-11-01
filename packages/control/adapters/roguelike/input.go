@@ -1,16 +1,20 @@
-package control
+package roguelike
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/internal/strictjson"
 )
 
 const (
-	roguelikeTaskType    = "Roguelike"
-	roguelikeAdapterName = "roguelike"
-	roguelikeVersion     = 1
+	roguelikeTaskType             = "Roguelike"
+	roguelikeAdapterName          = "roguelike"
+	roguelikeVersion              = 1
+	roguelikeMaxOperatorNameBytes = 256
 )
 
 // Theme names are exact, case-sensitive Core identifiers.
@@ -63,7 +67,7 @@ var (
 	}
 )
 
-// NewRoguelikeAdapter returns the strict, explicitly selected roguelike@1
+// New returns the strict, explicitly selected roguelike@1
 // adapter for the Roguelike Core task. Raw Roguelike tasks remain open Core
 // inputs.
 //
@@ -162,33 +166,33 @@ var (
 // device. It verifies local structure and budgets only; theme unlock state,
 // squad and operator names, seeds, foldartal names and reward identifiers
 // against the installed resources, and device readiness remain unverified.
-func NewRoguelikeAdapter() TaskAdapter { return roguelikeAdapter{} }
+func New() control.TaskAdapter { return roguelikeAdapter{} }
 
 type roguelikeAdapter struct{}
 
-func (roguelikeAdapter) Descriptor() AdapterRef {
-	return AdapterRef{Name: roguelikeAdapterName, Version: roguelikeVersion}
+func (roguelikeAdapter) Descriptor() control.AdapterRef {
+	return control.AdapterRef{Name: roguelikeAdapterName, Version: roguelikeVersion}
 }
 
-func (roguelikeAdapter) Prepare(task Task) (PreparedTask, error) {
+func (roguelikeAdapter) Prepare(task control.Task) (control.PreparedTask, error) {
 	if task.Type != roguelikeTaskType {
-		return PreparedTask{}, roguelikeReject("adapter requires Core type %q", roguelikeTaskType)
+		return control.PreparedTask{}, roguelikeReject("adapter requires Core type %q", roguelikeTaskType)
 	}
 	params, cfg, err := compileRoguelike(task.Params)
 	if err != nil {
-		return PreparedTask{}, err
+		return control.PreparedTask{}, err
 	}
 	policy, targets, reducer := roguelikeObjective(cfg)
-	if policy == ObjectiveNone {
-		return PreparedTask{Params: params, Policy: ObjectiveNone}, nil
+	if policy == control.ObjectiveNone {
+		return control.PreparedTask{Params: params, Policy: control.ObjectiveNone}, nil
 	}
-	return PreparedTask{Params: params, Policy: policy, Targets: targets, Reducer: reducer}, nil
+	return control.PreparedTask{Params: params, Policy: policy, Targets: targets, Reducer: reducer}, nil
 }
 
 // roguelikeReject wraps every input rejection with ErrInvalidPlan so callers
 // classify failures with errors.Is instead of inspecting diagnostics.
 func roguelikeReject(format string, args ...any) error {
-	return fmt.Errorf("%w: roguelike: %s", ErrInvalidPlan, fmt.Sprintf(format, args...))
+	return fmt.Errorf("%w: roguelike: %s", control.ErrInvalidPlan, fmt.Sprintf(format, args...))
 }
 
 // roguelikeConfig is the compiled input structure this adapter keeps in
@@ -230,13 +234,13 @@ type roguelikeConfig struct {
 // Core params plus the compiled configuration. It is deterministic and has no
 // file, native or device effects.
 func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, error) {
-	if !validObject(raw, MaxAdapterParamsBytes) {
-		return nil, roguelikeConfig{}, roguelikeReject("params must be a JSON object of at most %d bytes", MaxAdapterParamsBytes)
+	if !strictjson.ValidObject(raw, control.MaxAdapterParamsBytes) {
+		return nil, roguelikeConfig{}, roguelikeReject("params must be a JSON object of at most %d bytes", control.MaxAdapterParamsBytes)
 	}
 	// Duplicate keys at any depth are rejected before any field is interpreted.
 	keys := json.NewDecoder(bytes.NewReader(raw))
 	keys.UseNumber()
-	if err := checkTypedKeys(keys); err != nil {
+	if err := strictjson.CheckKeys(keys); err != nil {
 		return nil, roguelikeConfig{}, roguelikeReject("params contain duplicate or malformed fields")
 	}
 	// RawMessage values keep number literals exact and string bytes verbatim;
@@ -259,7 +263,7 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 	if !ok {
 		return nil, roguelikeConfig{}, roguelikeReject("theme is required")
 	}
-	theme, err := operProgressDecodeString(themeRaw)
+	theme, err := strictjson.String(themeRaw)
 	if err != nil || !roguelikeValidTheme(theme) {
 		return nil, roguelikeConfig{}, roguelikeReject("theme must be one of %s", strings.Join(roguelikeThemes, ", "))
 	}
@@ -267,7 +271,7 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 	if !ok {
 		return nil, roguelikeConfig{}, roguelikeReject("mode is required")
 	}
-	mode, err := operProgressInteger(modeRaw)
+	mode, err := strictjson.Integer(modeRaw)
 	if err != nil {
 		return nil, roguelikeConfig{}, roguelikeReject("mode must be an integer")
 	}
@@ -344,7 +348,7 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 			}
 		case "squad", "roles", "core_char", "collectible_mode_squad", "collectible_mode_roles",
 			"first_floor_foldartal", "start_with_seed":
-			if _, err := roguelikeStringField(value, name, MaxAdapterParamsBytes); err != nil {
+			if _, err := roguelikeStringField(value, name, control.MaxAdapterParamsBytes); err != nil {
 				return nil, roguelikeConfig{}, err
 			}
 		case "blackflow_strategy":
@@ -462,8 +466,8 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 	// json.Marshal sorts map keys, keeps RawMessage values byte-faithful and
 	// never routes numbers through float64.
 	params, err := json.Marshal(fields)
-	if err != nil || len(params) > MaxAdapterParamsBytes {
-		return nil, roguelikeConfig{}, roguelikeReject("compiled params exceed %d bytes", MaxAdapterParamsBytes)
+	if err != nil || len(params) > control.MaxAdapterParamsBytes {
+		return nil, roguelikeConfig{}, roguelikeReject("compiled params exceed %d bytes", control.MaxAdapterParamsBytes)
 	}
 	return params, cfg, nil
 }
@@ -581,7 +585,7 @@ func roguelikeBoolField(raw json.RawMessage, name string) (bool, error) {
 
 // roguelikeIntField accepts only an unquoted JSON integer literal.
 func roguelikeIntField(raw json.RawMessage, name string) (int, error) {
-	n, err := operProgressInteger(raw)
+	n, err := strictjson.Integer(raw)
 	if err != nil {
 		return 0, roguelikeReject("%s must be an integer", name)
 	}
@@ -592,11 +596,11 @@ func roguelikeIntField(raw json.RawMessage, name string) (int, error) {
 // all-whitespace, NUL-containing, invalid UTF-8 and unpaired surrogate values
 // are rejected; the decoded value is otherwise preserved verbatim.
 func roguelikeStringField(raw json.RawMessage, name string, max int) (string, error) {
-	s, err := operProgressDecodeString(raw)
+	s, err := strictjson.String(raw)
 	if err != nil {
 		return "", roguelikeReject("%s must be a string", name)
 	}
-	if !validText(s, uint64(max), false) || strings.TrimSpace(s) == "" {
+	if !strictjson.ValidText(s, uint64(max), false) || strings.TrimSpace(s) == "" {
 		return "", roguelikeReject("%s must be a nonempty string of at most %d bytes without NUL and not all whitespace", name, max)
 	}
 	return s, nil
@@ -604,7 +608,7 @@ func roguelikeStringField(raw json.RawMessage, name string, max int) (string, er
 
 // roguelikeEnumField validates a string field against a frozen value set.
 func roguelikeEnumField(raw json.RawMessage, name string, allowed []string) (string, error) {
-	s, err := roguelikeStringField(raw, name, MaxAdapterParamsBytes)
+	s, err := roguelikeStringField(raw, name, control.MaxAdapterParamsBytes)
 	if err != nil {
 		return "", err
 	}
@@ -620,7 +624,7 @@ func roguelikeEnumField(raw json.RawMessage, name string, allowed []string) (str
 // objects with a required nonempty name and an optional boolean use_support;
 // an empty array is valid and means no preferred operators.
 func roguelikeOperListField(raw json.RawMessage, name string) error {
-	items, err := operProgressJSONArray(raw)
+	items, err := strictjson.Array(raw)
 	if err != nil {
 		return roguelikeReject("%s must be an array", name)
 	}
@@ -642,9 +646,9 @@ func roguelikeOperListField(raw json.RawMessage, name string) error {
 		if !ok {
 			return roguelikeReject("%s entry %d requires name", name, i)
 		}
-		operName, err := operProgressDecodeString(nameRaw)
-		if err != nil || !validText(operName, operProgressMaxNameBytes, false) || strings.TrimSpace(operName) == "" {
-			return roguelikeReject("%s entry %d name must be a nonempty string of at most %d bytes without NUL", name, i, operProgressMaxNameBytes)
+		operName, err := strictjson.String(nameRaw)
+		if err != nil || !strictjson.ValidText(operName, roguelikeMaxOperatorNameBytes, false) || strings.TrimSpace(operName) == "" {
+			return roguelikeReject("%s entry %d name must be a nonempty string of at most %d bytes without NUL", name, i, roguelikeMaxOperatorNameBytes)
 		}
 		if raw, ok := entry["use_support"]; ok {
 			if _, err := roguelikeBoolField(raw, "use_support"); err != nil {
@@ -659,7 +663,7 @@ func roguelikeOperListField(raw json.RawMessage, name string) error {
 // names: Core skips empty entries and hard-rejects an all-empty list, so the
 // adapter rejects both shapes up front.
 func roguelikeFoldartalListField(raw json.RawMessage) error {
-	items, err := operProgressJSONArray(raw)
+	items, err := strictjson.Array(raw)
 	if err != nil {
 		return roguelikeReject("start_foldartal_list must be an array")
 	}
@@ -667,8 +671,8 @@ func roguelikeFoldartalListField(raw json.RawMessage) error {
 		return roguelikeReject("start_foldartal_list must not be empty")
 	}
 	for i, item := range items {
-		name, err := operProgressDecodeString(item)
-		if err != nil || !validText(name, MaxAdapterParamsBytes, false) || strings.TrimSpace(name) == "" {
+		name, err := strictjson.String(item)
+		if err != nil || !strictjson.ValidText(name, control.MaxAdapterParamsBytes, false) || strings.TrimSpace(name) == "" {
 			return roguelikeReject("start_foldartal_list entry %d must be a nonempty string without NUL", i)
 		}
 	}
@@ -678,13 +682,13 @@ func roguelikeFoldartalListField(raw json.RawMessage) error {
 // roguelikeParadigmListField accepts an array of nonempty collapsal paradigm
 // names; an empty array is valid and selects no paradigms.
 func roguelikeParadigmListField(raw json.RawMessage) error {
-	items, err := operProgressJSONArray(raw)
+	items, err := strictjson.Array(raw)
 	if err != nil {
 		return roguelikeReject("expected_collapsal_paradigms must be an array")
 	}
 	for i, item := range items {
-		name, err := operProgressDecodeString(item)
-		if err != nil || !validText(name, MaxAdapterParamsBytes, false) || strings.TrimSpace(name) == "" {
+		name, err := strictjson.String(item)
+		if err != nil || !strictjson.ValidText(name, control.MaxAdapterParamsBytes, false) || strings.TrimSpace(name) == "" {
 			return roguelikeReject("expected_collapsal_paradigms entry %d must be a nonempty string without NUL", i)
 		}
 	}
@@ -694,7 +698,7 @@ func roguelikeParadigmListField(raw json.RawMessage) error {
 // roguelikeBlackFlowAnimalsField validates the start-run animal list and
 // returns the entry count (0-2) plus whether the feathered serpent is present.
 func roguelikeBlackFlowAnimalsField(raw json.RawMessage) (int, bool, error) {
-	items, err := operProgressJSONArray(raw)
+	items, err := strictjson.Array(raw)
 	if err != nil {
 		return 0, false, roguelikeReject("blackflow_start_animals must be an array")
 	}
@@ -703,7 +707,7 @@ func roguelikeBlackFlowAnimalsField(raw json.RawMessage) (int, bool, error) {
 	}
 	serpents := 0
 	for i, item := range items {
-		animal, err := operProgressDecodeString(item)
+		animal, err := strictjson.String(item)
 		if err != nil {
 			return 0, false, roguelikeReject("blackflow_start_animals entry %d must be a string", i)
 		}
@@ -730,7 +734,7 @@ func roguelikeBlackFlowAnimalsField(raw json.RawMessage) (int, bool, error) {
 // roguelikeBlackFlowRewardPriorityField requires a nonempty array of distinct
 // known reward ids.
 func roguelikeBlackFlowRewardPriorityField(raw json.RawMessage) error {
-	items, err := operProgressJSONArray(raw)
+	items, err := strictjson.Array(raw)
 	if err != nil {
 		return roguelikeReject("blackflow_start_reward_priority must be an array")
 	}
@@ -739,7 +743,7 @@ func roguelikeBlackFlowRewardPriorityField(raw json.RawMessage) error {
 	}
 	seen := make(map[string]bool, len(items))
 	for i, item := range items {
-		id, err := operProgressDecodeString(item)
+		id, err := strictjson.String(item)
 		if err != nil {
 			return roguelikeReject("blackflow_start_reward_priority entry %d must be a string", i)
 		}

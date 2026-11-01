@@ -1,12 +1,14 @@
-package control
+package control_test
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	. "github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/adapters/operprogress"
 )
 
 func operProgressRuntimePlan(t *testing.T, params ...string) Plan {
@@ -25,49 +27,14 @@ func operProgressRuntimePlan(t *testing.T, params ...string) Plan {
 // exercised against the prepared OperProgress reducers.
 func newOperProgressRuntimeHarness(t *testing.T, plan Plan, coreIDs []int32) *Run {
 	t.Helper()
-	prepared, err := PreparePlan(plan, NewOperProgressAdapter())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(coreIDs) != len(prepared.Tasks) {
-		t.Fatalf("got %d Core task IDs for %d tasks", len(coreIDs), len(prepared.Tasks))
-	}
-	s, err := openStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(func() {
-		cancel()
-		_ = s.close()
-	})
-	index := make(map[int32]int, len(coreIDs))
-	for i, id := range coreIDs {
-		prepared.Tasks[i].CoreTaskID = id
-		prepared.Tasks[i].State = Started
-		index[id] = i
-	}
-	return &Run{
-		runtime:        &Runtime{store: s},
-		plan:           prepared.Plan,
-		sourcePlan:     clonePlan(plan),
-		result:         Result{SchemaVersion: SchemaVersion, RunID: newRunID(), State: Started, Cleanup: "pending", Tasks: prepared.Tasks},
-		events:         make(chan Event, runEventMessages),
-		done:           make(chan struct{}),
-		changed:        make(chan struct{}, 1),
-		commands:       ctx,
-		cancelCommands: cancel,
-		taskIndex:      index,
-		reducers:       prepared.reducers,
-		startIssued:    true,
-	}
+	return newPreparedTypedHarness(t, plan, coreIDs, true, operprogress.New())
 }
 
 func operProgressDrainEvents(r *Run) []Event {
 	var events []Event
 	for {
 		select {
-		case e := <-r.events:
+		case e := <-r.Events():
 			events = append(events, e)
 		default:
 			return events
@@ -143,7 +110,7 @@ func TestOperProgressRuntimeAssociatesSameTypeTasksByCoreID(t *testing.T) {
 		t.Fatalf("summary crossed task identity: %s", result.Tasks[1].Typed.Summary)
 	}
 
-	record, err := ReadRecord(filepath.Dir(r.runtime.store.dir), result.RunID)
+	record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(r)), result.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,10 +148,10 @@ func TestOperProgressRuntimeKeepsTargetFailureAfterChainSuccess(t *testing.T) {
 	if got.Outcome != TargetFailed || got.Code != "resource_insufficient" {
 		t.Fatalf("late success replaced the failure: %+v", got)
 	}
-	if r.proof != Failed || r.proofCode != "typed_failed" || r.fatal != "" {
-		t.Fatalf("batch proof = %s/%s fatal=%s", r.proof, r.proofCode, r.fatal)
+	if InspectRunForTest(r).Proof != Failed || InspectRunForTest(r).ProofCode != "typed_failed" || InspectRunForTest(r).Fatal != "" {
+		t.Fatalf("batch proof = %s/%s fatal=%s", InspectRunForTest(r).Proof, InspectRunForTest(r).ProofCode, InspectRunForTest(r).Fatal)
 	}
-	record, err := ReadRecord(filepath.Dir(r.runtime.store.dir), result.RunID)
+	record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(r)), result.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,8 +166,8 @@ func TestOperProgressRuntimeRejectsUnassociatedOrMalformedDetail(t *testing.T) {
 		r := newOperProgressRuntimeHarness(t, plan, []int32{101})
 		sendTypedCallback(t, r, operProgressMessageSubTaskExtraInfo,
 			`{"taskchain":"OperProgress","taskid":999,"what":"OperProgressDetail","details":{"role":"Warrior","name":"Alpha","result":"Success","result_detail":"Completed","elite":2}}`)
-		if r.fatal != "typed_invalid_event" {
-			t.Fatalf("unassociated callback was accepted: %s", r.fatal)
+		if InspectRunForTest(r).Fatal != "typed_invalid_event" {
+			t.Fatalf("unassociated callback was accepted: %s", InspectRunForTest(r).Fatal)
 		}
 		for _, target := range r.Snapshot().Tasks[0].Typed.Targets {
 			if target.Outcome != TargetUnobserved {
@@ -214,8 +181,8 @@ func TestOperProgressRuntimeRejectsUnassociatedOrMalformedDetail(t *testing.T) {
 			`{"taskchain":"OperProgress","taskid":101,"what":"OperProgressDetail","details":{"role":"Warrior","name":"Alpha","result":"Success","result_detail":"Completed","elite":2}}`)
 		sendTypedCallback(t, r, operProgressMessageSubTaskExtraInfo,
 			`{"taskchain":"OperProgress","taskid":101,"what":"OperProgressDetail","details":{"role":"Warrior","name":"Alpha","result":"Success","result_detail":"Completed","result_detail":"AlreadySatisfied","elite":2}}`)
-		if r.fatal != "typed_invalid_event" {
-			t.Fatalf("ambiguous detail was accepted: %s", r.fatal)
+		if InspectRunForTest(r).Fatal != "typed_invalid_event" {
+			t.Fatalf("ambiguous detail was accepted: %s", InspectRunForTest(r).Fatal)
 		}
 		result := r.Snapshot()
 		if result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || result.Tasks[0].Typed.State != Succeeded {

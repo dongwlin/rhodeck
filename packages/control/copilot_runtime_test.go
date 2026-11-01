@@ -1,4 +1,4 @@
-package control
+package control_test
 
 import (
 	"context"
@@ -10,13 +10,15 @@ import (
 	"testing"
 	"time"
 
+	. "github.com/dongwlin/rhodeck/packages/control"
+	"github.com/dongwlin/rhodeck/packages/control/adapters/copilot"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
 
 func copilotRuntimePlan(t *testing.T, params ...string) Plan {
 	t.Helper()
 	plan := runtimePlan(t)
-	ref := NewCopilotAdapter().Descriptor()
+	ref := copilot.New().Descriptor()
 	plan.Tasks = make([]Task, len(params))
 	for i, raw := range params {
 		plan.Tasks[i] = Task{ID: fmt.Sprintf("copilot-%d", i), Type: "Copilot", Adapter: &ref, Params: json.RawMessage(raw)}
@@ -52,7 +54,7 @@ func TestCopilotRuntimeKeepsEntryAndCoreTaskIdentities(t *testing.T) {
 	plan := copilotRuntimePlan(t,
 		`{"copilot_list":[{"id":7,"filename":"same.json"},{"id":8,"filename":"same.json","is_raid":true}]}`,
 		`{"copilot_list":[{"id":7,"filename":"same.json"}]}`)
-	run := newPreparedTypedHarness(t, plan, []int32{101, 202}, true, NewCopilotAdapter())
+	run := newPreparedTypedHarness(t, plan, []int32{101, 202}, true, copilot.New())
 	sendTypedCallback(t, run, 20003, copilotRuntimeLoad(101, 7, "same.json"))
 	// Navigation can run ProcessTask nodes too; it is not the battle settlement.
 	sendTypedCallback(t, run, 20001, `{"taskid":101,"taskchain":"Copilot","subtask":"ProcessTask","first":["StageNavigationBegin"],"details":{"task":"StageDrops-Stars-3"}}`)
@@ -78,7 +80,7 @@ func TestCopilotRuntimeKeepsEntryAndCoreTaskIdentities(t *testing.T) {
 	if len(events) != 3 || events[0].TaskID != "copilot-0" || events[0].CoreTaskID != 101 || events[1].TaskID != "copilot-1" || events[1].CoreTaskID != 202 {
 		t.Fatalf("typed event associations = %+v", events)
 	}
-	record, err := ReadRecord(filepath.Dir(run.runtime.store.dir), result.RunID)
+	record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(run)), result.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,19 +105,19 @@ func TestCopilotRuntimeDoesNotGuessMissingEntryScope(t *testing.T) {
 	} {
 		t.Run(raw, func(t *testing.T) {
 			plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"},{"id":8,"filename":"same.json","is_raid":true}]}`)
-			run := newPreparedTypedHarness(t, plan, []int32{101}, true, NewCopilotAdapter())
+			run := newPreparedTypedHarness(t, plan, []int32{101}, true, copilot.New())
 			copilotRuntimeFact(t, run, 101, 7, "same.json", "StageDrops-Stars-3")
 			sendTypedCallback(t, run, 20003, raw)
 			sendTypedCallback(t, run, 20001, copilotRuntimeNode(101, "FightMissionFailed"))
-			if run.fatal != "" {
-				t.Fatalf("missing scope overwrote a confirmed fact: %s", run.fatal)
+			if InspectRunForTest(run).Fatal != "" {
+				t.Fatalf("missing scope overwrote a confirmed fact: %s", InspectRunForTest(run).Fatal)
 			}
 			sendTypedCallback(t, run, 10002, `{"taskid":101}`)
 			sendTypedCallback(t, run, 3, `{"finished_tasks":[101]}`)
 			result := run.Snapshot()
-			if run.proof != Unknown || run.proofCode != "typed_incomplete" || result.Tasks[0].State != Succeeded ||
+			if InspectRunForTest(run).Proof != Unknown || InspectRunForTest(run).ProofCode != "typed_incomplete" || result.Tasks[0].State != Succeeded ||
 				result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || result.Tasks[0].Typed.Targets[1].Outcome == TargetAchieved || result.Tasks[0].Typed.Targets[1].Outcome == TargetFailed {
-				t.Fatalf("unassociated evidence became a clear or failure: %+v, proof=%s/%s", result.Tasks[0], run.proof, run.proofCode)
+				t.Fatalf("unassociated evidence became a clear or failure: %+v, proof=%s/%s", result.Tasks[0], InspectRunForTest(run).Proof, InspectRunForTest(run).ProofCode)
 			}
 		})
 	}
@@ -123,20 +125,20 @@ func TestCopilotRuntimeDoesNotGuessMissingEntryScope(t *testing.T) {
 
 func TestCopilotRuntimeLoadStartInvalidatesPreviousEntryScope(t *testing.T) {
 	plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"},{"id":8,"filename":"same.json","is_raid":true}]}`)
-	run := newPreparedTypedHarness(t, plan, []int32{101}, true, NewCopilotAdapter())
+	run := newPreparedTypedHarness(t, plan, []int32{101}, true, copilot.New())
 	copilotRuntimeFact(t, run, 101, 7, "same.json", "StageDrops-Stars-3")
 	original := run.Snapshot().Tasks[0].Typed.Targets[0]
 	// The next plugin has started, but its successful load observation is absent.
 	// Its subsequent battle must not inherit the previous entry's identity.
 	sendTypedCallback(t, run, 20001, `{"taskid":101,"taskchain":"Copilot","subtask":"MultiCopilotTask"}`)
 	sendTypedCallback(t, run, 20001, copilotRuntimeNode(101, "FightMissionFailed"))
-	if run.fatal != "" || !sameTarget(run.Snapshot().Tasks[0].Typed.Targets[0], original) || run.Snapshot().Tasks[0].Typed.Targets[1].Outcome != TargetUnobserved {
-		t.Fatalf("missing load inherited the previous entry: fatal=%s, targets=%+v", run.fatal, run.Snapshot().Tasks[0].Typed.Targets)
+	if InspectRunForTest(run).Fatal != "" || !sameTarget(run.Snapshot().Tasks[0].Typed.Targets[0], original) || run.Snapshot().Tasks[0].Typed.Targets[1].Outcome != TargetUnobserved {
+		t.Fatalf("missing load inherited the previous entry: fatal=%s, targets=%+v", InspectRunForTest(run).Fatal, run.Snapshot().Tasks[0].Typed.Targets)
 	}
 	sendTypedCallback(t, run, 10002, `{"taskid":101}`)
 	sendTypedCallback(t, run, 3, `{"finished_tasks":[101]}`)
-	if run.proof != Unknown || run.proofCode != "typed_incomplete" {
-		t.Fatalf("missing load was hidden by chain completion: %s/%s", run.proof, run.proofCode)
+	if InspectRunForTest(run).Proof != Unknown || InspectRunForTest(run).ProofCode != "typed_incomplete" {
+		t.Fatalf("missing load was hidden by chain completion: %s/%s", InspectRunForTest(run).Proof, InspectRunForTest(run).ProofCode)
 	}
 }
 
@@ -144,7 +146,7 @@ func TestCopilotRuntimeDuplicateConflictAndUnknownTaskPreserveFacts(t *testing.T
 	for _, fault := range []string{"conflict", "foreign task", "lost events"} {
 		t.Run(fault, func(t *testing.T) {
 			plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"}]}`)
-			run := newPreparedTypedHarness(t, plan, []int32{101}, true, NewCopilotAdapter())
+			run := newPreparedTypedHarness(t, plan, []int32{101}, true, copilot.New())
 			copilotRuntimeFact(t, run, 101, 7, "same.json", "StageDrops-Stars-3")
 			original := run.Snapshot().Tasks[0].Typed.Targets[0]
 			copilotRuntimeFact(t, run, 101, 7, "same.json", "StageDrops-Stars-3")
@@ -164,14 +166,14 @@ func TestCopilotRuntimeDuplicateConflictAndUnknownTaskPreserveFacts(t *testing.T
 				if err != nil {
 					t.Fatal(err)
 				}
-				run.observe(message)
+				ObserveRunForTest(run, message)
 			}
 			sendTypedCallback(t, run, 10002, `{"taskid":101}`)
 			sendTypedCallback(t, run, 3, `{"finished_tasks":[101]}`)
-			if run.fatal != code || run.proof != "" || !sameTarget(run.Snapshot().Tasks[0].Typed.Targets[0], original) {
-				t.Fatalf("fault changed a confirmed fact: fatal=%s, proof=%s, target=%+v", run.fatal, run.proof, run.Snapshot().Tasks[0].Typed.Targets[0])
+			if InspectRunForTest(run).Fatal != code || InspectRunForTest(run).Proof != "" || !sameTarget(run.Snapshot().Tasks[0].Typed.Targets[0], original) {
+				t.Fatalf("fault changed a confirmed fact: fatal=%s, proof=%s, target=%+v", InspectRunForTest(run).Fatal, InspectRunForTest(run).Proof, run.Snapshot().Tasks[0].Typed.Targets[0])
 			}
-			record, err := ReadRecord(filepath.Dir(run.runtime.store.dir), run.Snapshot().RunID)
+			record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(run)), run.Snapshot().RunID)
 			if err != nil || !sameTarget(record.Result.Tasks[0].Typed.Targets[0], original) {
 				t.Fatalf("fault changed durable facts: %+v, %v", record, err)
 			}
@@ -191,7 +193,7 @@ func TestCopilotRuntimeSeparatesChainAndStageResults(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"},{"id":8,"filename":"same.json"}]}`)
-			run := newPreparedTypedHarness(t, plan, []int32{101}, true, NewCopilotAdapter())
+			run := newPreparedTypedHarness(t, plan, []int32{101}, true, copilot.New())
 			copilotRuntimeFact(t, run, 101, 7, "same.json", "StageDrops-Stars-3")
 			if test.node != "" {
 				copilotRuntimeFact(t, run, 101, 8, "same.json", test.node)
@@ -199,8 +201,8 @@ func TestCopilotRuntimeSeparatesChainAndStageResults(t *testing.T) {
 			sendTypedCallback(t, run, 10002, `{"taskid":101}`)
 			sendTypedCallback(t, run, 3, `{"finished_tasks":[101]}`)
 			result := run.Snapshot()
-			if run.proof != test.state || run.proofCode != test.code || result.Tasks[0].State != Succeeded || result.Tasks[0].Typed.State != test.state {
-				t.Fatalf("chain completion replaced stage evidence: %+v, proof=%s/%s", result.Tasks[0], run.proof, run.proofCode)
+			if InspectRunForTest(run).Proof != test.state || InspectRunForTest(run).ProofCode != test.code || result.Tasks[0].State != Succeeded || result.Tasks[0].Typed.State != test.state {
+				t.Fatalf("chain completion replaced stage evidence: %+v, proof=%s/%s", result.Tasks[0], InspectRunForTest(run).Proof, InspectRunForTest(run).ProofCode)
 			}
 		})
 	}
@@ -211,10 +213,10 @@ func TestCopilotRuntimeSeparatesChainAndStageResults(t *testing.T) {
 // it does not add a second event consumer or change the shared worker fixture.
 type copilotLifecycleAdapter struct{}
 
-func (copilotLifecycleAdapter) Descriptor() AdapterRef { return NewCopilotAdapter().Descriptor() }
+func (copilotLifecycleAdapter) Descriptor() AdapterRef { return copilot.New().Descriptor() }
 
 func (copilotLifecycleAdapter) Prepare(task Task) (PreparedTask, error) {
-	prepared, err := NewCopilotAdapter().Prepare(task)
+	prepared, err := copilot.New().Prepare(task)
 	if err != nil {
 		return PreparedTask{}, err
 	}
@@ -306,9 +308,9 @@ func TestCopilotRuntimeLifecyclePreservesClearFacts(t *testing.T) {
 
 func TestCopilotRuntimeRecoversFactsWithoutAdapterOrReplay(t *testing.T) {
 	plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"},{"id":8,"filename":"same.json"}]}`)
-	run := newPreparedTypedHarness(t, plan, []int32{101}, true, NewCopilotAdapter())
+	run := newPreparedTypedHarness(t, plan, []int32{101}, true, copilot.New())
 	copilotRuntimeFact(t, run, 101, 7, "same.json", "StageDrops-Stars-3")
-	record, err := ReadRecord(filepath.Dir(run.runtime.store.dir), run.Snapshot().RunID)
+	record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(run)), run.Snapshot().RunID)
 	if err != nil || terminal(record.Result.State) || record.Result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved {
 		t.Fatalf("in-flight clear was not persisted: %+v, %v", record, err)
 	}
@@ -317,10 +319,10 @@ func TestCopilotRuntimeRecoversFactsWithoutAdapterOrReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.save(record); err != nil {
+	if err := s.Save(record); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.close(); err != nil {
+	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
 	cfg := runtimeConfig(t, "crash")
@@ -349,17 +351,17 @@ func TestCopilotRuntimeEventBudgetPreservesAcceptedFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := copilotRuntimePlan(t, string(params))
-	run := newPreparedTypedHarness(t, plan, []int32{101}, true, NewCopilotAdapter())
+	run := newPreparedTypedHarness(t, plan, []int32{101}, true, copilot.New())
 	id := int32(101)
 	for i := range entries {
-		run.observeTyped(protocol.Callback{MessageID: 20003, CoreSequence: uint64(2*i + 1), JSON: json.RawMessage(copilotRuntimeLoad(id, int32(i), "same.json"))}, &id, nil)
-		run.observeTyped(protocol.Callback{MessageID: 20001, CoreSequence: uint64(2*i + 2), JSON: json.RawMessage(copilotRuntimeNode(id, "StageDrops-Stars-3"))}, &id, nil)
+		ObserveTypedForTest(run, protocol.Callback{MessageID: 20003, CoreSequence: uint64(2*i + 1), JSON: json.RawMessage(copilotRuntimeLoad(id, int32(i), "same.json"))}, &id, nil)
+		ObserveTypedForTest(run, protocol.Callback{MessageID: 20001, CoreSequence: uint64(2*i + 2), JSON: json.RawMessage(copilotRuntimeNode(id, "StageDrops-Stars-3"))}, &id, nil)
 	}
 	result := run.Snapshot()
-	if run.fatal != "typed_event_overflow" || run.proof != "" || result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || result.Tasks[0].Typed.Targets[len(entries)-1].Outcome != TargetUnobserved {
-		t.Fatalf("event budget erased or manufactured stage facts: fatal=%s, proof=%s, targets=%+v", run.fatal, run.proof, result.Tasks[0].Typed.Targets)
+	if InspectRunForTest(run).Fatal != "typed_event_overflow" || InspectRunForTest(run).Proof != "" || result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || result.Tasks[0].Typed.Targets[len(entries)-1].Outcome != TargetUnobserved {
+		t.Fatalf("event budget erased or manufactured stage facts: fatal=%s, proof=%s, targets=%+v", InspectRunForTest(run).Fatal, InspectRunForTest(run).Proof, result.Tasks[0].Typed.Targets)
 	}
-	record, err := ReadRecord(filepath.Dir(run.runtime.store.dir), result.RunID)
+	record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(run)), result.RunID)
 	if err != nil || !reflect.DeepEqual(record.Result.Tasks, result.Tasks) {
 		t.Fatalf("event overflow changed durable stage facts: %+v, %v", record, err)
 	}

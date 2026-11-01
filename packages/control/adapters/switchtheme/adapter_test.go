@@ -1,18 +1,18 @@
-package control
+package switchtheme
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/dongwlin/rhodeck/packages/control"
 )
 
-func switchThemeTaskWithThemes(t *testing.T, themes ...string) Task {
+func switchThemeTaskWithThemes(t *testing.T, themes ...string) control.Task {
 	t.Helper()
 	raw, err := json.Marshal(struct {
 		Themes []string `json:"themes"`
@@ -20,7 +20,7 @@ func switchThemeTaskWithThemes(t *testing.T, themes ...string) Task {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Task{ID: "theme", Type: switchThemeTaskType, Params: raw}
+	return control.Task{ID: "theme", Type: switchThemeTaskType, Params: raw}
 }
 
 func switchThemeThemesJSON(t *testing.T, themes ...string) string {
@@ -38,7 +38,7 @@ func switchThemeNumberedThemes(n int) []string {
 
 func switchThemeTestReducer(t *testing.T, themes ...string) *switchThemeReducer {
 	t.Helper()
-	prepared, err := NewSwitchThemeAdapter().Prepare(switchThemeTaskWithThemes(t, themes...))
+	prepared, err := New().Prepare(switchThemeTaskWithThemes(t, themes...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,9 +49,9 @@ func switchThemeTestReducer(t *testing.T, themes ...string) *switchThemeReducer 
 	return reducer
 }
 
-func switchThemeObserve(t *testing.T, reducer TaskReducer, messageID int32, raw string) TypedUpdate {
+func switchThemeObserve(t *testing.T, reducer control.TaskReducer, messageID int32, raw string) control.TypedUpdate {
 	t.Helper()
-	update, err := reducer.Observe(Observation{MessageID: messageID, JSON: json.RawMessage(raw)})
+	update, err := reducer.Observe(control.Observation{MessageID: messageID, JSON: json.RawMessage(raw)})
 	if err != nil {
 		t.Fatalf("unexpected reducer error: %v", err)
 	}
@@ -89,14 +89,14 @@ func switchThemeSkippedCallback(taskID int32) string {
 	return fmt.Sprintf(`{"taskchain":"SwitchTheme","taskid":%d,"subtask":"SwitchThemeTask","what":"SwitchThemeSkipped","details":{}}`, taskID)
 }
 
-func wantNoSwitchThemeUpdate(t *testing.T, update TypedUpdate) {
+func wantNoSwitchThemeUpdate(t *testing.T, update control.TypedUpdate) {
 	t.Helper()
 	if len(update.Targets) != 0 || len(update.Summary) != 0 {
 		t.Fatalf("unexpected typed update: %+v", update)
 	}
 }
 
-func wantSwitchThemeFact(t *testing.T, update TypedUpdate, outcome TargetOutcome, code, theme string) {
+func wantSwitchThemeFact(t *testing.T, update control.TypedUpdate, outcome control.TargetOutcome, code, theme string) {
 	t.Helper()
 	if len(update.Summary) != 0 {
 		t.Fatalf("unexpected summary: %s", update.Summary)
@@ -122,15 +122,15 @@ func wantSwitchThemeFact(t *testing.T, update TypedUpdate, outcome TargetOutcome
 }
 
 func TestSwitchThemeAdapterDescriptor(t *testing.T) {
-	adapter := NewSwitchThemeAdapter()
-	want := AdapterRef{Name: "switch_theme", Version: 1}
+	adapter := New()
+	want := control.AdapterRef{Name: "switch_theme", Version: 1}
 	if got := adapter.Descriptor(); got != want {
 		t.Fatalf("descriptor = %+v, want %+v", got, want)
 	}
 }
 
 func TestSwitchThemePrepareCompilesOrderedCandidates(t *testing.T) {
-	adapter := NewSwitchThemeAdapter()
+	adapter := New()
 	for _, tc := range []struct {
 		name   string
 		themes []string
@@ -142,7 +142,7 @@ func TestSwitchThemePrepareCompilesOrderedCandidates(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			params := switchThemeThemesJSON(t, tc.themes...)
-			prepared, err := adapter.Prepare(Task{ID: "theme-1", Type: switchThemeTaskType, Params: json.RawMessage(params)})
+			prepared, err := adapter.Prepare(control.Task{ID: "theme-1", Type: switchThemeTaskType, Params: json.RawMessage(params)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -166,7 +166,7 @@ func TestSwitchThemePrepareCompilesOrderedCandidates(t *testing.T) {
 }
 
 func TestSwitchThemePrepareRejectsInvalidInput(t *testing.T) {
-	adapter := NewSwitchThemeAdapter()
+	adapter := New()
 	valid := switchThemeThemesJSON(t, "Theme One")
 	cases := []struct {
 		name   string
@@ -210,7 +210,7 @@ func TestSwitchThemePrepareRejectsInvalidInput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := adapter.Prepare(Task{ID: "theme", Type: switchThemeTaskType, Params: json.RawMessage(tc.params)}); !errors.Is(err, ErrInvalidPlan) {
+			if _, err := adapter.Prepare(control.Task{ID: "theme", Type: switchThemeTaskType, Params: json.RawMessage(tc.params)}); !errors.Is(err, control.ErrInvalidPlan) {
 				t.Fatalf("invalid input accepted: %v", err)
 			}
 		})
@@ -218,22 +218,22 @@ func TestSwitchThemePrepareRejectsInvalidInput(t *testing.T) {
 }
 
 func TestSwitchThemePrepareAcceptsCandidateBoundaries(t *testing.T) {
-	adapter := NewSwitchThemeAdapter()
+	adapter := New()
 	longName := strings.Repeat("a", switchThemeMaxThemeBytes)
 	themes := switchThemeNumberedThemes(switchThemeMaxThemes)
 	cases := []struct {
 		name   string
 		params string
-		check  func(t *testing.T, prepared PreparedTask)
+		check  func(t *testing.T, prepared control.PreparedTask)
 	}{
 		{"minimum count", switchThemeThemesJSON(t, "Theme One"), nil},
-		{"maximum count", switchThemeThemesJSON(t, themes...), func(t *testing.T, prepared PreparedTask) {
+		{"maximum count", switchThemeThemesJSON(t, themes...), func(t *testing.T, prepared control.PreparedTask) {
 			if len(prepared.Targets) != 1 {
 				t.Fatalf("targets = %v", prepared.Targets)
 			}
 		}},
 		{"maximum name bytes", `{"themes":["` + longName + `"]}`, nil},
-		{"paired surrogate", `{"themes":["\ud83d\ude00"]}`, func(t *testing.T, prepared PreparedTask) {
+		{"paired surrogate", `{"themes":["\ud83d\ude00"]}`, func(t *testing.T, prepared control.PreparedTask) {
 			if string(prepared.Params) != `{"themes":["😀"]}` {
 				t.Fatalf("compiled params = %s", prepared.Params)
 			}
@@ -241,7 +241,7 @@ func TestSwitchThemePrepareAcceptsCandidateBoundaries(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			prepared, err := adapter.Prepare(Task{ID: "theme", Type: switchThemeTaskType, Params: json.RawMessage(tc.params)})
+			prepared, err := adapter.Prepare(control.Task{ID: "theme", Type: switchThemeTaskType, Params: json.RawMessage(tc.params)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -256,35 +256,35 @@ func TestSwitchThemePrepareAcceptsCandidateBoundaries(t *testing.T) {
 }
 
 func TestSwitchThemePrepareParamsByteBoundary(t *testing.T) {
-	adapter := NewSwitchThemeAdapter()
+	adapter := New()
 	base := switchThemeThemesJSON(t, "Theme One")
-	for _, size := range []int{MaxAdapterParamsBytes, MaxAdapterParamsBytes + 1} {
+	for _, size := range []int{control.MaxAdapterParamsBytes, control.MaxAdapterParamsBytes + 1} {
 		params := base + strings.Repeat(" ", size-len(base))
-		_, err := adapter.Prepare(Task{ID: "theme", Type: switchThemeTaskType, Params: json.RawMessage(params)})
-		if size == MaxAdapterParamsBytes && err != nil {
+		_, err := adapter.Prepare(control.Task{ID: "theme", Type: switchThemeTaskType, Params: json.RawMessage(params)})
+		if size == control.MaxAdapterParamsBytes && err != nil {
 			t.Fatalf("params at the byte limit rejected: %v", err)
 		}
-		if size > MaxAdapterParamsBytes && !errors.Is(err, ErrInvalidPlan) {
+		if size > control.MaxAdapterParamsBytes && !errors.Is(err, control.ErrInvalidPlan) {
 			t.Fatalf("params over the byte limit accepted: %v", err)
 		}
 	}
 }
 
 func TestSwitchThemePrepareRejectsWrongCoreType(t *testing.T) {
-	adapter := NewSwitchThemeAdapter()
+	adapter := New()
 	params := json.RawMessage(switchThemeThemesJSON(t, "Theme One"))
 	for _, taskType := range []string{"OperProgress", "switch_theme", "SwitchTheme ", "switchtheme", ""} {
-		if _, err := adapter.Prepare(Task{ID: "theme", Type: taskType, Params: params}); !errors.Is(err, ErrInvalidPlan) {
+		if _, err := adapter.Prepare(control.Task{ID: "theme", Type: taskType, Params: params}); !errors.Is(err, control.ErrInvalidPlan) {
 			t.Fatalf("Core type %q accepted: %v", taskType, err)
 		}
 	}
 }
 
 func TestSwitchThemePrepareIsDetachedAndFreshPerTask(t *testing.T) {
-	adapter := NewSwitchThemeAdapter()
+	adapter := New()
 	const source = `{"themes":["Alpha","Beta"]}`
 	input := []byte(source)
-	prepared, err := adapter.Prepare(Task{ID: "theme-1", Type: switchThemeTaskType, Params: json.RawMessage(input)})
+	prepared, err := adapter.Prepare(control.Task{ID: "theme-1", Type: switchThemeTaskType, Params: json.RawMessage(input)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,13 +315,13 @@ func TestSwitchThemePrepareIsDetachedAndFreshPerTask(t *testing.T) {
 
 func TestSwitchThemeRawPlanRemainsOpen(t *testing.T) {
 	plan := validTestPlan(t)
-	ref := AdapterRef{Name: switchThemeAdapterName, Version: switchThemeVersion}
+	ref := control.AdapterRef{Name: switchThemeAdapterName, Version: switchThemeVersion}
 	rawParams := json.RawMessage(`{"themes":["Raw Theme"],"enable":true,"future":9007199254740993}`)
-	plan.Tasks = []Task{
+	plan.Tasks = []control.Task{
 		{ID: "raw", Type: switchThemeTaskType, Params: rawParams},
 		{ID: "strict", Type: switchThemeTaskType, Adapter: &ref, Params: json.RawMessage(`{"themes":["Strict One","Strict Two"]}`)},
 	}
-	prepared, err := PreparePlan(plan, NewSwitchThemeAdapter())
+	prepared, err := control.PreparePlan(plan, New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestSwitchThemeRawPlanRemainsOpen(t *testing.T) {
 		t.Fatalf("raw params lost unknown fields or integer literals: %s", prepared.Plan.Tasks[0].Params)
 	}
 	typed := prepared.Tasks[1].Typed
-	if typed == nil || len(typed.Targets) != 1 || typed.Targets[0].ID != switchThemeTargetID || typed.Targets[0].Outcome != TargetUnobserved {
+	if typed == nil || len(typed.Targets) != 1 || typed.Targets[0].ID != switchThemeTargetID || typed.Targets[0].Outcome != control.TargetUnobserved {
 		t.Fatalf("strict task was not prepared: %+v", typed)
 	}
 	if string(prepared.Plan.Tasks[1].Params) != `{"themes":["Strict One","Strict Two"]}` {
@@ -347,23 +347,23 @@ func TestSwitchThemeReducerRequiresExactSelection(t *testing.T) {
 		wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 101, "Beta")))
 		wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 101, "Beta")))
 		update := switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeAlreadySet))
-		wantSwitchThemeFact(t, update, TargetAlreadySet, switchThemeCodeAlreadySet, "Beta")
+		wantSwitchThemeFact(t, update, control.TargetAlreadySet, switchThemeCodeAlreadySet, "Beta")
 	})
 	t.Run("candidate order is not a fallback", func(t *testing.T) {
 		r := switchThemeTestReducer(t, "Beta", "Alpha")
 		wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 101, "Alpha")))
 		update := switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeLocked))
-		wantSwitchThemeFact(t, update, TargetLocked, switchThemeCodeLocked, "Alpha")
+		wantSwitchThemeFact(t, update, control.TargetLocked, switchThemeCodeLocked, "Alpha")
 	})
 	t.Run("single candidate still requires selection evidence", func(t *testing.T) {
 		r := switchThemeTestReducer(t, "Alpha")
 		update := switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeAlreadySet))
-		wantSwitchThemeFact(t, update, TargetAmbiguous, switchThemeCodeSelectionMissing, "")
+		wantSwitchThemeFact(t, update, control.TargetAmbiguous, switchThemeCodeSelectionMissing, "")
 
 		r = switchThemeTestReducer(t, "Alpha")
 		wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 101, "Alpha")))
 		update = switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeAlreadySet))
-		wantSwitchThemeFact(t, update, TargetAlreadySet, switchThemeCodeAlreadySet, "Alpha")
+		wantSwitchThemeFact(t, update, control.TargetAlreadySet, switchThemeCodeAlreadySet, "Alpha")
 	})
 	t.Run("non-candidate OCR text", func(t *testing.T) {
 		for name, raw := range map[string]string{
@@ -374,7 +374,7 @@ func TestSwitchThemeReducerRequiresExactSelection(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				r := switchThemeTestReducer(t, "Alpha", "Beta")
 				update := switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, raw)
-				wantSwitchThemeFact(t, update, TargetAmbiguous, switchThemeCodeSelectionUnmatched, "")
+				wantSwitchThemeFact(t, update, control.TargetAmbiguous, switchThemeCodeSelectionUnmatched, "")
 				wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeConfirm)))
 			})
 		}
@@ -389,7 +389,7 @@ func TestSwitchThemeReducerRequiresExactSelection(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				r := switchThemeTestReducer(t, "Alpha")
 				update := switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, raw)
-				wantSwitchThemeFact(t, update, TargetAmbiguous, switchThemeCodeSelectionMissing, "")
+				wantSwitchThemeFact(t, update, control.TargetAmbiguous, switchThemeCodeSelectionMissing, "")
 			})
 		}
 	})
@@ -398,12 +398,12 @@ func TestSwitchThemeReducerRequiresExactSelection(t *testing.T) {
 func TestSwitchThemeReducerBranches(t *testing.T) {
 	for _, tc := range []struct {
 		node    string
-		outcome TargetOutcome
+		outcome control.TargetOutcome
 		code    string
 	}{
-		{switchThemeNodeAlreadySet, TargetAlreadySet, switchThemeCodeAlreadySet},
-		{switchThemeNodeLocked, TargetLocked, switchThemeCodeLocked},
-		{switchThemeNodeConfirm, TargetConfirmationObserved, switchThemeCodeConfirmationObserved},
+		{switchThemeNodeAlreadySet, control.TargetAlreadySet, switchThemeCodeAlreadySet},
+		{switchThemeNodeLocked, control.TargetLocked, switchThemeCodeLocked},
+		{switchThemeNodeConfirm, control.TargetConfirmationObserved, switchThemeCodeConfirmationObserved},
 	} {
 		t.Run(tc.node, func(t *testing.T) {
 			r := switchThemeTestReducer(t, "Alpha", "Beta")
@@ -424,7 +424,7 @@ func TestSwitchThemeReducerNotFound(t *testing.T) {
 	t.Run("exact candidate match", func(t *testing.T) {
 		r := switchThemeTestReducer(t, "Alpha", "Beta")
 		update := switchThemeObserve(t, r, switchThemeMessageSubTaskExtraInfo, switchThemeNotFoundCallback(t, 101, "Beta"))
-		wantSwitchThemeFact(t, update, TargetNotFound, switchThemeCodeNotFound, "Beta")
+		wantSwitchThemeFact(t, update, control.TargetNotFound, switchThemeCodeNotFound, "Beta")
 	})
 	t.Run("unmatched theme", func(t *testing.T) {
 		for name, raw := range map[string]string{
@@ -436,7 +436,7 @@ func TestSwitchThemeReducerNotFound(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				r := switchThemeTestReducer(t, "Alpha")
 				update := switchThemeObserve(t, r, switchThemeMessageSubTaskExtraInfo, raw)
-				wantSwitchThemeFact(t, update, TargetAmbiguous, switchThemeCodeNotFoundUnassociated, "")
+				wantSwitchThemeFact(t, update, control.TargetAmbiguous, switchThemeCodeNotFoundUnassociated, "")
 			})
 		}
 	})
@@ -444,13 +444,13 @@ func TestSwitchThemeReducerNotFound(t *testing.T) {
 		r := switchThemeTestReducer(t, "Alpha", "Beta")
 		wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 101, "Alpha")))
 		update := switchThemeObserve(t, r, switchThemeMessageSubTaskExtraInfo, switchThemeNotFoundCallback(t, 101, "Beta"))
-		wantSwitchThemeFact(t, update, TargetAmbiguous, switchThemeCodeSelectionConflict, "")
+		wantSwitchThemeFact(t, update, control.TargetAmbiguous, switchThemeCodeSelectionConflict, "")
 	})
 	t.Run("same selected theme", func(t *testing.T) {
 		r := switchThemeTestReducer(t, "Alpha")
 		wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 101, "Alpha")))
 		update := switchThemeObserve(t, r, switchThemeMessageSubTaskExtraInfo, switchThemeNotFoundCallback(t, 101, "Alpha"))
-		wantSwitchThemeFact(t, update, TargetNotFound, switchThemeCodeNotFound, "Alpha")
+		wantSwitchThemeFact(t, update, control.TargetNotFound, switchThemeCodeNotFound, "Alpha")
 	})
 }
 
@@ -461,7 +461,7 @@ func TestSwitchThemeReducerSkippedAndStartOnly(t *testing.T) {
 	// A terminal chain callback carries no theme-selection evidence.
 	wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, 10002, `{"taskchain":"SwitchTheme","taskid":101}`))
 	update := switchThemeObserve(t, r, switchThemeMessageSubTaskExtraInfo, switchThemeSkippedCallback(101))
-	wantSwitchThemeFact(t, update, TargetAmbiguous, switchThemeCodeSkipped, "")
+	wantSwitchThemeFact(t, update, control.TargetAmbiguous, switchThemeCodeSkipped, "")
 }
 
 func TestSwitchThemeReducerIgnoresUnrelatedCallbacks(t *testing.T) {
@@ -493,7 +493,7 @@ func TestSwitchThemeReducerRejectsMalformedCallbacks(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := switchThemeTestReducer(t, "Alpha")
-			if _, err := r.Observe(Observation{MessageID: switchThemeMessageSubTaskCompleted, JSON: json.RawMessage(raw)}); !errors.Is(err, ErrTypedResult) {
+			if _, err := r.Observe(control.Observation{MessageID: switchThemeMessageSubTaskCompleted, JSON: json.RawMessage(raw)}); !errors.Is(err, control.ErrTypedResult) {
 				t.Fatalf("malformed callback accepted: %v", err)
 			}
 		})
@@ -508,7 +508,7 @@ func TestSwitchThemeReducerIgnoresUnknownCallbackFields(t *testing.T) {
 	wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, selectRaw))
 	branchRaw := `{"taskchain":"SwitchTheme","taskid":101,"future":"x","details":{"task":"SwitchThemeByNameAlreadySet","future":[1],"result":{"text":"已设置","future":2}}}`
 	update := switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, branchRaw)
-	wantSwitchThemeFact(t, update, TargetAlreadySet, switchThemeCodeAlreadySet, "Alpha")
+	wantSwitchThemeFact(t, update, control.TargetAlreadySet, switchThemeCodeAlreadySet, "Alpha")
 }
 
 func TestSwitchThemeReducerRepeatingIdenticalNodeIsStable(t *testing.T) {
@@ -516,8 +516,8 @@ func TestSwitchThemeReducerRepeatingIdenticalNodeIsStable(t *testing.T) {
 	wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 101, "Alpha")))
 	first := switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeLocked))
 	second := switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeLocked))
-	wantSwitchThemeFact(t, first, TargetLocked, switchThemeCodeLocked, "Alpha")
-	wantSwitchThemeFact(t, second, TargetLocked, switchThemeCodeLocked, "Alpha")
+	wantSwitchThemeFact(t, first, control.TargetLocked, switchThemeCodeLocked, "Alpha")
+	wantSwitchThemeFact(t, second, control.TargetLocked, switchThemeCodeLocked, "Alpha")
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("repeated node produced a different update: %+v vs %+v", first, second)
 	}
@@ -527,7 +527,7 @@ func TestSwitchThemeReducerSelectionConflictKeepsFirstSelection(t *testing.T) {
 	r := switchThemeTestReducer(t, "Alpha", "Beta")
 	wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 101, "Alpha")))
 	update := switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 101, "Beta"))
-	wantSwitchThemeFact(t, update, TargetAmbiguous, switchThemeCodeSelectionConflict, "")
+	wantSwitchThemeFact(t, update, control.TargetAmbiguous, switchThemeCodeSelectionConflict, "")
 	// The target fact is now fixed as ambiguous; a later branch cannot promote it.
 	wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeAlreadySet)))
 	if r.selected != "Alpha" || !r.selectedSet {
@@ -539,291 +539,19 @@ func TestSwitchThemeReducerKeepsFirstFactImmutably(t *testing.T) {
 	r := switchThemeTestReducer(t, "Alpha")
 	wantNoSwitchThemeUpdate(t, switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 101, "Alpha")))
 	locked := switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeLocked))
-	wantSwitchThemeFact(t, locked, TargetLocked, switchThemeCodeLocked, "Alpha")
+	wantSwitchThemeFact(t, locked, control.TargetLocked, switchThemeCodeLocked, "Alpha")
 	// A contradictory late confirm is still returned so the runtime can report
 	// typed_conflict and preserve the original locked fact.
 	confirm := switchThemeObserve(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeConfirm))
-	wantSwitchThemeFact(t, confirm, TargetConfirmationObserved, switchThemeCodeConfirmationObserved, "Alpha")
+	wantSwitchThemeFact(t, confirm, control.TargetConfirmationObserved, switchThemeCodeConfirmationObserved, "Alpha")
 	if r.selected != "Alpha" {
 		t.Fatalf("conflicting branch rewrote the selected theme: %q", r.selected)
 	}
 }
 
-func switchThemeRuntimePlan(t *testing.T, params ...string) Plan {
-	t.Helper()
-	ref := AdapterRef{Name: switchThemeAdapterName, Version: switchThemeVersion}
-	plan := runtimePlan(t)
-	plan.Tasks = make([]Task, len(params))
-	for i, p := range params {
-		plan.Tasks[i] = Task{ID: fmt.Sprintf("theme-%d", i), Type: switchThemeTaskType, Adapter: &ref, Params: json.RawMessage(p)}
-	}
-	return plan
-}
-
-// newSwitchThemeRuntimeHarness drives the real monitor path (Run.observe)
-// without launching a worker, so Core task ID association, persistence and
-// typed event publication are exercised against the prepared theme reducers.
-func newSwitchThemeRuntimeHarness(t *testing.T, plan Plan, coreIDs []int32) *Run {
-	t.Helper()
-	prepared, err := PreparePlan(plan, NewSwitchThemeAdapter())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(coreIDs) != len(prepared.Tasks) {
-		t.Fatalf("got %d Core task IDs for %d tasks", len(coreIDs), len(prepared.Tasks))
-	}
-	s, err := openStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(func() {
-		cancel()
-		_ = s.close()
-	})
-	index := make(map[int32]int, len(coreIDs))
-	for i, id := range coreIDs {
-		prepared.Tasks[i].CoreTaskID = id
-		prepared.Tasks[i].State = Started
-		index[id] = i
-	}
-	return &Run{
-		runtime:        &Runtime{store: s},
-		plan:           prepared.Plan,
-		sourcePlan:     clonePlan(plan),
-		result:         Result{SchemaVersion: SchemaVersion, RunID: newRunID(), State: Started, Cleanup: "pending", Tasks: prepared.Tasks},
-		events:         make(chan Event, runEventMessages),
-		done:           make(chan struct{}),
-		changed:        make(chan struct{}, 1),
-		commands:       ctx,
-		cancelCommands: cancel,
-		taskIndex:      index,
-		reducers:       prepared.reducers,
-		startIssued:    true,
-	}
-}
-
-func switchThemeDrainEvents(r *Run) []Event {
-	var events []Event
-	for {
-		select {
-		case e := <-r.events:
-			events = append(events, e)
-		default:
-			return events
-		}
-	}
-}
-
-func TestSwitchThemeRuntimeSameTypeTasksStayIsolated(t *testing.T) {
-	plan := switchThemeRuntimePlan(t,
-		switchThemeThemesJSON(t, "Alpha", "Beta"),
-		switchThemeThemesJSON(t, "Gamma"))
-	r := newSwitchThemeRuntimeHarness(t, plan, []int32{101, 202})
-
-	// The selection OCR result is the only association for the chosen theme.
-	sendTypedCallback(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 101, "Beta"))
-	sendTypedCallback(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 202, "Gamma"))
-	sendTypedCallback(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeAlreadySet))
-	sendTypedCallback(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 202, switchThemeNodeLocked))
-	// Repeating the identical node is harmless: the stored fact stays and no
-	// second typed event is published.
-	sendTypedCallback(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 202, switchThemeNodeLocked))
-
-	result := r.Snapshot()
-	first, second := result.Tasks[0].Typed, result.Tasks[1].Typed
-	if first == nil || second == nil {
-		t.Fatalf("typed results missing: %+v", result.Tasks)
-	}
-	if first.Targets[0].Outcome != TargetAlreadySet || first.Targets[0].Code != switchThemeCodeAlreadySet ||
-		!bytes.Equal(first.Targets[0].Details, json.RawMessage(`{"theme":"Beta"}`)) {
-		t.Fatalf("first task typed = %+v", first)
-	}
-	if second.Targets[0].Outcome != TargetLocked || second.Targets[0].Code != switchThemeCodeLocked ||
-		!bytes.Equal(second.Targets[0].Details, json.RawMessage(`{"theme":"Gamma"}`)) {
-		t.Fatalf("second task typed = %+v", second)
-	}
-	// The second task's selection must not leak into the first reducer.
-	if !bytes.Contains(first.Targets[0].Details, []byte("Beta")) || bytes.Contains(first.Targets[0].Details, []byte("Gamma")) {
-		t.Fatalf("cross-task selection pollution: %s", first.Targets[0].Details)
-	}
-
-	typedEvents := 0
-	for _, e := range switchThemeDrainEvents(r) {
-		if len(e.Details) != 0 {
-			t.Fatalf("default event disclosed the raw callback: %+v", e)
-		}
-		if e.Type != "typed" {
-			continue
-		}
-		typedEvents++
-		if e.Typed == nil || len(e.Typed.Targets) != 1 {
-			t.Fatalf("typed event = %+v", e)
-		}
-		wantTask, wantCore := "theme-0", int32(101)
-		if typedEvents == 2 {
-			wantTask, wantCore = "theme-1", 202
-		}
-		if e.TaskID != wantTask || e.CoreTaskID != wantCore {
-			t.Fatalf("typed event association = %+v", e)
-		}
-		details := e.Typed.Targets[0].Details
-		if bytes.Contains(details, []byte("rect")) || bytes.Contains(details, []byte("score")) {
-			t.Fatalf("typed event retained OCR geometry: %s", details)
-		}
-		e.Typed.Targets[0].Outcome = TargetAmbiguous
-		e.Typed.Targets[0].Details[0] = '['
-	}
-	if typedEvents != 2 {
-		t.Fatalf("typed event count = %d, want 2", typedEvents)
-	}
-	snapshot := r.Snapshot()
-	if snapshot.Tasks[0].Typed.Targets[0].Outcome != TargetAlreadySet || snapshot.Tasks[1].Typed.Targets[0].Outcome != TargetLocked {
-		t.Fatal("typed events alias snapshot facts")
-	}
-
-	record, err := ReadRecord(filepath.Dir(r.runtime.store.dir), result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Result.Tasks[0].Typed.Targets[0].Outcome != TargetAlreadySet ||
-		record.Result.Tasks[1].Typed.Targets[0].Outcome != TargetLocked {
-		t.Fatalf("record lost typed facts: %+v", record.Result.Tasks)
-	}
-	if !bytes.Contains(record.Plan.Tasks[0].Params, []byte(`"themes":["Alpha","Beta"]`)) ||
-		!bytes.Contains(record.Plan.Tasks[1].Params, []byte(`"themes":["Gamma"]`)) {
-		t.Fatalf("record lost the original caller plan: %+v", record.Plan.Tasks)
-	}
-
-	// Chain success cannot turn the locked task into a successful batch.
-	sendTypedCallback(t, r, 10002, `{"taskchain":"SwitchTheme","taskid":101}`)
-	sendTypedCallback(t, r, 10002, `{"taskchain":"SwitchTheme","taskid":202}`)
-	sendTypedCallback(t, r, 3, `{"finished_tasks":[101,202]}`)
-	result = r.Snapshot()
-	if result.Tasks[0].State != Succeeded || result.Tasks[1].State != Succeeded {
-		t.Fatalf("native chain facts = %+v", result.Tasks)
-	}
-	if r.proof != Failed || r.proofCode != "typed_failed" || r.fatal != "" {
-		t.Fatalf("batch proof = %s/%s fatal=%s", r.proof, r.proofCode, r.fatal)
-	}
-}
-
-func TestSwitchThemeRuntimeLockedSurvivesChainCompletion(t *testing.T) {
-	plan := switchThemeRuntimePlan(t, switchThemeThemesJSON(t, "Alpha"))
-	r := newSwitchThemeRuntimeHarness(t, plan, []int32{101})
-	sendTypedCallback(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 101, "Alpha"))
-	sendTypedCallback(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeLocked))
-	sendTypedCallback(t, r, 10002, `{"taskchain":"SwitchTheme","taskid":101}`)
-	sendTypedCallback(t, r, 3, `{"finished_tasks":[101]}`)
-
-	result := r.Snapshot()
-	if result.Tasks[0].State != Succeeded {
-		t.Fatalf("native chain fact = %s", result.Tasks[0].State)
-	}
-	if result.Tasks[0].Typed.State != Failed || result.Tasks[0].Typed.Code != "typed_failed" {
-		t.Fatalf("typed aggregate = %+v", result.Tasks[0].Typed)
-	}
-	got := result.Tasks[0].Typed.Targets[0]
-	if got.Outcome != TargetLocked || got.Code != switchThemeCodeLocked || !bytes.Equal(got.Details, json.RawMessage(`{"theme":"Alpha"}`)) {
-		t.Fatalf("locked fact = %+v", got)
-	}
-	if r.proof != Failed || r.proofCode != "typed_failed" || r.fatal != "" {
-		t.Fatalf("batch proof = %s/%s fatal=%s", r.proof, r.proofCode, r.fatal)
-	}
-
-	// A late confirm after the settled chain must not replace the lock.
-	switchThemeDrainEvents(r)
-	sendTypedCallback(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeConfirm))
-	if r.fatal != "" || len(switchThemeDrainEvents(r)) != 0 {
-		t.Fatalf("late confirm changed the settled run: fatal=%s", r.fatal)
-	}
-	if got := r.Snapshot().Tasks[0].Typed.Targets[0]; got.Outcome != TargetLocked {
-		t.Fatalf("late confirm replaced the lock: %+v", got)
-	}
-}
-
-func TestSwitchThemeRuntimeConfirmationRemainsIncomplete(t *testing.T) {
-	plan := switchThemeRuntimePlan(t, switchThemeThemesJSON(t, "Alpha"))
-	r := newSwitchThemeRuntimeHarness(t, plan, []int32{101})
-	sendTypedCallback(t, r, switchThemeMessageSubTaskCompleted, switchThemeSelectCallback(t, 101, "Alpha"))
-	sendTypedCallback(t, r, switchThemeMessageSubTaskCompleted, switchThemeBranchCallback(t, 101, switchThemeNodeConfirm))
-	sendTypedCallback(t, r, 10002, `{"taskchain":"SwitchTheme","taskid":101}`)
-	sendTypedCallback(t, r, 3, `{"finished_tasks":[101]}`)
-
-	result := r.Snapshot()
-	if result.Tasks[0].State != Succeeded {
-		t.Fatalf("native chain fact = %s", result.Tasks[0].State)
-	}
-	typed := result.Tasks[0].Typed
-	if typed.State != Unknown || typed.Code != "typed_incomplete" {
-		t.Fatalf("confirmation aggregate = %+v", typed)
-	}
-	got := typed.Targets[0]
-	if got.Outcome != TargetConfirmationObserved || got.Code != switchThemeCodeConfirmationObserved {
-		t.Fatalf("confirmation fact = %+v", got)
-	}
-	if !bytes.Equal(got.Details, json.RawMessage(`{"theme":"Alpha"}`)) {
-		t.Fatalf("confirmation details = %s", got.Details)
-	}
-	if r.proof != Unknown || r.proofCode != "typed_incomplete" || r.fatal != "" {
-		t.Fatalf("batch proof = %s/%s fatal=%s", r.proof, r.proofCode, r.fatal)
-	}
-	record, err := ReadRecord(filepath.Dir(r.runtime.store.dir), result.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Result.Tasks[0].Typed.Targets[0].Outcome != TargetConfirmationObserved || record.Result.State != Started {
-		t.Fatalf("record lost confirmation evidence: %+v", record.Result)
-	}
-}
-
-func TestSwitchThemeRuntimeChainCompletionIsNotThemeSuccess(t *testing.T) {
-	plan := switchThemeRuntimePlan(t, switchThemeThemesJSON(t, "Alpha"))
-	r := newSwitchThemeRuntimeHarness(t, plan, []int32{101})
-	// Start-only evidence and a terminal chain callback carry no selection.
-	sendTypedCallback(t, r, 20001, switchThemeSelectCallback(t, 101, "Alpha"))
-	sendTypedCallback(t, r, 10002, `{"taskchain":"SwitchTheme","taskid":101}`)
-	sendTypedCallback(t, r, 3, `{"finished_tasks":[101]}`)
-
-	result := r.Snapshot()
-	if result.Tasks[0].State != Succeeded {
-		t.Fatalf("native chain fact = %s", result.Tasks[0].State)
-	}
-	typed := result.Tasks[0].Typed
-	if typed.State != Unknown || typed.Code != "typed_incomplete" {
-		t.Fatalf("chain completion fabricated typed success: %+v", typed)
-	}
-	if got := typed.Targets[0]; got.Outcome != TargetUnobserved || got.Code != "" || len(got.Details) != 0 {
-		t.Fatalf("unobserved target = %+v", got)
-	}
-	if r.proof != Unknown || r.proofCode != "typed_incomplete" || r.fatal != "" {
-		t.Fatalf("batch proof = %s/%s fatal=%s", r.proof, r.proofCode, r.fatal)
-	}
-}
-
-func TestSwitchThemeRuntimeMalformedCallbackStopsWithoutFact(t *testing.T) {
-	plan := switchThemeRuntimePlan(t, switchThemeThemesJSON(t, "Alpha"))
-	r := newSwitchThemeRuntimeHarness(t, plan, []int32{101})
-	sendTypedCallback(t, r, switchThemeMessageSubTaskCompleted,
-		`{"taskchain":"SwitchTheme","taskid":101,"details":{"task":"SwitchThemeByNameSelectTheme","result":{"text":"Alpha","text":"Beta"}}}`)
-	if r.fatal != "typed_invalid_event" {
-		t.Fatalf("malformed callback = %s", r.fatal)
-	}
-	for _, e := range switchThemeDrainEvents(r) {
-		if e.Type == "typed" {
-			t.Fatalf("rejected callback published a typed event: %+v", e)
-		}
-	}
-	for _, target := range r.Snapshot().Tasks[0].Typed.Targets {
-		if target.Outcome != TargetUnobserved {
-			t.Fatalf("malformed callback created a fact: %+v", target)
-		}
-	}
-}
-
-func ExampleNewSwitchThemeAdapter() {
-	adapter := NewSwitchThemeAdapter()
-	prepared, err := adapter.Prepare(Task{
+func ExampleNew() {
+	adapter := New()
+	prepared, err := adapter.Prepare(control.Task{
 		ID:     "theme-1",
 		Type:   "SwitchTheme",
 		Params: json.RawMessage(`{"themes":["Theme One","Theme Two"]}`),
