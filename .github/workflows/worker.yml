@@ -125,4 +125,8 @@ jobs:
         run: |
           go build ./apps/core-worker/... ./apps/cli/... ./packages/control/...
           mkdir -p "$RUNNER_TEMP/worker-tests"
-          go test -c -o "$RUNNER_TEMP/worker-tests/" ./apps/core-worker/... ./apps/cli/... ./packages/control/...
+          go test -c -o "$RUNNER_TEMP/worker-tests/core-worker.test" ./apps/core-worker/internal/worker
+          go test -c -o "$RUNNER_TEMP/worker-tests/cli.test" ./apps/cli/internal/cli
+          go test -c -o "$RUNNER_TEMP/worker-tests/control.test" ./packages/control
+          go test -c -o "$RUNNER_TEMP/worker-tests/worker-client.test" ./packages/control/worker
+          go test -c -o "$RUNNER_TEMP/worker-tests/protocol.test" ./packages/control/worker/protocol
