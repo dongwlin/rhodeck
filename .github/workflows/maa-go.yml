@@ -137,24 +137,22 @@ jobs:
         run: go build ./...
       # `go test -c -o dir/ ./...` rejects duplicate test binary names, and the
       # module has packages sharing a basename (the two internal/app packages),
-      # so each package gets an explicit output file instead.
+      # so packages are enumerated and each binary gets a name derived from its
+      # import path. Enumerating keeps new packages covered without editing
+      # this file; the duplicate check keeps the derived names unique.
       - name: Compile test binaries without running them
         run: |
-          mkdir -p "$RUNNER_TEMP/maa-go-tests"
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/maa.test" ./packages/maa-go
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/native.test" ./packages/maa-go/internal/native
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/ffitest.test" ./packages/maa-go/internal/ffitest
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/cli.test" ./apps/cli/internal/app
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/core-worker.test" ./apps/core-worker/internal/app
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/control.test" ./packages/control
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/worker-client.test" ./packages/control/worker
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/protocol.test" ./packages/control/worker/protocol
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/adapters-copilot.test" ./packages/control/adapters/copilot
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/adapters-operprogress.test" ./packages/control/adapters/operprogress
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/adapters-roguelike.test" ./packages/control/adapters/roguelike
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/adapters-switchtheme.test" ./packages/control/adapters/switchtheme
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/recordfs.test" ./packages/control/internal/recordfs
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/strictjson.test" ./packages/control/internal/strictjson
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/api-coverage.test" ./tools/api-coverage
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/check-maa-api.test" ./tools/check-maa-api
-          go test -c -o "$RUNNER_TEMP/maa-go-tests/maa-go-check.test" ./tools/maa-go-check
+          module=$(go list -m)
+          out="$RUNNER_TEMP/maa-go-tests"
+          mkdir -p "$out"
+          go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... \
+            | sed '/^$/d' > "$out/imports.txt"
+          sed "s#^${module}/##; s#/#-#g" "$out/imports.txt" > "$out/names.txt"
+          duplicates=$(sort "$out/names.txt" | uniq -d)
+          if [ -n "$duplicates" ]; then
+            echo "Duplicate test binary names: $duplicates" >&2
+            exit 1
+          fi
+          while read -r pkg name; do
+            go test -c -o "$out/${name}.test" "$pkg"
+          done < <(paste -d' ' "$out/imports.txt" "$out/names.txt")
