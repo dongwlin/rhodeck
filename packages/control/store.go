@@ -256,11 +256,26 @@ func validateRecord(record Record) error {
 	}
 	for i, task := range record.Plan.Tasks {
 		result := record.Result.Tasks[i]
-		if task.ID != result.ID || (task.Adapter == nil) != (result.Typed == nil) {
+		if task.ID != result.ID {
 			return errors.New("control: record task association mismatch")
 		}
-		if task.Adapter != nil && *task.Adapter != result.Typed.Adapter {
-			return errors.New("control: record adapter association mismatch")
+		if task.Adapter == nil {
+			if result.Policy != "" || result.Typed != nil {
+				return errors.New("control: raw record task contains objective data")
+			}
+		} else {
+			switch result.Policy {
+			case ObjectiveNone:
+				if result.Typed != nil {
+					return errors.New("control: input-only record task contains typed facts")
+				}
+			case ObjectiveAll, ObjectiveAny:
+				if result.Typed == nil || *task.Adapter != result.Typed.Adapter || result.Policy != result.Typed.Policy {
+					return errors.New("control: record adapter or objective association mismatch")
+				}
+			default:
+				return errors.New("control: record task has an unsupported objective policy")
+			}
 		}
 		if record.Result.State == Succeeded && (result.State != Succeeded || (result.Typed != nil && result.Typed.State != Succeeded)) {
 			return errors.New("control: record success lacks confirmed task facts")

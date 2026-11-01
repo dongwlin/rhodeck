@@ -30,6 +30,17 @@ go run ./tools/maa-go-check --list
 ```
 
 `--root` 默认为当前目录向上最近的 `go.mod` 所在目录。
+`--c-input DIR` 选择含来源与逐文件摘要的头文件目录；默认使用仓库的
+`tools/check-maa-api/testdata/snapshot`。该目录是可更新的静态验证输入，
+不限制宿主安装的 MaaCore 版本。显式输入的结构与摘要校验见
+[checker 输入合同](../check-maa-api/README.md)。例如：
+
+```sh
+go run ./tools/maa-go-check --layers static --c-input /opt/maa-headers
+```
+
+缺少头文件 manifest 时 `static` 为 `UNVERIFIED`；头文件或声明不匹配
+时为 `FAIL`。静态输入不可用不会因为工具单测通过而被算为通过。
 
 需要精确区分退出码时先构建二进制：
 
@@ -45,12 +56,12 @@ go build -o maa-go-check ./tools/maa-go-check
 
 | 层 | 运行内容 | 外部要求 | CI |
 |---|---|---|---|
-| `static` | `tools/check-maa-api` 单测/反例 + 仓库内锁定 C 输入的 linux/windows 完整 checker | 无（头文件已随仓库提供） | 是 |
+| `static` | `tools/check-maa-api` 单测/反例 + 选定 C 输入的 linux/windows 完整 checker | `--c-input` 目录及 manifest（默认随仓库提供） | 是 |
 | `go` | `packages/maa-go` 单测与故障注入、`internal/ffitest`、`internal/native` 单测（含生产 loader 测试，排除独立 fixture 层）、本工具单测 | loader 夹具需要 `cc`/`gcc` | 是 |
 | `loader` | 独立 C loader fixture 的装载/解析/注册 | Linux、`cc`/`gcc` | Linux |
 | `abi` | 真实 C ABI fixture 的数值、参数、void 与缓冲区调用 | Linux、`cc`/`gcc` | Linux |
 | `callback` | 原生线程 callback fixture | Linux、`cc`/`gcc` | Linux |
-| `core` | 锁定 MaaCore v6.20.1 的真实库无设备链路 | 锁定发行包 | 否 |
+| `core` | 显式实际安装的真实库无设备链路 | 库与资源根，或显式 tarball | 否 |
 | `build` | `CGO_ENABLED=0 go build ./...` 与 `go vet ./...` | 无 | 是 |
 | `fmt` | `gofmt -l .`，有输出即失败 | 无 | 是 |
 | `race` | `go test ./packages/maa-go/... -race`，另以 `-skip` 排除 TestRealCore（Go 并发/单元测试；真实核心由 core 覆盖） | `cc`/`gcc`（race 需要 cgo） | 独立任务 |
@@ -65,7 +76,7 @@ go build -o maa-go-check ./tools/maa-go-check
 `-skip` 值。
 
 `--layers ci` 是 `static,go,loader,abi,callback,build,fmt`。
-`--layers all` 包含 `core` 与 `race`；缺少发行包或编译器时对应层为
+`--layers all` 包含 `core` 与 `race`；缺少实际安装输入或编译器时对应层为
 `UNVERIFIED`，二进制整体退出码 2（`go run` 统一显示为 1）。
 [CI 工作流](../../.github/workflows/maa-go.yml)使用以下矩阵，不运行 `core`：
 
@@ -82,9 +93,9 @@ go build -o maa-go-check ./tools/maa-go-check
 
 矩阵在各平台实际执行 Go 单测、故障注入、生产 loader 测试与构建检查；
 Linux 额外执行 loader/ABI/callback 独立 fixture 层。Windows 使用 runner
-预装的 MinGW gcc，macOS 使用系统 C 编译器。`static` 在所有 runner 上仍检查锁定的
+预装的 MinGW gcc，macOS 使用系统 C 编译器。`static` 在所有 runner 上检查选定头文件的
 `linux/amd64`、`windows/amd64` 两个声明目标，不把宿主架构当成新的
-ABI 基线。Windows/macOS 生产 loader 由本机原生库与夹具测试验证；
+声明目标。Windows/macOS 生产 loader 由本机原生库与夹具测试验证；
 真实 MaaCore、设备与 Docker 运行不在上述 CI 测试覆盖范围内。
 
 ## 状态与退出码
@@ -108,17 +119,29 @@ ABI 基线。Windows/macOS 生产 loader 由本机原生库与夹具测试验证
 
 - **C 编译器**：生产 loader 夹具、loader/ABI/callback fixture 与 race 层需要 `cc` 或
   `gcc`。缺失时这些层 `UNVERIFIED`，二进制退出码 2。
-- **锁定 MaaCore**：`core` 层使用
-  `~/.cache/maa/MAA-v6.20.1-linux-x86_64.tar.gz`，可用
-  `MAA_CORE_TARBALL` 覆盖；测试会校验整包与成员 SHA-256。缺失时该层
-  `UNVERIFIED`。
+- **实际 MaaCore**：`core` 层要求显式 `MAA_CORE_LIB_PATH` 与
+  `MAA_CORE_RESOURCE_ROOT`，或互斥的 `MAA_CORE_TARBALL`。不搜索缓存，
+  不规定版本。缺少或不完整输入为 `UNVERIFIED`；显式路径不存在、
+  输入冲突或不满足调用方期望时为 `FAIL`。原生依赖由宿主安装提供。
+  可选期望与 tarball 布局见[真实库测试说明](../../packages/maa-go/testdata/README.md)。
+
+```sh
+MAA_CORE_LIB_PATH=/opt/maa/libMaaCore.so \
+MAA_CORE_RESOURCE_ROOT=/opt/maa \
+go run ./tools/maa-go-check --layers core
+
+MAA_CORE_TARBALL=/opt/downloads/maa-linux.tar.gz \
+go run ./tools/maa-go-check --layers core
+```
 
 ## 报告
 
 默认输出逐层表格、环境摘要与结论。环境摘要只包含 Go/OS/架构、purego
-版本、默认 cgo 设置、C 编译器、锁定发行包 SHA-256 前缀与 git 提交；
+版本、默认 cgo 设置、C 编译器、显式输入类型、实际库或 tarball 的 SHA-256 前缀与 git 提交；
 不包含仓库根、用户目录或外部资源路径。`--json` 输出同样的信息，便于
-CI 归档。
+CI 归档。静态层的 JSON `header_input` 保留选定头文件的 `snapshot_id`、
+来源与逐文件摘要；CI 显式选择仓库快照并上传该报告。头文件来源与真实
+安装分开记账；`core` 没有执行时不声明真实库版本或能力通过。
 
 `race` 层显式使用 `CGO_ENABLED=1`，与生产 `CGO_ENABLED=0` 构建分开
 记录。race 通过只辅助发现 Go 并发问题，不证明原生 ABI；fixture 通过

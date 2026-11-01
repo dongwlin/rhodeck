@@ -280,12 +280,37 @@ func TestRunCommandHelper(t *testing.T) {
 	os.Exit(0)
 }
 
-func TestCheckerTargetsUseVendoredInput(t *testing.T) {
+func TestCheckerTargetsUseSelectedInput(t *testing.T) {
 	root, err := resolveRoot("")
 	if err != nil {
 		t.Fatalf("resolveRoot: %v", err)
 	}
-	env := environment{Root: root}
+	input := t.TempDir()
+	source := filepath.Join(root, "tools", "check-maa-api", "testdata", "snapshot")
+	for _, name := range []string{"inputs.json", "upstream/AsstCaller.h", "upstream/AsstCallerExtra.h", "upstream/AsstPort.h", "upstream/LICENSE"} {
+		data, err := os.ReadFile(filepath.Join(source, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name == "inputs.json" {
+			var manifest map[string]json.RawMessage
+			if err := json.Unmarshal(data, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			manifest["snapshot_id"] = json.RawMessage(`"caller-selected-headers"`)
+			data, err = json.Marshal(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(input, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(input, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := environment{Root: root, CInput: input}
 	bin, cleanup, err := buildChecker(context.Background(), env)
 	if err != nil {
 		t.Fatalf("buildChecker: %v", err)
@@ -304,6 +329,9 @@ func TestCheckerTargetsUseVendoredInput(t *testing.T) {
 		if res.Status != statusPass {
 			t.Fatalf("checker %s status = %q, want %q (%s)", tc.goos, res.Status, statusPass, res.Detail)
 		}
+		if res.HeaderInput == nil || res.HeaderInput.SnapshotID != "caller-selected-headers" {
+			t.Fatalf("checker did not report the selected input: %+v", res.HeaderInput)
+		}
 	}
 }
 
@@ -312,7 +340,7 @@ func TestCheckerTargetRejectsWrongPolicyCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveRoot: %v", err)
 	}
-	env := environment{Root: root}
+	env := environment{Root: root, CInput: filepath.Join(root, "tools", "check-maa-api", "testdata", "snapshot")}
 	bin, cleanup, err := buildChecker(context.Background(), env)
 	if err != nil {
 		t.Fatalf("buildChecker: %v", err)
@@ -367,10 +395,68 @@ func TestDefinitionsAreUniqueAndConsistent(t *testing.T) {
 		}
 		for _, req := range def.Requires {
 			switch req {
-			case "cc", "tarball":
+			case "cc", "headers", "core-input":
 			default:
 				t.Fatalf("layer %q has unknown requirement %q", def.Name, req)
 			}
+		}
+	}
+}
+
+func TestMissingHeaderInputIsUnverified(t *testing.T) {
+	called := false
+	res := runLayer(context.Background(), environment{CInput: t.TempDir()}, layer{
+		Name: "static", Requires: []string{"headers"},
+		Run: func(context.Context, environment) layerResult {
+			called = true
+			return layerResult{Status: statusPass, Passed: 1}
+		},
+	})
+	if called || res.Status != statusUnverified || res.Passed != 0 {
+		t.Fatalf("missing header manifest = %+v, called=%v", res, called)
+	}
+}
+
+func TestCoreInputPresenceAndRequirements(t *testing.T) {
+	tests := []struct {
+		name, tarball, library, resources, kind string
+		unverified                              bool
+	}{
+		{name: "missing", unverified: true},
+		{name: "partial library", library: "/missing/library", kind: "incomplete", unverified: true},
+		{name: "partial resources", resources: "/missing/resources", kind: "incomplete", unverified: true},
+		{name: "explicit tarball", tarball: "/missing/archive", kind: "tarball"},
+		{name: "explicit installation", library: "/missing/library", resources: "/missing/resources", kind: "installation"},
+		{name: "conflicting", tarball: "/archive", library: "/library", kind: "conflicting"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			kind := coreInputKind(tc.tarball, tc.library, tc.resources)
+			if kind != tc.kind {
+				t.Fatalf("input kind = %q, want %q", kind, tc.kind)
+			}
+			err := requirementError("core-input", environment{CoreInput: kind})
+			if (err != nil) != tc.unverified {
+				t.Fatalf("requirement error = %v; unverified=%v", err, tc.unverified)
+			}
+		})
+	}
+}
+
+func TestCoreExpectationsPresence(t *testing.T) {
+	for _, tc := range []struct {
+		values []string
+		want   bool
+	}{
+		{values: []string{"MAA_CORE_EXPECTED_VERSION="}},
+		{values: []string{"MAA_CORE_LIB_PATH=/library"}},
+		{values: []string{"MAA_CORE_EXPECTED_VERSION=caller-version"}, want: true},
+		{values: []string{"MAA_CORE_EXPECTED_LIBRARY_SHA256=invalid"}, want: true},
+		{values: []string{"MAA_CORE_EXPECTED_TARBALL_SHA256=invalid"}, want: true},
+		{values: []string{"MAA_CORE_EXPECTED_VERSION_SHA256=invalid"}, want: true},
+	} {
+		if got := hasCoreExpectations(tc.values); got != tc.want {
+			t.Fatalf("hasCoreExpectations(%v) = %v, want %v", tc.values, got, tc.want)
 		}
 	}
 }

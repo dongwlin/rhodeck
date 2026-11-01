@@ -98,7 +98,7 @@ var (
 )
 
 // frozenNonConstCharPointees 是 char pointee 冻结 const 分布中许可非
-// const 的 (符号, 参数名) 集合:锁定 profile 全集(与归档
+// const 的 (符号, 参数名) 集合:已支持声明全集(与输入
 // upstream/AsstCaller.h 逐一核对一致)仅 AsstGetUUID 的 buff 是
 // UTF-8 输出缓冲区 char*,其余 char pointee(各 UTF-8 输入参数、
 // callback 的 details_json、AsstGetVersion 的返回值)全部为 const

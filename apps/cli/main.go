@@ -77,7 +77,7 @@ type capabilities struct {
 	TaskInput           string              `json:"task_input"`
 	TaskAdapters        []adapterCapability `json:"task_adapters"`
 	AdapterBasis        string              `json:"adapter_basis"`
-	StaticSnapshotBasis string              `json:"static_snapshot_basis"`
+	CoreVersionPolicy   string              `json:"core_version_policy"`
 	InstallationFacts   string              `json:"installation_facts"`
 	DeviceAcceptance    string              `json:"device_acceptance"`
 	NativeTaskDiscovery bool                `json:"native_task_discovery"`
@@ -114,7 +114,7 @@ func runCLI(parent context.Context, args []string, stdin io.Reader, stdout, stde
 	if command == "help" || command == "--help" || command == "-h" ||
 		((command == "run" || command == "dry-run" || command == "doctor") && len(args) == 2 && (args[1] == "--help" || args[1] == "-h")) {
 		if err := encoder.Encode(envelope{SchemaVersion: control.SchemaVersion, Type: "help",
-			Usage: "rhodeck-cli capabilities|version; rhodeck-cli run|dry-run|doctor --input FILE|- --worker ABS_PATH --data-dir ABS_PATH [--timeout DURATION] [--startup-timeout 10s] [--request-timeout 30s] [--stop-timeout 5s] [--shutdown-timeout 5s] [--output-timeout 5s] [--include-raw-events]; run also accepts --dry-run. Explicit task adapters " + cliAdapterSummary() + " require task.adapter; tasks without it stay raw. dry-run compiles selected adapters and previews unobserved targets without side effects. Both adapters are locally implemented without authorized device acceptance."}); err != nil {
+			Usage: "rhodeck-cli capabilities|version; rhodeck-cli run|dry-run|doctor --input FILE|- --worker ABS_PATH --data-dir ABS_PATH [--timeout DURATION] [--startup-timeout 10s] [--request-timeout 30s] [--stop-timeout 5s] [--shutdown-timeout 5s] [--output-timeout 5s] [--include-raw-events]; run also accepts --dry-run. Explicit task adapters " + cliAdapterSummary() + " require task.adapter; tasks without it stay raw. dry-run compiles selected adapters and previews each task's actual objective policy and unobserved targets without side effects. Adapters are locally implemented without authorized device acceptance."}); err != nil {
 			return fail("output_failed", exitUnknown)
 		}
 		return exitSuccess
@@ -131,7 +131,7 @@ func runCLI(parent context.Context, args []string, stdin io.Reader, stdout, stde
 				Commands:     []string{"run", "dry-run", "doctor", "capabilities", "version", "help"},
 				TaskInput:    "string task type and raw JSON object parameters",
 				TaskAdapters: cliAdapterCapabilities(),
-				AdapterBasis: adapterBasis, StaticSnapshotBasis: staticSnapshotBasis,
+				AdapterBasis: adapterBasis, CoreVersionPolicy: coreVersionPolicy,
 				InstallationFacts: installationFacts, DeviceAcceptance: deviceAcceptance,
 				TaskAcceptance: "determined by the explicitly selected Core and resources at execution",
 			}

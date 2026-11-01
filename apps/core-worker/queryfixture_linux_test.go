@@ -94,6 +94,44 @@ func initializeQueryFixtureWorker(t *testing.T, c *worker.Client, library string
 	return info
 }
 
+func TestQueryFixtureExplicitCoreVersion(t *testing.T) {
+	library := buildQueryFixture(t)
+	// With no caller expectation the actual version is reported, without a
+	// repository-wide release gate. Each initialization uses a fresh process.
+	baseline := launchQueryFixtureWorker(t, library)
+	actual := initializeQueryFixtureWorker(t, baseline, library)
+	if actual.CoreVersion == "" {
+		t.Fatal("missing actual Core version")
+	}
+	if err := baseline.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, matching := range []bool{true, false} {
+		name, expected := "matching", actual.CoreVersion
+		if !matching {
+			name, expected = "mismatched", actual.CoreVersion+"-different"
+		}
+		t.Run(name, func(t *testing.T) {
+			c := launchQueryFixtureWorker(t, library)
+			root := t.TempDir()
+			info, err := c.Initialize(context.Background(), protocol.InitializeRequest{
+				SnapshotID: "explicit-version-fixture", LibraryPath: library, UserDir: root,
+				ResourceRoots: []string{root}, ExpectedCoreVersion: expected,
+			})
+			if matching {
+				if err != nil || info.CoreVersion != expected {
+					t.Fatalf("matching version: info=%+v err=%v", info, err)
+				}
+				return
+			}
+			var remote *protocol.Error
+			if !errors.As(err, &remote) || remote.Code != protocol.SnapshotMismatch {
+				t.Fatalf("version mismatch: got %v, want snapshot_mismatch", err)
+			}
+		})
+	}
+}
+
 // fixtureLogReadback reads the recorded log through the fixture's UUID
 // observation: "<level>\x1f<message>\x1f<count>".
 func fixtureLogReadback(t *testing.T, c *worker.Client) string {

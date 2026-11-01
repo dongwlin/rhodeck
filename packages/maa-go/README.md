@@ -5,15 +5,15 @@
 `MaaCore.dll`（Windows），不把 MaaCore 链接进 Go 二进制，
 生产 Go 包可以 `CGO_ENABLED=0` 构建。
 
-**支持声明**：在 Linux amd64 / glibc 上，本包对下方“公开面”列出的 API
-提供支持。其他平台、未列出的能力与所有未通过分层检查的层均未验证；
-未验证不等于支持。
+**验证边界**：Linux amd64 / glibc 是真实库无设备验证入口；下方公开面
+描述绑定提供的 API。支持结论只覆盖实际验证并记录的 Core、资源与平台
+组合，不随版本滚动继承。其他平台和未执行的层保持未验证。
 
 ## 支持矩阵
 
 | 平台 | 架构 | 运行环境 | 结论 |
 |---|---|---|---|
-| Linux | amd64 | glibc | **支持**（本页公开面） |
+| Linux | amd64 | glibc | 真实库无设备入口；以实际安装组合的执行记录为准 |
 | Linux | arm64 | CI 仅交叉编译包与测试二进制 | 未执行单测或真实 Core |
 | macOS | arm64 | CI 执行 Go/fake-native 与原生 loader 测试 | loader 已实现；结果以 CI run 为准 |
 | macOS | amd64 | CI 执行 Go/fake-native 与原生 loader 测试 | loader 已实现；结果以 CI run 为准 |
@@ -27,16 +27,23 @@ MaaCore 运行验证。
 
 ## ABI 与依赖
 
-Go 工具链与 purego 版本见 [go.mod](../../go.mod)。当前 ABI profile
-锁定 MaaCore `v6.20.1`；源码 commit、头文件摘要与许可证见
-[锁定 C 输入](../../tools/check-maa-api/testdata/locked/README.md)。
-该 profile 的 `AsstGetNullSize()` 为 `math.MaxUint64`。
+Go 工具链与 purego 版本见 [go.mod](../../go.mod)。绑定跟随调用方提供的
+MaaCore 头文件与安装组合，不固定发行版本，也不保证旧版本兼容。
+静态 checker 独立比较 C 头与 Go raw 声明；仓库内未版本化的
+[头文件快照](../../tools/check-maa-api/testdata/snapshot/README.md)记录来源、
+摘要与许可证，仅作为可复验的声明输入，不证明任何安装已验证。
+`AsstGetNullSize()` 的 `math.MaxUint64` 哨兵仍是输出缓冲区 ABI 约束。
 
-可选的真实库测试使用 `MAA-v6.20.1-linux-x86_64.tar.gz` 及其中的
-`resource/`，在运行时校验整包与成员摘要；缓存路径及运行命令见
-[测试夹具说明](testdata/README.md)。测试夹具与 race 层另需 C 编译器：
-前者按系统生成 `.so`、`.dylib` 或 `.dll`，后者使用 `-race` 所需的
-cgo 运行时；生产 `CGO_ENABLED=0` 构建不使用它。
+真实库测试显式接收 `MAA_CORE_LIB_PATH` + `MAA_CORE_RESOURCE_ROOT`，或
+`MAA_CORE_TARBALL`，不搜索缓存、不自动下载或更新；输入不完整时报告
+SKIP/UNVERIFIED。实际版本、库和版本文件 SHA256 分别记录；调用方可提供
+期望版本/摘要，不匹配仍失败。命令与变量见[测试夹具说明](testdata/README.md)。
+资源来源及摘要覆盖范围由安装宿主管理；CLI 元数据的对账方式见
+[宿主资源溯源](../../apps/cli/installation-provenance.md)。
+
+测试夹具与 race 层另需 C 编译器：前者按系统生成 `.so`、`.dylib` 或
+`.dll`，后者使用 `-race` 所需的 cgo 运行时；生产 `CGO_ENABLED=0`
+构建不使用它。
 
 仓库内可重复执行的分层检查包括：静态 checker 双目标、Go 故障注入、
 loader fixture、真实 ABI fixture、原生线程 callback fixture，以及真实库
@@ -111,16 +118,13 @@ func observe(in *maa.Instance, handleEvent func(maa.Event)) error {
 
 - 运行时仍需显式配置的 MaaCore 库绝对路径、至少一个包含 `resource/` 的
   资源根、可写的用户目录与 ADB 可执行文件；
-- Linux 锁定发行包根目录的 9 个 `.so` 必须放在同一目录并一起部署：
-  `libMaaCore.so` 与 8 个捆绑依赖 `libMaaAdbControlUnit.so`、
-  `libMaaUtils.so`、`libfastdeploy_ppocr.so`、`libonnxruntime.so.1`、
-  `libunwind.so.1`、`libopencv_world4.so.412`、`libc++.so.1`、
-  `libc++abi.so.1`。`libMaaCore.so` 的 `DT_RUNPATH=$ORIGIN` 依赖同目录
-  解析；只复制 `libMaaCore.so` 会在 dlopen 时失败；
+- 将实际发行包要求的捆绑依赖与主库一起部署，保留其目录布局与库内
+  RUNPATH；依赖集合随安装变化，不固定文件名或数量。只复制主库而
+  遗漏依赖可能在 dlopen 时失败；
 - MaaCore 自己依赖系统库，Linux 运行环境需与发行包要求的 glibc
   兼容；不保证 musl、静态单文件或无系统动态库部署；
 - 原生库与资源不随本仓库分发，也不在 `go test` 中打包；真实库测试从
-  锁定发行包缓存读取并校验摘要，缺失时明确报告受阻，不冒充通过；
+  显式安装路径或发行包读取并记录摘要，缺失时明确报告受阻，不冒充通过；
 - 连接参数（ADB 路径、地址、profile）由调用方提供；本包不做设备发现、
   不做 shell 展开、不记录设备地址。
 
@@ -183,7 +187,7 @@ go run ./tools/maa-go-check --layers ci
 # Windows/macOS CI 单测集合（不选择 Linux 原生 fixture）
 go run ./tools/maa-go-check --layers static,go,build,fmt
 
-# 真实 MaaCore 无设备链路（可选，需要锁定发行包，仅本地运行）
+# 真实 MaaCore 无设备链路（可选，需显式安装或发行包，仅本地运行）
 go run ./tools/maa-go-check --layers core
 
 # 全部层；任何缺少资源/工具链的层都会使整体非零退出，而不是被算作通过
@@ -217,7 +221,7 @@ skip 事件中、因此不计入 `Skipped`；详情与 JSON 的 `skip_filter` �
 
 分层不能互相借结论：静态 checker 只证明声明层；loader fixture 只证明
 装载/解析/注册，空导出绝不可调用；ABI/callback fixture 只证明手写 C
-签名与调用约定；真实库测试证明锁定 MaaCore 的初始化/生命周期；`race`
+签名与调用约定；真实库测试证明所提供安装的初始化/生命周期；`race`
 层只跑 Go 并发/单元测试（`-skip TestRealCore`），不证明真实核心行为。
 任何一层没有运行，都不能由另一层替代。
 
@@ -225,7 +229,7 @@ skip 事件中、因此不计入 `Skipped`；详情与 JSON 的 `skip_filter` �
 
 - `GetImageBGR` 返回原始 BGR 字节，不公开宽、高与步长元数据，通道序与
   步长由 Core 决定；符号缺席时返回 `ErrUnsupported`，只有能力探测结果。
-- 真实 MaaCore 运行支持仅限 Linux amd64/glibc；macOS、Windows 的
+- 真实 MaaCore 无设备验证入口面向 Linux amd64/glibc；macOS、Windows 的
   测试覆盖原生 loader 与夹具，真实 MaaCore 运行未验证；musl 与静态
   单文件部署未验证。
 - 每进程单 Runtime、单活动实例；无 Dlclose、热重载、同进程重建。
@@ -239,9 +243,10 @@ skip 事件中、因此不计入 `Skipped`；详情与 JSON 的 `skip_filter` �
 升级 MaaCore/purego/Go 或更换资源包时，按顺序执行并在同一组合上记录
 OS/架构、Go、purego、Core 文件摘要、源码 commit 与资源版本：
 
-1. 更新 `tools/check-maa-api` 的锁定 profile、内部期望表与
-   `tools/check-maa-api/testdata/locked` 的头文件/`inputs.json`，先跑
-   `--layers static`（linux 与 windows 两个目标都必须通过）。
+1. 显式选择有来源和摘要的头文件输入；使用 `--c-input DIR` 传给
+   `maa-go-check`，先跑 `--layers static`（linux 与 windows 两个目标
+   都必须通过）。若 ABI 变化，同步独立期望表与 raw 声明；仓库快照
+   更新时同步 `inputs.json` 与许可证。
 2. 若签名/常量变化，同步 fixture 与 raw 声明；跑 `--layers loader`、
    `--layers abi`、`--layers callback`。
 3. 用新发行包跑 `--layers core`，确认真实 Version/NullSize、初始化
@@ -250,15 +255,15 @@ OS/架构、Go、purego、Core 文件摘要、源码 commit 与资源版本：
    `--layers all`；全绿后才更新本页支持矩阵。
 5. 任何跳过的层保持“未验证”；升级不能把旧平台的旧证据直接继承。
 
-本包不以版本字符串推断兼容性；符号集合、checker profile、fixture 与
-真实库结果必须对同一锁定组合成立。
+本包不以版本字符串推断兼容性；符号集合、头文件、fixture 与
+真实库结果必须对同一实际组合成立；版本字符串不证明任务能力。
 
 ## 相关文档
 
 - [包文档](doc.go)：公开生命周期、并发、所有权、取消、错误与部署边界。
 - [check-maa-api](../../tools/check-maa-api/README.md)：静态声明 checker 的输入、输出、
   失败规则与反例覆盖。
-- [锁定 C 输入](../../tools/check-maa-api/testdata/locked/README.md)：仓库内锁定头的
+- [C 头文件快照](../../tools/check-maa-api/testdata/snapshot/README.md)：仓库内头文件的
   来源、摘要与许可证。
 - [maa-go-check](../../tools/maa-go-check/README.md)：分层入口、状态与退出码。
 - [测试夹具](testdata/README.md)：C fixture 与真实库链路的

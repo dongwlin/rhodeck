@@ -788,7 +788,7 @@ func TestRealNativeSignatureBaseline(t *testing.T) {
 	run := func(goos string) string {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
-		code := Run([]string{"--profile", testProfileID, "--goos", goos, "--goarch", "amd64",
+		code := Run([]string{"--goos", goos, "--goarch", "amd64",
 			"--c-input", cInput, "--go-root", goRoot}, &stdout, &stderr)
 		if code != 0 {
 			t.Fatalf("%s run exited %d:\n%s", goos, code, stderr.String())
@@ -915,7 +915,7 @@ func TestRealNativeSignatureVariantsFailThroughCLI(t *testing.T) {
 			goRoot := writeMutatedGoRoot(t, files)
 			var stdout, stderr bytes.Buffer
 			code := Run([]string{
-				"--profile", testProfileID, "--goos", "linux", "--goarch", "amd64",
+				"--goos", "linux", "--goarch", "amd64",
 				"--c-input", cInput, "--go-root", goRoot,
 			}, &stdout, &stderr)
 			if code == 0 {

@@ -19,7 +19,7 @@ import (
 // newAsyncRig fake-caller 生产创建接线):PNG Initial=8 字节/Max=64/
 // 重试 4,UUID Initial=16 字节/Max=64/重试 4,Tasks Initial=4 元素/
 // Max=16 元素/重试 4——容量探测序列在断言中逐项可见,读取哨兵取
-// Open 时核验保存的 Runtime.NullSize(锁定 profile 为 math.MaxUint64)。
+// Open 时核验保存的 Runtime.NullSize(输出缓冲区 ABI 哨兵为 math.MaxUint64)。
 func newReadRig(t *testing.T, handle uintptr) (*Instance, *createRig) {
 	t.Helper()
 	inst, rig := newAsyncRig(t, handle, func(l *Limits) {

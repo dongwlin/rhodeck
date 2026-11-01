@@ -27,14 +27,20 @@ paths; all installation and data paths below must be absolute on the host OS.
 and command list it reports:
 
 - `task_adapters`: one row per locally registered adapter with `name`,
-  `version`, `core_type`, the accepted `input` contract and an `acceptance`
-  statement;
+  `version`, `core_type`, the accepted `input` contract, `objective_policies`
+  (every policy that adapter's inputs can select, in the fixed `all`, `any`,
+  `none` order), `policy_selection` (which input selects which policy and what
+  it interprets), `result_interpretation` (the highest capability the adapter
+  can reach: `target_results`, `stage_results` or `mode_objective`) and an
+  `acceptance` statement; input-only branches are described as `none` inside
+  `policy_selection`, `input` and `acceptance` rather than by one static row
+  value, and `dry-run` shows the policy each prepared task actually selected;
 - `adapter_basis`: the reviewed implementation source revision (MAA source
   `9b75f9f7b103079458414c6e20216c8c531d6987`) and that the adapters were not
   executed;
-- `static_snapshot_basis`: the `MAA v6.20.1` release candidate is a separate
-  library and resource snapshot, not the reviewed source revision, and was not
-  executed;
+- `core_version_policy`: rolling validation of the latest caller-provided Core
+  and resources, with no fixed Core version or old-version compatibility
+  guarantee; Rhodeck performs no automatic downloads or updates;
 - `installation_facts`: `not inspected`. `capabilities` performs no installation
   discovery or native loading; run `doctor` with an explicit plan to inspect an
   installation;
@@ -44,8 +50,15 @@ Adapter names and versions come from the same `Descriptor()` values the runner
 registers, so the report cannot drift from the registry. There is no dynamic
 Core API enumerating supported task types, and an installed Core version string
 does not prove that a task or adapter works. `help` restates the adapter names,
-the explicit `task.adapter` selection rule and the missing device acceptance.
-The generic `task_input` continues to describe the open raw path.
+the explicit `task.adapter` selection rule, the per-task policy preview and the
+missing device acceptance. The generic `task_input` continues to describe the
+open raw path.
+
+The unpublished schema version 1 replaces `static_snapshot_basis` with
+`core_version_policy`. Actual installation facts remain in `doctor` output and
+run results/records, independently of the historical adapter source review.
+See [installation provenance](installation-provenance.md) for the host manifest
+template and reconciliation of each resource root and version-file digest.
 
 ## Explicit plan input
 
@@ -92,10 +105,10 @@ selected binding limits and frozen worker protocol budgets.
 
 ### Strict task adapters
 
-Two adapters are registered locally and stay inactive unless the task selects
+Four adapters are registered locally and stay inactive unless the task selects
 one with an exact `adapter` object. Selection never happens by task type alone:
-an `OperProgress` or `SwitchTheme` task without `adapter` keeps the open raw
-path and Core decides whether it accepts the parameters. Both adapter inputs
+a familiar `Copilot` or `Roguelike` task without `adapter` keeps the open raw
+path and Core decides whether it accepts the parameters. All adapter inputs
 are accepted from a file or stdin and are identical for `run` and `dry-run`.
 
 ```json
@@ -135,6 +148,57 @@ whitespace; names are never trimmed, translated or reordered. The sole target is
 once; the array is not a retry, progressive-switch or fallback order. Duplicate
 candidates, non-string or null elements and unknown fields are rejected.
 
+```json
+{
+  "id": "copilot-1",
+  "type": "Copilot",
+  "adapter": {"name": "copilot", "version": 1},
+  "params": {"copilot_list": [
+    {"filename": "job.json"},
+    {"filename": "job_raid.json", "is_raid": true}
+  ]}
+}
+```
+
+`copilot` requires exactly one of `filename` (a nonempty path string) or
+`copilot_list` (1-128 objects with a required nonempty `filename` plus an
+optional unique signed 32-bit `id`, `nav_name_override` and `is_raid`).
+Formation, support, additional-operator and loop options are validated
+structurally: `operbox_data_path` and `user_additional` require
+`formation=true`, and a list allows `loop_times` omission or 1 only.
+Preparation never opens a referenced file. Each list entry becomes target
+`copilot:<compiled id>` — explicit IDs are reserved and omitted IDs are
+assigned from zero in list order — and uses policy `all`, interpreted as
+per-entry stage results. Single-file and `loop_times` inputs are input-only
+(`none`): they produce no typed results, and a completed single-file chain
+does not prove a stage clear or a safe device handoff; battle actions may
+still be in progress.
+
+```json
+{
+  "id": "roguelike-1",
+  "type": "Roguelike",
+  "adapter": {"name": "roguelike", "version": 1},
+  "params": {"theme": "Sami", "mode": 6, "monthly_squad_auto_iterate": true}
+}
+```
+
+`roguelike` requires an explicit `theme` (`Phantom`, `Mizuki`, `Sami`,
+`Sarkaz`, `JieGarden` or `BlackFlow`) and `mode` from the frozen per-theme
+matrix, and validates common squad, investment and early-stop options plus
+theme- or mode-scoped fields such as `monthly_squad_auto_iterate`,
+`deep_exploration_auto_iterate`, `find_playTime_target` and the `blackflow_*`
+set; unknown or misplaced fields and invalid combinations are rejected. The
+objective policy follows the compiled input: mode 0 uses `all` for one
+declared run and `any` for several (`starts_count` 1-128 with no early-stop
+switch and no reachable investment stop), mode 1 uses `all` only when an
+investment limit can be reached, mode 6 uses `all` only with
+`monthly_squad_auto_iterate=true` and mode 7 only with
+`deep_exploration_auto_iterate=true`, modes 20001 and 30003 use `all`, and
+every other configuration — including modes 6 and 7 with their rotation
+switch off and modes without a reliable terminal fact — is input-only
+(`none`). None of the interpreted facts has authorized device acceptance.
+
 For `run` and `dry-run`, strict input is validated before any directory, lock or
 worker exists. An unknown adapter name or version, a mismatched Core type,
 malformed parameters or an over-budget input exits `2` with code `invalid_plan`,
@@ -156,12 +220,17 @@ registered adapters `run` uses, and prints one JSON object containing:
 
 - `plan`: the explicit plan with each selected adapter's final compiled Core
   parameters; raw tasks keep their original parameters;
-- `tasks`: the prepared per-task results, including each adapted task's
-  `unobserved` target IDs and `typed_incomplete` aggregate;
+- `tasks`: the prepared per-task results, including each adapted task's actual
+  `objective_policy` as `control.PreparePlan` selected it for that input —
+  input-only preparations show `none` without a typed result — plus the
+  `unobserved` target IDs and `typed_incomplete` aggregate of interpreted
+  tasks;
 - `sources` and `unverified`: the input/worker/data-dir sources plus
   installation, Core, device and adapter-specific conditions that local
   preparation cannot verify (operator identity, skills and prerequisites, theme
-  availability and unlock state, and the absence of authorized device acceptance).
+  availability and unlock state, referenced Copilot files and formation state,
+  roguelike resource identifiers, and the absence of authorized device
+  acceptance).
 
 `run --dry-run` is equivalent. An unknown adapter, unsupported version, rejected
 strict input or over-budget adapter parameters exits `2` with `invalid_plan`.
@@ -204,9 +273,15 @@ local diagnostic opt-in can disclose connection details or other private Core
 data. Records always retain the private input plan; callers choose their own
 retention and access policy for the data directory.
 
-An adapted task result also carries `typed`: schema version 1, the selected
-`adapter`, an independent business `state`/`code`, the fixed per-task `targets`
-and an optional `summary`. Each changed target fact is validated and saved
+An adapted task result carries the `objective_policy` that preparation selected
+for its input: `all` for `oper_progress`, `switch_theme` and Copilot lists,
+`none` for Copilot single-file and loop inputs, and `all`, `any` or `none` for
+`roguelike` depending on theme, mode and switches. Input-only tasks publish no
+typed events and follow native chain facts without a business-objective claim.
+An interpreted task's `typed` result repeats that policy and carries schema
+version 1, the
+selected `adapter`, an independent business `state`/`code`, the fixed per-task
+`targets` and an optional `summary`. Each changed target fact is validated and saved
 before a `type: "typed"` event carrying the full task result is written; these
 events need no `--include-raw-events` and never include raw callback fields.
 `TaskResult.state` remains the native task-chain fact. Once a business failure is
@@ -282,13 +357,15 @@ facts. At most one output write can remain blocked until the process exits.
 
 ## Delivery scope
 
-This is the generic execution foundation plus two opt-in local adapters. It
+This is the generic execution foundation plus four opt-in local adapters. It
 provides no task presets, scheduler, HTTP API, installer/updater, cross-runtime
-device lock, Docker image or La Pluma Next integration. `oper_progress` and
-`switch_theme` validate strict input and interpret filtered business facts, but
-neither has authorized device acceptance; the static basis is a review of MAA
-source `9b75f9f7b103079458414c6e20216c8c531d6987`, while the `v6.20.1` release
-candidate remains a separate, unexecuted library/resource snapshot. All target
+device lock, Docker image or La Pluma Next integration. `oper_progress`,
+`switch_theme`, `copilot` and `roguelike` validate strict input and interpret
+filtered business facts where their input selects a policy, but none has
+authorized device acceptance; the static basis is a review of MAA
+source `9b75f9f7b103079458414c6e20216c8c531d6987`. Actual Core and resource
+combinations are recorded and verified separately under the rolling version
+policy; a source review does not prove installation or task support. All target
 semantics remain unverified on a device. The open
 raw path still accepts any Core task type. A data directory lock does not
 establish mutual exclusion with another directory, external CLI or host.

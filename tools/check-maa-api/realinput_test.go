@@ -1,206 +1,23 @@
-//go:build linux
-
-// realinput_linux_test.go 是真实头正例集成测试:从锁定发行包缓存解包
-// 三个 C 头,校验整包与成员 SHA-256 后写出 inputs.json,并对 linux 与
-// windows 两个目标跑完整 checker;归档缺失时 SKIP 并写明受阻原因。
+// 本文件对有来源的未版本化头快照运行完整声明与签名检查。
+// CHECK_MAA_API_INPUT 可显式选择另一份输入，错误输入必须失败。
 
 package main
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
 
-// 锁定基线(证据冻结):发行包整包 SHA-256。成员级摘要取自
-// checker 内部 profile 常量(newLockedProfile),不在本文件重复转录。
-const lockedReleaseTarballSHA256 = "814a128d24c8183b38003284facd56789fe8346b8a66932f9ff885df48d48bc1"
-
-// checkerTarballOverrideEnv 允许测试环境覆盖锁定归档缓存路径。
-const checkerTarballOverrideEnv = "CHECK_MAA_API_TARBALL"
-
-// errTarballMissing 表示锁定发行包缓存缺失:真实头验收受阻,计为
-// SKIP——跳过不是通过,不得冒充真实环境验收。
-var errTarballMissing = errors.New("locked release tarball missing")
-
-// checkerTarballPath 返回锁定发行包缓存路径:默认用户缓存,可经
-// CHECK_MAA_API_TARBALL 覆盖(测试专用)。
-func checkerTarballPath() (string, error) {
-	if p := os.Getenv(checkerTarballOverrideEnv); p != "" {
-		return p, nil
-	}
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		return "", fmt.Errorf("%w: cannot locate the user cache directory: %v", errTarballMissing, err)
-	}
-	return filepath.Join(cache, "maa", "MAA-v6.20.1-linux-x86_64.tar.gz"), nil
-}
-
-// sha256File 计算文件 SHA-256 十六进制串。
-func sha256File(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// requireRealCInput 把锁定归档的三个 checker_input 头解包为经过校验的
-// c 输入目录:整包哈希钉扎 → 流式解包三成员(逐边复制边算摘要)→
-// 成员摘要与 checker 内部 profile 常量核对(失败即 Fatal)→ 写出
-// inputs.json。归档缺失返回 errTarballMissing 供调用方 SKIP;其余错误
-// 一律 Fatal(锁定基线被破坏不是环境受限)。
 func requireRealCInput(t *testing.T) string {
 	t.Helper()
-	if runtime.GOARCH != "amd64" {
-		t.Skipf("real-header acceptance blocked: architecture %s is outside the locked baseline (linux amd64)", runtime.GOARCH)
+	if input := os.Getenv("CHECK_MAA_API_INPUT"); input != "" {
+		return input
 	}
-	tarball, err := checkerTarballPath()
-	if err != nil {
-		t.Skipf("real-header acceptance blocked: %v", err)
-	}
-	if _, err := os.Stat(tarball); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			t.Skipf("real-header acceptance blocked: locked release tarball missing (%s)", tarball)
-		}
-		t.Fatalf("stat %s: %v", tarball, err)
-	}
-	got, err := sha256File(tarball)
-	if err != nil {
-		t.Fatalf("hash %s: %v", tarball, err)
-	}
-	if got != lockedReleaseTarballSHA256 {
-		t.Fatalf("release tarball SHA256 = %s, want %s (locked baseline broken)", got, lockedReleaseTarballSHA256)
-	}
-
-	members := map[string]string{ // 归档成员名 → 归档相对路径
-		"AsstCaller.h":      FileAsstCaller,
-		"AsstPort.h":        FileAsstPort,
-		"AsstCallerExtra.h": FileAsstCallerExtra,
-	}
-	profile := newLockedProfile()
-	digests := map[string]string{}
-	dir := t.TempDir()
-	if err := extractHeaderMembers(tarball, dir, members, digests); err != nil {
-		t.Fatalf("extracting the locked members failed: %v", err)
-	}
-
-	// 成员字节摘要必须等于 checker 内部 profile 常量;不符即 Fail,
-	// 不是 skip。
-	for _, key := range []string{FileAsstCaller, FileAsstPort, FileAsstCallerExtra} {
-		want := profile.Files[key]
-		if digests[key] != want.SHA256 {
-			t.Fatalf("%s member SHA256 = %s, want %s (does not match the checker's internal profile constant)",
-				key, digests[key], want.SHA256)
-		}
-	}
-
-	// inputs.json 结构照 ops 归档 manifest 的字段;size/sha256 取实测
-	// 值(已与内部常量核对一致)。
-	m := manifest{
-		SchemaVersion: intPtr(manifestSchemaVersion),
-		ProfileID:     profile.ID,
-		Source: manifestSource{
-			Repository: profile.SourceRepository,
-			Tag:        profile.SourceTag,
-			Commit:     profile.SourceCommit,
-		},
-	}
-	for _, member := range []string{"AsstCaller.h", "AsstPort.h", "AsstCallerExtra.h"} {
-		key := members[member]
-		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(key)))
-		if err != nil {
-			t.Fatalf("read extracted %s: %v", key, err)
-		}
-		m.Files = append(m.Files, manifestFile{
-			ArchivePath: key,
-			SourcePath:  "include/" + member,
-			SizeBytes:   int64(len(data)),
-			SHA256:      digests[key],
-			Purpose:     PurposeCheckerInput,
-			ReleasePath: member,
-		})
-	}
-	b, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "inputs.json"), append(b, '\n'), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return dir
-}
-
-// extractHeaderMembers 流式解包锁定成员:tar+gzip 逐成员过滤,只保留
-// 归档根的三个头文件,成员路径拒绝穿越;成员摘要就地计算。成员缺失即
-// 失败,其余成员(库、资源等)跳过。
-func extractHeaderMembers(tarball, dir string, members, digests map[string]string) error {
-	f, err := os.Open(tarball)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", tarball, err)
-	}
-	defer f.Close()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return fmt.Errorf("gzip %s: %w", tarball, err)
-	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
-	seen := map[string]bool{}
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("read tar: %w", err)
-		}
-		name := strings.TrimPrefix(hdr.Name, "./")
-		key, wanted := members[name]
-		if !wanted {
-			continue
-		}
-		if hdr.Typeflag != tar.TypeReg {
-			return fmt.Errorf("member %s has type %q outside the locked baseline (regular file expected)", name, hdr.Typeflag)
-		}
-		dest := filepath.Join(dir, filepath.FromSlash(key))
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return err
-		}
-		h := sha256.New()
-		var buf bytes.Buffer
-		if _, err := io.Copy(io.MultiWriter(&buf, h), tr); err != nil {
-			return fmt.Errorf("extract %s: %w", name, err)
-		}
-		if err := os.WriteFile(dest, buf.Bytes(), 0o644); err != nil {
-			return err
-		}
-		digests[key] = hex.EncodeToString(h.Sum(nil))
-		seen[name] = true
-	}
-	for name := range members {
-		if !seen[name] {
-			return fmt.Errorf("member %s not found in the release tarball", name)
-		}
-	}
-	return nil
+	return filepath.Join(repoRoot(t), "tools", "check-maa-api", "testdata", "snapshot")
 }
 
 // TestRealHeaderCheckerEndToEnd 用真实独立 C 头对两个目标各跑一次完整
@@ -224,7 +41,7 @@ func TestRealHeaderCheckerEndToEnd(t *testing.T) {
 	run := func(goos string) outcome {
 		var stdout, stderr bytes.Buffer
 		code := Run([]string{
-			"--profile", LockedProfileID, "--goos", goos, "--goarch", "amd64",
+			"--goos", goos, "--goarch", "amd64",
 			"--c-input", cInput, "--go-root", goRoot,
 		}, &stdout, &stderr)
 		return outcome{code, stdout.String(), stderr.String()}
@@ -405,7 +222,7 @@ func TestRealHeaderSignatureSection(t *testing.T) {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
 		code := Run([]string{
-			"--profile", LockedProfileID, "--goos", goos, "--goarch", "amd64",
+			"--goos", goos, "--goarch", "amd64",
 			"--c-input", cInput, "--go-root", goRoot,
 		}, &stdout, &stderr)
 		if code != 0 {

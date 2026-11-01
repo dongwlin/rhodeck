@@ -862,6 +862,18 @@ func (r *Run) observeTyped(callback protocol.Callback, id *int32, parseErr error
 	}
 	reducer := r.reducers[i]
 	if !known || reducer == nil {
+		if !known && parseErr == nil && id != nil && *id == 0 {
+			// Bundled reducers may recognize exact pre-admission diagnostics
+			// emitted before Core allocates a task ID. They cannot return facts
+			// here or exempt missing/foreign execution associations.
+			for _, candidate := range r.reducers {
+				if progress, ok := candidate.(interface{ preparationProgress(Observation) bool }); ok &&
+					progress.preparationProgress(Observation{MessageID: callback.MessageID, CoreSequence: callback.CoreSequence, JSON: callback.JSON}) {
+					r.mu.Unlock()
+					return true
+				}
+			}
+		}
 		// Callbacks belonging to a known raw task stay on the raw path. For
 		// unassociated subtask events, a matching typed chain cannot be guessed.
 		relevant := false

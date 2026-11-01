@@ -10,15 +10,19 @@ Configure adapters with `Config.Adapters`, or call
 initial target results. Preparation does not create directories, take locks,
 launch workers, load native code or connect devices. Each adapter must implement
 deterministic preparation without side effects, reject incompatible task types,
-and create a fresh reducer for each task. Adapters may be prepared concurrently.
-The package bundles two strict adapters: `NewOperProgressAdapter`
-(`oper_progress`, version 1) and `NewSwitchThemeAdapter` (`switch_theme`,
-version 1). The [standalone CLI](../../apps/cli/README.md) registers both
-explicitly for `run` and `dry-run`; a task still selects one only through
-`Task.Adapter`. Neither adapter has authorized device acceptance. The CLI
-capability report keeps the reviewed MAA source revision, the `v6.20.1` release
-candidate snapshot, the uninspected installation and the missing device
-acceptance separate.
+and create a fresh reducer for each task with interpreted targets. Input-only
+adapters return no reducer. Adapters may be prepared concurrently.
+The package bundles four strict adapters: `NewOperProgressAdapter`
+(`oper_progress`, version 1), `NewSwitchThemeAdapter` (`switch_theme`,
+version 1), `NewCopilotAdapter` (`copilot`, version 1) and
+`NewRoguelikeAdapter` (`roguelike`, version 1). The
+[standalone CLI](../../apps/cli/README.md) registers all four explicitly for
+`run` and `dry-run`; a task still selects one only through `Task.Adapter`.
+These adapters have no authorized device acceptance. The CLI
+capability report keeps the reviewed MAA source revision, the rolling Core
+version policy, the uninspected installation and the missing device acceptance
+separate. Actual versions and digests come from doctor/run/record; the host
+maintains [installation provenance](../../apps/cli/installation-provenance.md).
 The OperProgress
 input accepts only exact, case-sensitive `plans` entries with `role`, `name` and
 exactly one of `elite` (1-2), `skill_level` (2-7) or `skill_mastery` (three
@@ -59,8 +63,164 @@ Unknown fields, explicit nulls, duplicate keys at any depth, unpaired UTF-16
 surrogate escapes and duplicate candidates are rejected with `ErrInvalidPlan`.
 See `ExampleNewSwitchThemeAdapter` for a deterministic preview.
 
+## Copilot input and stage results
+
+Select `adapter: {"name":"copilot","version":1}` with Core type `Copilot`.
+The strict input accepts exactly one source:
+
+```json
+{"copilot_list":[{"filename":"job.json"},{"filename":"job.json","is_raid":true}],"formation":true,"operbox_data_path":"box.json","user_additional":[{"name":"Example","skill":3}]}
+```
+
+| Field | Accepted values |
+| --- | --- |
+| `filename` | Nonempty path string, mutually exclusive with `copilot_list` |
+| `copilot_list` | 1–128 objects with required nonempty `filename`, optional unique signed 32-bit integer `id`, string `nav_name_override` (may be empty), boolean `is_raid` (default false) |
+| `formation` | Boolean, default false |
+| `formation_index` | Integer 0–4; 0 leaves selection unspecified |
+| `add_trust`, `ignore_requirements`, `use_sanity_potion` | Boolean |
+| `support_unit_usage` | Integer 0–3; 2 requires `support_unit_name` |
+| `support_unit_name` | Optional nonempty string |
+| `loop_times` | Integer 1–2147483647; lists only allow omission or 1 |
+| `operbox_data_path` | Optional nonempty path string; requires `formation=true` |
+| `user_additional` | Array of objects with unique nonempty `name` and required integer `skill` 0–3; requires `formation=true` |
+
+Strings must be valid UTF-8 without NUL; unpaired surrogate escapes are rejected.
+Unknown fields, explicit nulls, duplicate keys at any depth and input or compiled
+JSON over 64 KiB are rejected. `is_paradox` and list-entry `stage_name` are not
+supported; use `nav_name_override` for a navigation override. Omitted options
+other than `formation`, `id` and `is_raid` retain Core defaults. Preparation
+does not open files, check their contents or existence, normalize paths or fetch
+network jobs. It validates structure, not whether the installation or device
+can execute the requested job.
+
+Compilation first reserves all explicit IDs, then assigns omitted IDs from
+zero in list order while skipping reserved values. A filename is a source,
+not an identity: normal/raid variants and repeated executions of the same file
+remain separate entries. Each list target is `copilot:<compiled id>` and uses
+policy `all`. Single-file inputs, including loops, use `none` and produce no
+typed results or typed events. Their chain success does not establish a clear
+or a safe device handoff; battle actions may still be in progress.
+
+For lists, `CopilotListLoadTaskFileSuccess` extra-info from `MultiCopilotTask`
+must name the exact compiled `details.id` and matching `details.file_name`.
+It only establishes an entry scope. On Windows the association accounts for
+Core converting backslashes to slashes; it does not clean paths, fold case or
+change submitted params. A `MultiCopilotTask` start or unusable load boundary
+clears the previous scope. Re-entering an entry whose scope was left is not
+interpreted as another execution. Callbacks without an explicit usable scope
+leave targets unobserved, including installations that omit the entry ID.
+
+Core can emit Box prechecks and file/parameter rejection diagnostics while
+appending tasks, before it allocates a task ID. The runtime ignores only
+recognized preparation diagnostics with explicit `taskid=0` and exact Copilot
+chain, subtask and diagnostic identifiers; they create no typed facts or entry
+scope. Append acceptance or rejection remains authoritative for that phase.
+Unknown diagnostics, missing IDs and unassociated settlement callbacks retain
+the normal conservative error handling. Duplicate keys are never exempted.
+
+Only `SubTaskStart` from the same accepted Core task, `taskchain=Copilot`,
+`subtask=ProcessTask` and exact `first=["Copilot@WaitUntilEndOfAction"]`
+can establish these facts within that scope:
+
+| Exact `details.task` | Outcome / code |
+| --- | --- |
+| `StageDrops-Stars-3` | `achieved` / `three_star_clear` |
+| `StageDrops-Stars-Adverse` | `achieved` / `adverse_clear` |
+| `FightMissionFailed` | `failed` / `mission_failed` |
+
+Core strips the namespace from `details.task`; prefixed or suffix lookalikes
+are not matched. The adverse marker is also mapped to three stars by Core;
+there is no supported non-three-star clear fact. Typed details expose only
+`entry_id`, zero-based `entry_index` and `is_raid`, without file paths or raw
+recognition data. Loading, `CopilotAction`, acceptance and chain completion
+do not manufacture clears. Missing evidence remains `typed_incomplete` even
+after chain success. Identical facts are idempotent; contradictory facts
+preserve the first fact and trigger `typed_conflict`.
+
+This scope relies on Core's synchronous list execution and FIFO callbacks,
+reviewed at upstream revision `9b75f9f7b103079458414c6e20216c8c531d6987`;
+it does not pin or guarantee compatibility with a Core version. Local tests
+cover preparation, interpretation, lifecycle faults and durable recovery.
+Actual installation callbacks and device behavior remain unverified. Result
+integration describes lists as `stage_results` with policy `all` and
+single-file/loop inputs as `none`; the CLI capability report states the same
+selection through `objective_policies` and `policy_selection`, and its dry-run
+shows the policy each task actually selected.
+
+## Roguelike input and mode objectives
+
+Select `adapter: {"name":"roguelike","version":1}` with Core type `Roguelike`.
+The strict input requires an explicit `theme` (`Phantom`, `Mizuki`, `Sami`,
+`Sarkaz`, `JieGarden` or `BlackFlow`) and `mode` from the frozen per-theme
+matrix: 0, 1, 4, 6 and 7 for every theme except BlackFlow, plus 5 for Sami,
+10001 for Sarkaz and 20001 for JieGarden; BlackFlow accepts only 0, 1, 30001
+and 30003. Modes 2 and 3 and every other theme/mode combination are rejected.
+Common squad, investment and early-stop options and theme- or mode-scoped
+fields (such as `monthly_squad_auto_iterate`, `deep_exploration_auto_iterate`,
+`find_playTime_target` and the `blackflow_*` set) are validated strictly:
+unknown fields, explicit nulls, duplicate keys at any depth, misplaced
+theme/mode fields and invalid combinations — including `only_start_with_elite_two`
+outside mode 4, the mode 30003 start-run requirements and values Core would
+silently override — are rejected with `ErrInvalidPlan`. Compilation keeps the
+submitted values verbatim and injects no Core defaults.
+
+The objective policy follows the compiled configuration instead of one static
+value:
+
+- Mode 0 declares one target per run, `roguelike:run:1..N`, with policy `any`
+  for several runs and `all` for a single run — only for a `starts_count` of
+  1-128 with no `stop_at_final_boss`/`stop_at_max_level` switch and no
+  reachable investment stop, and only outside the BlackFlow strategy profile.
+- Mode 1 declares `roguelike:investment` with policy `all` only when the
+  investment limit can be reached at all.
+- Mode 6 declares `roguelike:monthly_squad` and mode 7
+  `roguelike:deep_exploration` with policy `all` only when
+  `monthly_squad_auto_iterate` or `deep_exploration_auto_iterate` is true;
+  with the switch omitted or false Core never emits the rotation callback, so
+  those configurations stay input-only.
+- Modes 20001 and 30003 declare `roguelike:jie_garden_target` and
+  `roguelike:start_run` with policy `all`.
+- Every other configuration — modes 4, 5, 10001 and 30001, the BlackFlow
+  strategy profiles, and any configuration whose chain can end before its
+  declared runs settle — uses `none`: input is validated and compiled, and no
+  business objective is claimed.
+
+Facts come only from callbacks of the accepted Core task with
+`taskchain=Roguelike`: run settlements (`GamePass`, `MissionFailedFlag2`) are
+counted per declared run in arrival order, and the extra-info facts
+`RoguelikeInvestmentReachLimit`/`RoguelikeInvestmentReachFull`,
+`MonthlySquadCompleted`, `DeepExplorationCompleted`,
+`RoguelikeJieGardenTargetFound` and the BlackFlow start-run status establish
+their single objective exactly. Chain completion, stops and unknown statuses
+never create facts; missing evidence stays unobserved and is never inferred
+from `AllTasksCompleted`. All roguelike facts have no authorized device
+acceptance, and the CLI dry-run shows the policy each task actually selected.
+
+## Preparation and policies
+
 `PreparedTask.Params` is the final Core object; `PreparedTask.Targets` contains
-stable, unique target IDs. `PreparedPlan.Plan` contains the compiled parameters.
+stable, unique target IDs. `PreparedTask.Policy` selects `ObjectiveAll` (`all`,
+also the default when omitted), `ObjectiveAny` (`any`) or `ObjectiveNone`
+(`none`). `all` and `any` require at least one target and a non-nil reducer.
+`none` requires zero targets and a nil reducer: it validates and compiles input
+without interpreting business results. Unknown policies and illegal combinations
+return `ErrInvalidPlan` before admission. For example, an input-only adapter may
+return `PreparedTask{Params: compiled, Policy: ObjectiveNone}`.
+
+`PreparedPlan.Tasks[i].Policy` exposes the normalized choice as
+`objective_policy`. Interpreted tasks repeat that choice in
+`TypedResult.Policy`, so each typed event carries its own aggregation contract.
+Input-only tasks carry `objective_policy: "none"` and omit `typed`; they publish
+no typed events. Their run outcome follows native chain facts and makes no
+business-objective claim. Raw task results omit both fields. OperProgress and
+SwitchTheme use `all`. Copilot lists use `all` and its single-file and loop
+inputs `none`. Roguelike selects `all`, `any` or `none` from the theme, mode,
+run count and rotation switches (see the Roguelike section). Policy selection
+belongs to the adapter; it is
+not an additional caller-controlled plan field.
+
+`PreparedPlan.Plan` contains the compiled parameters.
 The runtime prepares its own detached submission and keeps the original caller
 plan in the private record. Mutating a preview cannot alter an admitted run.
 
@@ -69,8 +229,8 @@ plan in the private record. Mutating a preview cannot alter an admitted run.
 | Container | Generic input | Explicit adapter input |
 | --- | --- | --- |
 | Plan | `schema_version: 1` | Same schema, optional per-task `adapter`; mixed raw tasks allowed |
-| Result, Event, Record | `schema_version: 1` | Same schema, optional `typed` on task results and typed events |
-| TypedResult | Absent | `schema_version: 1` |
+| Result, Event, Record | `schema_version: 1` | Same schema, task result `objective_policy`; `typed` only for `all`/`any` |
+| TypedResult | Absent | `schema_version: 1`, matching `objective_policy: "all"` or `"any"` |
 | CLI envelope | `schema_version: 1` | `schema_version: 1` |
 
 The schema is under development and extends version 1 directly before the first
@@ -88,7 +248,12 @@ preview and adapter-specific unverified conditions without side effects.
 
 Records do not require the original adapter to be installed for reading.
 Recovery retains confirmed facts, marks unfinished work unknown, and executes
-nothing. Omitted optional adapter/result fields use the generic path.
+nothing. A raw task omits adapter, policy and typed fields. An adapted record
+requires an explicit policy: `none` has no typed result, while `all`/`any` require
+a matching typed adapter and policy with nonempty targets. Missing or unknown
+policies and inconsistent combinations are rejected; they never fall back to
+raw processing. Recovery preserves the recorded policy and facts without
+preparing the adapter or reinterpreting observations.
 Unsupported container or nested result versions, malformed associations and
 over-budget records refuse reading/startup. No automatic migration, deletion or
 replay is performed for records from unpublished snapshots.
@@ -118,9 +283,23 @@ the batch result is established, late callbacks cannot add typed facts.
 | `confirmation_observed` | Observed confirmation, incomplete final-state evidence |
 
 All targets must contribute success evidence for `TypedResult.State` to be
-`succeeded`. Any failure produces `failed` with `typed_failed`; otherwise the
-aggregate is `unknown` with `typed_incomplete`. Native task-chain state remains
-in `TaskResult.State`. For a matching completed batch, failure wins over unknown,
+`succeeded` under `all`. Any failure produces `failed` with `typed_failed`;
+otherwise the aggregate is `unknown` with `typed_incomplete`.
+
+Under `any`, at least one successful target produces `succeeded`, even when
+other independent targets failed or remain unobserved/ambiguous. Without success,
+all targets must have confirmed failure evidence to produce `failed` with
+`typed_failed`; any remaining incomplete evidence gives `unknown` with
+`typed_incomplete`. Different rounds or entries require distinct prepared target
+IDs. Both failure-then-success and success-then-failure across distinct targets
+retain each fact and satisfy `any`. Reusing a single target for another round
+is a conflict, not a way to overwrite its history. A confirmed failure cannot be
+replaced by later success; a contradictory update in either direction stops
+observation with `typed_conflict` while preserving the original fact. This
+conflict remains a run fault even if `any` was already achieved.
+
+Native task-chain state remains in `TaskResult.State`. For a matching completed
+batch, aggregate failure wins over unknown,
 which wins over success. A confirmed stop retains target facts and the existing
 stopped result unless a failure has already been established; a stop that
 already recorded a task or typed failure stays failed. A worker fault, lost
@@ -129,6 +308,13 @@ even when a typed failure was already recorded; confirmed target facts are
 preserved. Cleanup remains
 independent: a cleanup failure never produces a successful CLI exit and does not
 rewrite an established business state.
+
+Achieving an objective alone never completes a run or stops observation. Chain
+errors still fail the run; confirmed stops, timeouts, worker faults and lost
+events follow the same runtime rules even after an `any` objective was achieved.
+`TaskChainCompleted` (10002) does not create target facts. `none` avoids
+`typed_incomplete` by making no typed claim, rather than treating chain completion
+as business success.
 
 Every changed fact is validated and saved before its `type: "typed"` event is
 published. Typed events include a full detached task `TypedResult` and work
@@ -153,8 +339,8 @@ it cannot establish durable success or trigger replay.
 Details and summaries must be UTF-8 JSON objects with no duplicate keys at any
 depth. Unknown business fields and large integer literals retain their raw JSON;
 an adapter decides which fields belong in its public contract. Unsupported
-outcomes and inconsistent aggregates are rejected. Retained results contain
-current immutable facts, not callback histories.
+outcomes, policies and inconsistent aggregates are rejected. Retained results
+contain current immutable facts, not callback histories.
 
 Result validation errors support `errors.Is` with `ErrTypedResult`,
 `ErrTypedBudget` and `ErrTypedConflict`. Record persistence errors wrap

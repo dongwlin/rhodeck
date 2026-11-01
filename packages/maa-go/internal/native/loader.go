@@ -33,10 +33,9 @@ import (
 	"unicode/utf8"
 )
 
-// abiProfile 是当前锁定并经证据验证的 ABI 兼容组合标识,随每次
-// 符号查找错误一并报告。它只描述本次选定的组合,不声称升级到
-// 更新版本后必然兼容。
-const abiProfile = "maa-v6.20.1"
+// abiProfile 标识本绑定的 MaaCore C ABI 诊断上下文,不是发行版本。
+// 实际 Core 版本由运行时读取,兼容性仍需声明检查与真实库验证。
+const abiProfile = "maacore-c-api"
 
 // errNullHandle 表示平台原语打开库后返回零句柄且未报告错误:正常
 // 失败必须携带错误,该情形意味着系统 loader 的契约已被破坏。它是

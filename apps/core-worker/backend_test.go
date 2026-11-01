@@ -216,8 +216,8 @@ func TestInitializeConfigMappingTransfersEveryField(t *testing.T) {
 // TestEffectiveLimitsSelectsWholeDefaultOrExplicitCopy freezes the default
 // versus explicit distinction: omission applies the complete materialized
 // default set, an explicit configuration is applied as-is, and the returned
-// snapshot is detached from the request. The pinned numbers are the locked
-// binding profile's frozen defaults, which must stay wire-compatible.
+// snapshot is detached from the request. These numbers are the binding's
+// frozen defaults, which must stay wire-compatible.
 func TestEffectiveLimitsSelectsWholeDefaultOrExplicitCopy(t *testing.T) {
 	defaults := protocol.Limits{
 		InputStringBytes:  65_536,

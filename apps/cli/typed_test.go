@@ -34,6 +34,14 @@ func switchThemeTask(id, params string) control.Task {
 	return strictTask(id, "SwitchTheme", "switch_theme", params)
 }
 
+func copilotTask(id, params string) control.Task {
+	return strictTask(id, "Copilot", "copilot", params)
+}
+
+func roguelikeTask(id, params string) control.Task {
+	return strictTask(id, "Roguelike", "roguelike", params)
+}
+
 func rawTask(id, coreType, params string) control.Task {
 	return control.Task{ID: id, Type: coreType, Params: json.RawMessage(params)}
 }
@@ -102,10 +110,34 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 	if len(caps.TaskAdapters) != len(adapters) {
 		t.Fatalf("adapter capabilities = %d, registered adapters = %d", len(caps.TaskAdapters), len(adapters))
 	}
-	wantCore := map[string]string{"oper_progress": "OperProgress", "switch_theme": "SwitchTheme"}
+	wantCore := map[string]string{
+		"oper_progress": "OperProgress", "switch_theme": "SwitchTheme",
+		"copilot": "Copilot", "roguelike": "Roguelike",
+	}
 	wantInput := map[string][]string{
 		"oper_progress": {"Pioneer", "1-256", "skill_mastery"},
 		"switch_theme":  {"1-256", "random", "retry"},
+		"copilot":       {"copilot_list", "filename", "formation", "support_unit_usage", "loop_times"},
+		"roguelike":     {"theme", "monthly_squad_auto_iterate", "deep_exploration_auto_iterate", "BlackFlow"},
+	}
+	// The fixed all, any, none order; each adapter lists exactly the policies
+	// its inputs can select, never a single static value.
+	wantPolicies := map[string][]control.ObjectivePolicy{
+		"oper_progress": {control.ObjectiveAll},
+		"switch_theme":  {control.ObjectiveAll},
+		"copilot":       {control.ObjectiveAll, control.ObjectiveNone},
+		"roguelike":     {control.ObjectiveAll, control.ObjectiveAny, control.ObjectiveNone},
+	}
+	// result_interpretation names the highest capability, not every input's.
+	wantInterpretation := map[string]string{
+		"oper_progress": "target_results", "switch_theme": "target_results",
+		"copilot": "stage_results", "roguelike": "mode_objective",
+	}
+	wantSelection := map[string][]string{
+		"oper_progress": {"all inputs use policy all"},
+		"switch_theme":  {"all inputs use policy all"},
+		"copilot":       {"copilot_list", "all", "filename", "loop_times", "none"},
+		"roguelike":     {"starts_count", "monthly_squad_auto_iterate", "deep_exploration_auto_iterate", "none"},
 	}
 	for i, adapter := range adapters {
 		ref := adapter.Descriptor()
@@ -116,14 +148,36 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 		if got.CoreType != wantCore[got.Name] {
 			t.Fatalf("capability %d lacks core type: %+v", i, got)
 		}
+		if !reflect.DeepEqual(got.ObjectivePolicies, wantPolicies[got.Name]) {
+			t.Fatalf("capability %d objective policies = %v, want %v", i, got.ObjectivePolicies, wantPolicies[got.Name])
+		}
+		if got.ResultInterpretation != wantInterpretation[got.Name] {
+			t.Fatalf("capability %d interpretation = %q, want %q", i, got.ResultInterpretation, wantInterpretation[got.Name])
+		}
 		for _, fragment := range wantInput[got.Name] {
 			if !strings.Contains(got.Input, fragment) {
 				t.Fatalf("capability %d input lacks %q: %q", i, fragment, got.Input)
 			}
 		}
+		for _, fragment := range wantSelection[got.Name] {
+			if !strings.Contains(got.PolicySelection, fragment) {
+				t.Fatalf("capability %d policy selection lacks %q: %q", i, fragment, got.PolicySelection)
+			}
+		}
 		if !strings.Contains(got.Acceptance, "device acceptance: none") {
 			t.Fatalf("capability %d claims acceptance: %q", i, got.Acceptance)
 		}
+	}
+	// Input-only branches are named as none inside the descriptive fields; the
+	// capability report keeps no single static objective_policy field.
+	if bytes.Contains(out.Bytes(), []byte(`"objective_policy"`)) {
+		t.Fatalf("capabilities kept a single static objective_policy field: %s", out.String())
+	}
+	if got := caps.TaskAdapters[2]; !strings.Contains(got.Acceptance, "does not prove a clear or a safe device handoff") {
+		t.Fatalf("copilot acceptance lacks the single-file caveat: %q", got.Acceptance)
+	}
+	if got := caps.TaskAdapters[3]; !strings.Contains(got.Acceptance, "modes without a reliable terminal fact") {
+		t.Fatalf("roguelike acceptance lacks the input-only modes: %q", got.Acceptance)
 	}
 	if !strings.Contains(caps.AdapterBasis, "9b75f9f7") || !strings.Contains(caps.AdapterBasis, "not executed") {
 		t.Fatalf("adapter basis = %q", caps.AdapterBasis)
@@ -131,8 +185,13 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 	if strings.Contains(caps.AdapterBasis, "v6.20.1") {
 		t.Fatalf("source review conflates the release candidate: %q", caps.AdapterBasis)
 	}
-	if !strings.Contains(caps.StaticSnapshotBasis, "v6.20.1") || !strings.Contains(caps.StaticSnapshotBasis, "separate") {
-		t.Fatalf("static snapshot basis = %q", caps.StaticSnapshotBasis)
+	for _, fragment := range []string{"rolling", "caller-provided", "no fixed Core version", "old-version compatibility", "doctor/run/record"} {
+		if !strings.Contains(caps.CoreVersionPolicy, fragment) {
+			t.Fatalf("Core version policy lacks %q: %q", fragment, caps.CoreVersionPolicy)
+		}
+	}
+	if bytes.Contains(out.Bytes(), []byte(`"static_snapshot_basis"`)) || bytes.Contains(out.Bytes(), []byte("v6.20.1")) {
+		t.Fatalf("capabilities retains a fixed release snapshot: %s", out.String())
 	}
 	if !strings.Contains(caps.InstallationFacts, "not inspected") {
 		t.Fatalf("installation facts = %q", caps.InstallationFacts)
@@ -153,10 +212,175 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 	if err := json.Unmarshal(out.Bytes(), &help); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"oper_progress@1", "switch_theme@1", "task.adapter"} {
+	for _, name := range []string{"oper_progress@1", "switch_theme@1", "copilot@1", "roguelike@1", "task.adapter"} {
 		if !strings.Contains(help.Usage, name) {
 			t.Fatalf("help does not mention %q: %s", name, help.Usage)
 		}
+	}
+	if !strings.Contains(help.Usage, "actual objective policy") || strings.Contains(help.Usage, "Both adapters") {
+		t.Fatalf("help does not state the per-task policy preview: %s", help.Usage)
+	}
+}
+
+// TestAdapterRegistryFeedsEveryCommandSurface pins the four bundled adapters:
+// the specs, the runtime registry and the help summary all carry the same
+// Descriptor identities, so no command surface can drift from the registry.
+func TestAdapterRegistryFeedsEveryCommandSurface(t *testing.T) {
+	want := []control.AdapterRef{
+		{Name: "oper_progress", Version: 1},
+		{Name: "switch_theme", Version: 1},
+		{Name: "copilot", Version: 1},
+		{Name: "roguelike", Version: 1},
+	}
+	specs := cliAdapterSpecs()
+	if len(specs) != len(want) {
+		t.Fatalf("registered %d adapter specs, want %d", len(specs), len(want))
+	}
+	for i, spec := range specs {
+		if got := spec.newAdapter().Descriptor(); got != want[i] {
+			t.Fatalf("spec %d descriptor = %+v, want %+v", i, got, want[i])
+		}
+	}
+	adapters := cliAdapters()
+	if len(adapters) != len(want) {
+		t.Fatalf("registry has %d adapters, want %d", len(adapters), len(want))
+	}
+	for i, adapter := range adapters {
+		if got := adapter.Descriptor(); got != want[i] {
+			t.Fatalf("registry adapter %d = %+v, want %+v", i, got, want[i])
+		}
+	}
+	if got, wantSummary := cliAdapterSummary(),
+		"oper_progress@1 (OperProgress), switch_theme@1 (SwitchTheme), copilot@1 (Copilot), roguelike@1 (Roguelike)"; got != wantSummary {
+		t.Fatalf("help summary = %q, want %q", got, wantSummary)
+	}
+}
+
+// TestCopilotDryRunSeparatesListPoliciesFromInputOnlySingleFile verifies that
+// the same adapter reports policy all with per-entry stage targets for a
+// copilot_list and policy none without a typed result for a single file with
+// loops, entirely without side effects.
+func TestCopilotDryRunSeparatesListPoliciesFromInputOnlySingleFile(t *testing.T) {
+	plan, _, dir := typedPlan(t,
+		copilotTask("copilot-list", `{"copilot_list":[{"filename":"job.json"},{"filename":"job.json","is_raid":true}]}`),
+		copilotTask("copilot-single", `{"filename":"job.json","loop_times":3}`),
+	)
+	input := encodePlan(t, plan)
+	missingWorker := filepath.Join(t.TempDir(), "missing-worker")
+	code, text, lines, diagnostics := runMachine(t, cliArgs("dry-run", missingWorker, dir), input)
+	if code != exitSuccess {
+		t.Fatalf("exit = %d: %s (%s)", code, text, diagnostics)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("dry-run wrote %d records", len(lines))
+	}
+	var preview envelope
+	if err := json.Unmarshal(lines[0], &preview); err != nil || preview.Type != "plan" || preview.Plan == nil || len(preview.Tasks) != 2 {
+		t.Fatalf("missing compiled preview: %s", text)
+	}
+	list := preview.Tasks[0]
+	if list.Policy != control.ObjectiveAll || list.Typed == nil || list.Typed.Policy != list.Policy {
+		t.Fatalf("copilot list policy = %+v", list)
+	}
+	if got := targetIDs(list.Typed); !reflect.DeepEqual(got, []string{"copilot:0", "copilot:1"}) {
+		t.Fatalf("copilot list targets = %v", got)
+	}
+	for _, target := range list.Typed.Targets {
+		if target.Outcome != control.TargetUnobserved || target.Code != "" || len(target.Details) != 0 {
+			t.Fatalf("copilot list preview claims a fact: %+v", target)
+		}
+	}
+	single := preview.Tasks[1]
+	if single.Policy != control.ObjectiveNone || single.Typed != nil {
+		t.Fatalf("single-file copilot task = %+v", single)
+	}
+	if got := string(preview.Plan.Tasks[0].Params); !strings.Contains(got, `"id":0`) ||
+		!strings.Contains(got, `"id":1`) || !strings.Contains(got, `"is_raid":true`) {
+		t.Fatalf("compiled list lost explicit ids or raid flag: %s", got)
+	}
+	if got := string(preview.Plan.Tasks[1].Params); !strings.Contains(got, `"loop_times":3`) || strings.Contains(got, "copilot_list") {
+		t.Fatalf("compiled single-file input changed: %s", got)
+	}
+	if !strings.Contains(text, `"objective_policy":"all"`) || !strings.Contains(text, `"objective_policy":"none"`) {
+		t.Fatalf("dry-run did not report both per-task policies: %s", text)
+	}
+	joined := strings.Join(preview.Unverified, "\n")
+	if !strings.Contains(joined, "copilot:") {
+		t.Fatalf("copilot caveats missing: %v", preview.Unverified)
+	}
+	for _, fragment := range []string{"never inspected during preparation", "no authorized device acceptance", "does not prove a clear or a safe device handoff"} {
+		if !strings.Contains(joined, fragment) {
+			t.Fatalf("copilot caveats lack %q: %v", fragment, preview.Unverified)
+		}
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created the data directory: %v", err)
+	}
+}
+
+// TestRoguelikeDryRunSelectsPoliciesByModeAndSwitches verifies that the
+// roguelike adapter previews every policy from the compiled input: modes 6 and
+// 7 stay none with the rotation switch omitted or false, become all when the
+// switch is true, and mode 0 selects all for one declared run and any for
+// several.
+func TestRoguelikeDryRunSelectsPoliciesByModeAndSwitches(t *testing.T) {
+	plan, _, dir := typedPlan(t,
+		roguelikeTask("squad-omitted", `{"theme":"Sami","mode":6}`),
+		roguelikeTask("squad-false", `{"theme":"Sami","mode":6,"monthly_squad_auto_iterate":false}`),
+		roguelikeTask("squad-true", `{"theme":"Sami","mode":6,"monthly_squad_auto_iterate":true}`),
+		roguelikeTask("explore-omitted", `{"theme":"Mizuki","mode":7}`),
+		roguelikeTask("explore-true", `{"theme":"Mizuki","mode":7,"deep_exploration_auto_iterate":true}`),
+		roguelikeTask("runs-single", `{"theme":"Phantom","mode":0,"starts_count":1}`),
+		roguelikeTask("runs-several", `{"theme":"Phantom","mode":0,"starts_count":3}`),
+	)
+	input := encodePlan(t, plan)
+	missingWorker := filepath.Join(t.TempDir(), "missing-worker")
+	code, text, lines, diagnostics := runMachine(t, cliArgs("dry-run", missingWorker, dir), input)
+	if code != exitSuccess {
+		t.Fatalf("exit = %d: %s (%s)", code, text, diagnostics)
+	}
+	var preview envelope
+	if err := json.Unmarshal(lines[0], &preview); err != nil || preview.Type != "plan" || len(preview.Tasks) != 7 {
+		t.Fatalf("missing compiled preview: %s", text)
+	}
+	for i, want := range []struct {
+		policy control.ObjectivePolicy
+		target string
+	}{
+		{control.ObjectiveNone, ""}, {control.ObjectiveNone, ""},
+		{control.ObjectiveAll, "roguelike:monthly_squad"}, {control.ObjectiveNone, ""},
+		{control.ObjectiveAll, "roguelike:deep_exploration"},
+		{control.ObjectiveAll, "roguelike:run:1"},
+	} {
+		task := preview.Tasks[i]
+		if task.Policy != want.policy {
+			t.Fatalf("task %d policy = %q, want %q", i, task.Policy, want.policy)
+		}
+		if want.policy == control.ObjectiveNone {
+			if task.Typed != nil {
+				t.Fatalf("input-only task %d gained a typed preview: %+v", i, task.Typed)
+			}
+			continue
+		}
+		if task.Typed == nil || task.Typed.Policy != task.Policy {
+			t.Fatalf("task %d lacks its typed preview: %+v", i, task)
+		}
+		if got := targetIDs(task.Typed); !reflect.DeepEqual(got, []string{want.target}) {
+			t.Fatalf("task %d targets = %v, want [%s]", i, got, want.target)
+		}
+	}
+	if got := targetIDs(preview.Tasks[6].Typed); !reflect.DeepEqual(got, []string{"roguelike:run:1", "roguelike:run:2", "roguelike:run:3"}) {
+		t.Fatalf("multi-run targets = %v", got)
+	}
+	if preview.Tasks[6].Typed.Policy != control.ObjectiveAny {
+		t.Fatalf("multi-run policy = %q, want any", preview.Tasks[6].Typed.Policy)
+	}
+	joined := strings.Join(preview.Unverified, "\n")
+	if !strings.Contains(joined, "roguelike:") || !strings.Contains(joined, "no authorized device acceptance") {
+		t.Fatalf("roguelike caveats missing: %v", preview.Unverified)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created the data directory: %v", err)
 	}
 }
 
@@ -205,7 +429,7 @@ func TestTypedDryRunPreviewsCompiledTargetsWithoutEffects(t *testing.T) {
 				t.Fatalf("theme targets = %v", got)
 			}
 			for _, task := range preview.Tasks[:2] {
-				if task.Typed == nil || task.Typed.State != control.Unknown || task.Typed.Code != "typed_incomplete" {
+				if task.Policy != control.ObjectiveAll || task.Typed == nil || task.Typed.Policy != task.Policy || task.Typed.State != control.Unknown || task.Typed.Code != "typed_incomplete" {
 					t.Fatalf("prepared task lacks an unobserved aggregate: %+v", task)
 				}
 				for _, target := range task.Typed.Targets {
@@ -785,6 +1009,8 @@ func TestRawTasksStayOpenWithoutAnAdapterSelection(t *testing.T) {
 	plan, executable, dir := typedPlan(t,
 		rawTask("raw-grow", "OperProgress", `{"legacy":true,"future":900719925474099312345}`),
 		rawTask("raw-theme", "SwitchTheme", `{"themes":["Not Interpreted"]}`),
+		rawTask("raw-copilot", "Copilot", `{"copilot_list":[{"filename":"job.json"}]}`),
+		rawTask("raw-roguelike", "Roguelike", `{"theme":"Phantom","mode":0,"starts_count":1}`),
 	)
 	input := encodePlan(t, plan)
 
@@ -801,7 +1027,8 @@ func TestRawTasksStayOpenWithoutAnAdapterSelection(t *testing.T) {
 			t.Fatalf("raw task %d gained a typed preview: %+v", i, preview.Tasks[i].Typed)
 		}
 	}
-	if joined := strings.Join(preview.Unverified, "\n"); strings.Contains(joined, "oper_progress:") || strings.Contains(joined, "switch_theme:") {
+	if joined := strings.Join(preview.Unverified, "\n"); strings.Contains(joined, "oper_progress:") ||
+		strings.Contains(joined, "switch_theme:") || strings.Contains(joined, "copilot:") || strings.Contains(joined, "roguelike:") {
 		t.Fatalf("raw task names were interpreted as adapter selections: %v", preview.Unverified)
 	}
 
@@ -816,7 +1043,7 @@ func TestRawTasksStayOpenWithoutAnAdapterSelection(t *testing.T) {
 	if terminal.Result.State != control.Succeeded {
 		t.Fatalf("raw result = %+v", terminal.Result)
 	}
-	for _, id := range []string{"raw-grow", "raw-theme"} {
+	for _, id := range []string{"raw-grow", "raw-theme", "raw-copilot", "raw-roguelike"} {
 		if task := taskResult(t, terminal.Result.Tasks, id); task.Typed != nil {
 			t.Fatalf("%s gained typed facts: %+v", id, task.Typed)
 		}

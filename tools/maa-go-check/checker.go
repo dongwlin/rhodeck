@@ -1,5 +1,5 @@
-// Static checker execution: build the locked check-maa-api binary once and
-// run it against the repository-internal locked C input for both targets.
+// Static checker execution: build the check-maa-api binary once and run it
+// against the selected, provenance-backed C input for both targets.
 // The parsed report is checked for the expected bound/excluded/signature
 // counts so a no-op or empty run cannot be reported as a pass.
 package main
@@ -19,8 +19,8 @@ import (
 // checkerReport is the subset of check-maa-api's JSON output used by the
 // layered entry. The checker itself owns the full schema.
 type checkerReport struct {
-	Profile string `json:"profile"`
-	Target  struct {
+	Input  checkerInputReport `json:"input"`
+	Target struct {
 		GOOS   string `json:"goos"`
 		GOARCH string `json:"goarch"`
 	} `json:"target"`
@@ -36,6 +36,15 @@ type checkerReport struct {
 	Expect struct {
 		Symbols []json.RawMessage `json:"symbols"`
 	} `json:"expect"`
+}
+
+// The checker validates provenance and actual file digests. Retain that
+// evidence in the layer report without including the input's local path.
+type checkerInputReport struct {
+	SchemaVersion int               `json:"schema_version"`
+	SnapshotID    string            `json:"snapshot_id"`
+	Source        json.RawMessage   `json:"source"`
+	Files         []json.RawMessage `json:"files"`
 }
 
 // buildChecker compiles the checker into a temporary directory. The caller
@@ -69,13 +78,11 @@ func buildChecker(ctx context.Context, env environment) (string, func(), error) 
 // wrong-policy run is a failure, not an unverified skip.
 func runCheckerTarget(ctx context.Context, env environment, bin, goos string, bound, nonTarget, excluded int) layerResult {
 	res := newLayerResult("static/" + goos)
-	input := filepath.Join(env.Root, "tools", "check-maa-api", "testdata", "locked")
 	args := []string{
 		bin,
-		"--profile", coreProfile,
 		"--goos", goos,
 		"--goarch", "amd64",
-		"--c-input", input,
+		"--c-input", env.CInput,
 		"--go-root", env.Root,
 	}
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -101,8 +108,8 @@ func runCheckerTarget(ctx context.Context, env environment, bin, goos string, bo
 		return res
 	}
 	var problems []string
-	if rep.Profile != coreProfile {
-		problems = append(problems, fmt.Sprintf("profile=%q want %q", rep.Profile, coreProfile))
+	if rep.Input.SchemaVersion != 1 || rep.Input.SnapshotID == "" || len(rep.Input.Files) < 3 || len(rep.Input.Source) == 0 || bytes.Equal(rep.Input.Source, []byte("null")) {
+		problems = append(problems, "missing header input provenance or file digests")
 	}
 	if rep.Target.GOOS != goos || rep.Target.GOARCH != "amd64" {
 		problems = append(problems, fmt.Sprintf("target=%s/%s want %s/amd64", rep.Target.GOOS, rep.Target.GOARCH, goos))
@@ -133,8 +140,9 @@ func runCheckerTarget(ctx context.Context, env environment, bin, goos string, bo
 		return res
 	}
 	res.Passed = 1
-	res.Detail = fmt.Sprintf("%s: bound=%d nontarget=%d excluded=%d signatures=%d/%d expect=%d",
-		goos, len(rep.Link.Bound), len(rep.Link.NonTarget), len(rep.Link.Excluded),
+	res.HeaderInput = &rep.Input
+	res.Detail = fmt.Sprintf("%s: snapshot_id=%s bound=%d nontarget=%d excluded=%d signatures=%d/%d expect=%d",
+		goos, rep.Input.SnapshotID, len(rep.Link.Bound), len(rep.Link.NonTarget), len(rep.Link.Excluded),
 		len(rep.Signatures.Symbols), len(rep.Signatures.Callbacks), len(rep.Expect.Symbols))
 	return res
 }

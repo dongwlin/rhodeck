@@ -21,10 +21,15 @@ info, err := client.Initialize(ctx, protocol.InitializeRequest{
     LibraryPath: "/opt/maa/libMaaCore.so",
     UserDir: "/var/lib/rhodeck/core",
     ResourceRoots: []string{"/opt/maa"},
-    ExpectedCoreVersion: "v6.20.1",
 })
 // Check err and info before connecting. Consume client.Events() in one goroutine.
 ```
+
+Core selection follows the latest caller-provided installation, without a fixed
+release or old-version compatibility guarantee. Optional `ExpectedCoreVersion`
+and `ExpectedLibrarySHA256` reject mismatches against caller-supplied values.
+Keep actual metadata and [host provenance](../../../apps/cli/installation-provenance.md)
+associated with the snapshot ID; a version string does not prove task support.
 
 `Launch` requires an absolute executable path and uses no shell. Zero timeouts
 select defaults: startup 10s, requests 30s, shutdown 5s. Negative values fail before

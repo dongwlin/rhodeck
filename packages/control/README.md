@@ -32,9 +32,12 @@ preconditions remain unverified until the selected installation is used.
 Explicit [typed adapters](typed-adapters.md) extend the same schema with an
 optional selection and a runtime-local registry. `PreparePlan` provides a pure compiled preview; task
 names alone never enable an adapter. The package bundles the strict `oper_progress`
-(`NewOperProgressAdapter`) and `switch_theme` (`NewSwitchThemeAdapter`) adapters,
-which callers must register explicitly; the standalone CLI registers both for
-`run` and `dry-run`. Adapter inputs and results are locally implemented and
+(`NewOperProgressAdapter`), `switch_theme` (`NewSwitchThemeAdapter`), `copilot`
+(`NewCopilotAdapter`) and `roguelike` (`NewRoguelikeAdapter`) adapters, which
+callers must register explicitly. The
+standalone CLI registers all four for `run` and
+`dry-run`; a task still selects one only through `Task.Adapter`. Adapter inputs and
+results are locally implemented and
 tested without authorized device acceptance, so capability output does not claim
 they work on a device.
 
@@ -51,10 +54,18 @@ callback and `AllTasksCompleted.finished_tasks` to match the whole batch.
 `TaskChainError` remains a failure even if that ID appears in `finished_tasks`.
 Subtask errors alone are progress observations because Core may recover them.
 For an explicitly adapted task, `TaskResult.State` remains the chain fact while
-`TaskResult.Typed` carries independent target facts. A matching completed batch
-also requires every typed target to be achieved or already set before the run
-can succeed. A typed failure makes the run failed; incomplete evidence makes it
-unknown. A fault, lost event or unconfirmed stop before a business conclusion
+`TaskResult.Typed` carries independent target facts. Adapted task results expose
+`objective_policy`: `all` requires every target to be achieved or already set;
+`any` requires at least one, failing only when all targets have confirmed failure
+facts and remaining incomplete otherwise. An input-only adapter uses `none`,
+has no typed result or reducer, and follows chain facts without claiming a
+business objective. Raw results omit the policy. OperProgress and SwitchTheme
+use `all`; Copilot lists use `all`, while its single-file and loop inputs use
+`none`; Roguelike selects `all`, `any` or `none` from the theme, mode and
+switches. A matching completed batch also requires each
+interpreted objective to succeed. A typed failure makes the run failed; incomplete
+evidence makes it unknown. A fault, lost event or unconfirmed stop before a
+business conclusion
 keeps the run unknown even when typed facts already recorded a failure; those
 facts remain preserved. A confirmed stop without an established failure stays
 stopped, while a confirmed stop that already recorded a task or typed failure is

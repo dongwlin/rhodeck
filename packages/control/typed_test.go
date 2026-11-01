@@ -36,7 +36,7 @@ func adaptedTestPlan(t *testing.T) (Plan, *testTaskAdapter) {
 }
 
 func testTypedResult(ids ...string) *TypedResult {
-	r := &TypedResult{SchemaVersion: SchemaVersion, Adapter: AdapterRef{Name: "test", Version: 1}}
+	r := &TypedResult{SchemaVersion: SchemaVersion, Adapter: AdapterRef{Name: "test", Version: 1}, Policy: ObjectiveAll}
 	for _, id := range ids {
 		r.Targets = append(r.Targets, TargetResult{ID: id, Outcome: TargetUnobserved})
 	}

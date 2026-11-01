@@ -1,7 +1,7 @@
 // counterexample_cli_test.go 把反例目录中尚未达到完整
 // 命令入口层的向量补齐为 Run() 级端到端反例,按目录类别以子测试归组:
-// C 输入变体经测试 profile 注册表为改写后的文件计算独立摘要注册合成
-// profile(生产注册表不动)后走完整 CLI 路径,Go 变体经复制后的真实
+// C 输入变体为改写后的文件重新计算调用方清单摘要后走完整
+// CLI 路径,Go 变体经复制后的真实
 // native 目录改写构造。每个向量断言非零退出、stdout 无内容且无 PASS、
 // stderr 含预期诊断类别与可定位信息。已由 main_test.go/realnative_test
 // .go/compare_test.go 覆盖的向量不重复;对在更早层(摘要校验、
@@ -28,7 +28,7 @@ func mustFailThroughCLI(t *testing.T, goos, cInput, goRoot, wantCat string, want
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	code := Run([]string{
-		"--profile", testProfileID, "--goos", goos, "--goarch", "amd64",
+		"--goos", goos, "--goarch", "amd64",
 		"--c-input", cInput, "--go-root", goRoot,
 	}, &stdout, &stderr)
 	if code == 0 {
@@ -47,7 +47,7 @@ func mustFailThroughCLI(t *testing.T, goos, cInput, goRoot, wantCat string, want
 			t.Errorf("stderr must locate %q:\n%s", want, errOut)
 		}
 	}
-	if !strings.Contains(errOut, testProfileID) || !strings.Contains(errOut, "("+goos+", amd64)") {
+	if !strings.Contains(errOut, "("+goos+", amd64)") {
 		t.Errorf("stderr must print the profile and target header:\n%s", errOut)
 	}
 }

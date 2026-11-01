@@ -14,7 +14,7 @@ Rhodeck 当前是一个 Go module，提供 MaaCore 动态绑定、独立 Core wo
 | `packages/control/` | 应用运行时；运行身份、任务结果、停止、目录互斥与最小执行记录 |
 | `packages/control/worker/` | 父进程客户端；启动、请求关联、期限、诊断和进程回收 |
 | `packages/control/worker/protocol/` | 纯协议 DTO、编解码和有界队列 |
-| `tools/check-maa-api/` | 锁定 C 头与 Go raw 声明的静态一致性检查 |
+| `tools/check-maa-api/` | 显式来源化 C 头与 Go raw 声明的静态一致性检查 |
 | `tools/maa-go-check/` | 分层验证入口，分别报告各层执行结果 |
 | `tools/api-coverage/` | 完整 worker 的 API 覆盖清单与漂移门禁：扫描 maa-go 公开面并与冻结清单、五段映射对账 |
 

@@ -194,7 +194,7 @@ func TestWorkerProcess(t *testing.T) {
 // Opt in with explicit, caller-owned paths. This test never connects, starts a
 // task, discovers devices, or uses an ADB executable. The only asynchronous
 // probe is an unconnected Screencap: Core rejects it locally with ret=false
-// without contacting any device, the same failure probe the locked-Core
+// without contacting any device, the same failure probe the real-Core
 // binding acceptance uses. CI excludes this test explicitly.
 func TestRealCoreWorkerNoDevice(t *testing.T) {
 	library := os.Getenv("RHODECK_WORKER_CORE_LIBRARY")
@@ -215,7 +215,7 @@ func TestRealCoreWorkerNoDevice(t *testing.T) {
 		if err != nil {
 			t.Fatalf("initialize: %v; diagnostics: %s", err, c.Diagnostics())
 		}
-		// Metadata: the locked library and resource digests, the native
+		// Metadata: the actual library and resource digests, the native
 		// NullSize sentinel and the whole materialized default limit set must
 		// come back in the immutable snapshot.
 		if info.LibrarySHA256 != digest || info.CoreVersion != expectedVersion || len(info.Resources) != 1 || len(info.Resources[0].VersionSHA256) != 64 {

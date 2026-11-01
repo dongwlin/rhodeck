@@ -1,10 +1,6 @@
-// cinput.go 校验独立 C 输入目录:目录须含 inputs.json 及其相对路径
-// 文件。schema_version、profile_id、source.repository/tag/commit 必须
-// 与 profile 内部常量一致;manifest 条目集合与 profile 已知文件一致
-// (未知条目失败;三个 checker_input 缺一失败;semantic_reference/
-// license 条目缺省可容忍但存在即校验)。每个 archive_path 必须相对、
-// 非空、不含.. 分量、不重复;文件存在、非空,size 与 SHA-256 以
-// checker 内部常量为期望值,清单自带摘要只用于交叉核对。
+// cinput.go 校验调用方显式提供的 C 输入及其来源清单。
+// 清单摘要用于关联输入字节，不证明来源可信；声明与独立 Go 策略
+// 仍分别核验。生产代码不维护发行版本、摘要或 profile 注册表。
 
 package main
 
@@ -19,13 +15,12 @@ import (
 	"strings"
 )
 
-// manifestSchemaVersion 是冻结的清单 schema 版本。
 const manifestSchemaVersion = 1
 
 type manifestSource struct {
 	Repository string `json:"repository"`
-	Tag        string `json:"tag"`
-	Commit     string `json:"commit"`
+	Tag        string `json:"tag,omitempty"`
+	Commit     string `json:"commit,omitempty"`
 }
 
 type manifestFile struct {
@@ -34,155 +29,157 @@ type manifestFile struct {
 	SizeBytes   int64  `json:"size_bytes"`
 	SHA256      string `json:"sha256"`
 	Purpose     string `json:"purpose"`
-	ReleasePath string `json:"release_path"`
+	ReleasePath string `json:"release_path,omitempty"`
 }
 
 type manifest struct {
 	SchemaVersion *int           `json:"schema_version"`
-	ProfileID     string         `json:"profile_id"`
+	SnapshotID    string         `json:"snapshot_id"`
 	Source        manifestSource `json:"source"`
 	Files         []manifestFile `json:"files"`
 }
 
-// CInput 是通过校验的 c 输入:Contents 以归档相对路径为键保存已
-// 核对大小与摘要的文件原文,提取阶段只读取这些字节,不再触碰磁盘。
+// CInput 保存已核对的身份、来源和文件字节；提取不再读取磁盘。
 type CInput struct {
 	Dir      string
 	Profile  Profile
 	Contents map[string][]byte
+	Manifest manifest
 }
 
-// LoadCInput 校验并读取 c 输入目录;任何标识不符、路径越界、缺项、
-// 空文件、大小或摘要不符都以 input 类诊断失败。
-func LoadCInput(dir string, profile Profile) (*CInput, []Diagnostic) {
+// LoadCInput 校验显式输入。expected 仅供内部调用方追加身份与摘要
+// 期望；命令入口直接使用调用方清单，不查询版本注册表。
+func LoadCInput(dir string, expected ...Profile) (*CInput, []Diagnostic) {
 	manifestPath := filepath.Join(dir, "inputs.json")
-	fail := func(d Diagnostic) (*CInput, []Diagnostic) { return nil, []Diagnostic{d} }
-
+	fail := func(symbol, want, got, message string) (*CInput, []Diagnostic) {
+		return nil, []Diagnostic{{Category: CatInput, File: manifestPath, Symbol: symbol, Expected: want, Actual: got, Message: message}}
+	}
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: "inputs.json",
-			Expected: "readable inputs.json", Actual: err.Error(),
-			Message: "c input directory must contain inputs.json"})
+		return fail("inputs.json", "readable inputs.json", err.Error(), "c input directory must contain inputs.json")
 	}
 	var m manifest
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: "inputs.json",
-			Expected: "valid JSON manifest", Actual: err.Error(),
-			Message: "inputs.json is not a valid manifest"})
+		return fail("inputs.json", "valid JSON manifest", err.Error(), "inputs.json is not a valid manifest")
 	}
 	if m.SchemaVersion == nil {
-		return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: "schema_version",
-			Expected: strconv.Itoa(manifestSchemaVersion), Actual: "missing",
-			Message: "manifest schema_version is required"})
+		return fail("schema_version", strconv.Itoa(manifestSchemaVersion), "missing", "manifest schema_version is required")
 	}
 	if *m.SchemaVersion != manifestSchemaVersion {
-		return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: "schema_version",
-			Expected: strconv.Itoa(manifestSchemaVersion), Actual: strconv.Itoa(*m.SchemaVersion),
-			Message: "unsupported manifest schema version"})
+		return fail("schema_version", strconv.Itoa(manifestSchemaVersion), strconv.Itoa(*m.SchemaVersion), "unsupported manifest schema version")
 	}
-	if m.ProfileID != profile.ID {
-		return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: "profile_id",
-			Expected: profile.ID, Actual: m.ProfileID, Message: "manifest profile mismatch"})
+	if strings.TrimSpace(m.SnapshotID) == "" {
+		return fail("snapshot_id", "non-empty snapshot identity", m.SnapshotID, "manifest snapshot_id is required")
 	}
-	switch {
-	case m.Source.Repository != profile.SourceRepository:
-		return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: "source.repository",
-			Expected: profile.SourceRepository, Actual: m.Source.Repository, Message: "manifest source mismatch"})
-	case m.Source.Tag != profile.SourceTag:
-		return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: "source.tag",
-			Expected: profile.SourceTag, Actual: m.Source.Tag, Message: "manifest source mismatch"})
-	case m.Source.Commit != profile.SourceCommit:
-		return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: "source.commit",
-			Expected: profile.SourceCommit, Actual: m.Source.Commit, Message: "manifest source mismatch"})
+	if strings.TrimSpace(m.Source.Repository) == "" {
+		return fail("source.repository", "recorded source repository or download URL", m.Source.Repository, "manifest source is required")
 	}
-
-	seen := map[string]bool{}
+	if strings.TrimSpace(m.Source.Tag) == "" && strings.TrimSpace(m.Source.Commit) == "" {
+		return fail("source", "source tag or commit", "missing", "manifest source revision is required")
+	}
+	profile := Profile{ID: m.SnapshotID, SourceRepository: m.Source.Repository, SourceTag: m.Source.Tag, SourceCommit: m.Source.Commit, Files: map[string]ProfileFile{}}
+	if len(expected) > 0 {
+		p := expected[0]
+		for _, check := range []struct{ symbol, want, got string }{
+			{"snapshot_id", p.ID, m.SnapshotID}, {"source.repository", p.SourceRepository, m.Source.Repository}, {"source.tag", p.SourceTag, m.Source.Tag}, {"source.commit", p.SourceCommit, m.Source.Commit},
+		} {
+			if check.want != check.got {
+				return fail(check.symbol, check.want, check.got, "manifest does not match the explicit input expectation")
+			}
+		}
+	}
+	purposes := map[string]string{FileAsstCaller: PurposeCheckerInput, FileAsstPort: PurposeCheckerInput, FileAsstCallerExtra: PurposeCheckerInput, FileAsstTypes: PurposeSemanticReference, FileAsstMsg: PurposeSemanticReference, FileLicense: PurposeUpstreamLicense}
 	for _, e := range m.Files {
 		if d := validateRelPath(e.ArchivePath); d != nil {
 			d.Category = CatInput
 			d.File = manifestPath
 			d.Symbol = "archive_path"
-			return fail(*d)
+			return nil, []Diagnostic{*d}
 		}
-		if seen[e.ArchivePath] {
-			return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: e.ArchivePath,
-				Expected: "unique archive_path", Actual: "duplicate entry",
-				Message: "manifest lists the same archive_path twice"})
+		if _, seen := profile.Files[e.ArchivePath]; seen {
+			return fail(e.ArchivePath, "unique archive_path", "duplicate entry", "manifest lists the same archive_path twice")
 		}
-		seen[e.ArchivePath] = true
-		expected, ok := profile.Files[e.ArchivePath]
+		purpose, ok := purposes[e.ArchivePath]
 		if !ok {
-			return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: e.ArchivePath,
-				Expected: "entry absent (unknown to profile)", Actual: "present",
-				Message: "manifest contains an entry unknown to the locked profile"})
+			return fail(e.ArchivePath, "known input or reference file", "unknown entry", "manifest contains an unknown file")
 		}
-		if e.Purpose != expected.Purpose {
-			return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: e.ArchivePath + " purpose",
-				Expected: expected.Purpose, Actual: e.Purpose, Message: "manifest purpose mismatch"})
+		if e.Purpose != purpose {
+			return fail(e.ArchivePath+" purpose", purpose, e.Purpose, "manifest purpose mismatch")
 		}
-		if e.SHA256 != expected.SHA256 {
-			return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: e.ArchivePath + " sha256",
-				Expected: expected.SHA256, Actual: e.SHA256,
-				Message: "manifest digest does not match the checker-internal constant"})
+		decoded, err := hex.DecodeString(e.SHA256)
+		if err != nil || len(decoded) != sha256.Size || strings.ToLower(e.SHA256) != e.SHA256 {
+			return fail(e.ArchivePath+" sha256", "64 lowercase hexadecimal digits", e.SHA256, "invalid manifest SHA256")
 		}
-		if e.SizeBytes != expected.Size {
-			return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: e.ArchivePath + " size",
-				Expected: strconv.FormatInt(expected.Size, 10), Actual: strconv.FormatInt(e.SizeBytes, 10),
-				Message: "manifest size does not match the checker-internal constant"})
+		if e.SizeBytes <= 0 {
+			return fail(e.ArchivePath+" size", "positive size_bytes", strconv.FormatInt(e.SizeBytes, 10), "input files must be non-empty")
+		}
+		entry := ProfileFile{Purpose: e.Purpose, Size: e.SizeBytes, SHA256: e.SHA256}
+		if len(expected) > 0 {
+			want, ok := expected[0].Files[e.ArchivePath]
+			if !ok {
+				return fail(e.ArchivePath, "expected file", "unknown entry", "manifest file absent from explicit expectation")
+			}
+			if entry.SHA256 != want.SHA256 {
+				return fail(e.ArchivePath+" sha256", want.SHA256, entry.SHA256, "manifest digest mismatch")
+			}
+			if entry.Size != want.Size {
+				return fail(e.ArchivePath+" size", strconv.FormatInt(want.Size, 10), strconv.FormatInt(entry.Size, 10), "manifest size mismatch")
+			}
+		}
+		profile.Files[e.ArchivePath] = entry
+	}
+	for _, key := range []string{FileAsstCaller, FileAsstPort, FileAsstCallerExtra} {
+		if _, ok := profile.Files[key]; !ok {
+			return fail(key, "manifest entry present", "missing", "required checker_input file is missing from the manifest")
 		}
 	}
-	for _, key := range sortedProfileFiles(profile) {
-		if profile.Files[key].Purpose == PurposeCheckerInput && !seen[key] {
-			return fail(Diagnostic{Category: CatInput, File: manifestPath, Symbol: key,
-				Expected: "manifest entry present", Actual: "missing",
-				Message: "required checker_input file is missing from the manifest"})
-		}
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return fail("c-input", "accessible directory", err.Error(), "cannot resolve c input directory")
 	}
-
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return fail("c-input", "absolute input directory", err.Error(), "cannot resolve c input directory")
+	}
 	contents := make(map[string][]byte, len(profile.Files))
 	for _, key := range sortedProfileFiles(profile) {
-		if !seen[key] {
-			continue // 可容忍缺省的 semantic_reference/license 条目
-		}
-		expected := profile.Files[key]
+		want := profile.Files[key]
 		full := filepath.Join(dir, filepath.FromSlash(key))
-		st, err := os.Stat(full)
+		resolved, err := filepath.EvalSymlinks(full)
 		if err != nil {
-			return fail(Diagnostic{Category: CatInput, File: key, Symbol: "file",
-				Expected: "existing file", Actual: "missing",
-				Message: "archived file missing on disk: " + full})
+			return fail("file", key, err.Error(), "archived file missing on disk: "+full)
 		}
-		if !st.Mode().IsRegular() {
-			return fail(Diagnostic{Category: CatInput, File: key, Symbol: "file",
-				Expected: "regular file", Actual: "not a regular file",
-				Message: "archived path is not a regular file: " + full})
-		}
-		data, err := os.ReadFile(full)
+		resolved, err = filepath.Abs(resolved)
 		if err != nil {
-			return fail(Diagnostic{Category: CatInput, File: key, Symbol: "file",
-				Expected: "readable file", Actual: err.Error(),
-				Message: "archived file cannot be read: " + full})
+			return fail("file", key, err.Error(), "cannot resolve archived file")
 		}
-		if len(data) == 0 {
-			return fail(Diagnostic{Category: CatInput, File: key, Symbol: "size",
-				Expected: strconv.FormatInt(expected.Size, 10), Actual: "0",
-				Message: "archived file is empty: " + full})
+		rel, err := filepath.Rel(root, resolved)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fail(key, "file within input directory", resolved, "archived file escapes input directory")
 		}
-		if int64(len(data)) != expected.Size {
-			return fail(Diagnostic{Category: CatInput, File: key, Symbol: "size",
-				Expected: strconv.FormatInt(expected.Size, 10), Actual: strconv.Itoa(len(data)),
-				Message: "archived file size mismatch"})
+		st, err := os.Stat(resolved)
+		if err != nil || !st.Mode().IsRegular() {
+			return fail("file", key, "not a regular file", "archived path is not a regular file: "+full)
+		}
+		if st.Size() != want.Size {
+			return fail("size", strconv.FormatInt(want.Size, 10), strconv.FormatInt(st.Size(), 10), "archived file size mismatch: "+key)
+		}
+		data, err := os.ReadFile(resolved)
+		if err != nil {
+			return fail("file", key, err.Error(), "archived file cannot be read")
+		}
+		if int64(len(data)) != want.Size {
+			return fail("size", strconv.FormatInt(want.Size, 10), strconv.Itoa(len(data)), "archived file size mismatch: "+key)
 		}
 		sum := sha256.Sum256(data)
 		got := hex.EncodeToString(sum[:])
-		if got != expected.SHA256 {
-			return fail(Diagnostic{Category: CatInput, File: key, Symbol: "sha256",
-				Expected: expected.SHA256, Actual: got,
-				Message: "archived file digest mismatch against the checker-internal constant"})
+		if got != want.SHA256 {
+			return fail("sha256", want.SHA256, got, "archived file digest mismatch: "+key)
 		}
 		contents[key] = data
 	}
-	return &CInput{Dir: dir, Profile: profile, Contents: contents}, nil
+	sort.Slice(m.Files, func(i, j int) bool { return m.Files[i].ArchivePath < m.Files[j].ArchivePath })
+	return &CInput{Dir: dir, Profile: profile, Contents: contents, Manifest: m}, nil
 }
 
 func sortedProfileFiles(p Profile) []string {
@@ -194,8 +191,7 @@ func sortedProfileFiles(p Profile) []string {
 	return keys
 }
 
-// validateRelPath 校验归档相对路径:非空、相对、无空分量、无. 或
-// .. 分量、不含反斜杠或冒号;失败返回未定类别的诊断(由调用方补齐)。
+// validateRelPath 限定归档相对路径，拒绝空分量、点分量和跨平台绝对路径。
 func validateRelPath(p string) *Diagnostic {
 	switch {
 	case p == "":
@@ -206,14 +202,11 @@ func validateRelPath(p string) *Diagnostic {
 	for _, comp := range strings.Split(p, "/") {
 		switch {
 		case comp == "":
-			return &Diagnostic{Expected: "path without empty components", Actual: p,
-				Message: "archive_path contains an empty path component"}
+			return &Diagnostic{Expected: "path without empty components", Actual: p, Message: "archive_path contains an empty path component"}
 		case comp == "." || comp == "..":
-			return &Diagnostic{Expected: "path without . or .. components", Actual: p,
-				Message: "archive_path must stay inside the c input directory"}
+			return &Diagnostic{Expected: "path without . or .. components", Actual: p, Message: "archive_path must stay inside the c input directory"}
 		case strings.ContainsAny(comp, "\\/:"):
-			return &Diagnostic{Expected: "plain path component", Actual: comp,
-				Message: "archive_path contains a forbidden character"}
+			return &Diagnostic{Expected: "plain path component", Actual: comp, Message: "archive_path contains a forbidden character"}
 		}
 	}
 	return nil

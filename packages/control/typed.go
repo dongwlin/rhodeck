@@ -34,6 +34,16 @@ type AdapterRef struct {
 	Version int    `json:"version"`
 }
 
+// ObjectivePolicy selects how independent target facts establish a task's
+// objective. It never establishes the native task-chain or cleanup result.
+type ObjectivePolicy string
+
+const (
+	ObjectiveAll  ObjectivePolicy = "all"
+	ObjectiveAny  ObjectivePolicy = "any"
+	ObjectiveNone ObjectivePolicy = "none"
+)
+
 // TaskAdapter validates a task and creates a fresh, task-local reducer. Prepare
 // must be deterministic and have no filesystem, native or device side effects.
 // Implementations must reject task types they do not understand and export only
@@ -47,8 +57,11 @@ type TaskAdapter interface {
 // PreparedTask bridges adapter input to the open Core task contract. Params is
 // the final Core JSON object. Targets are stable caller-visible correlation IDs.
 // Reducer is fresh per preparation and receives callbacks serially for one task.
+// An omitted Policy defaults to ObjectiveAll. ObjectiveNone is input-only and
+// requires no targets or reducer; the runtime retains only native chain facts.
 type PreparedTask struct {
 	Params  json.RawMessage
+	Policy  ObjectivePolicy
 	Targets []string
 	Reducer TaskReducer
 }
@@ -101,6 +114,7 @@ type TargetResult struct {
 type TypedResult struct {
 	SchemaVersion int             `json:"schema_version"`
 	Adapter       AdapterRef      `json:"adapter"`
+	Policy        ObjectivePolicy `json:"objective_policy"`
 	State         State           `json:"state"`
 	Code          string          `json:"code,omitempty"`
 	Targets       []TargetResult  `json:"targets"`
@@ -151,11 +165,24 @@ func PreparePlan(p Plan, adapters ...TaskAdapter) (PreparedPlan, error) {
 		if err != nil {
 			return PreparedPlan{}, fmt.Errorf("%w: adapter rejected task: %w", ErrInvalidPlan, err)
 		}
-		if nilInterface(prepared.Reducer) {
-			return bad("adapter returned a nil reducer")
+		policy := prepared.Policy
+		if policy == "" {
+			policy = ObjectiveAll
 		}
-		if len(prepared.Targets) == 0 {
-			return bad("adapter returned no targets")
+		switch policy {
+		case ObjectiveNone:
+			if len(prepared.Targets) != 0 || !nilInterface(prepared.Reducer) {
+				return bad("input-only adapter returned targets or a reducer")
+			}
+		case ObjectiveAll, ObjectiveAny:
+			if nilInterface(prepared.Reducer) {
+				return bad("adapter returned a nil reducer")
+			}
+			if len(prepared.Targets) == 0 {
+				return bad("adapter returned no targets")
+			}
+		default:
+			return bad("adapter returned an unsupported objective policy")
 		}
 		if len(prepared.Targets) > MaxTypedTargetsPerTask {
 			return PreparedPlan{}, fmt.Errorf("%w: %w", ErrInvalidPlan, typedBudget("too many prepared targets"))
@@ -164,7 +191,11 @@ func PreparePlan(p Plan, adapters ...TaskAdapter) (PreparedPlan, error) {
 			return bad("adapter returned invalid Core params")
 		}
 		out.Plan.Tasks[i].Params = bytes.Clone(prepared.Params)
-		typed := &TypedResult{SchemaVersion: SchemaVersion, Adapter: *task.Adapter}
+		out.Tasks[i].Policy = policy
+		if policy == ObjectiveNone {
+			continue
+		}
+		typed := &TypedResult{SchemaVersion: SchemaVersion, Adapter: *task.Adapter, Policy: policy}
 		for _, id := range prepared.Targets {
 			typed.Targets = append(typed.Targets, TargetResult{ID: id, Outcome: TargetUnobserved})
 		}
@@ -212,18 +243,30 @@ func cloneTypedResult(in *TypedResult) *TypedResult {
 }
 
 func typedState(in *TypedResult) (State, string) {
-	complete := len(in.Targets) > 0
+	successes, failures := 0, 0
 	for _, target := range in.Targets {
 		switch target.Outcome {
 		case TargetFailed, TargetLocked, TargetNotFound:
-			return Failed, "typed_failed"
+			failures++
 		case TargetAchieved, TargetAlreadySet:
-		default:
-			complete = false
+			successes++
 		}
 	}
-	if complete {
-		return Succeeded, ""
+	switch in.Policy {
+	case ObjectiveAll:
+		if failures > 0 {
+			return Failed, "typed_failed"
+		}
+		if len(in.Targets) > 0 && successes == len(in.Targets) {
+			return Succeeded, ""
+		}
+	case ObjectiveAny:
+		if successes > 0 {
+			return Succeeded, ""
+		}
+		if len(in.Targets) > 0 && failures == len(in.Targets) {
+			return Failed, "typed_failed"
+		}
 	}
 	return Unknown, "typed_incomplete"
 }
@@ -263,6 +306,9 @@ func validateTypedResult(in *TypedResult) error {
 	}
 	if in.SchemaVersion != SchemaVersion || !validAdapterRef(in.Adapter) {
 		return typedError("unsupported typed schema or adapter identity")
+	}
+	if in.Policy != ObjectiveAll && in.Policy != ObjectiveAny {
+		return typedError("unsupported typed objective policy")
 	}
 	if len(in.Targets) == 0 {
 		return typedError("typed result requires targets")

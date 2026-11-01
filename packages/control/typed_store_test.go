@@ -14,12 +14,12 @@ func typedStoreRecord(t *testing.T) Record {
 	p := validTestPlan(t)
 	p.SchemaVersion = SchemaVersion
 	p.Tasks[0].Adapter = &AdapterRef{Name: "fixture", Version: 1}
-	typed := &TypedResult{SchemaVersion: SchemaVersion, Adapter: *p.Tasks[0].Adapter,
+	typed := &TypedResult{SchemaVersion: SchemaVersion, Adapter: *p.Tasks[0].Adapter, Policy: ObjectiveAll,
 		Targets: []TargetResult{{ID: "target-1", Outcome: TargetAchieved, Details: json.RawMessage(`{"value":9007199254740993}`)}}}
 	typed.State, typed.Code = typedState(typed)
 	return Record{SchemaVersion: SchemaVersion, Plan: p, Result: Result{
 		SchemaVersion: SchemaVersion, RunID: newRunID(), State: Started, Cleanup: "pending",
-		Tasks: []TaskResult{{ID: p.Tasks[0].ID, CoreTaskID: 1, State: Started, Typed: typed}},
+		Tasks: []TaskResult{{ID: p.Tasks[0].ID, CoreTaskID: 1, State: Started, Policy: ObjectiveAll, Typed: typed}},
 	}}
 }
 

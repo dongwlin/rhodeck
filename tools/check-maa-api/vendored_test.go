@@ -1,8 +1,4 @@
-// 本文件验收仓库内的锁定 C 输入:不依赖用户缓存中的发行包,直接对
-// tools/check-maa-api/testdata/locked 运行完整 checker 命令入口,并核
-// 对两个目标的策略计数与签名记录。它使 CI 与离线环境也能执行真实的
-// 锁定头比对,而不是只跑合成正例;发行包缺失时的 SKIP 仅影响
-// realinput_linux_test.go 的归档来源测试,不影响本用例。
+// 本文件对仓库内有来源的未版本化头快照执行两目标静态检查。
 
 package main
 
@@ -13,9 +9,9 @@ import (
 	"testing"
 )
 
-func TestVendoredLockedInputRun(t *testing.T) {
+func TestVendoredInputRun(t *testing.T) {
 	root := repoRoot(t)
-	input := filepath.Join(root, "tools", "check-maa-api", "testdata", "locked")
+	input := filepath.Join(root, "tools", "check-maa-api", "testdata", "snapshot")
 	tests := []struct {
 		goos      string
 		bound     int
@@ -28,7 +24,6 @@ func TestVendoredLockedInputRun(t *testing.T) {
 		t.Run(tc.goos, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			code := Run([]string{
-				"--profile", "maa-v6.20.1",
 				"--goos", tc.goos,
 				"--goarch", "amd64",
 				"--c-input", input,
@@ -41,8 +36,8 @@ func TestVendoredLockedInputRun(t *testing.T) {
 			if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
 				t.Fatalf("decode report: %v", err)
 			}
-			if rep.Profile != "maa-v6.20.1" {
-				t.Fatalf("profile = %q, want maa-v6.20.1", rep.Profile)
+			if rep.Input.SnapshotID != "maacore-headers" {
+				t.Fatalf("profile = %q, want maacore-headers", rep.Input.SnapshotID)
 			}
 			if rep.Target.GOOS != tc.goos || rep.Target.GOARCH != "amd64" {
 				t.Fatalf("target = %s/%s, want %s/amd64", rep.Target.GOOS, rep.Target.GOARCH, tc.goos)
