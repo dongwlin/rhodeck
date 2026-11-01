@@ -6,9 +6,11 @@
 desktop host. Only the worker loads MaaCore. The caller supplies the worker,
 Core library and its native dependencies, resources, ADB and writable directories.
 
-`main.go` is the executable entry point. Command handling, input parsing, path
-checks, adapter registration, JSON output and exit codes live in `internal/app`,
-alongside their tests.
+`main.go` is the executable entry point. The implementation is layered: `internal/output`
+owns the machine output contract (envelope types, diagnostic codes, exit codes
+and the single stdout writer), `internal/plan` owns the plan service and the
+local adapter registry, `internal/cmd` owns the cobra command surface and
+`internal/app` owns the process shell. Each layer depends on the one below it.
 
 Build the two executables from the repository root:
 
