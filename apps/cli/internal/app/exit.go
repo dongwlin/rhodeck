@@ -19,6 +19,17 @@ const (
 	exitUnknown  = 6
 )
 
+// cliError carries a stable diagnostic code and the process exit code.
+// reported marks that the machine envelope was already written to stdout, so
+// the caller must not write it again.
+type cliError struct {
+	code     string
+	exit     int
+	reported bool
+}
+
+func (e *cliError) Error() string { return e.code }
+
 func resultExit(r control.Result) int {
 	// A persistence failure is not an input rejection even when the run entered
 	// the rejected state before any device work. A failed cleanup or timeout
