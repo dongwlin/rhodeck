@@ -5,13 +5,13 @@ package worker
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os/exec"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWorkerSignalExit(t *testing.T) {
@@ -23,33 +23,25 @@ func TestWorkerSignalExit(t *testing.T) {
 			var diagnostics bytes.Buffer
 			cmd.Stderr = &diagnostics
 			stdin, err := cmd.StdinPipe()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			defer stdin.Close()
 			stdout, err := cmd.StdoutPipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := cmd.Start(); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+			require.NoError(t, cmd.Start())
 			t.Cleanup(func() {
 				if cmd.ProcessState == nil {
 					_ = cmd.Process.Kill()
 					_ = cmd.Wait()
 				}
 			})
-			if _, err := protocol.NewReader(stdout).Read(); err != nil {
-				t.Fatal(err)
-			}
-			if err := cmd.Process.Signal(signal); err != nil {
-				t.Fatal(err)
-			}
+			_, err = protocol.NewReader(stdout).Read()
+			require.NoError(t, err)
+			require.NoError(t, cmd.Process.Signal(signal))
 			var exit *exec.ExitError
-			if err := cmd.Wait(); !errors.As(err, &exit) || exit.ExitCode() != 1 || ctx.Err() != nil {
-				t.Fatalf("signal shutdown: %v, %v; diagnostics: %s", err, ctx.Err(), diagnostics.String())
-			}
+			err = cmd.Wait()
+			require.ErrorAs(t, err, &exit, "signal shutdown; diagnostics: %s", diagnostics.String())
+			require.Equal(t, 1, exit.ExitCode(), "signal shutdown; diagnostics: %s", diagnostics.String())
+			require.NoError(t, ctx.Err(), "signal shutdown; diagnostics: %s", diagnostics.String())
 		})
 	}
 }

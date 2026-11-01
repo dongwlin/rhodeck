@@ -27,6 +27,7 @@ import (
 
 	"github.com/dongwlin/rhodeck/packages/control/worker"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -67,19 +68,14 @@ func buildImageFixture(t *testing.T) string {
 		t.Skipf("image fixture blocked: no C compiler found; controlled native verification not executed, does not count as a pass")
 	}
 	src, err := filepath.Abs(imageFixtureSrcRel)
-	if err != nil {
-		t.Fatalf("resolve fixture source: %v", err)
-	}
-	if _, err := os.Stat(src); err != nil {
-		t.Fatalf("image fixture source %s is not accessible: %v", src, err)
-	}
+	require.NoError(t, err, "resolve fixture source")
+	_, err = os.Stat(src)
+	require.NoError(t, err, "image fixture source %s is not accessible", src)
 	outPath := filepath.Join(t.TempDir(), imageFixtureSOName)
 	args := []string{"-shared", "-fPIC", "-O2", "-o", outPath, src}
 	t.Logf("image fixture build: compiler=%s platform=%s/%s command=%s", compiler, runtime.GOOS, runtime.GOARCH, compiler+" "+strings.Join(args, " "))
 	output, err := exec.Command(compiler, args...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to compile the image fixture: %v\n%s", err, output)
-	}
+	require.NoError(t, err, "failed to compile the image fixture:\n%s", output)
 	return outPath
 }
 
@@ -94,9 +90,7 @@ func launchImageFixtureWorker(t *testing.T, library string, pngBytes, bgrBytes u
 		RequestTimeout:  60 * time.Second,
 		ShutdownTimeout: 15 * time.Second,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close(context.Background()) })
 	return c
 }
@@ -108,12 +102,9 @@ func initializeImageFixtureWorker(t *testing.T, c *worker.Client, library string
 	t.Helper()
 	root := t.TempDir()
 	info, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "image-fixture", LibraryPath: library, UserDir: root, ResourceRoots: []string{root}})
-	if err != nil {
-		t.Fatalf("initialize: %v; diagnostics: %s", err, c.Diagnostics())
-	}
-	if !info.Capabilities.ImageBGR || info.NullSize != math.MaxUint64 {
-		t.Fatalf("fixture runtime snapshot: %+v", info)
-	}
+	require.NoError(t, err, "initialize; diagnostics: %s", c.Diagnostics())
+	require.True(t, info.Capabilities.ImageBGR, "fixture runtime snapshot: %+v", info)
+	require.Equal(t, uint64(math.MaxUint64), info.NullSize, "fixture runtime snapshot: %+v", info)
 	return info
 }
 
@@ -141,26 +132,16 @@ func TestControlledNativeImageTransferFidelity(t *testing.T) {
 
 			wantPNG := imageFixturePattern(int(tc.png), imageFixturePNGSalt)
 			gotPNG, err := c.GetImagePNG(context.Background())
-			if err != nil {
-				t.Fatalf("get_image_png: %v; diagnostics: %s", err, c.Diagnostics())
-			}
-			if !bytes.Equal(gotPNG, wantPNG) {
-				t.Fatalf("png snapshot diverges byte for byte: got %d bytes, want %d", len(gotPNG), len(wantPNG))
-			}
+			require.NoError(t, err, "get_image_png; diagnostics: %s", c.Diagnostics())
+			require.True(t, bytes.Equal(gotPNG, wantPNG), "png snapshot diverges byte for byte: got %d bytes, want %d", len(gotPNG), len(wantPNG))
 			pngDigest := sha256.Sum256(gotPNG)
 			wantDigest := sha256.Sum256(wantPNG)
-			if !bytes.Equal(pngDigest[:], wantDigest[:]) {
-				t.Fatal("png digest diverges from the controlled native content")
-			}
+			require.True(t, bytes.Equal(pngDigest[:], wantDigest[:]), "png digest diverges from the controlled native content")
 
 			wantBGR := imageFixturePattern(int(tc.bgr), imageFixtureBGRSalt)
 			gotBGR, err := c.GetImageBGR(context.Background())
-			if err != nil {
-				t.Fatalf("get_image_bgr: %v; diagnostics: %s", err, c.Diagnostics())
-			}
-			if !bytes.Equal(gotBGR, wantBGR) {
-				t.Fatalf("bgr snapshot diverges byte for byte: got %d bytes, want %d", len(gotBGR), len(wantBGR))
-			}
+			require.NoError(t, err, "get_image_bgr; diagnostics: %s", c.Diagnostics())
+			require.True(t, bytes.Equal(gotBGR, wantBGR), "bgr snapshot diverges byte for byte: got %d bytes, want %d", len(gotBGR), len(wantBGR))
 
 			// A repeat read is an independent snapshot of the same cache:
 			// mutating the first return value cannot reach it.
@@ -168,26 +149,20 @@ func TestControlledNativeImageTransferFidelity(t *testing.T) {
 				gotPNG[0] ^= 0xFF
 			}
 			again, err := c.GetImagePNG(context.Background())
-			if err != nil {
-				t.Fatalf("repeat get_image_png: %v", err)
-			}
-			if !bytes.Equal(again, wantPNG) {
-				t.Fatalf("repeat png snapshot diverges after caller mutation: %d bytes", len(again))
-			}
+			require.NoError(t, err, "repeat get_image_png")
+			require.True(t, bytes.Equal(again, wantPNG), "repeat png snapshot diverges after caller mutation: %d bytes", len(again))
 
-			if err := c.Ping(context.Background()); err != nil {
-				t.Fatalf("ping after transfers: %v", err)
-			}
+			err = c.Ping(context.Background())
+			require.NoError(t, err, "ping after transfers")
 			// The fixture never calls back: reads and chunk traffic must not
 			// have produced any event.
 			select {
 			case event := <-c.Events():
-				t.Fatalf("fixture transfer produced events: %+v", event)
+				require.FailNow(t, fmt.Sprintf("fixture transfer produced events: %+v", event))
 			default:
 			}
-			if err := c.Close(context.Background()); err != nil {
-				t.Fatalf("close: %v; diagnostics: %s", err, c.Diagnostics())
-			}
+			err = c.Close(context.Background())
+			require.NoError(t, err, "close; diagnostics: %s", c.Diagnostics())
 			bgrDigest := sha256.Sum256(wantBGR)
 			t.Logf("png=%d bytes sha256=%s bgr=%d bytes sha256=%s", len(gotPNG), hex.EncodeToString(wantDigest[:]), len(gotBGR), hex.EncodeToString(bgrDigest[:]))
 		})

@@ -14,7 +14,7 @@ package worker
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -24,6 +24,7 @@ import (
 
 	"github.com/dongwlin/rhodeck/packages/control/worker"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -47,16 +48,12 @@ func buildQueryFixture(t *testing.T) string {
 		t.Skipf("query fixture blocked: no C compiler found; controlled native verification not executed, does not count as a pass")
 	}
 	src, err := filepath.Abs(queryFixtureSrcRel)
-	if err != nil {
-		t.Fatalf("resolve fixture source: %v", err)
-	}
+	require.NoError(t, err, "resolve fixture source")
 	outPath := filepath.Join(t.TempDir(), queryFixtureSOName)
 	args := []string{"-shared", "-fPIC", "-O2", "-o", outPath, src}
 	t.Logf("query fixture build: compiler=%s platform=%s/%s command=%s", compiler, runtime.GOOS, runtime.GOARCH, compiler+" "+strings.Join(args, " "))
 	output, err := exec.Command(compiler, args...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to compile the query fixture: %v\n%s", err, output)
-	}
+	require.NoError(t, err, "failed to compile the query fixture:\n%s", output)
 	return outPath
 }
 
@@ -70,9 +67,7 @@ func launchQueryFixtureWorker(t *testing.T, library string) *worker.Client {
 		RequestTimeout:  60 * time.Second,
 		ShutdownTimeout: 15 * time.Second,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close(context.Background()) })
 	return c
 }
@@ -84,13 +79,9 @@ func initializeQueryFixtureWorker(t *testing.T, c *worker.Client, library string
 	t.Helper()
 	root := t.TempDir()
 	info, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "query-fixture", LibraryPath: library, UserDir: root, ResourceRoots: []string{root}})
-	if err != nil {
-		t.Fatalf("initialize: %v; diagnostics: %s", err, c.Diagnostics())
-	}
+	require.NoError(t, err, "initialize; diagnostics: %s", c.Diagnostics())
 	want := protocol.Capabilities{ImageBGR: false, AttachWindow: false, MapLevelKey: true, ItemName: true}
-	if info.Capabilities != want {
-		t.Fatalf("fixture capability snapshot = %+v, want %+v", info.Capabilities, want)
-	}
+	require.Equal(t, want, info.Capabilities, "fixture capability snapshot = %+v, want %+v", info.Capabilities, want)
 	return info
 }
 
@@ -100,12 +91,8 @@ func TestQueryFixtureExplicitCoreVersion(t *testing.T) {
 	// repository-wide release gate. Each initialization uses a fresh process.
 	baseline := launchQueryFixtureWorker(t, library)
 	actual := initializeQueryFixtureWorker(t, baseline, library)
-	if actual.CoreVersion == "" {
-		t.Fatal("missing actual Core version")
-	}
-	if err := baseline.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	require.NotEmpty(t, actual.CoreVersion, "missing actual Core version")
+	require.NoError(t, baseline.Close(context.Background()))
 	for _, matching := range []bool{true, false} {
 		name, expected := "matching", actual.CoreVersion
 		if !matching {
@@ -119,15 +106,13 @@ func TestQueryFixtureExplicitCoreVersion(t *testing.T) {
 				ResourceRoots: []string{root}, ExpectedCoreVersion: expected,
 			})
 			if matching {
-				if err != nil || info.CoreVersion != expected {
-					t.Fatalf("matching version: info=%+v err=%v", info, err)
-				}
+				require.NoError(t, err, "matching version: info=%+v", info)
+				require.Equal(t, expected, info.CoreVersion, "matching version: info=%+v", info)
 				return
 			}
 			var remote *protocol.Error
-			if !errors.As(err, &remote) || remote.Code != protocol.SnapshotMismatch {
-				t.Fatalf("version mismatch: got %v, want snapshot_mismatch", err)
-			}
+			require.ErrorAs(t, err, &remote, "version mismatch: got %v, want snapshot_mismatch", err)
+			require.Equal(t, protocol.SnapshotMismatch, remote.Code, "version mismatch: got %v, want snapshot_mismatch", err)
 		})
 	}
 }
@@ -137,9 +122,7 @@ func TestQueryFixtureExplicitCoreVersion(t *testing.T) {
 func fixtureLogReadback(t *testing.T, c *worker.Client) string {
 	t.Helper()
 	res, err := c.UUID(context.Background())
-	if err != nil {
-		t.Fatalf("log readback: %v; diagnostics: %s", err, c.Diagnostics())
-	}
+	require.NoError(t, err, "log readback; diagnostics: %s", c.Diagnostics())
 	return res.UUID
 }
 
@@ -148,13 +131,10 @@ func fixtureLogReadback(t *testing.T, c *worker.Client) string {
 func requireRejectionCode(t *testing.T, call func() error, code string) {
 	t.Helper()
 	err := call()
-	if err == nil {
-		t.Fatalf("expected %s rejection, got success", code)
-	}
+	require.Error(t, err, "expected %s rejection, got success", code)
 	var rejected *protocol.Error
-	if !errors.As(err, &rejected) || rejected.Code != code {
-		t.Fatalf("error = %v, want code %s", err, code)
-	}
+	require.ErrorAs(t, err, &rejected, "error = %v, want code %s", err, code)
+	require.Equal(t, code, rejected.Code, "error = %v, want code %s", err, code)
 }
 
 // TestControlledNativeLogAndExperimentQueries proves the production chain of
@@ -174,34 +154,28 @@ func TestControlledNativeLogAndExperimentQueries(t *testing.T) {
 
 	// The log input crosses verbatim, including non-ASCII bytes and spaces,
 	// and the fixture records it as the first log call.
-	if err := c.Log(ctx, protocol.LogRequest{Level: "queryfx", Message: "hello 世界 — log fidelity ✔"}); err != nil {
-		t.Fatalf("log: %v; diagnostics: %s", err, c.Diagnostics())
-	}
-	if got := fixtureLogReadback(t, c); got != "queryfx\x1fhello 世界 — log fidelity ✔\x1f1" {
-		t.Fatalf("recorded log diverges from the input: %q", got)
-	}
+	err := c.Log(ctx, protocol.LogRequest{Level: "queryfx", Message: "hello 世界 — log fidelity ✔"})
+	require.NoError(t, err, "log; diagnostics: %s", c.Diagnostics())
+	got := fixtureLogReadback(t, c)
+	require.Equal(t, "queryfx\x1fhello 世界 — log fidelity ✔\x1f1", got, "recorded log diverges from the input: %q", got)
 
 	// Empty strings are valid log inputs; the C void return is answered as a
 	// normal result that states only "the call returned".
-	if err := c.Log(ctx, protocol.LogRequest{}); err != nil {
-		t.Fatalf("empty log: %v", err)
-	}
+	err = c.Log(ctx, protocol.LogRequest{})
+	require.NoError(t, err, "empty log")
 	emptyReadback := fixtureLogReadback(t, c)
-	if emptyReadback != "\x1f\x1f2" {
-		t.Fatalf("empty log input was not recorded verbatim: %q", emptyReadback)
-	}
+	require.Equal(t, "\x1f\x1f2", emptyReadback, "empty log input was not recorded verbatim: %q", emptyReadback)
 
 	// An input the binding rejects (embedded NUL) fails with invalid_input
 	// and provably never reaches the native log: the recorded readback is
 	// unchanged.
-	if err := c.Log(ctx, protocol.LogRequest{Level: "x", Message: "a\x00b"}); err == nil {
-		t.Fatal("embedded NUL accepted")
-	} else if rejected := classify(err); rejected == nil || rejected.Code != protocol.InvalidInput {
-		t.Fatalf("NUL log error = %v, want invalid_input", err)
-	}
-	if got := fixtureLogReadback(t, c); got != emptyReadback {
-		t.Fatalf("rejected log input reached the native boundary: %q", got)
-	}
+	err = c.Log(ctx, protocol.LogRequest{Level: "x", Message: "a\x00b"})
+	require.Error(t, err, "embedded NUL accepted")
+	rejected := classify(err)
+	require.NotNil(t, rejected, "NUL log error = %v, want invalid_input", err)
+	require.Equal(t, protocol.InvalidInput, rejected.Code, "NUL log error = %v, want invalid_input", err)
+	got = fixtureLogReadback(t, c)
+	require.Equal(t, emptyReadback, got, "rejected log input reached the native boundary: %q", got)
 
 	// Experiment level lookup: a key the binding rejects (embedded NUL)
 	// fails with invalid_input before any native call, so the first hit
@@ -211,49 +185,42 @@ func TestControlledNativeLogAndExperimentQueries(t *testing.T) {
 		return err
 	}, protocol.InvalidInput)
 	hit1, err := c.MapLevelKey(ctx, protocol.MapLevelKeyRequest{Key: "queryfx-hit"})
-	if err != nil {
-		t.Fatalf("map_level_key hit: %v", err)
-	}
-	if hit1 != (protocol.MapLevelKeyResult{StageID: "queryfx-stage#1", Code: "queryfx-code#1", LevelID: "queryfx-level#1", Name: "queryfx-name#1"}) {
-		t.Fatalf("four-field result diverges or fields are misaligned: %+v", hit1)
-	}
+	require.NoError(t, err, "map_level_key hit")
+	require.Equal(t, protocol.MapLevelKeyResult{StageID: "queryfx-stage#1", Code: "queryfx-code#1", LevelID: "queryfx-level#1", Name: "queryfx-name#1"}, hit1, "four-field result diverges or fields are misaligned: %+v", hit1)
 
 	// Not found is the zero value: a normal result, not an error.
 	miss, err := c.MapLevelKey(ctx, protocol.MapLevelKeyRequest{Key: "no-such-level"})
-	if err != nil || miss != (protocol.MapLevelKeyResult{}) {
-		t.Fatalf("not-found result = %+v, %v — the zero value must be a normal result", miss, err)
-	}
+	require.NoError(t, err, "not-found result = %+v — the zero value must be a normal result", miss)
+	require.Equal(t, protocol.MapLevelKeyResult{}, miss, "not-found result = %+v, %v — the zero value must be a normal result", miss, err)
 
 	// The next hit rewrites the fixture's borrowed buffers. The earlier
 	// result must stay its own snapshot: each response encoded an
 	// independent copy of the borrowed data at its own call time.
 	hit2, err := c.MapLevelKey(ctx, protocol.MapLevelKeyRequest{Key: "queryfx-hit"})
-	if err != nil || hit2.StageID != "queryfx-stage#2" {
-		t.Fatalf("second hit = %+v, %v", hit2, err)
-	}
-	if hit1.StageID != "queryfx-stage#1" || hit1.Name != "queryfx-name#1" {
-		t.Fatalf("earlier snapshot was rewritten by a later call: %+v", hit1)
-	}
+	require.NoError(t, err, "second hit = %+v", hit2)
+	require.Equal(t, "queryfx-stage#2", hit2.StageID, "second hit = %+v, %v", hit2, err)
+	require.Equal(t, "queryfx-stage#1", hit1.StageID, "earlier snapshot was rewritten by a later call: %+v", hit1)
+	require.Equal(t, "queryfx-name#1", hit1.Name, "earlier snapshot was rewritten by a later call: %+v", hit1)
 
 	// Item lookup: the empty id answers the native "Unknown", an unknown id
 	// answers the empty string — both normal results — and a rejected id
 	// never reaches the native side.
-	if name, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: ""}); err != nil || name.Name != "Unknown" {
-		t.Fatalf("empty id = %+v, %v", name, err)
-	}
+	name, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: ""})
+	require.NoError(t, err, "empty id = %+v", name)
+	require.Equal(t, "Unknown", name.Name, "empty id = %+v, %v", name, err)
 	requireRejectionCode(t, func() error {
 		_, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: "a\x00b"})
 		return err
 	}, protocol.InvalidInput)
-	if name, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: "queryfx-item"}); err != nil || name.Name != "queryfx-item#1" {
-		t.Fatalf("item hit = %+v, %v", name, err)
-	}
-	if name, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: "no-such-item"}); err != nil || name.Name != "" {
-		t.Fatalf("empty name = %+v, %v — must be a normal result", name, err)
-	}
-	if name, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: "queryfx-item"}); err != nil || name.Name != "queryfx-item#2" {
-		t.Fatalf("second item hit = %+v, %v", name, err)
-	}
+	name, err = c.ItemName(ctx, protocol.ItemNameRequest{ID: "queryfx-item"})
+	require.NoError(t, err, "item hit = %+v", name)
+	require.Equal(t, "queryfx-item#1", name.Name, "item hit = %+v, %v", name, err)
+	name, err = c.ItemName(ctx, protocol.ItemNameRequest{ID: "no-such-item"})
+	require.NoError(t, err, "empty name = %+v — must be a normal result", name)
+	require.Equal(t, "", name.Name, "empty name = %+v, %v — must be a normal result", name, err)
+	name, err = c.ItemName(ctx, protocol.ItemNameRequest{ID: "queryfx-item"})
+	require.NoError(t, err, "second item hit = %+v", name)
+	require.Equal(t, "queryfx-item#2", name.Name, "second item hit = %+v, %v", name, err)
 
 	// A bad native string (invalid UTF-8, no NUL within the scan window) and
 	// a null return are native contract breaches: protocol_error, never a
@@ -268,23 +235,20 @@ func TestControlledNativeLogAndExperimentQueries(t *testing.T) {
 	}, protocol.ProtocolError)
 	requireRejectionCode(t, func() error { _, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: "queryfx-badutf8"}); return err }, protocol.ProtocolError)
 	requireRejectionCode(t, func() error { _, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: "queryfx-nil"}); return err }, protocol.ProtocolError)
-	if err := c.Ping(ctx); err != nil {
-		t.Fatalf("session unusable after contract breaches: %v", err)
-	}
-	if got := fixtureLogReadback(t, c); got != "\x1f\x1f2" {
-		t.Fatalf("query traffic disturbed the recorded log: %q", got)
-	}
+	err = c.Ping(ctx)
+	require.NoError(t, err, "session unusable after contract breaches")
+	got = fixtureLogReadback(t, c)
+	require.Equal(t, "\x1f\x1f2", got, "query traffic disturbed the recorded log: %q", got)
 
 	// The fixture never calls back: the query traffic must not have produced
 	// any event.
 	select {
 	case event := <-c.Events():
-		t.Fatalf("query traffic produced events: %+v", event)
+		require.FailNow(t, fmt.Sprintf("query traffic produced events: %+v", event))
 	default:
 	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatalf("close: %v; diagnostics: %s", err, c.Diagnostics())
-	}
+	err = c.Close(ctx)
+	require.NoError(t, err, "close; diagnostics: %s", c.Diagnostics())
 }
 
 // TestControlledNativeQueryCapabilityAbsence proves the capability gate end
@@ -297,28 +261,22 @@ func TestControlledNativeQueryCapabilityAbsence(t *testing.T) {
 	c := launchImageFixtureWorker(t, library, 0, 0)
 	root := t.TempDir()
 	info, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "query-absence", LibraryPath: library, UserDir: root, ResourceRoots: []string{root}})
-	if err != nil {
-		t.Fatalf("initialize: %v; diagnostics: %s", err, c.Diagnostics())
-	}
+	require.NoError(t, err, "initialize; diagnostics: %s", c.Diagnostics())
 	want := protocol.Capabilities{ImageBGR: true, AttachWindow: false, MapLevelKey: false, ItemName: false}
-	if info.Capabilities != want {
-		t.Fatalf("capability snapshot = %+v, want %+v", info.Capabilities, want)
-	}
+	require.Equal(t, want, info.Capabilities, "capability snapshot = %+v, want %+v", info.Capabilities, want)
 	ctx := context.Background()
-	if _, err := c.MapLevelKey(ctx, protocol.MapLevelKeyRequest{Key: "queryfx-hit"}); err == nil {
-		t.Fatal("map_level_key answered without the optional symbol")
-	} else if rejected := classify(err); rejected == nil || rejected.Code != protocol.Unsupported {
-		t.Fatalf("map_level_key error = %v, want unsupported", err)
-	}
-	if _, err := c.ItemName(ctx, protocol.ItemNameRequest{ID: "queryfx-item"}); err == nil {
-		t.Fatal("item_name answered without the optional symbol")
-	} else if rejected := classify(err); rejected == nil || rejected.Code != protocol.Unsupported {
-		t.Fatalf("item_name error = %v, want unsupported", err)
-	}
-	if err := c.Ping(ctx); err != nil {
-		t.Fatalf("session unusable after unsupported rejections: %v", err)
-	}
-	if err := c.Close(ctx); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+	_, err = c.MapLevelKey(ctx, protocol.MapLevelKeyRequest{Key: "queryfx-hit"})
+	require.Error(t, err, "map_level_key answered without the optional symbol")
+	mkRejected := classify(err)
+	require.NotNil(t, mkRejected, "map_level_key error = %v, want unsupported", err)
+	require.Equal(t, protocol.Unsupported, mkRejected.Code, "map_level_key error = %v, want unsupported", err)
+	_, err = c.ItemName(ctx, protocol.ItemNameRequest{ID: "queryfx-item"})
+	require.Error(t, err, "item_name answered without the optional symbol")
+	inRejected := classify(err)
+	require.NotNil(t, inRejected, "item_name error = %v, want unsupported", err)
+	require.Equal(t, protocol.Unsupported, inRejected.Code, "item_name error = %v, want unsupported", err)
+	err = c.Ping(ctx)
+	require.NoError(t, err, "session unusable after unsupported rejections")
+	err = c.Close(ctx)
+	require.NoError(t, err, "close")
 }

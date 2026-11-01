@@ -16,6 +16,7 @@ import (
 
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 	maa "github.com/dongwlin/rhodeck/packages/maa-go"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNativeErrorCodes(t *testing.T) {
@@ -37,14 +38,12 @@ func TestNativeErrorCodes(t *testing.T) {
 		{&maa.FunctionRegistrationError{Err: errors.New("fixture")}, protocol.RegistrationFailed},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
-			if got := classify(fmt.Errorf("context: %w", tc.err)); got.Code != tc.code {
-				t.Fatalf("code = %s, want %s", got.Code, tc.code)
-			}
+			got := classify(fmt.Errorf("context: %w", tc.err))
+			require.Equal(t, tc.code, got.Code, "code = %s, want %s", got.Code, tc.code)
 		})
 	}
-	if got := classify(errors.New(strings.Repeat("界", 4096))); len(got.Message) > 4096 {
-		t.Fatalf("diagnostic exceeds bound: %d", len(got.Message))
-	}
+	got := classify(errors.New(strings.Repeat("界", 4096)))
+	require.LessOrEqual(t, len(got.Message), 4096, "diagnostic exceeds bound: %d", len(got.Message))
 }
 
 // TestNativeErrorStructuredDetails proves the bounded structured reasons: the
@@ -75,32 +74,22 @@ func TestNativeErrorStructuredDetails(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := classify(fmt.Errorf("context: %w", tc.err))
-			if got.Code != tc.code {
-				t.Fatalf("code = %s, want %s", got.Code, tc.code)
-			}
+			require.Equal(t, tc.code, got.Code, "code = %s, want %s", got.Code, tc.code)
 			if tc.detail == nil {
-				if got.Detail != nil {
-					t.Fatalf("detail = %+v, want none", got.Detail)
-				}
+				require.Nil(t, got.Detail, "detail = %+v, want none", got.Detail)
 				return
 			}
-			if got.Detail == nil || *got.Detail != *tc.detail {
-				t.Fatalf("detail = %+v, want %+v", got.Detail, tc.detail)
-			}
+			require.NotNil(t, got.Detail, "detail = %+v, want %+v", got.Detail, tc.detail)
+			require.Equal(t, *tc.detail, *got.Detail, "detail = %+v, want %+v", got.Detail, tc.detail)
 			// Every mapped error must remain a valid frame payload.
-			if err := validateWireErrorForTest(got); err != nil {
-				t.Fatalf("mapped error is not wire-valid: %v", err)
-			}
+			require.NoError(t, validateWireErrorForTest(got), "mapped error is not wire-valid")
 		})
 	}
 	long := &maa.LibraryLoadError{LibraryName: strings.Repeat("长", 100), Err: errors.New("fixture")}
 	got := classify(long)
-	if got.Code != protocol.LoadFailed || len(got.Detail.Field) > 128 {
-		t.Fatalf("over-long field not bounded: %d bytes", len(got.Detail.Field))
-	}
-	if err := validateWireErrorForTest(got); err != nil {
-		t.Fatalf("truncated detail is not wire-valid: %v", err)
-	}
+	require.Equal(t, protocol.LoadFailed, got.Code, "over-long field not bounded")
+	require.LessOrEqual(t, len(got.Detail.Field), 128, "over-long field not bounded: %d bytes", len(got.Detail.Field))
+	require.NoError(t, validateWireErrorForTest(got), "truncated detail is not wire-valid")
 }
 
 // validateWireErrorForTest runs the wire frame validation against an error as
@@ -158,12 +147,8 @@ func TestLimitsMappingTransfersEveryField(t *testing.T) {
 		EarlyResults:      67,
 		EarlyBytes:        68,
 	}
-	if *got != want {
-		t.Fatalf("binding limits = %+v, want %+v", *got, want)
-	}
-	if bindingLimits(nil) != nil {
-		t.Fatal("omitted wire limits must map to the binding's own defaults")
-	}
+	require.Equal(t, want, *got, "binding limits = %+v, want %+v", *got, want)
+	require.Nil(t, bindingLimits(nil), "omitted wire limits must map to the binding's own defaults")
 }
 
 // TestInitializeConfigMappingTransfersEveryField proves the initialize request
@@ -183,18 +168,17 @@ func TestInitializeConfigMappingTransfersEveryField(t *testing.T) {
 		Limits:           &limits,
 	}
 	cfg := bindingConfig(req)
-	if cfg.LibraryPath != req.LibraryPath || cfg.UserDir != req.UserDir {
-		t.Fatalf("paths changed: %+v", cfg)
-	}
-	if len(cfg.ResourceRoots) != 2 || cfg.ResourceRoots[0] != "/opt/maa/base" || cfg.ResourceRoots[1] != "/opt/maa/overlay" {
-		t.Fatalf("resource root order changed: %+v", cfg.ResourceRoots)
-	}
-	if len(cfg.StaticOptions) != 2 || cfg.StaticOptions[0] != (maa.StaticOption{Key: 1, Value: "cpu"}) || cfg.StaticOptions[1] != (maa.StaticOption{Key: 2, Value: ""}) {
-		t.Fatalf("static options changed: %+v", cfg.StaticOptions)
-	}
-	if len(cfg.ConnectionExtras) != 1 || cfg.ConnectionExtras[0].Name != "adb" || string(cfg.ConnectionExtras[0].JSON) != `{"serial":"emulator-5554"}` {
-		t.Fatalf("connection extras changed: %+v", cfg.ConnectionExtras)
-	}
+	require.Equal(t, req.LibraryPath, cfg.LibraryPath, "paths changed: %+v", cfg)
+	require.Equal(t, req.UserDir, cfg.UserDir, "paths changed: %+v", cfg)
+	require.Len(t, cfg.ResourceRoots, 2, "resource root order changed: %+v", cfg.ResourceRoots)
+	require.Equal(t, "/opt/maa/base", cfg.ResourceRoots[0], "resource root order changed: %+v", cfg.ResourceRoots)
+	require.Equal(t, "/opt/maa/overlay", cfg.ResourceRoots[1], "resource root order changed: %+v", cfg.ResourceRoots)
+	require.Len(t, cfg.StaticOptions, 2, "static options changed: %+v", cfg.StaticOptions)
+	require.Equal(t, maa.StaticOption{Key: 1, Value: "cpu"}, cfg.StaticOptions[0], "static options changed: %+v", cfg.StaticOptions)
+	require.Equal(t, maa.StaticOption{Key: 2, Value: ""}, cfg.StaticOptions[1], "static options changed: %+v", cfg.StaticOptions)
+	require.Len(t, cfg.ConnectionExtras, 1, "connection extras changed: %+v", cfg.ConnectionExtras)
+	require.Equal(t, "adb", cfg.ConnectionExtras[0].Name, "connection extras changed: %+v", cfg.ConnectionExtras)
+	require.Equal(t, `{"serial":"emulator-5554"}`, string(cfg.ConnectionExtras[0].JSON), "connection extras changed: %+v", cfg.ConnectionExtras)
 	want := maa.Limits{
 		InputStringBytes: 11, InputJSONBytes: 12, ConfigEntries: 13, ConfigBytes: 14,
 		ImagePNG:      maa.BufferLimits{Initial: 21, Max: 22, GrowthRetries: 23},
@@ -204,13 +188,10 @@ func TestInitializeConfigMappingTransfersEveryField(t *testing.T) {
 		CallbackBytes: 61, InternalEvents: 62, InternalBytes: 63, PublicEvents: 64,
 		PublicBytes: 65, PendingOperations: 66, EarlyResults: 67, EarlyBytes: 68,
 	}
-	if *cfg.Limits != want {
-		t.Fatalf("limits changed through the config mapping: %+v", *cfg.Limits)
-	}
+	require.Equal(t, want, *cfg.Limits, "limits changed through the config mapping: %+v", *cfg.Limits)
 	icfg := bindingInstanceConfig(req)
-	if len(icfg.Options) != 1 || icfg.Options[0] != (maa.InstanceOption{Key: 7, Value: "instance"}) {
-		t.Fatalf("instance options changed: %+v", icfg.Options)
-	}
+	require.Len(t, icfg.Options, 1, "instance options changed: %+v", icfg.Options)
+	require.Equal(t, maa.InstanceOption{Key: 7, Value: "instance"}, icfg.Options[0], "instance options changed: %+v", icfg.Options)
 }
 
 // TestEffectiveLimitsSelectsWholeDefaultOrExplicitCopy freezes the default
@@ -237,27 +218,19 @@ func TestEffectiveLimitsSelectsWholeDefaultOrExplicitCopy(t *testing.T) {
 		EarlyResults:      1,
 		EarlyBytes:        1 << 20,
 	}
-	if bindingDefaultLimits != defaults {
-		t.Fatalf("materialized defaults drifted: %+v", bindingDefaultLimits)
-	}
-	if got := effectiveLimits(nil); got != defaults {
-		t.Fatalf("omitted limits = %+v, want the whole default set", got)
-	}
-	if err := protocol.CheckWireLimits(&defaults); err != nil {
-		t.Fatalf("defaults must be wire-compatible: %v", err)
-	}
+	require.Equal(t, defaults, bindingDefaultLimits, "materialized defaults drifted: %+v", bindingDefaultLimits)
+	require.Equal(t, defaults, effectiveLimits(nil), "omitted limits = %+v, want the whole default set", effectiveLimits(nil))
+	require.NoError(t, protocol.CheckWireLimits(&defaults), "defaults must be wire-compatible")
 
 	explicit := mappingLimitsFixture()
 	got := effectiveLimits(&explicit)
-	if got != explicit {
-		t.Fatalf("explicit limits = %+v, want %+v", got, explicit)
-	}
+	require.Equal(t, explicit, got, "explicit limits = %+v, want %+v", got, explicit)
 	explicit.InputJSONBytes = 999
 	explicit.ImagePNG.Max = 1
 	explicit.Tasks.GrowthRetries = 9
-	if got.InputJSONBytes == 999 || got.ImagePNG.Max == 1 || got.Tasks.GrowthRetries == 9 {
-		t.Fatalf("effective snapshot is aliased to the request: %+v", got)
-	}
+	require.NotEqual(t, uint64(999), got.InputJSONBytes, "effective snapshot is aliased to the request: %+v", got)
+	require.NotEqual(t, uint64(1), got.ImagePNG.Max, "effective snapshot is aliased to the request: %+v", got)
+	require.NotEqual(t, uint32(9), got.Tasks.GrowthRetries, "effective snapshot is aliased to the request: %+v", got)
 }
 
 // TestOpenEngineRejectsIllegalLimitsBeforeNativeLoad proves a zero capacity, a
@@ -269,9 +242,7 @@ func TestEffectiveLimitsSelectsWholeDefaultOrExplicitCopy(t *testing.T) {
 func TestOpenEngineRejectsIllegalLimitsBeforeNativeLoad(t *testing.T) {
 	dir := t.TempDir()
 	library := filepath.Join(dir, "libMaaCore.so")
-	if err := os.WriteFile(library, []byte("placeholder bytes, never loaded"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(library, []byte("placeholder bytes, never loaded"), 0o600))
 	cases := []struct {
 		name   string
 		mutate func(*protocol.Limits)
@@ -288,15 +259,10 @@ func TestOpenEngineRejectsIllegalLimitsBeforeNativeLoad(t *testing.T) {
 			tc.mutate(&limits)
 			req := protocol.InitializeRequest{SnapshotID: "limits", LibraryPath: library, UserDir: dir, ResourceRoots: []string{dir}, Limits: &limits}
 			_, _, err := openEngine(req)
-			if !errors.Is(err, maa.ErrInvalidInput) {
-				t.Fatalf("expected the binding's invalid-input rejection, got %v", err)
-			}
-			if !strings.Contains(err.Error(), tc.field) {
-				t.Fatalf("rejection must name %s, got %v", tc.field, err)
-			}
-			if got := classify(err); got.Code != protocol.InvalidInput {
-				t.Fatalf("code = %s, want invalid_input", got.Code)
-			}
+			require.ErrorIs(t, err, maa.ErrInvalidInput, "expected the binding's invalid-input rejection, got %v", err)
+			require.True(t, strings.Contains(err.Error(), tc.field), "rejection must name %s, got %v", tc.field, err)
+			got := classify(err)
+			require.Equal(t, protocol.InvalidInput, got.Code, "code = %s, want invalid_input", got.Code)
 		})
 	}
 }
@@ -310,27 +276,23 @@ func TestHwndFromUint64ChecksPointerWidth(t *testing.T) {
 	width := uint64(^uintptr(0))
 	for _, v := range []uint64{1, 1 << 16, width} {
 		hwnd, err := hwndFromUint64(v)
-		if err != nil || hwnd != uintptr(v) {
-			t.Fatalf("hwndFromUint64(%d) = %d, %v", v, hwnd, err)
-		}
+		require.NoError(t, err, "hwndFromUint64(%d) = %d, %v", v, hwnd, err)
+		require.Equal(t, uintptr(v), hwnd, "hwndFromUint64(%d) = %d, %v", v, hwnd, err)
 	}
 	if width >= 1<<53 {
 		// 64-bit: the full uint64 range fits the pointer width, so the
 		// >2^53 JSON boundary converts exactly and no uint64 can overflow.
 		for _, v := range []uint64{1 << 53, (1 << 53) + 1, ^uint64(0)} {
 			hwnd, err := hwndFromUint64(v)
-			if err != nil || hwnd != uintptr(v) {
-				t.Fatalf("hwndFromUint64(%d) = %d, %v", v, hwnd, err)
-			}
+			require.NoError(t, err, "hwndFromUint64(%d) = %d, %v", v, hwnd, err)
+			require.Equal(t, uintptr(v), hwnd, "hwndFromUint64(%d) = %d, %v", v, hwnd, err)
 		}
 		return
 	}
 	// 32-bit: values beyond the pointer width are rejected, not truncated.
-	if _, err := hwndFromUint64(1 << 53); err == nil {
-		t.Fatal("a value beyond the platform pointer width must be rejected")
-	} else if got := classify(err).Code; got != protocol.InvalidInput {
-		t.Fatalf("overflow code = %s, want invalid_input", got)
-	}
+	_, err := hwndFromUint64(1 << 53)
+	require.Error(t, err, "a value beyond the platform pointer width must be rejected")
+	require.Equal(t, protocol.InvalidInput, classify(err).Code, "overflow code = %s, want invalid_input", classify(err).Code)
 }
 
 // stubObservations is a controllable stand-in for the native instance's
@@ -425,7 +387,7 @@ func waitFor(t *testing.T, cond func() bool) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatal("condition never became true")
+	require.FailNow(t, "condition never became true")
 }
 
 // TestObserveInstanceReportsFaultWhileTheReaderIsBlocked proves the fault
@@ -449,20 +411,12 @@ func TestObserveInstanceReportsFaultWhileTheReaderIsBlocked(t *testing.T) {
 	waitFor(t, func() bool { return rec.count(protocol.FaultEvent) == 1 })
 	notices := rec.named(protocol.FaultEvent)
 	var notice protocol.FaultNotice
-	if err := protocol.Decode(notices[0].Payload, &notice); err != nil {
-		t.Fatal(err)
-	}
-	if notice.Error.Code != protocol.EventOverflow {
-		t.Fatalf("fault code = %s, want event_overflow", notice.Error.Code)
-	}
-	if rec.count(protocol.CoreEvent) != 1 {
-		t.Fatalf("the blocked reader produced extra events: %+v", rec.named(protocol.CoreEvent))
-	}
+	require.NoError(t, protocol.Decode(notices[0].Payload, &notice))
+	require.Equal(t, protocol.EventOverflow, notice.Error.Code, "fault code = %s, want event_overflow", notice.Error.Code)
+	require.Equal(t, 1, rec.count(protocol.CoreEvent), "the blocked reader produced extra events: %+v", rec.named(protocol.CoreEvent))
 
 	cancel()
-	if err := <-obsErr; err == nil {
-		t.Fatal("a cancelled observation must report why")
-	}
+	require.Error(t, <-obsErr, "a cancelled observation must report why")
 }
 
 // TestObserveInstanceOrdersFaultBeforeDiagnostics proves the terminal
@@ -486,17 +440,11 @@ func TestObserveInstanceOrdersFaultBeforeDiagnostics(t *testing.T) {
 	go func() { obsErr <- observeInstance(context.Background(), in, rec.emit) }()
 	in.armFault(fault)
 	in.finish()
-	if err := <-obsErr; err != nil {
-		t.Fatalf("observe after a faulted close: %v", err)
-	}
+	require.NoError(t, <-obsErr, "observe after a faulted close")
 
-	if got := rec.count(protocol.FaultEvent); got != 1 {
-		t.Fatalf("fault events = %d, want exactly one", got)
-	}
+	require.Equal(t, 1, rec.count(protocol.FaultEvent), "fault events = %d, want exactly one", rec.count(protocol.FaultEvent))
 	reports := rec.named(protocol.DiagnosticsEvent)
-	if len(reports) != 1 {
-		t.Fatalf("diagnostics events = %d, want exactly one", len(reports))
-	}
+	require.Len(t, reports, 1, "diagnostics events = %d, want exactly one", len(reports))
 	var order []string
 	for _, m := range rec.messages {
 		order = append(order, m.Name)
@@ -510,30 +458,21 @@ func TestObserveInstanceOrdersFaultBeforeDiagnostics(t *testing.T) {
 			diagnosticsAt = i
 		}
 	}
-	if faultAt == -1 || diagnosticsAt == -1 || faultAt > diagnosticsAt {
-		t.Fatalf("fault report must precede the terminal snapshot: %v", order)
-	}
+	require.NotEqual(t, -1, faultAt, "fault report must precede the terminal snapshot: %v", order)
+	require.NotEqual(t, -1, diagnosticsAt, "fault report must precede the terminal snapshot: %v", order)
+	require.LessOrEqual(t, faultAt, diagnosticsAt, "fault report must precede the terminal snapshot: %v", order)
 
 	var report protocol.InstanceDiagnostics
-	if err := protocol.Decode(reports[0].Payload, &report); err != nil {
-		t.Fatal(err)
-	}
-	if report.LostEvents != math.MaxUint64 {
-		t.Fatalf("lost_events = %d, want the saturated count", report.LostEvents)
-	}
-	if report.FirstFault == nil || report.FirstFault.Code != protocol.EventOverflow {
-		t.Fatalf("first fault = %+v, want event_overflow", report.FirstFault)
-	}
-	if report.StopDiagnostic == nil || report.StopDiagnostic.Code != protocol.NativeRejected {
-		t.Fatalf("stop diagnostic = %+v, want native_rejected", report.StopDiagnostic)
-	}
+	require.NoError(t, protocol.Decode(reports[0].Payload, &report))
+	require.Equal(t, uint64(math.MaxUint64), report.LostEvents, "lost_events = %d, want the saturated count", report.LostEvents)
+	require.NotNil(t, report.FirstFault, "first fault = %+v, want event_overflow", report.FirstFault)
+	require.Equal(t, protocol.EventOverflow, report.FirstFault.Code, "first fault = %+v, want event_overflow", report.FirstFault)
+	require.NotNil(t, report.StopDiagnostic, "stop diagnostic = %+v, want native_rejected", report.StopDiagnostic)
+	require.Equal(t, protocol.NativeRejected, report.StopDiagnostic.Code, "stop diagnostic = %+v, want native_rejected", report.StopDiagnostic)
 	decoded, err := base64.StdEncoding.DecodeString(report.RawPrefix)
-	if err != nil || string(decoded) != string(rawPrefix) {
-		t.Fatalf("raw prefix changed: %q -> %q (%v)", rawPrefix, decoded, err)
-	}
-	if err := report.Validate(); err != nil {
-		t.Fatalf("report is not wire-valid: %v", err)
-	}
+	require.NoError(t, err, "raw prefix changed: %q -> %q", rawPrefix, decoded)
+	require.Equal(t, string(rawPrefix), string(decoded), "raw prefix changed")
+	require.NoError(t, report.Validate(), "report is not wire-valid")
 }
 
 // TestObserveInstanceTerminalSnapshotWithoutFault proves a close without any
@@ -546,23 +485,16 @@ func TestObserveInstanceTerminalSnapshotWithoutFault(t *testing.T) {
 		obsErr := make(chan error, 1)
 		go func() { obsErr <- observeInstance(context.Background(), in, rec.emit) }()
 		in.finish()
-		if err := <-obsErr; err != nil {
-			t.Fatalf("clean close: %v", err)
-		}
-		if rec.count(protocol.FaultEvent) != 0 {
-			t.Fatalf("a clean close must not report a fault: %+v", rec.named(protocol.FaultEvent))
-		}
+		require.NoError(t, <-obsErr, "clean close")
+		require.Equal(t, 0, rec.count(protocol.FaultEvent), "a clean close must not report a fault: %+v", rec.named(protocol.FaultEvent))
 		reports := rec.named(protocol.DiagnosticsEvent)
-		if len(reports) != 1 {
-			t.Fatalf("diagnostics events = %d, want exactly one", len(reports))
-		}
+		require.Len(t, reports, 1, "diagnostics events = %d, want exactly one", len(reports))
 		var report protocol.InstanceDiagnostics
-		if err := protocol.Decode(reports[0].Payload, &report); err != nil {
-			t.Fatal(err)
-		}
-		if report.LostEvents != 0 || report.FirstFault != nil || report.RawPrefix != "" || report.StopDiagnostic != nil {
-			t.Fatalf("clean close snapshot = %+v, want the zero form", report)
-		}
+		require.NoError(t, protocol.Decode(reports[0].Payload, &report))
+		require.Zero(t, report.LostEvents, "clean close snapshot = %+v, want the zero form", report)
+		require.Nil(t, report.FirstFault, "clean close snapshot = %+v, want the zero form", report)
+		require.Empty(t, report.RawPrefix, "clean close snapshot = %+v, want the zero form", report)
+		require.Nil(t, report.StopDiagnostic, "clean close snapshot = %+v, want the zero form", report)
 	})
 	t.Run("a stop-only diagnostic is not a fault", func(t *testing.T) {
 		in := newStubObservations()
@@ -573,19 +505,13 @@ func TestObserveInstanceTerminalSnapshotWithoutFault(t *testing.T) {
 		obsErr := make(chan error, 1)
 		go func() { obsErr <- observeInstance(context.Background(), in, rec.emit) }()
 		in.finish()
-		if err := <-obsErr; err != nil {
-			t.Fatalf("stop-only close: %v", err)
-		}
-		if rec.count(protocol.FaultEvent) != 0 {
-			t.Fatalf("a stop diagnostic must not fabricate a fault: %+v", rec.named(protocol.FaultEvent))
-		}
+		require.NoError(t, <-obsErr, "stop-only close")
+		require.Equal(t, 0, rec.count(protocol.FaultEvent), "a stop diagnostic must not fabricate a fault: %+v", rec.named(protocol.FaultEvent))
 		var report protocol.InstanceDiagnostics
-		if err := protocol.Decode(rec.named(protocol.DiagnosticsEvent)[0].Payload, &report); err != nil {
-			t.Fatal(err)
-		}
-		if report.StopDiagnostic == nil || report.StopDiagnostic.Code != protocol.NativeRejected || report.FirstFault != nil {
-			t.Fatalf("stop-only snapshot = %+v", report)
-		}
+		require.NoError(t, protocol.Decode(rec.named(protocol.DiagnosticsEvent)[0].Payload, &report))
+		require.NotNil(t, report.StopDiagnostic, "stop-only snapshot = %+v", report)
+		require.Equal(t, protocol.NativeRejected, report.StopDiagnostic.Code, "stop-only snapshot = %+v", report)
+		require.Nil(t, report.FirstFault, "stop-only snapshot = %+v", report)
 	})
 }
 
@@ -608,16 +534,10 @@ func TestObserveInstanceReportsFaultWhenDoneAndFaultAreSimultaneous(t *testing.T
 	in.armFault(fault)
 	close(in.events)
 	close(in.done)
-	if err := <-obsErr; err != nil {
-		t.Fatalf("observe: %v", err)
-	}
-	if rec.count(protocol.FaultEvent) != 1 {
-		t.Fatalf("fault events = %d, want exactly one", rec.count(protocol.FaultEvent))
-	}
+	require.NoError(t, <-obsErr, "observe")
+	require.Equal(t, 1, rec.count(protocol.FaultEvent), "fault events = %d, want exactly one", rec.count(protocol.FaultEvent))
 	reports := rec.named(protocol.DiagnosticsEvent)
-	if len(reports) != 1 {
-		t.Fatalf("diagnostics events = %d, want exactly one", len(reports))
-	}
+	require.Len(t, reports, 1, "diagnostics events = %d, want exactly one", len(reports))
 	var order []string
 	for _, m := range rec.messages {
 		order = append(order, m.Name)
@@ -631,9 +551,7 @@ func TestObserveInstanceReportsFaultWhenDoneAndFaultAreSimultaneous(t *testing.T
 			diagnosticsAt = i
 		}
 	}
-	if faultAt > diagnosticsAt {
-		t.Fatalf("fault report must precede the terminal snapshot: %v", order)
-	}
+	require.LessOrEqual(t, faultAt, diagnosticsAt, "fault report must precede the terminal snapshot: %v", order)
 }
 
 // TestObserveInstancePropagatesEmissionFailure proves a failed emission ends
@@ -652,9 +570,7 @@ func TestObserveInstancePropagatesEmissionFailure(t *testing.T) {
 		obsErr := make(chan error, 1)
 		go func() { obsErr <- observeInstance(context.Background(), in, emit) }()
 		in.events <- maa.Event{MessageID: 1, Sequence: 1, JSON: json.RawMessage(`{}`)}
-		if err := <-obsErr; !errors.Is(err, boom) {
-			t.Fatalf("observe error = %v, want the emission failure", err)
-		}
+		require.ErrorIs(t, <-obsErr, boom, "observe error must be the emission failure")
 	})
 	t.Run("terminal emission failure", func(t *testing.T) {
 		in := newStubObservations()
@@ -669,8 +585,6 @@ func TestObserveInstancePropagatesEmissionFailure(t *testing.T) {
 		obsErr := make(chan error, 1)
 		go func() { obsErr <- observeInstance(context.Background(), in, emit) }()
 		in.finish()
-		if err := <-obsErr; !errors.Is(err, boom) {
-			t.Fatalf("observe error = %v, want the emission failure", err)
-		}
+		require.ErrorIs(t, <-obsErr, boom, "observe error must be the emission failure")
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/dongwlin/rhodeck/packages/control/worker"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
+	"github.com/stretchr/testify/require"
 )
 
 var processBinary struct {
@@ -52,18 +54,14 @@ func workerBinary(t *testing.T) string {
 			processBinary.err = errors.New(string(out) + err.Error())
 		}
 	})
-	if processBinary.err != nil {
-		t.Fatal(processBinary.err)
-	}
+	require.NoError(t, processBinary.err)
 	return processBinary.path
 }
 
 func launchWorker(t *testing.T) *worker.Client {
 	t.Helper()
 	c, err := worker.Launch(context.Background(), worker.Config{Executable: workerBinary(t), StartupTimeout: 5 * time.Second, RequestTimeout: 30 * time.Second, ShutdownTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close(context.Background()) })
 	return c
 }
@@ -71,81 +69,73 @@ func launchWorker(t *testing.T) *worker.Client {
 func TestWorkerProcess(t *testing.T) {
 	t.Run("handshake and uninitialized close", func(t *testing.T) {
 		c := launchWorker(t)
-		if g := c.Greeting(); g.WorkerVersion != "dev" || len(g.SessionID) != 32 || g.OS != runtime.GOOS || g.Arch != runtime.GOARCH {
-			t.Fatalf("greeting: %+v", g)
-		}
-		if err := c.Ping(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if err := c.Close(context.Background()); err != nil {
-			t.Fatal(err)
-		}
+		g := c.Greeting()
+		require.Equal(t, "dev", g.WorkerVersion, "greeting: %+v", g)
+		require.Len(t, g.SessionID, 32, "greeting: %+v", g)
+		require.Equal(t, runtime.GOOS, g.OS, "greeting: %+v", g)
+		require.Equal(t, runtime.GOARCH, g.Arch, "greeting: %+v", g)
+		err := c.Ping(context.Background())
+		require.NoError(t, err)
+		err = c.Close(context.Background())
+		require.NoError(t, err)
 	})
 	t.Run("load failure is typed and terminal", func(t *testing.T) {
 		c := launchWorker(t)
 		root := t.TempDir()
 		_, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "missing-library", LibraryPath: filepath.Join(root, "missing-library"), UserDir: root, ResourceRoots: []string{root}})
 		var remote *protocol.Error
-		if !errors.As(err, &remote) || remote.Code != protocol.LoadFailed {
-			t.Fatalf("load failure: %v", err)
-		}
+		require.ErrorAs(t, err, &remote, "load failure: %v", err)
+		require.Equal(t, protocol.LoadFailed, remote.Code, "load failure: %v", err)
 		select {
 		case <-c.Done():
 		case <-time.After(5 * time.Second):
-			t.Fatal("failed initializer did not exit")
+			require.FailNow(t, "failed initializer did not exit")
 		}
 	})
 	t.Run("snapshot hash mismatch precedes native loading", func(t *testing.T) {
 		c := launchWorker(t)
 		root := t.TempDir()
 		library := filepath.Join(root, "placeholder")
-		if err := os.WriteFile(library, []byte("not a dynamic library"), 0600); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(library, []byte("not a dynamic library"), 0600))
 		_, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "mismatch", LibraryPath: library, UserDir: root, ResourceRoots: []string{root}, ExpectedLibrarySHA256: strings.Repeat("0", 64)})
 		var remote *protocol.Error
-		if !errors.As(err, &remote) || remote.Code != protocol.SnapshotMismatch {
-			t.Fatalf("snapshot check: %v", err)
-		}
+		require.ErrorAs(t, err, &remote, "snapshot check: %v", err)
+		require.Equal(t, protocol.SnapshotMismatch, remote.Code, "snapshot check: %v", err)
 	})
 	t.Run("binding rejects zero-capacity limits before loading", func(t *testing.T) {
 		c := launchWorker(t)
 		root := t.TempDir()
 		library := filepath.Join(root, "placeholder")
-		if err := os.WriteFile(library, []byte("not a dynamic library"), 0600); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(library, []byte("not a dynamic library"), 0600))
 		limits := bindingDefaultLimits
 		limits.ImagePNG.Initial = 0
 		_, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "zero-capacity", LibraryPath: library, UserDir: root, ResourceRoots: []string{root}, Limits: &limits})
 		var remote *protocol.Error
-		if !errors.As(err, &remote) || remote.Code != protocol.InvalidInput || !strings.Contains(remote.Message, "Limits.ImagePNG.Initial") {
-			t.Fatalf("zero capacity must be rejected by the binding with its field path: %v", err)
-		}
+		require.ErrorAs(t, err, &remote, "zero capacity must be rejected by the binding with its field path: %v", err)
+		require.Equal(t, protocol.InvalidInput, remote.Code, "zero capacity must be rejected by the binding with its field path: %v", err)
+		require.True(t, strings.Contains(remote.Message, "Limits.ImagePNG.Initial"), "zero capacity must be rejected by the binding with its field path: %v", err)
 		select {
 		case <-c.Done():
 		case <-time.After(5 * time.Second):
-			t.Fatal("rejected initializer did not exit")
+			require.FailNow(t, "rejected initializer did not exit")
 		}
 	})
 	t.Run("binding rejects contradictory limits before loading", func(t *testing.T) {
 		c := launchWorker(t)
 		root := t.TempDir()
 		library := filepath.Join(root, "placeholder")
-		if err := os.WriteFile(library, []byte("not a dynamic library"), 0600); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(library, []byte("not a dynamic library"), 0600))
 		limits := bindingDefaultLimits
 		limits.UUID = protocol.BufferLimits{Initial: 4097, Max: 4096, GrowthRetries: 6}
 		_, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "contradiction", LibraryPath: library, UserDir: root, ResourceRoots: []string{root}, Limits: &limits})
 		var remote *protocol.Error
-		if !errors.As(err, &remote) || remote.Code != protocol.InvalidInput || !strings.Contains(remote.Message, "Limits.UUID.Initial") {
-			t.Fatalf("contradictory limits must be rejected by the binding with its field path: %v", err)
-		}
+		require.ErrorAs(t, err, &remote, "contradictory limits must be rejected by the binding with its field path: %v", err)
+		require.Equal(t, protocol.InvalidInput, remote.Code, "contradictory limits must be rejected by the binding with its field path: %v", err)
+		require.True(t, strings.Contains(remote.Message, "Limits.UUID.Initial"), "contradictory limits must be rejected by the binding with its field path: %v", err)
 		select {
 		case <-c.Done():
 		case <-time.After(5 * time.Second):
-			t.Fatal("rejected initializer did not exit")
+			require.FailNow(t, "rejected initializer did not exit")
 		}
 	})
 	// A complete, binding-legal limit configuration must reach the native
@@ -155,38 +145,32 @@ func TestWorkerProcess(t *testing.T) {
 		c := launchWorker(t)
 		root := t.TempDir()
 		library := filepath.Join(root, "placeholder")
-		if err := os.WriteFile(library, []byte("not a dynamic library"), 0600); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(library, []byte("not a dynamic library"), 0600))
 		limits := bindingDefaultLimits
 		limits.ImageBGR = protocol.BufferLimits{Initial: 4 << 20, Max: 128 << 20, GrowthRetries: 5}
 		_, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "explicit-limits", LibraryPath: library, UserDir: root, ResourceRoots: []string{root}, Limits: &limits})
 		var remote *protocol.Error
-		if !errors.As(err, &remote) || remote.Code != protocol.LoadFailed {
-			t.Fatalf("legal explicit limits must reach native loading: %v", err)
-		}
+		require.ErrorAs(t, err, &remote, "legal explicit limits must reach native loading: %v", err)
+		require.Equal(t, protocol.LoadFailed, remote.Code, "legal explicit limits must reach native loading: %v", err)
 		select {
 		case <-c.Done():
 		case <-time.After(5 * time.Second):
-			t.Fatal("failed initializer did not exit")
+			require.FailNow(t, "failed initializer did not exit")
 		}
 	})
 	t.Run("omitted limits reach native loading", func(t *testing.T) {
 		c := launchWorker(t)
 		root := t.TempDir()
 		library := filepath.Join(root, "placeholder")
-		if err := os.WriteFile(library, []byte("not a dynamic library"), 0600); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(library, []byte("not a dynamic library"), 0600))
 		_, err := c.Initialize(context.Background(), protocol.InitializeRequest{SnapshotID: "default-limits", LibraryPath: library, UserDir: root, ResourceRoots: []string{root}})
 		var remote *protocol.Error
-		if !errors.As(err, &remote) || remote.Code != protocol.LoadFailed {
-			t.Fatalf("omitted limits must select the whole default set and load: %v", err)
-		}
+		require.ErrorAs(t, err, &remote, "omitted limits must select the whole default set and load: %v", err)
+		require.Equal(t, protocol.LoadFailed, remote.Code, "omitted limits must select the whole default set and load: %v", err)
 		select {
 		case <-c.Done():
 		case <-time.After(5 * time.Second):
-			t.Fatal("failed initializer did not exit")
+			require.FailNow(t, "failed initializer did not exit")
 		}
 	})
 }
@@ -204,136 +188,117 @@ func TestRealCoreWorkerNoDevice(t *testing.T) {
 	if library == "" && root == "" && digest == "" && expectedVersion == "" {
 		t.Skip("real Core worker unverified: explicit library, resource root, SHA256 and version were not provided")
 	}
-	if !filepath.IsAbs(library) || !filepath.IsAbs(root) || len(digest) != 64 || expectedVersion == "" {
-		t.Fatal("all real Core inputs must be explicit, including SHA256 and version")
-	}
+	require.True(t, filepath.IsAbs(library), "all real Core inputs must be explicit, including SHA256 and version")
+	require.True(t, filepath.IsAbs(root), "all real Core inputs must be explicit, including SHA256 and version")
+	require.Len(t, digest, 64, "all real Core inputs must be explicit, including SHA256 and version")
+	require.NotEmpty(t, expectedVersion, "all real Core inputs must be explicit, including SHA256 and version")
 	ctx := context.Background()
 
 	t.Run("default limits, metadata, queries and rejections", func(t *testing.T) {
 		c := launchWorker(t)
 		info, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "explicit-no-device-test", LibraryPath: library, UserDir: t.TempDir(), ResourceRoots: []string{root}, ExpectedLibrarySHA256: digest, ExpectedCoreVersion: expectedVersion})
-		if err != nil {
-			t.Fatalf("initialize: %v; diagnostics: %s", err, c.Diagnostics())
-		}
+		require.NoError(t, err, "initialize; diagnostics: %s", c.Diagnostics())
 		// Metadata: the actual library and resource digests, the native
 		// NullSize sentinel and the whole materialized default limit set must
 		// come back in the immutable snapshot.
-		if info.LibrarySHA256 != digest || info.CoreVersion != expectedVersion || len(info.Resources) != 1 || len(info.Resources[0].VersionSHA256) != 64 {
-			t.Fatalf("runtime snapshot: %+v", info)
-		}
-		if info.NullSize != math.MaxUint64 {
-			t.Fatalf("null size sentinel: got %d, want %d", info.NullSize, uint64(math.MaxUint64))
-		}
-		if info.Limits == nil || *info.Limits != bindingDefaultLimits {
-			t.Fatalf("omitted limits must report the materialized default set: %+v", info.Limits)
-		}
-		if runtime.GOOS != "windows" && info.Capabilities.AttachWindow {
-			t.Fatalf("async attach window is Windows-only and must be reported absent on %s", runtime.GOOS)
+		require.Equal(t, digest, info.LibrarySHA256, "runtime snapshot: %+v", info)
+		require.Equal(t, expectedVersion, info.CoreVersion, "runtime snapshot: %+v", info)
+		require.Len(t, info.Resources, 1, "runtime snapshot: %+v", info)
+		require.Len(t, info.Resources[0].VersionSHA256, 64, "runtime snapshot: %+v", info)
+		require.Equal(t, uint64(math.MaxUint64), info.NullSize, "null size sentinel: got %d, want %d", info.NullSize, uint64(math.MaxUint64))
+		require.NotNil(t, info.Limits, "omitted limits must report the materialized default set: %+v", info.Limits)
+		require.Equal(t, bindingDefaultLimits, *info.Limits, "omitted limits must report the materialized default set: %+v", info.Limits)
+		if runtime.GOOS != "windows" {
+			require.False(t, info.Capabilities.AttachWindow, "async attach window is Windows-only and must be reported absent on %s", runtime.GOOS)
 		}
 		assertQueryCapabilityMatchesBehavior(t, c, info.Capabilities)
 		// Queries: a log line and the device UUID are plain native calls with
 		// no device on the other end; UUID without a connection must not
 		// imply one (empty string is a normal result).
-		if err := c.Log(ctx, protocol.LogRequest{Level: "Trace", Message: "worker no-device probe 9007199254740993"}); err != nil {
-			t.Fatalf("log: %v; diagnostics: %s", err, c.Diagnostics())
-		}
+		err = c.Log(ctx, protocol.LogRequest{Level: "Trace", Message: "worker no-device probe 9007199254740993"})
+		require.NoError(t, err, "log; diagnostics: %s", c.Diagnostics())
 		uuid, err := c.UUID(ctx)
-		if err != nil {
-			t.Fatalf("uuid: %v; diagnostics: %s", err, c.Diagnostics())
-		}
-		if status, err := c.Status(ctx); err != nil || status.Connected {
-			t.Fatalf("uuid read must not open an implicit connection: %+v, %v", status, err)
-		}
+		require.NoError(t, err, "uuid; diagnostics: %s", c.Diagnostics())
+		status, err := c.Status(ctx)
+		require.NoError(t, err, "uuid read must not open an implicit connection: %+v", status)
+		require.False(t, status.Connected, "uuid read must not open an implicit connection: %+v, %v", status, err)
 		// Rejections: Core decides task-type acceptance, and a task id that
 		// was never appended is a native false.
-		if _, err := c.AppendTask(ctx, protocol.TaskRequest{Type: "RhodeckUnknownTaskForProtocolTest", Params: json.RawMessage(`{"future":9007199254740993}`)}); !isNativeRejected(err) {
-			t.Fatalf("Core must decide unknown task acceptance: %v", err)
-		}
+		_, err = c.AppendTask(ctx, protocol.TaskRequest{Type: "RhodeckUnknownTaskForProtocolTest", Params: json.RawMessage(`{"future":9007199254740993}`)})
+		require.True(t, isNativeRejected(err), "Core must decide unknown task acceptance: %v", err)
 		var ids []int32
 		for range 2 {
 			r, err := c.AppendTask(ctx, protocol.TaskRequest{Type: "Award", Params: json.RawMessage(`{"enable":false,"future":9007199254740993}`)})
-			if err != nil || r.TaskID == 0 {
-				t.Fatalf("append only: %+v, %v", r, err)
-			}
+			require.NoError(t, err, "append only: %+v", r)
+			require.NotZero(t, r.TaskID, "append only: %+v, %v", r, err)
 			ids = append(ids, r.TaskID)
 		}
-		if err := c.SetTaskParams(ctx, protocol.TaskParamsRequest{TaskID: ids[0], Params: json.RawMessage(`{"enable":false}`)}); err != nil {
-			t.Fatal(err)
-		}
-		if err := c.SetTaskParams(ctx, protocol.TaskParamsRequest{TaskID: 1 << 30, Params: json.RawMessage(`{"enable":false}`)}); !isNativeRejected(err) {
-			t.Fatalf("params for a task id that was never appended must be a native rejection: %v", err)
-		}
-		status, err := c.Status(ctx)
-		if err != nil || status.Running || status.Connected || len(status.Tasks) != 2 {
-			t.Fatalf("unconnected status: %+v, %v", status, err)
-		}
+		err = c.SetTaskParams(ctx, protocol.TaskParamsRequest{TaskID: ids[0], Params: json.RawMessage(`{"enable":false}`)})
+		require.NoError(t, err)
+		err = c.SetTaskParams(ctx, protocol.TaskParamsRequest{TaskID: 1 << 30, Params: json.RawMessage(`{"enable":false}`)})
+		require.True(t, isNativeRejected(err), "params for a task id that was never appended must be a native rejection: %v", err)
+		status, err = c.Status(ctx)
+		require.NoError(t, err, "unconnected status: %+v, %v", status, err)
+		require.False(t, status.Running, "unconnected status: %+v, %v", status, err)
+		require.False(t, status.Connected, "unconnected status: %+v, %v", status, err)
+		require.Len(t, status.Tasks, 2, "unconnected status: %+v, %v", status, err)
 		for _, id := range ids {
 			found := false
 			for _, actual := range status.Tasks {
 				found = found || id == actual
 			}
-			if !found {
-				t.Fatalf("missing submitted task %d: %+v", id, status)
-			}
+			require.True(t, found, "missing submitted task %d: %+v", id, status)
 		}
 		// Stop on a never-started instance is a plain native observation, not
 		// a device action; Core clears its pending task list and caches.
-		if _, err := c.Stop(ctx); err != nil {
-			t.Fatalf("stop on a never-started instance: %v; diagnostics: %s", err, c.Diagnostics())
-		}
+		_, err = c.Stop(ctx)
+		require.NoError(t, err, "stop on a never-started instance; diagnostics: %s", c.Diagnostics())
 		// Unconnected Screencap failure probe: the submission is accepted, the
 		// native completion arrives with ok=false and is reported as the
 		// stable native_rejected code, never as a success.
 		op, err := c.Screencap(ctx)
-		if err != nil {
-			t.Fatalf("screencap submission: %v", err)
+		require.NoError(t, err, "screencap submission")
+		require.NotZero(t, op.ID(), "screencap submission must return a nonzero async id")
+		res, err := op.Wait(ctx)
+		if err == nil {
+			require.FailNow(t, fmt.Sprintf("unconnected screencap must not report success: %+v", res))
 		}
-		if op.ID() == 0 {
-			t.Fatal("screencap submission must return a nonzero async id")
-		}
-		if res, err := op.Wait(ctx); err != nil {
-			var remote *protocol.Error
-			if !errors.As(err, &remote) || remote.Code != protocol.NativeRejected {
-				t.Fatalf("unconnected screencap must settle as native_rejected: %v", err)
-			}
-			if res.What != "Screencap" || res.OK || res.AsyncID != op.ID() {
-				t.Fatalf("screencap completion must keep its identity: %+v", res)
-			}
-		} else {
-			t.Fatalf("unconnected screencap must not report success: %+v", res)
-		}
+		var remote *protocol.Error
+		require.ErrorAs(t, err, &remote, "unconnected screencap must settle as native_rejected: %v", err)
+		require.Equal(t, protocol.NativeRejected, remote.Code, "unconnected screencap must settle as native_rejected: %v", err)
+		require.Equal(t, "Screencap", res.What, "screencap completion must keep its identity: %+v", res)
+		require.False(t, res.OK, "screencap completion must keep its identity: %+v", res)
+		require.Equal(t, op.ID(), res.AsyncID, "screencap completion must keep its identity: %+v", res)
 		// Cached image reads without any capture: an empty image is a legal,
 		// complete transfer, not an error and not a fake success.
 		png, err := c.GetImagePNG(ctx)
-		if err != nil || len(png) != 0 {
-			t.Fatalf("empty PNG cache must be an empty transfer: %d bytes, %v", len(png), err)
-		}
+		require.NoError(t, err, "empty PNG cache must be an empty transfer: %d bytes, %v", len(png), err)
+		require.Empty(t, png, "empty PNG cache must be an empty transfer: %d bytes, %v", len(png), err)
 		bgr, err := c.GetImageBGR(ctx)
-		if err != nil || len(bgr) != 0 {
-			t.Fatalf("empty BGR cache must be an empty transfer: %d bytes, %v", len(bgr), err)
-		}
-		if err := c.Ping(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if err := c.Close(ctx); err != nil {
-			t.Fatalf("close: %v; diagnostics: %s", err, c.Diagnostics())
-		}
+		require.NoError(t, err, "empty BGR cache must be an empty transfer: %d bytes, %v", len(bgr), err)
+		require.Empty(t, bgr, "empty BGR cache must be an empty transfer: %d bytes, %v", len(bgr), err)
+		err = c.Ping(ctx)
+		require.NoError(t, err)
+		err = c.Close(ctx)
+		require.NoError(t, err, "close; diagnostics: %s", c.Diagnostics())
 		diagnostics, callbacks, operations := drainClosedEvents(t, c)
-		if diagnostics.LostEvents != 0 || diagnostics.FirstFault != nil {
-			t.Fatalf("clean close must deliver a fault-free diagnostics snapshot: %+v", diagnostics)
-		}
+		require.Zero(t, diagnostics.LostEvents, "clean close must deliver a fault-free diagnostics snapshot: %+v", diagnostics)
+		require.Nil(t, diagnostics.FirstFault, "clean close must deliver a fault-free diagnostics snapshot: %+v", diagnostics)
 		// The unconnected Screencap completion (message 4) precedes Destroyed
 		// (message 5) on the same FIFO observation stream; the buffered events
 		// stay readable after the close response, and the worker's own
 		// operation event carries the same terminal state.
-		if len(callbacks) != 2 || callbacks[0].MessageID != 4 || callbacks[1].MessageID != 5 ||
-			callbacks[0].CoreSequence != 1 || callbacks[1].CoreSequence != 2 {
-			t.Fatalf("expected the screencap completion then Destroyed, got %+v", callbacks)
-		}
-		if len(operations) != 1 || operations[0].What != "Screencap" || operations[0].OK ||
-			operations[0].AsyncID != op.ID() || operations[0].Error == nil || !isNativeRejected(operations[0].Error) {
-			t.Fatalf("operation event must carry the screencap terminal state: %+v", operations)
-		}
+		require.Len(t, callbacks, 2, "expected the screencap completion then Destroyed, got %+v", callbacks)
+		require.Equal(t, int32(4), callbacks[0].MessageID, "expected the screencap completion then Destroyed, got %+v", callbacks)
+		require.Equal(t, int32(5), callbacks[1].MessageID, "expected the screencap completion then Destroyed, got %+v", callbacks)
+		require.Equal(t, uint64(1), callbacks[0].CoreSequence, "expected the screencap completion then Destroyed, got %+v", callbacks)
+		require.Equal(t, uint64(2), callbacks[1].CoreSequence, "expected the screencap completion then Destroyed, got %+v", callbacks)
+		require.Len(t, operations, 1, "operation event must carry the screencap terminal state: %+v", operations)
+		require.Equal(t, "Screencap", operations[0].What, "operation event must carry the screencap terminal state: %+v", operations)
+		require.False(t, operations[0].OK, "operation event must carry the screencap terminal state: %+v", operations)
+		require.Equal(t, op.ID(), operations[0].AsyncID, "operation event must carry the screencap terminal state: %+v", operations)
+		require.NotNil(t, operations[0].Error, "operation event must carry the screencap terminal state: %+v", operations)
+		require.True(t, isNativeRejected(operations[0].Error), "operation event must carry the screencap terminal state: %+v", operations)
 		t.Logf("platform=%s/%s Core=%s library_sha256=%s resource_version_sha256=%s null_size=%d uuid=%q capabilities=%+v; metadata/config/query/rejection/close passed without device actions",
 			runtime.GOOS, runtime.GOARCH, info.CoreVersion, info.LibrarySHA256, info.Resources[0].VersionSHA256, info.NullSize, uuid.UUID, info.Capabilities)
 	})
@@ -347,28 +312,19 @@ func TestRealCoreWorkerNoDevice(t *testing.T) {
 		limits := bindingDefaultLimits
 		limits.ImageBGR = protocol.BufferLimits{Initial: 4 << 20, Max: 128 << 20, GrowthRetries: 5}
 		info, err := c.Initialize(ctx, protocol.InitializeRequest{SnapshotID: "explicit-no-device-limits", LibraryPath: library, UserDir: t.TempDir(), ResourceRoots: []string{root}, ExpectedLibrarySHA256: digest, ExpectedCoreVersion: expectedVersion, Limits: &limits})
-		if err != nil {
-			t.Fatalf("initialize with explicit limits: %v; diagnostics: %s", err, c.Diagnostics())
-		}
-		if info.Limits == nil || *info.Limits != limits {
-			t.Fatalf("explicit limits must be applied and reported verbatim: %+v", info.Limits)
-		}
-		if info.NullSize != math.MaxUint64 {
-			t.Fatalf("null size sentinel: got %d, want %d", info.NullSize, uint64(math.MaxUint64))
-		}
-		if err := c.Close(ctx); err != nil {
-			t.Fatalf("close: %v; diagnostics: %s", err, c.Diagnostics())
-		}
+		require.NoError(t, err, "initialize with explicit limits; diagnostics: %s", c.Diagnostics())
+		require.NotNil(t, info.Limits, "explicit limits must be applied and reported verbatim: %+v", info.Limits)
+		require.Equal(t, limits, *info.Limits, "explicit limits must be applied and reported verbatim: %+v", info.Limits)
+		require.Equal(t, uint64(math.MaxUint64), info.NullSize, "null size sentinel: got %d, want %d", info.NullSize, uint64(math.MaxUint64))
+		err = c.Close(ctx)
+		require.NoError(t, err, "close; diagnostics: %s", c.Diagnostics())
 		diagnostics, callbacks, operations := drainClosedEvents(t, c)
-		if diagnostics.LostEvents != 0 || diagnostics.FirstFault != nil {
-			t.Fatalf("clean close must deliver a fault-free diagnostics snapshot: %+v", diagnostics)
-		}
-		if len(operations) != 0 {
-			t.Fatalf("no operation ran in this flow: %+v", operations)
-		}
-		if len(callbacks) != 1 || callbacks[0].MessageID != 5 || callbacks[0].CoreSequence != 1 {
-			t.Fatalf("expected the sole Destroyed callback, got %+v", callbacks)
-		}
+		require.Zero(t, diagnostics.LostEvents, "clean close must deliver a fault-free diagnostics snapshot: %+v", diagnostics)
+		require.Nil(t, diagnostics.FirstFault, "clean close must deliver a fault-free diagnostics snapshot: %+v", diagnostics)
+		require.Empty(t, operations, "no operation ran in this flow: %+v", operations)
+		require.Len(t, callbacks, 1, "expected the sole Destroyed callback, got %+v", callbacks)
+		require.Equal(t, int32(5), callbacks[0].MessageID, "expected the sole Destroyed callback, got %+v", callbacks)
+		require.Equal(t, uint64(1), callbacks[0].CoreSequence, "expected the sole Destroyed callback, got %+v", callbacks)
 	})
 }
 
@@ -389,17 +345,17 @@ func assertQueryCapabilityMatchesBehavior(t *testing.T, c *worker.Client, caps p
 	ctx := context.Background()
 	_, keyErr := c.MapLevelKey(ctx, protocol.MapLevelKeyRequest{Key: ""})
 	_, nameErr := c.ItemName(ctx, protocol.ItemNameRequest{ID: ""})
-	if caps.MapLevelKey && keyErr != nil {
-		t.Fatalf("reported-present MapLevelKey must execute, not-found is a normal result: %v", keyErr)
+	if caps.MapLevelKey {
+		require.NoError(t, keyErr, "reported-present MapLevelKey must execute, not-found is a normal result")
 	}
-	if !caps.MapLevelKey && !isUnsupported(keyErr) {
-		t.Fatalf("absent MapLevelKey must be stable unsupported: %v", keyErr)
+	if !caps.MapLevelKey {
+		require.True(t, isUnsupported(keyErr), "absent MapLevelKey must be stable unsupported: %v", keyErr)
 	}
-	if caps.ItemName && nameErr != nil {
-		t.Fatalf("reported-present ItemName must execute, not-found is a normal result: %v", nameErr)
+	if caps.ItemName {
+		require.NoError(t, nameErr, "reported-present ItemName must execute, not-found is a normal result")
 	}
-	if !caps.ItemName && !isUnsupported(nameErr) {
-		t.Fatalf("absent ItemName must be stable unsupported: %v", nameErr)
+	if !caps.ItemName {
+		require.True(t, isUnsupported(nameErr), "absent ItemName must be stable unsupported: %v", nameErr)
 	}
 }
 
@@ -421,32 +377,22 @@ func drainClosedEvents(t *testing.T, c *worker.Client) (protocol.InstanceDiagnos
 	for event := range c.Events() {
 		switch event.Name {
 		case protocol.DiagnosticsEvent:
-			if diagnostics != nil {
-				t.Fatalf("second diagnostics event: %+v", event)
-			}
+			require.Nil(t, diagnostics, "second diagnostics event: %+v", event)
 			var snap protocol.InstanceDiagnostics
-			if protocol.Decode(event.Payload, &snap) != nil {
-				t.Fatalf("undecodable diagnostics payload: %+v", event)
-			}
+			require.NoError(t, protocol.Decode(event.Payload, &snap), "undecodable diagnostics payload: %+v", event)
 			diagnostics = &snap
 		case protocol.CoreEvent:
 			var callback protocol.Callback
-			if protocol.Decode(event.Payload, &callback) != nil {
-				t.Fatalf("undecodable callback payload: %+v", event)
-			}
+			require.NoError(t, protocol.Decode(event.Payload, &callback), "undecodable callback payload: %+v", event)
 			callbacks = append(callbacks, callback)
 		case protocol.OperationEvent:
 			var result protocol.OperationResult
-			if protocol.Decode(event.Payload, &result) != nil {
-				t.Fatalf("undecodable operation payload: %+v", event)
-			}
+			require.NoError(t, protocol.Decode(event.Payload, &result), "undecodable operation payload: %+v", event)
 			operations = append(operations, result)
 		default:
-			t.Fatalf("unexpected event %q: %+v", event.Name, event)
+			require.FailNow(t, fmt.Sprintf("unexpected event %q: %+v", event.Name, event))
 		}
 	}
-	if diagnostics == nil {
-		t.Fatal("clean close must deliver a terminal diagnostics snapshot")
-	}
+	require.NotNil(t, diagnostics, "clean close must deliver a terminal diagnostics snapshot")
 	return *diagnostics, callbacks, operations
 }

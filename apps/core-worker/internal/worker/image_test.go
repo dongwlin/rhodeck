@@ -11,6 +11,8 @@ import (
 
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 	maa "github.com/dongwlin/rhodeck/packages/maa-go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func sha256Hex(data []byte) string {
@@ -22,9 +24,7 @@ func sha256Hex(data []byte) string {
 func decodeImageTransfer(t *testing.T, m protocol.Message) protocol.ImageTransfer {
 	t.Helper()
 	var transfer protocol.ImageTransfer
-	if err := protocol.Decode(m.Payload, &transfer); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, protocol.Decode(m.Payload, &transfer))
 	return transfer
 }
 
@@ -39,17 +39,14 @@ func fetchSnapshot(t *testing.T, h *sessionHarness, transfer protocol.ImageTrans
 			length = remaining
 		}
 		m := h.call(protocol.ImageChunk, protocol.ImageChunkRequest{TransferID: transfer.TransferID, Offset: offset, Length: uint32(length)})
-		if m.Error != nil {
-			t.Fatal(m.Error)
-		}
+		require.Nil(t, m.Error, "unexpected chunk error: %v", m.Error)
 		var chunk protocol.ImageChunkResponse
-		if err := protocol.Decode(m.Payload, &chunk); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, protocol.Decode(m.Payload, &chunk))
 		data, err := base64.StdEncoding.DecodeString(chunk.Data)
-		if err != nil || chunk.TransferID != transfer.TransferID || chunk.Offset != offset || uint64(len(data)) != length {
-			t.Fatalf("chunk mismatch at offset %d: %+v (%d bytes, %v)", offset, chunk, len(data), err)
-		}
+		require.NoError(t, err, "chunk mismatch at offset %d: %+v", offset, chunk)
+		require.Equal(t, transfer.TransferID, chunk.TransferID, "chunk mismatch at offset %d: %+v", offset, chunk)
+		require.Equal(t, offset, chunk.Offset, "chunk mismatch at offset %d: %+v", offset, chunk)
+		require.Equal(t, length, uint64(len(data)), "chunk mismatch at offset %d: %+v (%d bytes)", offset, chunk, len(data))
 		assembled = append(assembled, data...)
 		offset += length
 	}
@@ -68,43 +65,30 @@ func TestSessionImageTransferServesBoundedChunks(t *testing.T) {
 	h := harness(t, fakeFactory(f))
 	h.initialize()
 	m := h.call(protocol.GetImagePNG, nil)
-	if m.Error != nil {
-		t.Fatal(m.Error)
-	}
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
 	transfer := decodeImageTransfer(t, m)
-	if transfer.TransferID == 0 || transfer.TotalBytes != uint64(len(payload)) || transfer.ChunkBytes != protocol.ImageChunkBytes {
-		t.Fatalf("transfer description: %+v", transfer)
-	}
-	if transfer.SHA256 != sha256Hex(payload) {
-		t.Fatalf("transfer digest %s, want %s", transfer.SHA256, sha256Hex(payload))
-	}
+	require.NotZero(t, transfer.TransferID, "transfer description: %+v", transfer)
+	require.Equal(t, uint64(len(payload)), transfer.TotalBytes, "transfer description: %+v", transfer)
+	require.Equal(t, uint32(protocol.ImageChunkBytes), transfer.ChunkBytes, "transfer description: %+v", transfer)
+	require.Equal(t, sha256Hex(payload), transfer.SHA256, "transfer digest %s, want %s", transfer.SHA256, sha256Hex(payload))
 	assembled := fetchSnapshot(t, h, transfer)
-	if !bytes.Equal(assembled, payload) {
-		t.Fatalf("assembled payload diverged: %d bytes", len(assembled))
-	}
+	require.True(t, bytes.Equal(assembled, payload), "assembled payload diverged: %d bytes", len(assembled))
 	// Chunk responses are responses, not events: nothing entered the event
 	// sequence domain.
-	if len(h.events) != 0 {
-		t.Fatalf("chunk traffic produced events: %+v", h.events)
-	}
+	require.Empty(t, h.events, "chunk traffic produced events: %+v", h.events)
 	// The last served byte released the snapshot: a duplicate fetch is
 	// invalid_input, and the freed slot admits a new transfer.
-	if m := h.call(protocol.ImageChunk, protocol.ImageChunkRequest{TransferID: transfer.TransferID, Offset: 0, Length: 1}); m.Error == nil || m.Error.Code != protocol.InvalidInput {
-		t.Fatalf("fetch after release: %+v", m)
-	}
+	m = h.call(protocol.ImageChunk, protocol.ImageChunkRequest{TransferID: transfer.TransferID, Offset: 0, Length: 1})
+	require.NotNil(t, m.Error, "fetch after release: %+v", m)
+	require.Equal(t, protocol.InvalidInput, m.Error.Code, "fetch after release: %+v", m)
 	f.imagePNG = func() ([]byte, error) { return []byte{1}, nil }
-	if m := h.call(protocol.GetImagePNG, nil); m.Error != nil {
-		t.Fatalf("freed slot must admit a new transfer: %+v", m)
-	}
-	if m := h.call(protocol.Ping, nil); m.Error != nil {
-		t.Fatalf("session unusable after transfers: %+v", m)
-	}
-	if m := h.call(protocol.Close, nil); m.Error != nil {
-		t.Fatal(m.Error)
-	}
-	if err := <-h.done; err != nil {
-		t.Fatal(err)
-	}
+	m = h.call(protocol.GetImagePNG, nil)
+	require.Nil(t, m.Error, "freed slot must admit a new transfer: %+v", m)
+	m = h.call(protocol.Ping, nil)
+	require.Nil(t, m.Error, "session unusable after transfers: %+v", m)
+	m = h.call(protocol.Close, nil)
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+	require.NoError(t, <-h.done)
 }
 
 // TestSessionImageTransferAdmissionAndFailures proves the budget gates and
@@ -125,29 +109,21 @@ func TestSessionImageTransferAdmissionAndFailures(t *testing.T) {
 		h := harness(t, fakeFactory(f))
 		h.initialize()
 		for range protocol.ImageTransfersMax {
-			if m := h.call(protocol.GetImagePNG, nil); m.Error != nil {
-				t.Fatal(m.Error)
-			}
+			m := h.call(protocol.GetImagePNG, nil)
+			require.Nil(t, m.Error, "unexpected error: %v", m.Error)
 		}
 		m := h.call(protocol.GetImagePNG, nil)
-		if m.Error == nil || m.Error.Code != protocol.LimitExceeded {
-			t.Fatalf("transfer beyond the concurrency budget: %+v", m)
-		}
-		if m.Error.Detail == nil || m.Error.Detail.Unit != "transfers" || m.Error.Detail.Maximum != protocol.ImageTransfersMax {
-			t.Fatalf("effective maximum not reported: %+v", m.Error.Detail)
-		}
-		if reads.Load() != int32(protocol.ImageTransfersMax) {
-			t.Fatalf("rejected request must not read image bytes: %d reads", reads.Load())
-		}
-		if m := h.call(protocol.Ping, nil); m.Error != nil {
-			t.Fatalf("session unusable after the rejection: %+v", m)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		require.NotNil(t, m.Error, "transfer beyond the concurrency budget: %+v", m)
+		require.Equal(t, protocol.LimitExceeded, m.Error.Code, "transfer beyond the concurrency budget: %+v", m)
+		require.NotNil(t, m.Error.Detail, "effective maximum not reported: %+v", m.Error.Detail)
+		require.Equal(t, "transfers", m.Error.Detail.Unit, "effective maximum not reported: %+v", m.Error.Detail)
+		require.Equal(t, uint64(protocol.ImageTransfersMax), m.Error.Detail.Maximum, "effective maximum not reported: %+v", m.Error.Detail)
+		require.Equal(t, int32(protocol.ImageTransfersMax), reads.Load(), "rejected request must not read image bytes: %d reads", reads.Load())
+		m = h.call(protocol.Ping, nil)
+		require.Nil(t, m.Error, "session unusable after the rejection: %+v", m)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("read failures classify and release the slot", func(t *testing.T) {
@@ -156,33 +132,26 @@ func TestSessionImageTransferAdmissionAndFailures(t *testing.T) {
 		f.imageBGR = func() ([]byte, error) { return nil, maa.ErrUnsupported }
 		h := harness(t, fakeFactory(f))
 		h.initialize()
-		if m := h.call(protocol.GetImagePNG, nil); m.Error == nil || m.Error.Code != protocol.LimitExceeded {
-			t.Fatalf("buffer exhaustion must stay limit_exceeded: %+v", m)
-		}
-		if m := h.call(protocol.GetImageBGR, nil); m.Error == nil || m.Error.Code != protocol.Unsupported {
-			t.Fatalf("missing optional BGR symbol must stay unsupported: %+v", m)
-		}
+		m := h.call(protocol.GetImagePNG, nil)
+		require.NotNil(t, m.Error, "buffer exhaustion must stay limit_exceeded: %+v", m)
+		require.Equal(t, protocol.LimitExceeded, m.Error.Code, "buffer exhaustion must stay limit_exceeded: %+v", m)
+		m = h.call(protocol.GetImageBGR, nil)
+		require.NotNil(t, m.Error, "missing optional BGR symbol must stay unsupported: %+v", m)
+		require.Equal(t, protocol.Unsupported, m.Error.Code, "missing optional BGR symbol must stay unsupported: %+v", m)
 		// Failed reads retained nothing: the default empty read is admitted.
 		f.imagePNG, f.imageBGR = nil, nil
 		for _, name := range []string{protocol.GetImagePNG, protocol.GetImageBGR} {
 			m := h.call(name, nil)
-			if m.Error != nil {
-				t.Fatalf("%s after failed reads: %+v", name, m)
-			}
+			require.Nil(t, m.Error, "%s after failed reads: %+v", name, m)
 			transfer := decodeImageTransfer(t, m)
-			if transfer.TotalBytes != 0 || transfer.SHA256 != sha256Hex(nil) {
-				t.Fatalf("empty image must be a complete transfer: %+v", transfer)
-			}
+			require.Zero(t, transfer.TotalBytes, "empty image must be a complete transfer: %+v", transfer)
+			require.Equal(t, sha256Hex(nil), transfer.SHA256, "empty image must be a complete transfer: %+v", transfer)
 		}
-		if m := h.call(protocol.Ping, nil); m.Error != nil {
-			t.Fatalf("session damaged by read failures: %+v", m)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m = h.call(protocol.Ping, nil)
+		require.Nil(t, m.Error, "session damaged by read failures: %+v", m)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("snapshot beyond the byte budget is the last gate", func(t *testing.T) {
@@ -191,23 +160,18 @@ func TestSessionImageTransferAdmissionAndFailures(t *testing.T) {
 		h := harness(t, fakeFactory(f))
 		h.initialize()
 		m := h.call(protocol.GetImagePNG, nil)
-		if m.Error == nil || m.Error.Code != protocol.LimitExceeded {
-			t.Fatalf("oversized snapshot: %+v", m)
-		}
-		if m.Error.Detail == nil || m.Error.Detail.Unit != "bytes" || m.Error.Detail.Maximum != protocol.ImageTransferMaxBytes {
-			t.Fatalf("effective byte maximum not reported: %+v", m.Error.Detail)
-		}
+		require.NotNil(t, m.Error, "oversized snapshot: %+v", m)
+		require.Equal(t, protocol.LimitExceeded, m.Error.Code, "oversized snapshot: %+v", m)
+		require.NotNil(t, m.Error.Detail, "effective byte maximum not reported: %+v", m.Error.Detail)
+		require.Equal(t, "bytes", m.Error.Detail.Unit, "effective byte maximum not reported: %+v", m.Error.Detail)
+		require.Equal(t, uint64(protocol.ImageTransferMaxBytes), m.Error.Detail.Maximum, "effective byte maximum not reported: %+v", m.Error.Detail)
 		// Nothing was retained: an ordinary read is admitted afterwards.
 		f.imagePNG = func() ([]byte, error) { return []byte{2}, nil }
-		if m := h.call(protocol.GetImagePNG, nil); m.Error != nil {
-			t.Fatalf("rejected snapshot must not hold a slot: %+v", m)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m = h.call(protocol.GetImagePNG, nil)
+		require.Nil(t, m.Error, "rejected snapshot must not hold a slot: %+v", m)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("reads never screencap", func(t *testing.T) {
@@ -215,22 +179,18 @@ func TestSessionImageTransferAdmissionAndFailures(t *testing.T) {
 		f.imagePNG = func() ([]byte, error) { return []byte{3}, nil }
 		f.imageBGR = func() ([]byte, error) { return []byte{4}, nil }
 		f.screencapHook = func() (operation, error) {
-			t.Error("image reads must not submit an implicit screencap")
+			assert.Fail(t, "image reads must not submit an implicit screencap")
 			return nil, errors.New("unreachable")
 		}
 		h := harness(t, fakeFactory(f))
 		h.initialize()
 		for _, name := range []string{protocol.GetImagePNG, protocol.GetImageBGR} {
-			if m := h.call(name, nil); m.Error != nil {
-				t.Fatalf("%s: %+v", name, m)
-			}
+			m := h.call(name, nil)
+			require.Nil(t, m.Error, "%s: %+v", name, m)
 		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m := h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 }
 
@@ -246,9 +206,7 @@ func TestSessionImageChunkRequestsAreValidated(t *testing.T) {
 	h := harness(t, fakeFactory(f))
 	h.initialize()
 	m := h.call(protocol.GetImagePNG, nil)
-	if m.Error != nil {
-		t.Fatal(m.Error)
-	}
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
 	transfer := decodeImageTransfer(t, m)
 	bad := []protocol.ImageChunkRequest{
 		{TransferID: 0, Offset: 0, Length: 1},
@@ -259,26 +217,20 @@ func TestSessionImageChunkRequestsAreValidated(t *testing.T) {
 		{TransferID: transfer.TransferID, Offset: transfer.TotalBytes - 2, Length: 3},
 	}
 	for _, req := range bad {
-		if m := h.call(protocol.ImageChunk, req); m.Error == nil || m.Error.Code != protocol.InvalidInput {
-			t.Fatalf("malformed chunk %+v: %+v", req, m)
-		}
+		m := h.call(protocol.ImageChunk, req)
+		require.NotNil(t, m.Error, "malformed chunk %+v: %+v", req, m)
+		require.Equal(t, protocol.InvalidInput, m.Error.Code, "malformed chunk %+v: %+v", req, m)
 	}
-	if m := h.call(protocol.ImageChunk, nil); m.Error == nil || m.Error.Code != protocol.InvalidInput {
-		t.Fatalf("missing payload: %+v", m)
-	}
+	m = h.call(protocol.ImageChunk, nil)
+	require.NotNil(t, m.Error, "missing payload: %+v", m)
+	require.Equal(t, protocol.InvalidInput, m.Error.Code, "missing payload: %+v", m)
 	data := fetchSnapshot(t, h, transfer)
-	if !bytes.Equal(data, payload) {
-		t.Fatalf("valid chunk after rejections diverged: %q", data)
-	}
-	if m := h.call(protocol.Ping, nil); m.Error != nil {
-		t.Fatalf("session unusable after rejections: %+v", m)
-	}
-	if m := h.call(protocol.Close, nil); m.Error != nil {
-		t.Fatal(m.Error)
-	}
-	if err := <-h.done; err != nil {
-		t.Fatal(err)
-	}
+	require.True(t, bytes.Equal(data, payload), "valid chunk after rejections diverged: %q", data)
+	m = h.call(protocol.Ping, nil)
+	require.Nil(t, m.Error, "session unusable after rejections: %+v", m)
+	m = h.call(protocol.Close, nil)
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+	require.NoError(t, <-h.done)
 }
 
 // TestSessionImageTransferReleaseAndClose proves the empty-image and release
@@ -293,38 +245,30 @@ func TestSessionImageTransferReleaseAndClose(t *testing.T) {
 		h := harness(t, fakeFactory(f))
 		h.initialize()
 		m := h.call(protocol.GetImageBGR, nil)
-		if m.Error != nil {
-			t.Fatal(m.Error)
-		}
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
 		transfer := decodeImageTransfer(t, m)
-		if transfer.TotalBytes != 0 || transfer.SHA256 != sha256Hex(nil) || transfer.TransferID == 0 {
-			t.Fatalf("empty transfer: %+v", transfer)
-		}
+		require.Zero(t, transfer.TotalBytes, "empty transfer: %+v", transfer)
+		require.Equal(t, sha256Hex(nil), transfer.SHA256, "empty transfer: %+v", transfer)
+		require.NotZero(t, transfer.TransferID, "empty transfer: %+v", transfer)
 		// Nothing to fetch: a chunk request against the empty transfer is
 		// invalid_input, and the two concurrent slots are still free.
-		if m := h.call(protocol.ImageChunk, protocol.ImageChunkRequest{TransferID: transfer.TransferID, Offset: 0, Length: 1}); m.Error == nil || m.Error.Code != protocol.InvalidInput {
-			t.Fatalf("chunk against an empty transfer: %+v", m)
-		}
+		m = h.call(protocol.ImageChunk, protocol.ImageChunkRequest{TransferID: transfer.TransferID, Offset: 0, Length: 1})
+		require.NotNil(t, m.Error, "chunk against an empty transfer: %+v", m)
+		require.Equal(t, protocol.InvalidInput, m.Error.Code, "chunk against an empty transfer: %+v", m)
 		f.imagePNG = func() ([]byte, error) { return bytes.Repeat([]byte{9}, 16), nil }
 		for range protocol.ImageTransfersMax {
-			if m := h.call(protocol.GetImagePNG, nil); m.Error != nil {
-				t.Fatalf("empty transfer must not hold a slot: %+v", m)
-			}
+			m := h.call(protocol.GetImagePNG, nil)
+			require.Nil(t, m.Error, "empty transfer must not hold a slot: %+v", m)
 		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("release helper drops retained snapshots", func(t *testing.T) {
 		s := &session{transfers: map[uint64]*imageSnapshot{3: {data: []byte("snapshot")}}}
 		s.releaseImageTransfers()
-		if len(s.transfers) != 0 {
-			t.Fatalf("release left %d snapshots behind", len(s.transfers))
-		}
+		require.Empty(t, s.transfers, "release left %d snapshots behind", len(s.transfers))
 	})
 
 	t.Run("close with retained snapshots exits cleanly", func(t *testing.T) {
@@ -333,16 +277,12 @@ func TestSessionImageTransferReleaseAndClose(t *testing.T) {
 		h := harness(t, fakeFactory(f))
 		h.initialize()
 		for range protocol.ImageTransfersMax {
-			if m := h.call(protocol.GetImagePNG, nil); m.Error != nil {
-				t.Fatal(m.Error)
-			}
+			m := h.call(protocol.GetImagePNG, nil)
+			require.Nil(t, m.Error, "unexpected error: %v", m.Error)
 		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m := h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("failing session with retained snapshots still exits", func(t *testing.T) {
@@ -351,15 +291,12 @@ func TestSessionImageTransferReleaseAndClose(t *testing.T) {
 		h := harness(t, fakeFactory(f))
 		h.initialize()
 		for range protocol.ImageTransfersMax {
-			if m := h.call(protocol.GetImagePNG, nil); m.Error != nil {
-				t.Fatal(m.Error)
-			}
+			m := h.call(protocol.GetImagePNG, nil)
+			require.Nil(t, m.Error, "unexpected error: %v", m.Error)
 		}
 		for i := range 128 {
 			f.inst.sendEvent(maa.Event{MessageID: 1, Sequence: uint64(i + 1), JSON: []byte(`{}`)})
 		}
-		if err := <-h.done; !errors.Is(err, protocol.ErrQueueFull) {
-			t.Fatalf("session failure with retained snapshots: %v", err)
-		}
+		require.ErrorIs(t, <-h.done, protocol.ErrQueueFull, "session failure with retained snapshots")
 	})
 }

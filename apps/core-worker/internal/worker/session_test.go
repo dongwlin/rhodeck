@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 	maa "github.com/dongwlin/rhodeck/packages/maa-go"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeInstance mimics the native instance's observation surface: an event
@@ -305,34 +305,26 @@ func harness(t *testing.T, factory engineFactory) *sessionHarness {
 	go func() { done <- serve(ctx, input, output, factory, 30*time.Millisecond, "dev"); output.Close() }()
 	h := &sessionHarness{t: t, in: toWorker, out: fromWorker, reader: protocol.NewReader(fromWorker), done: done}
 	t.Cleanup(func() { cancel(); toWorker.Close(); fromWorker.Close() })
-	if m := h.read(); m.Type != protocol.Hello {
-		t.Fatalf("first frame: %+v", m)
-	}
+	m := h.read()
+	require.Equal(t, protocol.Hello, m.Type, "first frame: %+v", m)
 	return h
 }
 
 func (h *sessionHarness) read() protocol.Message {
 	h.t.Helper()
 	m, err := h.reader.Read()
-	if err != nil {
-		h.t.Fatal(err)
-	}
+	require.NoError(h.t, err)
 	return m
 }
 func (h *sessionHarness) send(name string, body any) uint64 {
 	h.t.Helper()
 	h.id++
 	m, err := protocol.NewMessage(protocol.Request, name, h.id, body)
-	if err != nil {
-		h.t.Fatal(err)
-	}
+	require.NoError(h.t, err)
 	data, err := protocol.Encode(m)
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	if _, err := h.in.Write(data); err != nil {
-		h.t.Fatal(err)
-	}
+	require.NoError(h.t, err)
+	_, err = h.in.Write(data)
+	require.NoError(h.t, err)
 	return h.id
 }
 func (h *sessionHarness) response(id uint64) protocol.Message {
@@ -343,9 +335,7 @@ func (h *sessionHarness) response(id uint64) protocol.Message {
 			h.events = append(h.events, m)
 			continue
 		}
-		if m.ID != id {
-			h.t.Fatalf("response ID = %d, want %d", m.ID, id)
-		}
+		require.Equal(h.t, id, m.ID, "response ID = %d, want %d", m.ID, id)
 		return m
 	}
 }
@@ -354,9 +344,8 @@ func (h *sessionHarness) call(name string, body any) protocol.Message {
 }
 func (h *sessionHarness) initialize() {
 	h.t.Helper()
-	if m := h.call(protocol.Initialize, protocol.InitializeRequest{SnapshotID: "test"}); m.Error != nil {
-		h.t.Fatal(m.Error)
-	}
+	m := h.call(protocol.Initialize, protocol.InitializeRequest{SnapshotID: "test"})
+	require.Nil(h.t, m.Error, "unexpected error: %v", m.Error)
 }
 func fakeFactory(f *fakeEngine) engineFactory {
 	return func(protocol.InitializeRequest) (engine, protocol.RuntimeInfo, error) {
@@ -367,45 +356,34 @@ func fakeFactory(f *fakeEngine) engineFactory {
 func TestSessionRawTasksAndUnknownCallbacks(t *testing.T) {
 	f := newFakeEngine()
 	h := harness(t, fakeFactory(f))
-	if m := h.call(protocol.Start, nil); m.Error == nil || m.Error.Code != protocol.InvalidState {
-		t.Fatalf("pre-init start: %+v", m)
-	}
+	m := h.call(protocol.Start, nil)
+	require.NotNil(t, m.Error, "pre-init start: %+v", m)
+	require.Equal(t, protocol.InvalidState, m.Error.Code, "pre-init start: %+v", m)
 	h.initialize()
-	if m := h.call(protocol.Initialize, protocol.InitializeRequest{}); m.Error == nil || m.Error.Code != protocol.InvalidState {
-		t.Fatalf("second init: %+v", m)
-	}
+	m = h.call(protocol.Initialize, protocol.InitializeRequest{})
+	require.NotNil(t, m.Error, "second init: %+v", m)
+	require.Equal(t, protocol.InvalidState, m.Error.Code, "second init: %+v", m)
 	raw := json.RawMessage(`{"future":900719925474099312345}`)
-	if m := h.call(protocol.AppendTask, protocol.TaskRequest{Type: "FutureTask", Params: raw}); m.Error != nil {
-		t.Fatal(m.Error)
-	}
-	if f.task.Type != "FutureTask" || string(f.task.Params) != string(raw) {
-		t.Fatalf("task changed: %+v", f.task)
-	}
+	m = h.call(protocol.AppendTask, protocol.TaskRequest{Type: "FutureTask", Params: raw})
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+	require.Equal(t, "FutureTask", f.task.Type, "task changed: %+v", f.task)
+	require.Equal(t, string(raw), string(f.task.Params), "task changed: %+v", f.task)
 	params := json.RawMessage(`{"enable":false,"future":9007199254740993,"nested":{"deep":900719925474099312345}}`)
-	if m := h.call(protocol.SetTaskParams, protocol.TaskParamsRequest{TaskID: -23, Params: params}); m.Error != nil {
-		t.Fatal(m.Error)
-	}
-	if f.params.TaskID != -23 || string(f.params.Params) != string(params) {
-		t.Fatalf("task params changed: %+v", f.params)
-	}
+	m = h.call(protocol.SetTaskParams, protocol.TaskParamsRequest{TaskID: -23, Params: params})
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+	require.Equal(t, int32(-23), f.params.TaskID, "task params changed: %+v", f.params)
+	require.Equal(t, string(params), string(f.params.Params), "task params changed: %+v", f.params)
 	f.inst.sendEvent(maa.Event{MessageID: 7654321, Sequence: 1, JSON: raw})
-	m := h.read()
+	m = h.read()
 	var callback protocol.Callback
-	if err := protocol.Decode(m.Payload, &callback); err != nil {
-		t.Fatal(err)
-	}
-	if m.Sequence != 1 || callback.MessageID != 7654321 || string(callback.JSON) != string(raw) {
-		t.Fatalf("callback changed: %+v", m)
-	}
-	if m := h.call(protocol.Close, nil); m.Error != nil {
-		t.Fatal(m.Error)
-	}
-	if err := <-h.done; err != nil {
-		t.Fatal(err)
-	}
-	if f.closes.Load() != 1 {
-		t.Fatalf("close count: %d", f.closes.Load())
-	}
+	require.NoError(t, protocol.Decode(m.Payload, &callback))
+	require.Equal(t, uint64(1), m.Sequence, "callback changed: %+v", m)
+	require.Equal(t, int32(7654321), callback.MessageID, "callback changed: %+v", m)
+	require.Equal(t, string(raw), string(callback.JSON), "callback changed: %+v", m)
+	m = h.call(protocol.Close, nil)
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+	require.NoError(t, <-h.done)
+	require.Equal(t, int32(1), f.closes.Load(), "close count: %d", f.closes.Load())
 }
 
 // TestSessionRuntimeLogAndExperimentQueries proves the wire contract of the
@@ -421,34 +399,27 @@ func TestSessionRuntimeLogAndExperimentQueries(t *testing.T) {
 		f := newFakeEngine()
 		h := harness(t, fakeFactory(f))
 		h.initialize()
-		if m := h.call(protocol.Log, protocol.LogRequest{Level: "warn", Message: " hello 世界 "}); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if f.logInput.Level != "warn" || f.logInput.Message != " hello 世界 " {
-			t.Fatalf("log input changed: %+v", f.logInput)
-		}
+		m := h.call(protocol.Log, protocol.LogRequest{Level: "warn", Message: " hello 世界 "})
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.Equal(t, "warn", f.logInput.Level, "log input changed: %+v", f.logInput)
+		require.Equal(t, " hello 世界 ", f.logInput.Message, "log input changed: %+v", f.logInput)
 		// Empty strings are valid inputs; the empty-object response only means
 		// the call was issued and returned.
-		if m := h.call(protocol.Log, protocol.LogRequest{}); m.Error != nil || string(m.Payload) != `{}` {
-			t.Fatalf("empty log input: %+v payload %s", m, m.Payload)
-		}
-		if f.logInput.Level != "" || f.logInput.Message != "" {
-			t.Fatalf("empty log input changed: %+v", f.logInput)
-		}
+		m = h.call(protocol.Log, protocol.LogRequest{})
+		require.Nil(t, m.Error, "empty log input: %+v payload %s", m, m.Payload)
+		require.Equal(t, "{}", string(m.Payload), "empty log input: %+v payload %s", m, m.Payload)
+		require.Empty(t, f.logInput.Level, "empty log input changed: %+v", f.logInput)
+		require.Empty(t, f.logInput.Message, "empty log input changed: %+v", f.logInput)
 		// A hook error is classified, not swallowed into an empty success.
 		f.log = func(protocol.LogRequest) error { return maa.ErrRuntimeTerminated }
-		if m := h.call(protocol.Log, protocol.LogRequest{Level: "x", Message: "y"}); m.Error == nil || m.Error.Code != protocol.InvalidState {
-			t.Fatalf("terminated log: %+v", m)
-		}
-		if m := h.call(protocol.Ping, nil); m.Error != nil {
-			t.Fatalf("session unusable after log calls: %+v", m)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m = h.call(protocol.Log, protocol.LogRequest{Level: "x", Message: "y"})
+		require.NotNil(t, m.Error, "terminated log: %+v", m)
+		require.Equal(t, protocol.InvalidState, m.Error.Code, "terminated log: %+v", m)
+		m = h.call(protocol.Ping, nil)
+		require.Nil(t, m.Error, "session unusable after log calls: %+v", m)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("four-field query transfers without loss", func(t *testing.T) {
@@ -457,25 +428,17 @@ func TestSessionRuntimeLogAndExperimentQueries(t *testing.T) {
 		f.mapLevel = func(protocol.MapLevelKeyRequest) (protocol.MapLevelKeyResult, error) { return want, nil }
 		h := harness(t, fakeFactory(f))
 		h.initialize()
-		if m := h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{Key: "粉碎矿山"}); m.Error != nil || string(m.Payload) != `{"stage_id":"main-07","code":"1-7","level_id":"level_07","name":"粉碎矿山"}` {
-			t.Fatalf("map_level_key: %+v payload %s", m, m.Payload)
-		}
-		if f.queryKey != "粉碎矿山" {
-			t.Fatalf("query key changed: %q", f.queryKey)
-		}
+		m := h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{Key: "粉碎矿山"})
+		require.Nil(t, m.Error, "map_level_key: %+v payload %s", m, m.Payload)
+		require.Equal(t, `{"stage_id":"main-07","code":"1-7","level_id":"level_07","name":"粉碎矿山"}`, string(m.Payload), "map_level_key: %+v payload %s", m, m.Payload)
+		require.Equal(t, "粉碎矿山", f.queryKey, "query key changed: %q", f.queryKey)
 		// The empty key passes through verbatim.
-		if m := h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{}); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if f.queryKey != "" {
-			t.Fatalf("empty key changed: %q", f.queryKey)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m = h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{})
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.Empty(t, f.queryKey, "empty key changed: %q", f.queryKey)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("zero values, empty names and Unknown are normal results", func(t *testing.T) {
@@ -489,21 +452,18 @@ func TestSessionRuntimeLogAndExperimentQueries(t *testing.T) {
 		h := harness(t, fakeFactory(f))
 		h.initialize()
 		// Not found is the zero value: a normal result, not an error.
-		if m := h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{Key: "missing"}); m.Error != nil || string(m.Payload) != `{"stage_id":"","code":"","level_id":"","name":""}` {
-			t.Fatalf("not-found result: %+v payload %s", m, m.Payload)
-		}
-		if m := h.call(protocol.ItemName, protocol.ItemNameRequest{ID: ""}); m.Error != nil || string(m.Payload) != `{"name":"Unknown"}` {
-			t.Fatalf("empty id result: %+v payload %s", m, m.Payload)
-		}
-		if m := h.call(protocol.ItemName, protocol.ItemNameRequest{ID: "unknown-id"}); m.Error != nil || string(m.Payload) != `{"name":""}` {
-			t.Fatalf("empty name result: %+v payload %s", m, m.Payload)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m := h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{Key: "missing"})
+		require.Nil(t, m.Error, "not-found result: %+v payload %s", m, m.Payload)
+		require.Equal(t, `{"stage_id":"","code":"","level_id":"","name":""}`, string(m.Payload), "not-found result: %+v payload %s", m, m.Payload)
+		m = h.call(protocol.ItemName, protocol.ItemNameRequest{ID: ""})
+		require.Nil(t, m.Error, "empty id result: %+v payload %s", m, m.Payload)
+		require.Equal(t, `{"name":"Unknown"}`, string(m.Payload), "empty id result: %+v payload %s", m, m.Payload)
+		m = h.call(protocol.ItemName, protocol.ItemNameRequest{ID: "unknown-id"})
+		require.Nil(t, m.Error, "empty name result: %+v payload %s", m, m.Payload)
+		require.Equal(t, `{"name":""}`, string(m.Payload), "empty name result: %+v payload %s", m, m.Payload)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("capability absence and contract breaches keep stable codes", func(t *testing.T) {
@@ -517,24 +477,20 @@ func TestSessionRuntimeLogAndExperimentQueries(t *testing.T) {
 		}
 		h := harness(t, fakeFactory(f))
 		h.initialize()
-		if m := h.call(protocol.Log, protocol.LogRequest{Level: "l", Message: "m"}); m.Error == nil || m.Error.Code != protocol.InvalidInput {
-			t.Fatalf("invalid log input: %+v", m)
-		}
-		if m := h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{Key: "k"}); m.Error == nil || m.Error.Code != protocol.Unsupported {
-			t.Fatalf("absent experiment symbol: %+v", m)
-		}
-		if m := h.call(protocol.ItemName, protocol.ItemNameRequest{ID: "i"}); m.Error == nil || m.Error.Code != protocol.ProtocolError {
-			t.Fatalf("native contract breach: %+v", m)
-		}
-		if m := h.call(protocol.Ping, nil); m.Error != nil {
-			t.Fatalf("session unusable after classified rejections: %+v", m)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m := h.call(protocol.Log, protocol.LogRequest{Level: "l", Message: "m"})
+		require.NotNil(t, m.Error, "invalid log input: %+v", m)
+		require.Equal(t, protocol.InvalidInput, m.Error.Code, "invalid log input: %+v", m)
+		m = h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{Key: "k"})
+		require.NotNil(t, m.Error, "absent experiment symbol: %+v", m)
+		require.Equal(t, protocol.Unsupported, m.Error.Code, "absent experiment symbol: %+v", m)
+		m = h.call(protocol.ItemName, protocol.ItemNameRequest{ID: "i"})
+		require.NotNil(t, m.Error, "native contract breach: %+v", m)
+		require.Equal(t, protocol.ProtocolError, m.Error.Code, "native contract breach: %+v", m)
+		m = h.call(protocol.Ping, nil)
+		require.Nil(t, m.Error, "session unusable after classified rejections: %+v", m)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 }
 
@@ -549,13 +505,11 @@ func TestSessionUnknownCommandsStayUnsupported(t *testing.T) {
 	h.initialize()
 	for _, name := range []string{"frobnicate", "log2", "MAP_LEVEL_KEY"} {
 		m := h.call(name, nil)
-		if m.Error == nil || m.Error.Code != protocol.Unsupported {
-			t.Fatalf("%s must be rejected with unsupported, got %+v", name, m)
-		}
+		require.NotNil(t, m.Error, "%s must be rejected with unsupported, got %+v", name, m)
+		require.Equal(t, protocol.Unsupported, m.Error.Code, "%s must be rejected with unsupported, got %+v", name, m)
 	}
-	if m := h.call(protocol.Ping, nil); m.Error != nil {
-		t.Fatalf("session did not survive unknown rejections: %+v", m)
-	}
+	m := h.call(protocol.Ping, nil)
+	require.Nil(t, m.Error, "session did not survive unknown rejections: %+v", m)
 }
 
 // limitsRecorder records the initialize requests one factory received and
@@ -594,31 +548,22 @@ func TestSessionAppliesLimitsContract(t *testing.T) {
 		rec := &limitsRecorder{}
 		h := harness(t, limitsFactory(rec))
 		m := h.call(protocol.Initialize, protocol.InitializeRequest{SnapshotID: "test"})
-		if m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if rec.calls.Load() != 1 || rec.last.Limits == nil || *rec.last.Limits != bindingDefaultLimits {
-			t.Fatalf("factory limits = %+v, want the materialized defaults", rec.last.Limits)
-		}
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.Equal(t, int32(1), rec.calls.Load(), "factory limits = %+v, want the materialized defaults", rec.last.Limits)
+		require.NotNil(t, rec.last.Limits, "factory limits = %+v, want the materialized defaults", rec.last.Limits)
+		require.Equal(t, bindingDefaultLimits, *rec.last.Limits, "factory limits = %+v, want the materialized defaults", rec.last.Limits)
 		var info protocol.RuntimeInfo
-		if err := protocol.Decode(m.Payload, &info); err != nil {
-			t.Fatal(err)
-		}
-		if info.NullSize != math.MaxUint64 {
-			t.Fatalf("null_size = %d, want the locked sentinel", info.NullSize)
-		}
-		if info.Limits == nil || *info.Limits != bindingDefaultLimits {
-			t.Fatalf("reported limits = %+v, want the applied defaults", info.Limits)
-		}
-		if !info.Capabilities.ImageBGR || !info.Capabilities.AttachWindow || info.Capabilities.MapLevelKey || !info.Capabilities.ItemName {
-			t.Fatalf("capabilities changed: %+v", info.Capabilities)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, protocol.Decode(m.Payload, &info))
+		require.Equal(t, uint64(math.MaxUint64), info.NullSize, "null_size = %d, want the locked sentinel", info.NullSize)
+		require.NotNil(t, info.Limits, "reported limits = %+v, want the applied defaults", info.Limits)
+		require.Equal(t, bindingDefaultLimits, *info.Limits, "reported limits = %+v, want the applied defaults", info.Limits)
+		require.True(t, info.Capabilities.ImageBGR, "capabilities changed: %+v", info.Capabilities)
+		require.True(t, info.Capabilities.AttachWindow, "capabilities changed: %+v", info.Capabilities)
+		require.False(t, info.Capabilities.MapLevelKey, "capabilities changed: %+v", info.Capabilities)
+		require.True(t, info.Capabilities.ItemName, "capabilities changed: %+v", info.Capabilities)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("explicit limits are applied verbatim", func(t *testing.T) {
@@ -643,25 +588,17 @@ func TestSessionAppliesLimitsContract(t *testing.T) {
 			EarlyBytes:        1 << 20,
 		}
 		m := h.call(protocol.Initialize, protocol.InitializeRequest{SnapshotID: "test", Limits: &explicit})
-		if m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if rec.calls.Load() != 1 || rec.last.Limits == nil || *rec.last.Limits != explicit {
-			t.Fatalf("factory limits = %+v, want the explicit configuration", rec.last.Limits)
-		}
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.Equal(t, int32(1), rec.calls.Load(), "factory limits = %+v, want the explicit configuration", rec.last.Limits)
+		require.NotNil(t, rec.last.Limits, "factory limits = %+v, want the explicit configuration", rec.last.Limits)
+		require.Equal(t, explicit, *rec.last.Limits, "factory limits = %+v, want the explicit configuration", rec.last.Limits)
 		var info protocol.RuntimeInfo
-		if err := protocol.Decode(m.Payload, &info); err != nil {
-			t.Fatal(err)
-		}
-		if info.Limits == nil || *info.Limits != explicit {
-			t.Fatalf("reported limits = %+v, want the explicit configuration", info.Limits)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, protocol.Decode(m.Payload, &info))
+		require.NotNil(t, info.Limits, "reported limits = %+v, want the explicit configuration", info.Limits)
+		require.Equal(t, explicit, *info.Limits, "reported limits = %+v, want the explicit configuration", info.Limits)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("wire budget rejection precedes the factory", func(t *testing.T) {
@@ -670,30 +607,20 @@ func TestSessionAppliesLimitsContract(t *testing.T) {
 		oversized := bindingDefaultLimits
 		oversized.ConfigBytes = protocol.MaxConfigBytes + 1
 		m := h.call(protocol.Initialize, protocol.InitializeRequest{SnapshotID: "test", Limits: &oversized})
-		if m.Error == nil || m.Error.Code != protocol.LimitExceeded {
-			t.Fatalf("oversized limits: %+v", m)
-		}
-		if m.Error.Detail == nil || m.Error.Detail.Field != "Limits.ConfigBytes" || m.Error.Detail.Maximum != protocol.MaxConfigBytes {
-			t.Fatalf("effective maximum not reported: %+v", m.Error.Detail)
-		}
-		if rec.calls.Load() != 0 {
-			t.Fatal("wire rejection must not reach the native factory")
-		}
-		if m := h.call(protocol.Ping, nil); m.Error != nil {
-			t.Fatalf("session unusable after wire rejection: %+v", m)
-		}
-		if m := h.call(protocol.Initialize, protocol.InitializeRequest{SnapshotID: "test"}); m.Error != nil {
-			t.Fatalf("legal initialize after wire rejection: %+v", m)
-		}
-		if rec.calls.Load() != 1 {
-			t.Fatalf("factory calls: %d", rec.calls.Load())
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		require.NotNil(t, m.Error, "oversized limits: %+v", m)
+		require.Equal(t, protocol.LimitExceeded, m.Error.Code, "oversized limits: %+v", m)
+		require.NotNil(t, m.Error.Detail, "effective maximum not reported: %+v", m.Error.Detail)
+		require.Equal(t, "Limits.ConfigBytes", m.Error.Detail.Field, "effective maximum not reported: %+v", m.Error.Detail)
+		require.Equal(t, uint64(protocol.MaxConfigBytes), m.Error.Detail.Maximum, "effective maximum not reported: %+v", m.Error.Detail)
+		require.Equal(t, int32(0), rec.calls.Load(), "wire rejection must not reach the native factory")
+		m = h.call(protocol.Ping, nil)
+		require.Nil(t, m.Error, "session unusable after wire rejection: %+v", m)
+		m = h.call(protocol.Initialize, protocol.InitializeRequest{SnapshotID: "test"})
+		require.Nil(t, m.Error, "legal initialize after wire rejection: %+v", m)
+		require.Equal(t, int32(1), rec.calls.Load(), "factory calls: %d", rec.calls.Load())
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 }
 
@@ -704,25 +631,22 @@ func TestSessionAsyncCompletionDoesNotBlockStop(t *testing.T) {
 	h.initialize()
 	accepted := h.call(protocol.Connect, protocol.ConnectRequest{})
 	var op protocol.OperationAccepted
-	if err := protocol.Decode(accepted.Payload, &op); err != nil || op.AsyncID != 41 || accepted.Error != nil {
-		t.Fatalf("connect acceptance: %+v, %v", accepted, err)
-	}
-	if m := h.call(protocol.Stop, nil); m.Error != nil {
-		t.Fatal(m.Error)
-	}
+	require.NoError(t, protocol.Decode(accepted.Payload, &op), "connect acceptance: %+v", accepted)
+	require.Equal(t, int32(41), op.AsyncID, "connect acceptance: %+v", accepted)
+	require.Nil(t, accepted.Error, "connect acceptance: %+v", accepted)
+	m := h.call(protocol.Stop, nil)
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
 	f.op.finish()
-	m := h.read()
+	m = h.read()
 	var result protocol.OperationResult
-	if err := protocol.Decode(m.Payload, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.RequestID != accepted.ID || result.OK || result.Error.Code != protocol.NativeRejected || !strings.Contains(string(result.Details), "9007199254740993") {
-		t.Fatalf("async result: %+v", result)
-	}
+	require.NoError(t, protocol.Decode(m.Payload, &result))
+	require.Equal(t, accepted.ID, result.RequestID, "async result: %+v", result)
+	require.False(t, result.OK, "async result: %+v", result)
+	require.NotNil(t, result.Error, "async result: %+v", result)
+	require.Equal(t, protocol.NativeRejected, result.Error.Code, "async result: %+v", result)
+	require.True(t, strings.Contains(string(result.Details), "9007199254740993"), "async result: %+v", result)
 	h.call(protocol.Close, nil)
-	if err := <-h.done; err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, <-h.done)
 }
 
 // TestSessionSyncControlLifecycleAdmission proves the lifecycle admission rules
@@ -734,19 +658,15 @@ func TestSessionSyncControlLifecycleAdmission(t *testing.T) {
 	t.Run("rejected before initialize", func(t *testing.T) {
 		h := harness(t, fakeFactory(newFakeEngine()))
 		for _, name := range []string{protocol.BackToHome, protocol.UUID, protocol.Status, protocol.Stop, protocol.GetImagePNG, protocol.GetImageBGR, protocol.ImageChunk, protocol.Log, protocol.MapLevelKey, protocol.ItemName} {
-			if m := h.call(name, nil); m.Error == nil || m.Error.Code != protocol.InvalidState {
-				t.Fatalf("pre-init %s: %+v", name, m)
-			}
+			m := h.call(name, nil)
+			require.NotNil(t, m.Error, "pre-init %s: %+v", name, m)
+			require.Equal(t, protocol.InvalidState, m.Error.Code, "pre-init %s: %+v", name, m)
 		}
-		if m := h.call(protocol.Ping, nil); m.Error != nil {
-			t.Fatalf("session unusable after pre-init rejections: %+v", m)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m := h.call(protocol.Ping, nil)
+		require.Nil(t, m.Error, "session unusable after pre-init rejections: %+v", m)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("native rejection is not an empty success", func(t *testing.T) {
@@ -754,18 +674,14 @@ func TestSessionSyncControlLifecycleAdmission(t *testing.T) {
 		f.backToHome = func() error { return maa.ErrNativeRejected }
 		h := harness(t, fakeFactory(f))
 		h.initialize()
-		if m := h.call(protocol.BackToHome, nil); m.Error == nil || m.Error.Code != protocol.NativeRejected {
-			t.Fatalf("back_to_home native rejection: %+v", m)
-		}
-		if m := h.call(protocol.Ping, nil); m.Error != nil {
-			t.Fatalf("session damaged by native rejection: %+v", m)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m := h.call(protocol.BackToHome, nil)
+		require.NotNil(t, m.Error, "back_to_home native rejection: %+v", m)
+		require.Equal(t, protocol.NativeRejected, m.Error.Code, "back_to_home native rejection: %+v", m)
+		m = h.call(protocol.Ping, nil)
+		require.Nil(t, m.Error, "session damaged by native rejection: %+v", m)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("closing and terminated rejections keep invalid_state", func(t *testing.T) {
@@ -781,27 +697,24 @@ func TestSessionSyncControlLifecycleAdmission(t *testing.T) {
 		}
 		h := harness(t, fakeFactory(f))
 		h.initialize()
-		if m := h.call(protocol.BackToHome, nil); m.Error == nil || m.Error.Code != protocol.InvalidState {
-			t.Fatalf("closing rejection: %+v", m)
-		}
-		if m := h.call(protocol.UUID, nil); m.Error == nil || m.Error.Code != protocol.InvalidState {
-			t.Fatalf("terminated rejection: %+v", m)
-		}
-		if m := h.call(protocol.Log, protocol.LogRequest{Level: "l", Message: "m"}); m.Error == nil || m.Error.Code != protocol.InvalidState {
-			t.Fatalf("closing log rejection: %+v", m)
-		}
-		if m := h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{Key: "k"}); m.Error == nil || m.Error.Code != protocol.InvalidState {
-			t.Fatalf("terminated query rejection: %+v", m)
-		}
-		if m := h.call(protocol.ItemName, protocol.ItemNameRequest{ID: "i"}); m.Error == nil || m.Error.Code != protocol.InvalidState {
-			t.Fatalf("closing query rejection: %+v", m)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m := h.call(protocol.BackToHome, nil)
+		require.NotNil(t, m.Error, "closing rejection: %+v", m)
+		require.Equal(t, protocol.InvalidState, m.Error.Code, "closing rejection: %+v", m)
+		m = h.call(protocol.UUID, nil)
+		require.NotNil(t, m.Error, "terminated rejection: %+v", m)
+		require.Equal(t, protocol.InvalidState, m.Error.Code, "terminated rejection: %+v", m)
+		m = h.call(protocol.Log, protocol.LogRequest{Level: "l", Message: "m"})
+		require.NotNil(t, m.Error, "closing log rejection: %+v", m)
+		require.Equal(t, protocol.InvalidState, m.Error.Code, "closing log rejection: %+v", m)
+		m = h.call(protocol.MapLevelKey, protocol.MapLevelKeyRequest{Key: "k"})
+		require.NotNil(t, m.Error, "terminated query rejection: %+v", m)
+		require.Equal(t, protocol.InvalidState, m.Error.Code, "terminated query rejection: %+v", m)
+		m = h.call(protocol.ItemName, protocol.ItemNameRequest{ID: "i"})
+		require.NotNil(t, m.Error, "closing query rejection: %+v", m)
+		require.Equal(t, protocol.InvalidState, m.Error.Code, "closing query rejection: %+v", m)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 }
 
@@ -824,21 +737,18 @@ func TestSessionUUIDAndStatusObservations(t *testing.T) {
 		}
 		h := harness(t, fakeFactory(f))
 		h.initialize()
-		if m := h.call(protocol.UUID, nil); m.Error != nil || string(m.Payload) != `{"uuid":"emulator-5554"}` {
-			t.Fatalf("uuid: %+v", m)
-		}
-		if m := h.call(protocol.UUID, nil); m.Error != nil || string(m.Payload) != `{"uuid":""}` {
-			t.Fatalf("empty uuid is a normal result: %+v", m)
-		}
-		if m := h.call(protocol.Status, nil); m.Error != nil || string(m.Payload) != `{"running":false,"connected":false,"tasks":[]}` {
-			t.Fatalf("empty status: %+v", m)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m := h.call(protocol.UUID, nil)
+		require.Nil(t, m.Error, "uuid: %+v", m)
+		require.Equal(t, `{"uuid":"emulator-5554"}`, string(m.Payload), "uuid: %+v", m)
+		m = h.call(protocol.UUID, nil)
+		require.Nil(t, m.Error, "empty uuid is a normal result: %+v", m)
+		require.Equal(t, `{"uuid":""}`, string(m.Payload), "empty uuid is a normal result: %+v", m)
+		m = h.call(protocol.Status, nil)
+		require.Nil(t, m.Error, "empty status: %+v", m)
+		require.Equal(t, `{"running":false,"connected":false,"tasks":[]}`, string(m.Payload), "empty status: %+v", m)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("buffer exhaustion and bad native output are distinguishable", func(t *testing.T) {
@@ -846,22 +756,18 @@ func TestSessionUUIDAndStatusObservations(t *testing.T) {
 		f.uuid = func() (protocol.UUIDResult, error) { return protocol.UUIDResult{}, maa.ErrBufferLimit }
 		h := harness(t, fakeFactory(f))
 		h.initialize()
-		if m := h.call(protocol.UUID, nil); m.Error == nil || m.Error.Code != protocol.LimitExceeded {
-			t.Fatalf("buffer exhaustion: %+v", m)
-		}
+		m := h.call(protocol.UUID, nil)
+		require.NotNil(t, m.Error, "buffer exhaustion: %+v", m)
+		require.Equal(t, protocol.LimitExceeded, m.Error.Code, "buffer exhaustion: %+v", m)
 		f.uuid = func() (protocol.UUIDResult, error) { return protocol.UUIDResult{}, maa.ErrProtocol }
-		if m := h.call(protocol.UUID, nil); m.Error == nil || m.Error.Code != protocol.ProtocolError {
-			t.Fatalf("bad native output: %+v", m)
-		}
-		if m := h.call(protocol.Ping, nil); m.Error != nil {
-			t.Fatalf("session damaged by read failures: %+v", m)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m = h.call(protocol.UUID, nil)
+		require.NotNil(t, m.Error, "bad native output: %+v", m)
+		require.Equal(t, protocol.ProtocolError, m.Error.Code, "bad native output: %+v", m)
+		m = h.call(protocol.Ping, nil)
+		require.Nil(t, m.Error, "session damaged by read failures: %+v", m)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 }
 
@@ -876,29 +782,19 @@ func TestSessionStopAcceptanceAndTerminalStates(t *testing.T) {
 	h := harness(t, fakeFactory(f))
 	h.initialize()
 	m := h.call(protocol.Stop, nil)
-	if m.Error != nil {
-		t.Fatal(m.Error)
-	}
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
 	var result protocol.StopResult
-	if err := protocol.Decode(m.Payload, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Stopped {
-		t.Fatalf("accepted stop must not fabricate a stopped confirmation: %+v", result)
-	}
+	require.NoError(t, protocol.Decode(m.Payload, &result))
+	require.False(t, result.Stopped, "accepted stop must not fabricate a stopped confirmation: %+v", result)
 	// A task terminal state is an independent core observation; acceptance
 	// never synthesizes one.
 	f.inst.sendEvent(maa.Event{MessageID: 4, Sequence: 1, JSON: json.RawMessage(`{"what":"TaskChainCompleted","details":{}}`)})
 	event := h.read()
-	if event.Name != protocol.CoreEvent || !strings.Contains(string(event.Payload), "TaskChainCompleted") {
-		t.Fatalf("terminal state must arrive as a core event: %+v", event)
-	}
-	if m := h.call(protocol.Close, nil); m.Error != nil {
-		t.Fatal(m.Error)
-	}
-	if err := <-h.done; err != nil {
-		t.Fatal(err)
-	}
+	require.Equal(t, protocol.CoreEvent, event.Name, "terminal state must arrive as a core event: %+v", event)
+	require.True(t, strings.Contains(string(event.Payload), "TaskChainCompleted"), "terminal state must arrive as a core event: %+v", event)
+	m = h.call(protocol.Close, nil)
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+	require.NoError(t, <-h.done)
 }
 
 func TestPingRemainsResponsiveDuringNativeCall(t *testing.T) {
@@ -910,15 +806,12 @@ func TestPingRemainsResponsiveDuringNativeCall(t *testing.T) {
 	startID := h.send(protocol.Start, nil)
 	<-entered
 	pingID := h.send(protocol.Ping, nil)
-	if m := h.response(pingID); m.Error != nil {
-		t.Fatal(m.Error)
-	}
+	m := h.response(pingID)
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
 	close(release)
 	h.response(startID)
 	h.call(protocol.Close, nil)
-	if err := <-h.done; err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, <-h.done)
 }
 
 func TestSessionInitializationFailureIsTerminal(t *testing.T) {
@@ -927,15 +820,11 @@ func TestSessionInitializationFailureIsTerminal(t *testing.T) {
 		calls.Add(1)
 		return nil, protocol.RuntimeInfo{}, maa.ErrNativeRejected
 	})
-	if m := h.call(protocol.Initialize, protocol.InitializeRequest{}); m.Error == nil || m.Error.Code != protocol.NativeRejected {
-		t.Fatalf("init error: %+v", m)
-	}
-	if err := <-h.done; !errors.Is(err, maa.ErrNativeRejected) {
-		t.Fatalf("exit: %v", err)
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("factory called %d times", calls.Load())
-	}
+	m := h.call(protocol.Initialize, protocol.InitializeRequest{})
+	require.NotNil(t, m.Error, "init error: %+v", m)
+	require.Equal(t, protocol.NativeRejected, m.Error.Code, "init error: %+v", m)
+	require.ErrorIs(t, <-h.done, maa.ErrNativeRejected, "exit")
+	require.Equal(t, int32(1), calls.Load(), "factory called %d times", calls.Load())
 }
 
 func TestSessionCloseErrorIsReportedBeforeExit(t *testing.T) {
@@ -943,15 +832,11 @@ func TestSessionCloseErrorIsReportedBeforeExit(t *testing.T) {
 	f.closeError = maa.ErrNativeRejected
 	h := harness(t, fakeFactory(f))
 	h.initialize()
-	if m := h.call(protocol.Close, nil); m.Error == nil || m.Error.Code != protocol.NativeRejected {
-		t.Fatalf("close diagnostic: %+v", m)
-	}
-	if err := <-h.done; !errors.Is(err, maa.ErrNativeRejected) {
-		t.Fatalf("close exit: %v", err)
-	}
-	if f.closes.Load() != 1 {
-		t.Fatalf("close count: %d", f.closes.Load())
-	}
+	m := h.call(protocol.Close, nil)
+	require.NotNil(t, m.Error, "close diagnostic: %+v", m)
+	require.Equal(t, protocol.NativeRejected, m.Error.Code, "close diagnostic: %+v", m)
+	require.ErrorIs(t, <-h.done, maa.ErrNativeRejected, "close exit")
+	require.Equal(t, int32(1), f.closes.Load(), "close count: %d", f.closes.Load())
 }
 
 func TestSessionProtocolDamageAndEOFRunCleanup(t *testing.T) {
@@ -965,12 +850,8 @@ func TestSessionProtocolDamageAndEOFRunCleanup(t *testing.T) {
 			} else {
 				_, _ = io.WriteString(h.in, frame)
 			}
-			if err := <-h.done; err == nil {
-				t.Fatal("damaged session succeeded")
-			}
-			if f.closes.Load() != 1 {
-				t.Fatalf("close count: %d", f.closes.Load())
-			}
+			require.Error(t, <-h.done, "damaged session succeeded")
+			require.Equal(t, int32(1), f.closes.Load(), "close count: %d", f.closes.Load())
 		})
 	}
 }
@@ -983,9 +864,9 @@ func TestSessionShutdownDeadlineAndOutputOverflow(t *testing.T) {
 		h := harness(t, fakeFactory(f))
 		h.initialize()
 		h.in.Close()
-		if err := <-h.done; err == nil || !strings.Contains(err.Error(), "shutdown deadline") {
-			t.Fatalf("hung shutdown: %v", err)
-		}
+		err := <-h.done
+		require.Error(t, err, "hung shutdown")
+		require.True(t, strings.Contains(err.Error(), "shutdown deadline"), "hung shutdown: %v", err)
 		close(release)
 		<-returned
 	})
@@ -996,12 +877,8 @@ func TestSessionShutdownDeadlineAndOutputOverflow(t *testing.T) {
 		for i := range 128 {
 			f.inst.sendEvent(maa.Event{MessageID: 1, Sequence: uint64(i + 1), JSON: json.RawMessage(`{}`)})
 		}
-		if err := <-h.done; !errors.Is(err, protocol.ErrQueueFull) {
-			t.Fatalf("output overflow: %v", err)
-		}
-		if f.closes.Load() != 1 {
-			t.Fatalf("close count: %d", f.closes.Load())
-		}
+		require.ErrorIs(t, <-h.done, protocol.ErrQueueFull, "output overflow")
+		require.Equal(t, int32(1), f.closes.Load(), "close count: %d", f.closes.Load())
 	})
 }
 
@@ -1017,13 +894,9 @@ func operationEvents(t *testing.T, h *sessionHarness, n int) []protocol.Operatio
 		} else {
 			m = h.read()
 		}
-		if m.Name != protocol.OperationEvent {
-			t.Fatalf("expected an operation event, got %+v", m)
-		}
+		require.Equal(t, protocol.OperationEvent, m.Name, "expected an operation event, got %+v", m)
 		var r protocol.OperationResult
-		if err := protocol.Decode(m.Payload, &r); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, protocol.Decode(m.Payload, &r))
 		out = append(out, r)
 	}
 	return out
@@ -1044,65 +917,49 @@ func TestSessionAsyncSubmissionFamily(t *testing.T) {
 		f.attachHook = func(protocol.AttachWindowRequest) (operation, error) { next++; return f.submit(newFakeOperation(next)) }
 		h := harness(t, fakeFactory(f))
 		h.initialize()
-		if m := h.call(protocol.Click, protocol.ClickRequest{X: -5, Y: 7}); m.Error != nil {
-			t.Fatal(m.Error)
-		} else {
-			var accepted protocol.OperationAccepted
-			if err := protocol.Decode(m.Payload, &accepted); err != nil || accepted.AsyncID != 1 {
-				t.Fatalf("click acceptance: %+v, %v", accepted, err)
-			}
-		}
-		if f.click.X != -5 || f.click.Y != 7 {
-			t.Fatalf("click payload changed: %+v", f.click)
-		}
-		if m := h.call(protocol.Screencap, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
+		m := h.call(protocol.Click, protocol.ClickRequest{X: -5, Y: 7})
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		var accepted protocol.OperationAccepted
+		require.NoError(t, protocol.Decode(m.Payload, &accepted), "click acceptance: %+v", accepted)
+		require.Equal(t, int32(1), accepted.AsyncID, "click acceptance: %+v", accepted)
+		require.Equal(t, int32(-5), f.click.X, "click payload changed: %+v", f.click)
+		require.Equal(t, int32(7), f.click.Y, "click payload changed: %+v", f.click)
+		m = h.call(protocol.Screencap, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
 		attach := protocol.AttachWindowRequest{
 			Hwnd:            9007199254740993, // 2^53 + 1
 			ScreencapMethod: 1 << 63,
 			MouseMethod:     math.MaxUint64,
 			KeyboardMethod:  1 << 40,
 		}
-		if m := h.call(protocol.AttachWindow, attach); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if f.attach != attach {
-			t.Fatalf("attach_window payload changed: %+v, want %+v", f.attach, attach)
-		}
-		if m := h.call(protocol.Ping, nil); m.Error != nil {
-			t.Fatalf("session unusable after four submissions: %+v", m)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m = h.call(protocol.AttachWindow, attach)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.Equal(t, attach, f.attach, "attach_window payload changed: %+v, want %+v", f.attach, attach)
+		m = h.call(protocol.Ping, nil)
+		require.Nil(t, m.Error, "session unusable after four submissions: %+v", m)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("schema violations are invalid_input", func(t *testing.T) {
 		f := newFakeEngine()
 		h := harness(t, fakeFactory(f))
 		h.initialize()
-		if m := h.call(protocol.Click, nil); m.Error == nil || m.Error.Code != protocol.InvalidInput {
-			t.Fatalf("click without payload: %+v", m)
-		}
-		if m := h.call(protocol.AttachWindow, map[string]any{"hwnd": 1.5, "screencap_method": 1, "mouse_method": 0, "keyboard_method": 0}); m.Error == nil || m.Error.Code != protocol.InvalidInput {
-			t.Fatalf("fractional hwnd: %+v", m)
-		}
-		if m := h.call(protocol.AttachWindow, map[string]any{"hwnd": "9e18", "screencap_method": 1, "mouse_method": 0, "keyboard_method": 0}); m.Error == nil || m.Error.Code != protocol.InvalidInput {
-			t.Fatalf("exponent hwnd: %+v", m)
-		}
-		if m := h.call(protocol.Ping, nil); m.Error != nil {
-			t.Fatalf("session damaged by schema rejections: %+v", m)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m := h.call(protocol.Click, nil)
+		require.NotNil(t, m.Error, "click without payload: %+v", m)
+		require.Equal(t, protocol.InvalidInput, m.Error.Code, "click without payload: %+v", m)
+		m = h.call(protocol.AttachWindow, map[string]any{"hwnd": 1.5, "screencap_method": 1, "mouse_method": 0, "keyboard_method": 0})
+		require.NotNil(t, m.Error, "fractional hwnd: %+v", m)
+		require.Equal(t, protocol.InvalidInput, m.Error.Code, "fractional hwnd: %+v", m)
+		m = h.call(protocol.AttachWindow, map[string]any{"hwnd": "9e18", "screencap_method": 1, "mouse_method": 0, "keyboard_method": 0})
+		require.NotNil(t, m.Error, "exponent hwnd: %+v", m)
+		require.Equal(t, protocol.InvalidInput, m.Error.Code, "exponent hwnd: %+v", m)
+		m = h.call(protocol.Ping, nil)
+		require.Nil(t, m.Error, "session damaged by schema rejections: %+v", m)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 
 	t.Run("submission rejections keep stable codes", func(t *testing.T) {
@@ -1112,27 +969,21 @@ func TestSessionAsyncSubmissionFamily(t *testing.T) {
 		f.attachHook = func(protocol.AttachWindowRequest) (operation, error) { return nil, maa.ErrUnsupported }
 		h := harness(t, fakeFactory(f))
 		h.initialize()
-		if m := h.call(protocol.Click, protocol.ClickRequest{X: 1, Y: 2}); m.Error == nil || m.Error.Code != protocol.NativeRejected {
-			t.Fatalf("click rejection: %+v", m)
-		}
-		if m := h.call(protocol.Screencap, nil); m.Error == nil || m.Error.Code != protocol.LimitExceeded {
-			t.Fatalf("screencap operation limit: %+v", m)
-		}
-		if m := h.call(protocol.AttachWindow, protocol.AttachWindowRequest{}); m.Error == nil || m.Error.Code != protocol.Unsupported {
-			t.Fatalf("attach_window without the native symbol must stay unsupported, not fall back: %+v", m)
-		}
-		if len(f.created) != 0 {
-			t.Fatalf("rejected submissions must not hold pending slots: %d", len(f.created))
-		}
-		if m := h.call(protocol.Ping, nil); m.Error != nil {
-			t.Fatalf("session damaged by submission rejections: %+v", m)
-		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
+		m := h.call(protocol.Click, protocol.ClickRequest{X: 1, Y: 2})
+		require.NotNil(t, m.Error, "click rejection: %+v", m)
+		require.Equal(t, protocol.NativeRejected, m.Error.Code, "click rejection: %+v", m)
+		m = h.call(protocol.Screencap, nil)
+		require.NotNil(t, m.Error, "screencap operation limit: %+v", m)
+		require.Equal(t, protocol.LimitExceeded, m.Error.Code, "screencap operation limit: %+v", m)
+		m = h.call(protocol.AttachWindow, protocol.AttachWindowRequest{})
+		require.NotNil(t, m.Error, "attach_window without the native symbol must stay unsupported, not fall back: %+v", m)
+		require.Equal(t, protocol.Unsupported, m.Error.Code, "attach_window without the native symbol must stay unsupported, not fall back: %+v", m)
+		require.Empty(t, f.created, "rejected submissions must not hold pending slots: %d", len(f.created))
+		m = h.call(protocol.Ping, nil)
+		require.Nil(t, m.Error, "session damaged by submission rejections: %+v", m)
+		m = h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
 	})
 }
 
@@ -1165,31 +1016,28 @@ func TestSessionAsyncCompletionOrdering(t *testing.T) {
 	}{{firstID, 41}, {secondID, 42}} {
 		m := h.response(tc.id)
 		var accepted protocol.OperationAccepted
-		if err := protocol.Decode(m.Payload, &accepted); err != nil || accepted.AsyncID != tc.want {
-			t.Fatalf("acceptance %d: %+v, %v", tc.id, accepted, err)
-		}
+		require.NoError(t, protocol.Decode(m.Payload, &accepted), "acceptance %d: %+v", tc.id, accepted)
+		require.Equal(t, tc.want, accepted.AsyncID, "acceptance %d: %+v", tc.id, accepted)
 	}
-	if m := h.call(protocol.Stop, nil); m.Error != nil {
-		t.Fatalf("command loop blocked by in-flight operations: %+v", m)
-	}
+	m := h.call(protocol.Stop, nil)
+	require.Nil(t, m.Error, "command loop blocked by in-flight operations: %+v", m)
 	// The second operation completes out of submission order while the first
 	// is still in flight.
 	second.finish()
 	completion := operationEvents(t, h, 1)[0]
-	if completion.AsyncID != 42 || completion.RequestID != secondID || completion.OK {
-		t.Fatalf("second completion: %+v (request %d)", completion, secondID)
-	}
-	if completion.Error == nil || completion.Error.Code != protocol.NativeRejected || !strings.Contains(string(completion.Details), "9007199254740993") {
-		t.Fatalf("native failure facts: %+v", completion)
-	}
+	require.Equal(t, int32(42), completion.AsyncID, "second completion: %+v (request %d)", completion, secondID)
+	require.Equal(t, secondID, completion.RequestID, "second completion: %+v (request %d)", completion, secondID)
+	require.False(t, completion.OK, "second completion: %+v (request %d)", completion, secondID)
+	require.NotNil(t, completion.Error, "native failure facts: %+v", completion)
+	require.Equal(t, protocol.NativeRejected, completion.Error.Code, "native failure facts: %+v", completion)
+	require.True(t, strings.Contains(string(completion.Details), "9007199254740993"), "native failure facts: %+v", completion)
 	first.finish()
 	completion = operationEvents(t, h, 1)[0]
-	if completion.AsyncID != 41 || completion.RequestID != firstID || !completion.OK || completion.Error != nil {
-		t.Fatalf("first completion: %+v (request %d)", completion, firstID)
-	}
-	if !strings.Contains(string(completion.Details), "9007199254740993") {
-		t.Fatalf("success details changed: %s", completion.Details)
-	}
+	require.Equal(t, int32(41), completion.AsyncID, "first completion: %+v (request %d)", completion, firstID)
+	require.Equal(t, firstID, completion.RequestID, "first completion: %+v (request %d)", completion, firstID)
+	require.True(t, completion.OK, "first completion: %+v (request %d)", completion, firstID)
+	require.Nil(t, completion.Error, "first completion: %+v (request %d)", completion, firstID)
+	require.True(t, strings.Contains(string(completion.Details), "9007199254740993"), "success details changed: %s", completion.Details)
 	// A third submission completes before the session can wait for it at all:
 	// the early completion event still follows its acceptance response.
 	third := newFakeOperation(43)
@@ -1200,21 +1048,17 @@ func TestSessionAsyncCompletionOrdering(t *testing.T) {
 		return op, nil
 	}
 	thirdID := h.send(protocol.Connect, protocol.ConnectRequest{})
-	m := h.response(thirdID)
+	m = h.response(thirdID)
 	var accepted protocol.OperationAccepted
-	if err := protocol.Decode(m.Payload, &accepted); err != nil || accepted.AsyncID != 43 {
-		t.Fatalf("third acceptance: %+v, %v", accepted, err)
-	}
+	require.NoError(t, protocol.Decode(m.Payload, &accepted), "third acceptance: %+v", accepted)
+	require.Equal(t, int32(43), accepted.AsyncID, "third acceptance: %+v", accepted)
 	completion = operationEvents(t, h, 1)[0]
-	if completion.AsyncID != 43 || completion.RequestID != thirdID || !completion.OK {
-		t.Fatalf("early completion: %+v (request %d)", completion, thirdID)
-	}
-	if m := h.call(protocol.Close, nil); m.Error != nil {
-		t.Fatal(m.Error)
-	}
-	if err := <-h.done; err != nil {
-		t.Fatal(err)
-	}
+	require.Equal(t, int32(43), completion.AsyncID, "early completion: %+v (request %d)", completion, thirdID)
+	require.Equal(t, thirdID, completion.RequestID, "early completion: %+v (request %d)", completion, thirdID)
+	require.True(t, completion.OK, "early completion: %+v (request %d)", completion, thirdID)
+	m = h.call(protocol.Close, nil)
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+	require.NoError(t, <-h.done)
 }
 
 // TestSessionCloseSettlesPendingOperations proves a close settles every
@@ -1229,32 +1073,23 @@ func TestSessionCloseSettlesPendingOperations(t *testing.T) {
 	h := harness(t, fakeFactory(f))
 	h.initialize()
 	accepted := h.call(protocol.Connect, protocol.ConnectRequest{})
-	if accepted.Error != nil {
-		t.Fatal(accepted.Error)
-	}
-	if m := h.call(protocol.Close, nil); m.Error != nil {
-		t.Fatal(m.Error)
-	}
+	require.Nil(t, accepted.Error, "unexpected error: %v", accepted.Error)
+	m := h.call(protocol.Close, nil)
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
 	// The terminal diagnostics and the operation settlement race each other on
 	// the way out (neither ordering is frozen), so filter by name instead of
 	// assuming one precedes the other.
 	settlements := namedEvents(h, protocol.OperationEvent)
-	if len(settlements) != 1 {
-		t.Fatalf("expected exactly one settlement event, got %d", len(settlements))
-	}
+	require.Len(t, settlements, 1, "expected exactly one settlement event, got %d", len(settlements))
 	var settlement protocol.OperationResult
-	if err := protocol.Decode(settlements[0].Payload, &settlement); err != nil {
-		t.Fatal(err)
-	}
-	if settlement.RequestID != accepted.ID || settlement.AsyncID != 41 || settlement.OK || settlement.What != "" {
-		t.Fatalf("close settlement: %+v", settlement)
-	}
-	if settlement.Error == nil || settlement.Error.Code != protocol.InvalidState {
-		t.Fatalf("lifecycle settlement must be invalid_state: %+v", settlement.Error)
-	}
-	if err := <-h.done; err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, protocol.Decode(settlements[0].Payload, &settlement))
+	require.Equal(t, accepted.ID, settlement.RequestID, "close settlement: %+v", settlement)
+	require.Equal(t, int32(41), settlement.AsyncID, "close settlement: %+v", settlement)
+	require.False(t, settlement.OK, "close settlement: %+v", settlement)
+	require.Empty(t, settlement.What, "close settlement: %+v", settlement)
+	require.NotNil(t, settlement.Error, "lifecycle settlement must be invalid_state: %+v", settlement.Error)
+	require.Equal(t, protocol.InvalidState, settlement.Error.Code, "lifecycle settlement must be invalid_state: %+v", settlement.Error)
+	require.NoError(t, <-h.done)
 }
 
 // TestSessionCloseReleasesRetainedTransfersAndSettlesOperations proves close
@@ -1273,53 +1108,35 @@ func TestSessionCloseReleasesRetainedTransfersAndSettlesOperations(t *testing.T)
 	h.initialize()
 	var accepted protocol.ImageTransfer
 	m := h.call(protocol.GetImagePNG, nil)
-	if m.Error != nil {
-		t.Fatal(m.Error)
-	}
-	if err := protocol.Decode(m.Payload, &accepted); err != nil {
-		t.Fatal(err)
-	}
-	if accepted.TotalBytes != 8 {
-		t.Fatalf("transfer: %+v", accepted)
-	}
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+	require.NoError(t, protocol.Decode(m.Payload, &accepted))
+	require.Equal(t, uint64(8), accepted.TotalBytes, "transfer: %+v", accepted)
 	// Serve only the first half, so the snapshot is still retained when the
 	// close arrives.
 	chunk := h.call(protocol.ImageChunk, protocol.ImageChunkRequest{TransferID: accepted.TransferID, Offset: 0, Length: 3})
-	if chunk.Error != nil {
-		t.Fatal(chunk.Error)
-	}
+	require.Nil(t, chunk.Error, "unexpected error: %v", chunk.Error)
 	connectID := h.send(protocol.Connect, protocol.ConnectRequest{})
-	if m := h.response(connectID); m.Error != nil {
-		t.Fatal(m.Error)
-	}
-	if m := h.call(protocol.Close, nil); m.Error != nil {
-		t.Fatalf("close: %+v", m)
-	}
+	m = h.response(connectID)
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+	m = h.call(protocol.Close, nil)
+	require.Nil(t, m.Error, "close: %+v", m)
 	// The terminal diagnostics and the operation settlement race each other on
 	// the way out (neither ordering is frozen), so filter by name instead of
 	// assuming one precedes the other.
 	settlements := namedEvents(h, protocol.OperationEvent)
-	if len(settlements) != 1 {
-		t.Fatalf("expected exactly one settlement event, got %d", len(settlements))
-	}
+	require.Len(t, settlements, 1, "expected exactly one settlement event, got %d", len(settlements))
 	var settlement protocol.OperationResult
-	if err := protocol.Decode(settlements[0].Payload, &settlement); err != nil {
-		t.Fatal(err)
-	}
-	if settlement.RequestID != connectID || settlement.AsyncID != 41 || settlement.OK || settlement.What != "" {
-		t.Fatalf("close settlement: %+v", settlement)
-	}
-	if settlement.Error == nil || settlement.Error.Code != protocol.InvalidState {
-		t.Fatalf("lifecycle settlement must be invalid_state: %+v", settlement.Error)
-	}
+	require.NoError(t, protocol.Decode(settlements[0].Payload, &settlement))
+	require.Equal(t, connectID, settlement.RequestID, "close settlement: %+v", settlement)
+	require.Equal(t, int32(41), settlement.AsyncID, "close settlement: %+v", settlement)
+	require.False(t, settlement.OK, "close settlement: %+v", settlement)
+	require.Empty(t, settlement.What, "close settlement: %+v", settlement)
+	require.NotNil(t, settlement.Error, "lifecycle settlement must be invalid_state: %+v", settlement.Error)
+	require.Equal(t, protocol.InvalidState, settlement.Error.Code, "lifecycle settlement must be invalid_state: %+v", settlement.Error)
 	// The close response is answered exactly once and the session exits
 	// cleanly: the release path added no second close diagnostic.
-	if err := <-h.done; err != nil {
-		t.Fatal(err)
-	}
-	if f.closes.Load() != 1 {
-		t.Fatalf("close count: %d", f.closes.Load())
-	}
+	require.NoError(t, <-h.done)
+	require.Equal(t, int32(1), f.closes.Load(), "close count: %d", f.closes.Load())
 }
 
 // namedEvents returns the collected session events with the given name, in
@@ -1349,24 +1166,19 @@ func TestSessionFaultReportIsIndependentOfTheEventsReader(t *testing.T) {
 	// One core event: the send completes when the reader receives it, and
 	// waiting for its frame leaves the reader blocked on the empty stream.
 	f.inst.sendEvent(maa.Event{MessageID: 7654321, Sequence: 1, JSON: json.RawMessage(`{}`)})
-	if m := h.read(); m.Name != protocol.CoreEvent || m.Sequence != 1 {
-		t.Fatalf("core event: %+v", m)
-	}
+	m := h.read()
+	require.Equal(t, protocol.CoreEvent, m.Name, "core event: %+v", m)
+	require.Equal(t, uint64(1), m.Sequence, "core event: %+v", m)
 
 	// Arm the fault while the reader is blocked: the report must not wait
 	// for any further event consumption.
 	f.inst.faultNow(fmt.Errorf("probe exhausted: %w", maa.ErrEventOverflow))
-	m := h.read()
-	if m.Name != protocol.FaultEvent || m.Sequence != 2 {
-		t.Fatalf("fault event: %+v", m)
-	}
+	m = h.read()
+	require.Equal(t, protocol.FaultEvent, m.Name, "fault event: %+v", m)
+	require.Equal(t, uint64(2), m.Sequence, "fault event: %+v", m)
 	var notice protocol.FaultNotice
-	if err := protocol.Decode(m.Payload, &notice); err != nil {
-		t.Fatal(err)
-	}
-	if notice.Error.Code != protocol.EventOverflow {
-		t.Fatalf("fault code = %s, want event_overflow", notice.Error.Code)
-	}
+	require.NoError(t, protocol.Decode(m.Payload, &notice))
+	require.Equal(t, protocol.EventOverflow, notice.Error.Code, "fault code = %s, want event_overflow", notice.Error.Code)
 
 	// The reader is still blocked: no further core event was consumed. The
 	// close completes cleanly and delivers the terminal snapshot afterwards.
@@ -1377,35 +1189,23 @@ func TestSessionFaultReportIsIndependentOfTheEventsReader(t *testing.T) {
 			RawPrefix:  []byte{0xDE, 0x00, 0xFF, 0xFE},
 		}
 	}
-	if m := h.call(protocol.Close, nil); m.Error != nil {
-		t.Fatal(m.Error)
-	}
-	if err := <-h.done; err != nil {
-		t.Fatal(err)
-	}
+	m = h.call(protocol.Close, nil)
+	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+	require.NoError(t, <-h.done)
 	reports := namedEvents(h, protocol.DiagnosticsEvent)
-	if len(reports) != 1 {
-		t.Fatalf("diagnostics events = %d, want exactly one", len(reports))
-	}
+	require.Len(t, reports, 1, "diagnostics events = %d, want exactly one", len(reports))
 	// The fault event was read above at sequence 2; the terminal snapshot
 	// must follow it on the same ordered sequence.
-	if reports[0].Sequence != 3 {
-		t.Fatalf("the terminal snapshot must follow the fault report: sequence %d", reports[0].Sequence)
-	}
+	require.Equal(t, uint64(3), reports[0].Sequence, "the terminal snapshot must follow the fault report: sequence %d", reports[0].Sequence)
 	var report protocol.InstanceDiagnostics
-	if err := protocol.Decode(reports[0].Payload, &report); err != nil {
-		t.Fatal(err)
-	}
-	if report.LostEvents != math.MaxUint64 {
-		t.Fatalf("lost_events = %d, want the saturated count", report.LostEvents)
-	}
-	if report.FirstFault == nil || report.FirstFault.Code != protocol.EventOverflow || report.StopDiagnostic != nil {
-		t.Fatalf("snapshot = %+v", report)
-	}
+	require.NoError(t, protocol.Decode(reports[0].Payload, &report))
+	require.Equal(t, uint64(math.MaxUint64), report.LostEvents, "lost_events = %d, want the saturated count", report.LostEvents)
+	require.NotNil(t, report.FirstFault, "snapshot = %+v", report)
+	require.Equal(t, protocol.EventOverflow, report.FirstFault.Code, "snapshot = %+v", report)
+	require.Nil(t, report.StopDiagnostic, "snapshot = %+v", report)
 	decoded, err := base64.StdEncoding.DecodeString(report.RawPrefix)
-	if err != nil || string(decoded) != string([]byte{0xDE, 0x00, 0xFF, 0xFE}) {
-		t.Fatalf("raw prefix changed: %v, %q", err, decoded)
-	}
+	require.NoError(t, err, "raw prefix changed")
+	require.Equal(t, string([]byte{0xDE, 0x00, 0xFF, 0xFE}), string(decoded), "raw prefix changed")
 }
 
 // TestSessionDiagnosticsWithoutFault proves the terminal snapshot is a normal
@@ -1418,26 +1218,19 @@ func TestSessionDiagnosticsWithoutFault(t *testing.T) {
 		h := harness(t, fakeFactory(f))
 		h.initialize()
 		f.inst.snapshot = func() maa.InstanceDiagnostics { return maa.InstanceDiagnostics{LostEvents: 3} }
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
-		if got := namedEvents(h, protocol.FaultEvent); len(got) != 0 {
-			t.Fatalf("a clean close must not report a fault: %+v", got)
-		}
+		m := h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
+		got := namedEvents(h, protocol.FaultEvent)
+		require.Empty(t, got, "a clean close must not report a fault: %+v", got)
 		reports := namedEvents(h, protocol.DiagnosticsEvent)
-		if len(reports) != 1 {
-			t.Fatalf("diagnostics events = %d, want exactly one", len(reports))
-		}
+		require.Len(t, reports, 1, "diagnostics events = %d, want exactly one", len(reports))
 		var report protocol.InstanceDiagnostics
-		if err := protocol.Decode(reports[0].Payload, &report); err != nil {
-			t.Fatal(err)
-		}
-		if report.LostEvents != 3 || report.FirstFault != nil || report.RawPrefix != "" || report.StopDiagnostic != nil {
-			t.Fatalf("snapshot = %+v", report)
-		}
+		require.NoError(t, protocol.Decode(reports[0].Payload, &report))
+		require.Equal(t, uint64(3), report.LostEvents, "snapshot = %+v", report)
+		require.Nil(t, report.FirstFault, "snapshot = %+v", report)
+		require.Empty(t, report.RawPrefix, "snapshot = %+v", report)
+		require.Nil(t, report.StopDiagnostic, "snapshot = %+v", report)
 	})
 
 	t.Run("a stop-only diagnostic is not a fault", func(t *testing.T) {
@@ -1447,21 +1240,15 @@ func TestSessionDiagnosticsWithoutFault(t *testing.T) {
 		f.inst.snapshot = func() maa.InstanceDiagnostics {
 			return maa.InstanceDiagnostics{StopDiagnostic: fmt.Errorf("stop returned 0: %w", maa.ErrNativeRejected)}
 		}
-		if m := h.call(protocol.Close, nil); m.Error != nil {
-			t.Fatal(m.Error)
-		}
-		if err := <-h.done; err != nil {
-			t.Fatal(err)
-		}
-		if got := namedEvents(h, protocol.FaultEvent); len(got) != 0 {
-			t.Fatalf("a stop diagnostic must not fabricate a fault: %+v", got)
-		}
+		m := h.call(protocol.Close, nil)
+		require.Nil(t, m.Error, "unexpected error: %v", m.Error)
+		require.NoError(t, <-h.done)
+		got := namedEvents(h, protocol.FaultEvent)
+		require.Empty(t, got, "a stop diagnostic must not fabricate a fault: %+v", got)
 		var report protocol.InstanceDiagnostics
-		if err := protocol.Decode(namedEvents(h, protocol.DiagnosticsEvent)[0].Payload, &report); err != nil {
-			t.Fatal(err)
-		}
-		if report.StopDiagnostic == nil || report.StopDiagnostic.Code != protocol.NativeRejected || report.FirstFault != nil {
-			t.Fatalf("snapshot = %+v", report)
-		}
+		require.NoError(t, protocol.Decode(namedEvents(h, protocol.DiagnosticsEvent)[0].Payload, &report))
+		require.NotNil(t, report.StopDiagnostic, "snapshot = %+v", report)
+		require.Equal(t, protocol.NativeRejected, report.StopDiagnostic.Code, "snapshot = %+v", report)
+		require.Nil(t, report.FirstFault, "snapshot = %+v", report)
 	})
 }
