@@ -1,3 +1,5 @@
+// Covers: observe.go, events.go and adapter.go.
+
 package control
 
 import (
@@ -5,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -149,4 +152,29 @@ func TestRuntimeClassifierDoesNotBlockControlAndRejectsLateProgress(t *testing.T
 			require.False(t, len(typedEventsIn(run)) != 0 || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved, "late classifier changed target facts: %+v", run.Snapshot())
 		})
 	}
+}
+
+// A consumer that stops draining must not keep the worker or the data-directory
+// lock alive after an event overflow. The run stops unknown and a new runtime
+// can take ownership immediately after cleanup.
+func TestRuntimeEventOverflowReleasesCleanupAndDirectory(t *testing.T) {
+	cfg := runtimeConfig(t, "overflow")
+	cfg.IncludeRawEvents = true
+	pidFile := filepath.Join(t.TempDir(), "worker.pid")
+	cfg.Worker.Env = append(cfg.Worker.Env, "RHODECK_TEST_CONTROL_WORKER_PID="+pidFile)
+	rt := newRuntime(t, cfg)
+	r, err := rt.Run(context.Background(), runtimePlan(t))
+	require.NoError(t, err)
+	select {
+	case <-r.Done():
+	case <-time.After(60 * time.Second):
+		require.FailNow(t, "cleanup depended on the event consumer")
+	}
+	result := r.Snapshot()
+	require.True(t, result.State == Unknown && result.Code == "event_overflow", "overflow result = %+v", result)
+	require.NoError(t, rt.Close(context.Background()))
+	requireWorkerProcessExited(t, pidFile)
+	next, err := New(cfg)
+	require.NoError(t, err, "directory lock was retained after event overflow: %v", err)
+	require.NoError(t, next.Close(context.Background()))
 }

@@ -1,3 +1,5 @@
+// Covers: doctor.go. Skipped by -skip TestRealCore.
+
 package control
 
 import (

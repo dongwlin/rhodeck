@@ -1,9 +1,10 @@
+// Covers: plan.go, prepare.go and types.go.
+
 package control
 
 import (
 	"bytes"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,14 +12,6 @@ import (
 
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
-
-func validTestPlan(t *testing.T) Plan {
-	t.Helper()
-	dir := t.TempDir()
-	return Plan{SchemaVersion: SchemaVersion, HostRunID: "external-run", Initialize: protocol.InitializeRequest{
-		SnapshotID: "test-install", LibraryPath: filepath.Join(dir, "MaaCore"), UserDir: dir, ResourceRoots: []string{dir},
-	}, Connection: protocol.ConnectRequest{ADBPath: filepath.Join(dir, "adb"), Address: "fixture"}, Tasks: []Task{{ID: "task-1", Type: "FutureTask", Params: json.RawMessage(`{"large":9007199254740993,"unknown":{"a":1}}`)}}}
-}
 
 func TestPlanOpenJSONAndSnapshot(t *testing.T) {
 	p := validTestPlan(t)

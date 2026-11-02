@@ -1,3 +1,5 @@
+// Covers: adapters/switchtheme and the shared monitor.
+
 package control_test
 
 import (
@@ -7,9 +9,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	. "github.com/dongwlin/rhodeck/packages/control"
 	"github.com/dongwlin/rhodeck/packages/control/adapters/switchtheme"
-	"github.com/stretchr/testify/require"
 )
 
 func switchThemeRuntimePlan(t *testing.T, params ...string) Plan {

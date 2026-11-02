@@ -1,3 +1,5 @@
+// Test-only bridges; no production code under test.
+
 package control
 
 import (
@@ -60,3 +62,19 @@ func OpenRecordStoreForTest(dir string) (*RecordStoreForTest, error) {
 }
 func (s *RecordStoreForTest) Save(record Record) error { return s.store.save(record) }
 func (s *RecordStoreForTest) Close() error             { return s.store.close() }
+
+// Shared harness bridges. The external test package aliases these instead of
+// keeping a second copy of the runtime fixtures.
+func RuntimePlanForTest(t *testing.T) Plan                         { return runtimePlan(t) }
+func RuntimeConfigForTest(t *testing.T, mode string) Config        { return runtimeConfig(t, mode) }
+func NewRuntimeForTest(t *testing.T, cfg Config) *Runtime          { return newRuntime(t, cfg) }
+func WaitRuntimeRunForTest(t *testing.T, r *Run) ([]Event, Result) { return waitRuntimeRun(t, r) }
+func WaitStartedForTest(t *testing.T, r *Run)                      { waitStarted(t, r) }
+func ValidPlanForTest(t *testing.T) Plan                           { return validTestPlan(t) }
+func RequireWorkerProcessExitedForTest(t *testing.T, pidFile string) {
+	requireWorkerProcessExited(t, pidFile)
+}
+func SendTypedCallbackForTest(t *testing.T, r *Run, id int32, raw string) {
+	sendTypedCallback(t, r, id, raw)
+}
+func TypedEventsInForTest(r *Run) []Event { return typedEventsIn(r) }

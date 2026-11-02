@@ -25,6 +25,19 @@
 - 生命周期、停止和目录所有权使用真实 helper 子进程，覆盖共享关闭、取消等待后仍持锁、慢消费者和进程回收；不要只断言状态值。
 - adapter 输入与 reducer 规则在所属包验证；关联、目标聚合、事件预算与持久化顺序在 control 层验证。相关用例包含同类型多任务、重复/冲突事实、缺失关联和输入策略分支。
 - 记录变更覆盖往返与独立副本、坏记录拒绝、中断恢复和保存失败；文件替换机制与业务恢复分层验证。跨平台原子替换测试不能作为断电持久性证明。
+- 测试文件按领域归并，一个领域一个文件；共享夹具只放在 `harness_test.go`（`package control`）和 `adapter_harness_test.go`（`package control_test`），后者经 `export_test.go` 的桥复用前者，不得再复制一份。
+- 需要未导出入口（`Run.observe`、`applyTypedUpdate`、`openStore`）的用例留在白盒包；只依赖公开 API 的用例放黑盒包。
+
+| 测试域 | 白盒（`package control`） | 黑盒（`package control_test`） | 被测源码 |
+| --- | --- | --- | --- |
+| 计划与准入 | `plan_test.go` | `typed_contract_test.go` | `plan.go` `prepare.go` `types.go` |
+| 运行生命周期 | `runtime_test.go` | — | `run.go` `stop.go` `execute.go` `runtime.go` |
+| 观察与事件预算 | `runtime_observe_test.go` | `typed_contract_test.go` | `observe.go` `events.go` `adapter.go` |
+| 记录与恢复 | `record_test.go` `record_typed_test.go` | `typed_contract_test.go` | `record.go` `store.go` `recovery.go` `internal/recordfs` |
+| typed 准备与策略 | `typed_plan_test.go` | — | `plan.go` `prepare.go` `adapter.go` `objective.go` |
+| typed 运行 | `typed_runtime_test.go` | — | `observe.go` `objective.go` |
+| 适配器端到端 | — | `adapter_*_test.go` | `adapters/*` 与共享 monitor |
+| 环境自检 | `doctor_test.go` | — | `doctor.go`（`-skip TestRealCore` 过滤） |
 
 ## 延伸阅读
 

@@ -1,3 +1,5 @@
+// Covers: adapters/copilot and the shared monitor.
+
 package control_test
 
 import (
@@ -6,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -306,4 +309,182 @@ func TestCopilotRuntimeEventBudgetPreservesAcceptedFacts(t *testing.T) {
 	require.False(t, InspectRunForTest(run).Fatal != "typed_event_overflow" || InspectRunForTest(run).Proof != "" || result.Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || result.Tasks[0].Typed.Targets[len(entries)-1].Outcome != TargetUnobserved, "event budget erased or manufactured stage facts: fatal=%s, proof=%s, targets=%+v", InspectRunForTest(run).Fatal, InspectRunForTest(run).Proof, result.Tasks[0].Typed.Targets)
 	record, err := ReadRecord(filepath.Dir(RunRecordDirForTest(run)), result.RunID)
 	require.False(t, err != nil || !reflect.DeepEqual(record.Result.Tasks, result.Tasks), "event overflow changed durable stage facts: %+v, %v", record, err)
+}
+
+func copilotPreparationCallback(subtask, what, why string) string {
+	details := json.RawMessage(`{}`)
+	switch what {
+	case "CopilotPrecheckFile":
+		details = json.RawMessage(`{"nav_name":"Example Stage","filename":"same.json"}`)
+	case "BattleFormationOperboxMatched":
+		details = json.RawMessage(`{"matched_groups":[{"group_name":"Example Group","oper_name":"Example Operator"}]}`)
+	case "BattleFormationOperbox1Unmatched":
+		details = json.RawMessage(`{"group_name":"Example Group","may_borrow_oper":"Example Support"}`)
+	case "UserAdditionalOperInvalid":
+		details = json.RawMessage(`{"name":"Example Operator"}`)
+	case "UnsupportedLevel":
+		details = json.RawMessage(`{"level":"example-stage"}`)
+	case "CopilotStageNotSupported":
+		details = json.RawMessage(`{"stage_name":"example-stage"}`)
+	}
+	if why == "OperatorMissing" {
+		details = json.RawMessage(`{"opers":{"Example Group":[{"name":"Example Operator","reason":"Missing"}]}}`)
+	}
+	raw, _ := json.Marshal(struct {
+		TaskID    int32           `json:"taskid"`
+		TaskChain string          `json:"taskchain"`
+		Subtask   string          `json:"subtask"`
+		What      string          `json:"what,omitempty"`
+		Why       string          `json:"why,omitempty"`
+		Details   json.RawMessage `json:"details"`
+	}{0, "Copilot", subtask, what, why, details})
+	return string(raw)
+}
+
+func TestCopilotPreparationCallbacksBeforeAppendResponse(t *testing.T) {
+	for _, params := range []string{
+		`{"copilot_list":[{"id":7,"filename":"same.json"}],"formation":true,"operbox_data_path":"box.json"}`,
+		`{"filename":"same.json","formation":true,"operbox_data_path":"box.json"}`,
+	} {
+		t.Run(params, func(t *testing.T) {
+			cfg := runtimeConfig(t, "copilot-preparation")
+			cfg.Adapters = []TaskAdapter{copilot.New()}
+			rt := newRuntime(t, cfg)
+			run, err := rt.Run(context.Background(), copilotRuntimePlan(t, params))
+			require.NoError(t, err)
+			events, result := waitRuntimeRun(t, run)
+			require.False(t, result.State != Succeeded || result.Cleanup != "complete", "preparation callbacks prevented accepted work: %+v", result)
+			prechecks, typed := 0, 0
+			for _, event := range events {
+				if event.Type == "core" && event.MessageID == 20003 && event.CoreTaskID == 0 {
+					prechecks++
+					require.Empty(t, event.TaskID, "preparation observation gained a task association: %+v", event)
+				}
+				if event.Type == "typed" {
+					typed++
+					require.False(t, event.MessageID != 20001 || event.CoreTaskID != 101 || event.Typed.Targets[0].Outcome != TargetAchieved, "preparation observation became a business fact: %+v", event)
+				}
+			}
+			wantTyped := 1
+			if strings.Contains(params, `"filename":"same.json","formation"`) {
+				wantTyped = 0
+				require.False(t, result.Tasks[0].Typed != nil || result.Tasks[0].Policy != ObjectiveNone, "single-file preparation gained objectives: %+v", result.Tasks[0])
+			}
+			require.False(t, prechecks != 3 || typed != wantTyped, "preparation/typed events = %d/%d, want 3/%d", prechecks, typed, wantTyped)
+		})
+	}
+}
+
+func TestCopilotPreparationErrorsLeaveAppendResponseAuthoritative(t *testing.T) {
+	for _, reason := range []string{"OperatorMissing", "OperboxDataParseFailed", "CopilotFileReadError", "UserAdditionalOperInvalid", "CopilotStageNotSupported", "UnsupportedLevel"} {
+		t.Run(reason, func(t *testing.T) {
+			cfg := runtimeConfig(t, "copilot-preparation")
+			cfg.Worker.Env = append(cfg.Worker.Env, "RHODECK_TEST_COPILOT_PREPARATION_REJECT="+reason)
+			cfg.Adapters = []TaskAdapter{copilot.New()}
+			rt := newRuntime(t, cfg)
+			run, err := rt.Run(context.Background(), copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"}]}`))
+			require.NoError(t, err)
+			events, result := waitRuntimeRun(t, run)
+			require.False(t, result.State != Rejected || result.Cleanup != "complete" || result.Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved, "preparation error replaced append rejection: %+v", result)
+			for _, event := range events {
+				require.False(t, event.Type == "typed" || event.Typed != nil, "preparation error manufactured a target failure: %+v", event)
+			}
+		})
+	}
+}
+
+func TestCopilotPreparationErrorsInMixedInputOnlyTask(t *testing.T) {
+	for _, reason := range []string{"CopilotStageNotSupported", "UnsupportedLevel"} {
+		t.Run(reason, func(t *testing.T) {
+			cfg := runtimeConfig(t, "copilot-preparation")
+			cfg.Worker.Env = append(cfg.Worker.Env, "RHODECK_TEST_COPILOT_PREPARATION_REJECT="+reason, "RHODECK_TEST_COPILOT_PREPARATION_REJECT_AT=2")
+			cfg.Adapters = []TaskAdapter{copilot.New()}
+			rt := newRuntime(t, cfg)
+			plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"}]}`, `{"filename":"same.json"}`)
+			run, err := rt.Run(context.Background(), plan)
+			require.NoError(t, err)
+			events, result := waitRuntimeRun(t, run)
+			require.False(t, result.State != Rejected || result.Cleanup != "complete" || result.Tasks[0].CoreTaskID != 101 || result.Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved || result.Tasks[1].Policy != ObjectiveNone || result.Tasks[1].Typed != nil, "input-only preparation error polluted typed task routing: %+v", result)
+			for _, event := range events {
+				require.False(t, event.Type == "typed" || event.Typed != nil, "input-only rejection created a target fact: %+v", event)
+			}
+		})
+	}
+}
+
+func TestCopilotPreparationLateProgressPreservesActiveEntryScope(t *testing.T) {
+	plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"}]}`)
+	run := newPreparedTypedHarness(t, plan, []int32{101}, true, copilot.New())
+	sendTypedCallback(t, run, 20003, copilotRuntimeLoad(101, 7, "same.json"))
+	for _, callback := range []string{
+		copilotPreparationCallback("CopilotTask", "CopilotPrecheckFile", ""),
+		copilotPreparationCallback("BattleFormationTask", "BattleFormationOperboxMatched", ""),
+		copilotPreparationCallback("BattleFormationTask", "BattleFormationOperbox1Unmatched", ""),
+	} {
+		sendTypedCallback(t, run, 20003, callback)
+	}
+	require.False(t, InspectRunForTest(run).Fatal != "" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved || len(typedEventsIn(run)) != 0, "late preparation progress became a target fact: fatal=%s, result=%+v", InspectRunForTest(run).Fatal, run.Snapshot())
+	sendTypedCallback(t, run, 20001, copilotRuntimeNode(101, "StageDrops-Stars-3"))
+	require.False(t, InspectRunForTest(run).Fatal != "" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetAchieved || len(typedEventsIn(run)) != 1, "late preparation progress cleared entry scope: fatal=%s, result=%+v", InspectRunForTest(run).Fatal, run.Snapshot())
+}
+
+func TestCopilotPreparationExceptionRejectsUnassociatedEvidence(t *testing.T) {
+	valid := copilotPreparationCallback("CopilotTask", "CopilotPrecheckFile", "")
+	for _, test := range []struct {
+		name      string
+		messageID int32
+		raw       string
+	}{
+		{"duplicate correlation", 20003, strings.Replace(valid, `"taskid":0`, `"taskid":0,"taskid":101`, 1)},
+		{"duplicate nested field", 20003, mutateCopilotResultField(t, valid, "details", `{"filename":"same.json","filename":"other.json"}`)},
+		{"wrong subtask", 20003, copilotPreparationCallback("ProcessTask", "CopilotPrecheckFile", "")},
+		{"unknown preparation event", 20003, copilotPreparationCallback("CopilotTask", "FuturePrecheck", "")},
+		{"missing id", 20003, mutateCopilotResultField(t, valid, "taskid", "")},
+		{"foreign nonzero id", 20003, mutateCopilotResultField(t, valid, "taskid", "999")},
+		{"null id", 20003, mutateCopilotResultField(t, valid, "taskid", "null")},
+		{"missing details", 20003, mutateCopilotResultField(t, valid, "details", "")},
+		{"zero id load", 20003, copilotRuntimeLoad(0, 7, "same.json")},
+		{"zero id settlement", 20001, copilotRuntimeNode(0, "StageDrops-Stars-3")},
+		{"missing id settlement", 20001, strings.Replace(copilotRuntimeNode(101, "StageDrops-Stars-3"), `"taskid":101,`, "", 1)},
+		{"foreign id settlement", 20001, copilotRuntimeNode(999, "FightMissionFailed")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan := copilotRuntimePlan(t, `{"copilot_list":[{"id":7,"filename":"same.json"}]}`)
+			run := newPreparedTypedHarness(t, plan, []int32{101}, false, copilot.New())
+			sendTypedCallback(t, run, test.messageID, test.raw)
+			require.False(t, InspectRunForTest(run).Fatal != "typed_invalid_event" || run.Snapshot().Tasks[0].Typed.Targets[0].Outcome != TargetUnobserved || len(typedEventsIn(run)) != 0, "invalid pre-acceptance evidence was admitted: fatal=%s, result=%+v", InspectRunForTest(run).Fatal, run.Snapshot())
+		})
+	}
+}
+
+func TestRuntimeCopilotInputOnlyUsesChainFacts(t *testing.T) {
+	for _, test := range []struct {
+		mode  string
+		state State
+	}{{"success", Succeeded}, {"failure", Failed}, {"stop", Stopped}} {
+		for _, loop := range []string{"", `,"loop_times":2`} {
+			t.Run(test.mode+loop, func(t *testing.T) {
+				cfg := runtimeConfig(t, test.mode)
+				cfg.Adapters = []TaskAdapter{copilot.New()}
+				rt := newRuntime(t, cfg)
+				plan := runtimePlan(t)
+				ref := copilot.New().Descriptor()
+				plan.Tasks[0] = Task{ID: "battle", Type: "Copilot", Adapter: &ref, Params: json.RawMessage(`{"filename":"9007199254740993.json"` + loop + `}`)}
+				run, err := rt.Run(context.Background(), plan)
+				require.NoError(t, err)
+				if test.mode == "stop" {
+					waitStarted(t, run)
+					err := run.Stop(context.Background())
+					require.NoError(t, err)
+				}
+				events, result := waitRuntimeRun(t, run)
+				require.False(t, result.State != test.state || result.Cleanup != "complete" || result.Tasks[0].Policy != ObjectiveNone || result.Tasks[0].Typed != nil, "input-only chain result = %+v", result)
+				for _, event := range events {
+					require.False(t, event.Type == "typed" || event.Typed != nil, "input-only task emitted business facts: %+v", event)
+				}
+				record, err := ReadRecord(cfg.DataDir, result.RunID)
+				require.False(t, err != nil || record.Result.State != test.state || record.Result.Tasks[0].Typed != nil || record.Result.Tasks[0].Policy != ObjectiveNone, "input-only record = %+v, %v", record, err)
+			})
+		}
+	}
 }

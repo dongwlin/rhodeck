@@ -1,23 +1,18 @@
+// Shared fixtures for the external adapter tests; no production code under test.
+
 package control_test
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
-	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	. "github.com/dongwlin/rhodeck/packages/control"
-	"github.com/dongwlin/rhodeck/packages/control/worker"
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
 
@@ -30,6 +25,22 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(m.Run())
 }
+
+// The root package owns these harnesses in its test build and exposes them
+// through export_test.go. Re-declaring them here would let the two test
+// packages drift apart.
+var (
+	runtimePlan                = RuntimePlanForTest
+	runtimeConfig              = RuntimeConfigForTest
+	newRuntime                 = NewRuntimeForTest
+	waitRuntimeRun             = WaitRuntimeRunForTest
+	waitStarted                = WaitStartedForTest
+	validTestPlan              = ValidPlanForTest
+	requireWorkerProcessExited = RequireWorkerProcessExitedForTest
+	sendTypedCallback          = SendTypedCallbackForTest
+	typedEventsIn              = TypedEventsInForTest
+	sameTarget                 = SameTargetForTest
+)
 
 // These values are callback and output contract fixtures, independent of adapter internals.
 const (
@@ -77,9 +88,8 @@ var (
 	newPreparedTypedHarness = NewPreparedRunForTest
 )
 
-var sameTarget = SameTargetForTest
-
 func roguelikeRunTargetID(run int) string { return fmt.Sprintf("roguelike:run:%d", run) }
+
 func roguelikeTask(params string) Task {
 	return Task{ID: "roguelike-task", Type: "Roguelike", Params: json.RawMessage(params)}
 }
@@ -88,109 +98,13 @@ type runtimeReducerFunc func(Observation) (TypedUpdate, error)
 
 func (f runtimeReducerFunc) Observe(o Observation) (TypedUpdate, error) { return f(o) }
 
-func sendTypedCallback(t *testing.T, r *Run, messageID int32, raw string) {
-	t.Helper()
-	m, err := protocol.NewMessage(protocol.Event, protocol.CoreEvent, 0, protocol.Callback{MessageID: messageID, CoreSequence: 1, JSON: json.RawMessage(raw)})
-	require.NoError(t, err)
-	ObserveRunForTest(r, m)
-}
-
-func typedEventsIn(r *Run) []Event {
-	var events []Event
-	for {
-		select {
-		case event := <-r.Events():
-			if event.Type == "typed" {
-				events = append(events, event)
-			}
-		default:
-			return events
-		}
-	}
-}
-
 func openStore(dir string) (*RecordStoreForTest, error) { return OpenRecordStoreForTest(dir) }
-func newRunID() string                                  { return NewRunIDForTest() }
-func clonePlan(p Plan) Plan                             { return ClonePlanForTest(p) }
-func terminal(s State) bool                             { return TerminalStateForTest(s) }
 
-func runtimePlan(t *testing.T) Plan {
-	t.Helper()
-	root := t.TempDir()
-	return Plan{SchemaVersion: SchemaVersion, HostRunID: "host-run", Initialize: protocol.InitializeRequest{
-		SnapshotID: "fixture", LibraryPath: filepath.Join(root, "core"), UserDir: filepath.Join(root, "user"), ResourceRoots: []string{root}},
-		Connection: protocol.ConnectRequest{ADBPath: filepath.Join(root, "adb"), Address: "fixture"},
-		Tasks: []Task{{ID: "first", Type: "FutureTask", Params: json.RawMessage(`{"value":9007199254740993}`)},
-			{ID: "second", Type: "FutureTask", Params: json.RawMessage(`{"value":9007199254740993}`)}}}
-}
+func newRunID() string { return NewRunIDForTest() }
 
-func runtimeConfig(t *testing.T, mode string) Config {
-	t.Helper()
-	executable, err := os.Executable()
-	require.NoError(t, err)
-	return Config{DataDir: t.TempDir(), StopTimeout: 300 * time.Millisecond,
-		Worker: worker.Config{Executable: executable, Env: []string{"RHODECK_TEST_CONTROL_WORKER=" + mode, "GORACE=atexit_sleep_ms=0"},
-			StartupTimeout: time.Second, RequestTimeout: 300 * time.Millisecond, ShutdownTimeout: 300 * time.Millisecond}}
-}
+func clonePlan(p Plan) Plan { return ClonePlanForTest(p) }
 
-func newRuntime(t *testing.T, cfg Config) *Runtime {
-	t.Helper()
-	rt, err := New(cfg)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		assert.NoError(t, rt.Close(ctx))
-	})
-	return rt
-}
-
-func waitRuntimeRun(t *testing.T, r *Run) ([]Event, Result) {
-	t.Helper()
-	var events []Event
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-	for {
-		select {
-		case e, ok := <-r.Events():
-			if ok {
-				events = append(events, e)
-			} else {
-				<-r.Done()
-				return events, r.Snapshot()
-			}
-		case <-timer.C:
-			require.FailNow(t, "run did not terminate")
-		}
-	}
-}
-
-func waitStarted(t *testing.T, r *Run) {
-	t.Helper()
-	timer := time.NewTimer(3 * time.Second)
-	defer timer.Stop()
-	for {
-		select {
-		case e, ok := <-r.Events():
-			if !ok {
-				require.FailNow(t, fmt.Sprintf("run terminated before start: %+v", r.Snapshot()))
-			}
-			if e.Type == "state" && e.State == Started {
-				return
-			}
-		case <-timer.C:
-			require.FailNow(t, "run did not start")
-		}
-	}
-}
-
-func validTestPlan(t *testing.T) Plan {
-	t.Helper()
-	dir := t.TempDir()
-	return Plan{SchemaVersion: SchemaVersion, HostRunID: "external-run", Initialize: protocol.InitializeRequest{
-		SnapshotID: "test-install", LibraryPath: filepath.Join(dir, "MaaCore"), UserDir: dir, ResourceRoots: []string{dir},
-	}, Connection: protocol.ConnectRequest{ADBPath: filepath.Join(dir, "adb"), Address: "fixture"}, Tasks: []Task{{ID: "task-1", Type: "FutureTask", Params: json.RawMessage(`{"large":9007199254740993,"unknown":{"a":1}}`)}}}
-}
+func terminal(s State) bool { return TerminalStateForTest(s) }
 
 func operProgressTask(params string) Task {
 	return Task{ID: "grow", Type: operProgressTaskType, Params: json.RawMessage(params)}
@@ -219,23 +133,6 @@ func mutateCopilotResultField(t *testing.T, source, field, value string) string 
 	return string(raw)
 }
 
-func requireWorkerProcessExited(t *testing.T, pidFile string) {
-	t.Helper()
-	raw, err := os.ReadFile(pidFile)
-	require.NoError(t, err, "worker PID marker missing")
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	require.False(t, err != nil || pid <= 0, "invalid worker PID marker %q", raw)
-	if runtime.GOOS == "windows" {
-		t.Logf("worker %d liveness probe skipped on windows", pid)
-		return
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return
-	}
-	require.Error(t, proc.Signal(syscall.Signal(0)), "worker process %d was not reaped", pid)
-}
-
 func switchThemeThemesJSON(t *testing.T, themes ...string) string {
 	t.Helper()
 	raw, err := json.Marshal(struct {
@@ -257,4 +154,92 @@ func switchThemeBranchCallback(t *testing.T, taskID int32, node string) string {
 	encoded, err := json.Marshal(node)
 	require.NoError(t, err)
 	return fmt.Sprintf(`{"taskchain":"SwitchTheme","taskid":%d,"subtask":"ProcessTask","details":{"task":%s,"result":{"text":"branch","rect":[5,6,7,8],"score":0.5}}}`, taskID, encoded)
+}
+
+// Copilot validates local files and formation inputs inside AppendTask, before
+// it can return an accepted task ID. These callbacks cross a real child pipe so
+// their ordering relative to the response is part of the regression test.
+func copilotPreparationWorkerHelper() int {
+	var eventSequence, coreSequence uint64
+	emit := func(kind, name string, requestID uint64, payload any, failure *protocol.Error) {
+		message, err := protocol.NewMessage(kind, name, requestID, payload)
+		if err != nil {
+			panic(err)
+		}
+		if kind == protocol.Event {
+			eventSequence++
+			message.Sequence = eventSequence
+		}
+		message.Error = failure
+		frame, err := protocol.Encode(message)
+		if err != nil || protocol.WriteFrame(os.Stdout, frame) != nil {
+			os.Exit(3)
+		}
+	}
+	core := func(messageID int32, raw string) {
+		coreSequence++
+		emit(protocol.Event, protocol.CoreEvent, 0, protocol.Callback{MessageID: messageID, CoreSequence: coreSequence, JSON: json.RawMessage(raw)}, nil)
+	}
+	emit(protocol.Hello, "", 0, protocol.Greeting{
+		WorkerVersion: "copilot-preparation-fixture", SessionID: "copilot-preparation-fixture", OS: "fixture", Arch: "fixture",
+		MaxFrameBytes: protocol.MaxFrameBytes, QueueMessages: protocol.QueueMessages, QueueBytes: protocol.QueueBytes,
+	}, nil)
+	reader := protocol.NewReader(os.Stdin)
+	var tasks []int32
+	appendCount := 0
+	for {
+		message, err := reader.Read()
+		if err != nil {
+			return 2
+		}
+		respond := func(payload any) { emit(protocol.Response, message.Name, message.ID, payload, nil) }
+		switch message.Name {
+		case protocol.Initialize:
+			respond(protocol.RuntimeInfo{SnapshotID: "fixture", CoreVersion: "fixture-core", LibrarySHA256: strings.Repeat("a", 64),
+				Resources: []protocol.Resource{{Root: "fixture-root"}}, Limits: &protocol.Limits{InputJSONBytes: 1 << 20}, NullSize: math.MaxUint64})
+		case protocol.Connect:
+			respond(protocol.OperationAccepted{AsyncID: 41})
+			emit(protocol.Event, protocol.OperationEvent, 0, protocol.OperationResult{RequestID: message.ID, AsyncID: 41, What: "Connect", OK: true}, nil)
+		case protocol.AppendTask:
+			appendCount++
+			core(20003, copilotPreparationCallback("CopilotTask", "CopilotPrecheckFile", ""))
+			core(20003, copilotPreparationCallback("BattleFormationTask", "BattleFormationOperboxMatched", ""))
+			core(20003, copilotPreparationCallback("BattleFormationTask", "BattleFormationOperbox1Unmatched", ""))
+			rejectAt := os.Getenv("RHODECK_TEST_COPILOT_PREPARATION_REJECT_AT")
+			if reason := os.Getenv("RHODECK_TEST_COPILOT_PREPARATION_REJECT"); reason != "" && (rejectAt != "2" || appendCount == 2) {
+				subtask, what, why, messageID := "CopilotTask", reason, "", int32(20000)
+				if reason == "OperatorMissing" {
+					subtask, what, why = "BattleFormationTask", "", reason
+				} else if reason == "UnsupportedLevel" {
+					subtask, messageID = "BattleProcessTask", 20003
+				}
+				core(messageID, copilotPreparationCallback(subtask, what, why))
+				emit(protocol.Response, message.Name, message.ID, nil, &protocol.Error{Code: protocol.NativeRejected, Message: "fixture rejected preparation"})
+				continue
+			}
+			id := int32(len(tasks) + 101)
+			tasks = append(tasks, id)
+			respond(protocol.TaskAccepted{TaskID: id})
+		case protocol.Start:
+			respond(struct{}{})
+			for _, id := range tasks {
+				core(10001, fmt.Sprintf(`{"taskid":%d,"taskchain":"Copilot"}`, id))
+				core(20003, copilotRuntimeLoad(id, 7, "same.json"))
+				core(20001, copilotRuntimeNode(id, "StageDrops-Stars-3"))
+				core(10002, fmt.Sprintf(`{"taskid":%d,"taskchain":"Copilot"}`, id))
+			}
+			finished, _ := json.Marshal(tasks)
+			core(3, `{"finished_tasks":`+string(finished)+`}`)
+		case protocol.Status:
+			respond(protocol.ExecutionStatus{Connected: true, Tasks: tasks})
+		case protocol.Stop:
+			respond(protocol.StopResult{Stopped: true})
+		case protocol.Close:
+			emit(protocol.Event, protocol.DiagnosticsEvent, 0, protocol.InstanceDiagnostics{}, nil)
+			respond(struct{}{})
+			return 0
+		default:
+			return 5
+		}
+	}
 }
