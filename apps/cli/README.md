@@ -1,134 +1,23 @@
 # Rhodeck CLI
 
-`rhodeck-cli` executes one explicit task batch through the shared
-[`control.Runtime`](../../packages/control/README.md) and a supervised
-[`worker`](../worker/README.md). It needs no HTTP server, Web app or
-desktop host. Only the worker loads MaaCore. The caller supplies the worker,
-Core library and its native dependencies, resources, ADB and writable directories.
+`rhodeck-cli` runs an explicit MaaCore task batch through a supervised
+[worker](../worker/README.md). The caller supplies MaaCore and its native
+dependencies, resources, ADB, a device address and writable directories.
 
-`main.go` is the executable entry point. The implementation is layered: `internal/output`
-owns the machine output contract (envelope types, diagnostic codes, exit codes
-and the single stdout writer), `internal/plan` owns the plan service and the
-local adapter registry, `internal/cmd` owns the cobra command surface and
-`internal/app` owns the process shell. Each layer depends on the one below it.
+## Quick start
 
-Build the two executables from the repository root:
+Build both executables from the repository root:
 
 ```sh
 CGO_ENABLED=0 go build -o /tmp/rhodeck-cli ./apps/cli
 CGO_ENABLED=0 go build -o /tmp/worker ./apps/worker
-/tmp/rhodeck-cli capabilities
-/tmp/rhodeck-cli version
-/tmp/rhodeck-cli help
-/tmp/rhodeck-cli help --format json
 ```
 
-`help` prints human-readable text; `help --format json` prints the machine
-envelope for the same help text. See [Command surface](#command-surface).
+The examples use Linux paths; use host-appropriate absolute paths and `.exe`
+executables on Windows. `CGO_ENABLED=0` does not remove MaaCore's native dependencies.
 
-The CLI build version defaults to `dev`; release builds can set it with
-`-ldflags '-X main.version=VERSION'`. `CGO_ENABLED=0` does not remove the Core
-library's native dependency requirements. Windows binaries use `.exe` output
-paths; all installation and data paths below must be absolute on the host OS.
-
-## Command surface
-
-The CLI is a command tree. There is no installation discovery, shell expansion
-or default device selection; each command declares its own explicit inputs.
-
-| Command | Purpose |
-| --- | --- |
-| `run` | Execute one explicit task batch through the shared control runtime. Also accepts `--dry-run`. |
-| `dry-run` | Preview one explicit plan: compiles the selected adapters and previews each task's actual objective policy and unobserved targets, with no side effects. |
-| `doctor` | Diagnose an explicit installation: checks files, directories and executable bits, then initializes Core in a supervised worker and closes it. |
-| `capabilities` | Report the platform, worker protocol version, registered task adapters and the task input contract. |
-| `version` | Print the CLI build version. |
-| `help` | Show the help text of a command; `help run` shows `run`'s help. |
-
-The `capabilities` report lists exactly these commands, in this order: `run`,
-`dry-run`, `doctor`, `capabilities`, `version`, `help`. The list is derived
-from the command tree, not maintained by hand.
-
-There is no `completion` command and no `--version` flag; `version` already
-reports the build version, and a completion command would print a shell script
-on stdout instead of a JSON object.
-
-The input, worker and data-directory flags of `run`, `dry-run` and `doctor` are
-documented below; `--dry-run` is specific to `run`.
-
-### Help output
-
-Help is human-readable text by default. `rhodeck-cli --help`,
-`rhodeck-cli help`, `rhodeck-cli run --help` and `rhodeck-cli help run` print
-a help screen — the command description, its usage, the available commands and
-its flags — on stdout and exit `0`.
-
-A persistent flag `--format` selects the encoding of the help and usage
-output:
-
-- `--format text` (default) — human-readable help text.
-- `--format json` — the machine envelope
-  `{"schema_version":1,"type":"help","usage":"<the same help text>"}`, one
-  JSON object on stdout. Machine callers that ask for help must use this form.
-
-Any other value is rejected with code `invalid_arguments` and exit `2`.
-
-`--format` only affects the help and usage surface. Command results
-(`version`, `capabilities`, `plan`, `doctor`, run events, `terminal`) and error
-envelopes are always schema version 1 JSON lines.
-
-## Capability report
-
-`capabilities` is schema version 1 JSON. Besides the platform, worker protocol
-and command list it reports:
-
-- `task_adapters`: one row per locally registered adapter with `name`,
-  `version`, `core_type`, the accepted `input` contract, `objective_policies`
-  (every policy that adapter's inputs can select, in the fixed `all`, `any`,
-  `none` order), `policy_selection` (which input selects which policy and what
-  it interprets), `result_interpretation` (the highest capability the adapter
-  can reach: `target_results`, `stage_results` or `mode_objective`) and an
-  `acceptance` statement whose last clause is `authorized device acceptance:
-  <scope>` and names the branch device execution actually covered; input-only
-  branches are described as `none` inside `policy_selection`, `input` and
-  `acceptance` rather than by one static row value, and `dry-run` shows the
-  policy each prepared task actually selected;
-- `adapter_basis`: the reviewed implementation source revisions (MAA source
-  `9b75f9f7b103079458414c6e20216c8c531d6987`, and MAA WPF GUI/Core source
-  `d8a98c72a45618f24e9c55fa014809d5ade6bf52` compared for the accepted inputs)
-  and that each adapter was executed against one local Android device on
-  2026-11-02;
-- `core_version_policy`: rolling validation of the latest caller-provided Core
-  and resources, with no fixed Core version or old-version compatibility
-  guarantee; Rhodeck performs no automatic downloads or updates;
-- `installation_facts`: `not inspected`. `capabilities` performs no installation
-  discovery or native loading; run `doctor` with an explicit plan to inspect an
-  installation;
-- `device_acceptance`: `partial`, summarizing the device executions. It never
-  stands in for a device matrix: each adapter row states the scope that ran and
-  every other branch, Core version, platform and device stays unverified.
-
-Adapter names and versions come from the same `Descriptor()` values the runner
-registers, so the report cannot drift from the registry. There is no dynamic
-Core API enumerating supported task types, and an installed Core version string
-does not prove that a task or adapter works. `help` restates the adapter names,
-the explicit `task.adapter` selection rule, the per-task policy preview and the
-fact that each adapter's device scope is reported per row; `--format json`
-carries that same help text in the machine envelope. The generic `task_input` continues to describe the
-open raw path.
-
-The unpublished schema version 1 replaces `static_snapshot_basis` with
-`core_version_policy`. Actual installation facts remain in `doctor` output and
-run results/records, independently of the historical adapter source review.
-See [installation provenance](installation-provenance.md) for the host manifest
-template and reconciliation of each resource root and version-file digest.
-
-## Explicit plan input
-
-`run`, `dry-run` and `doctor` all accept the same complete JSON plan through
-`--input FILE` or `--input -` for stdin. There is no installation discovery,
-shell expansion or default device selection. For example, create `plan.json`
-with paths and a device address chosen by the caller:
+Save the following as `plan.json`, replacing the installation paths and device
+address. Each resource root is the directory containing `resource/`.
 
 ```json
 {
@@ -155,45 +44,78 @@ with paths and a device address chosen by the caller:
 }
 ```
 
-`host_run_id` is optional opaque caller correlation. Each task has its own unique
-`id`, an open string `type`, and JSON object `params`. Unknown task types, unknown
-parameter fields and large integer literals survive the input path. Their
-acceptance and meaning are decided by the selected Core and resource snapshot.
-There is no dynamic Core API enumerating every supported task type, so
-`capabilities` describes the runner input contract and installed platform rather
-than claiming all task types work. Input control fields are strict; duplicate
-control fields, trailing JSON, malformed objects and oversized input are rejected.
-The plan limit is 16 MiB with at most 128 tasks; individual inputs also obey the
-selected binding limits and frozen worker protocol budgets.
+Preview the plan, diagnose the installation, then execute:
 
-### Strict task adapters
-
-Four adapters are registered locally and stay inactive unless the task selects
-one with an exact `adapter` object. Selection never happens by task type alone:
-a familiar `Copilot` or `Roguelike` task without `adapter` keeps the open raw
-path and Core decides whether it accepts the parameters. All adapter inputs
-are accepted from a file or stdin and are identical for `run` and `dry-run`.
-
-```json
-{
-  "id": "grow-1",
-  "type": "OperProgress",
-  "adapter": {"name": "oper_progress", "version": 1},
-  "params": {"plans": [
-    {"role": "Warrior", "name": "Example", "elite": 2},
-    {"role": "Caster", "name": "Example Two", "skill_mastery": [0, 0, 3]}
-  ]}
-}
+```sh
+/tmp/rhodeck-cli dry-run --input plan.json \
+  --worker /tmp/worker --data-dir /var/lib/rhodeck/control
+/tmp/rhodeck-cli doctor --input plan.json \
+  --worker /tmp/worker --data-dir /var/lib/rhodeck/control
+/tmp/rhodeck-cli run --input plan.json \
+  --worker /tmp/worker --data-dir /var/lib/rhodeck/control \
+  --timeout 30m
 ```
 
-`oper_progress` accepts 1-128 `plans` entries in input order. Each entry requires
-`role` and `name` and exactly one of `elite` (1-2), `skill_level` (2-7) or
-`skill_mastery` (three integers with exactly one nonzero slot in 1-3). Roles are
-exactly `Pioneer`, `Warrior`, `Tank`, `Sniper`, `Caster`, `Medic`, `Support` or
-`Special`. `name` must be valid UTF-8, 1-256 bytes, contain no NUL and not be all
-whitespace; names are never trimmed or translated. Target IDs are
-`op-0001`..`op-0128` by input position. Duplicate `(role, name)` entries, unknown
-or null fields, duplicate JSON keys and unsupported roles are rejected.
+All three commands require `--input`, `--worker` and `--data-dir`, including
+`dry-run`. Use `--input -` to read the complete plan from stdin. Worker, data,
+Core, resource, user-directory and ADB paths must be absolute. Installation and
+device selection are explicit; the CLI performs no discovery or downloads.
+
+`dry-run` validates and compiles the plan, then reports the compiled parameters,
+per-task objective policies, initial targets, input sources and unverified
+conditions. It creates no directories, takes no locks and starts no worker or
+device actions; it does not check whether the supplied installation exists.
+`run --dry-run` is equivalent.
+
+`doctor` checks local paths and executable permissions, initializes Core in a
+worker and closes it. It can create and lock the data directory, recover
+interrupted records and write to the Core user directory. It does not prepare
+adapters, run ADB, connect a device or submit tasks. A passing diagnosis does not
+establish device readiness or task support.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `run` | Execute one task batch; also accepts `--dry-run`. |
+| `dry-run` | Validate and preview a plan without side effects. |
+| `doctor` | Check an explicit installation and initialize Core. |
+| `capabilities` | Report the platform, worker protocol, adapter inputs, policies and device validation scope. |
+| `version` | Print the CLI build version. |
+| `help [command]` | Show usage and flags, for example `help run`. |
+
+Help is text by default. Machine callers can use `help run --format json` to
+receive `{"schema_version":1,"type":"help","usage":"..."}`. `--format` accepts
+`text` or `json` and affects only help; command results and errors are always JSON.
+
+`capabilities` describes the locally registered adapters. It does not inspect the
+installation or enumerate every task supported by Core. Use `doctor` for actual
+Core/library/resource metadata; adapter device validation covers only the scope
+reported for each adapter, not every branch, version, platform or device.
+
+## Plan and adapters
+
+Each task requires a unique `id`, a Core task `type` and an object `params`.
+`host_run_id` is optional caller correlation; the runtime generates a separate
+`run_id`. Raw task types and parameters remain open: unknown fields and large
+integer literals are preserved, and the selected Core and resources determine
+their meaning and acceptance.
+
+Control fields are strict: unknown or duplicate control fields, trailing JSON,
+malformed objects and oversized input are rejected. Plans are limited to 16 MiB
+and 128 tasks; binding and worker protocol limits also apply.
+
+An explicit `adapter` enables strict parameter validation and, where supported,
+business result interpretation. These adapters are registered at version `1`:
+
+| Adapter name | Core task type |
+| --- | --- |
+| `oper_progress` | `OperProgress` |
+| `switch_theme` | `SwitchTheme` |
+| `copilot` | `Copilot` |
+| `roguelike` | `Roguelike` |
+
+For example, replace a task in the plan with:
 
 ```json
 {
@@ -204,253 +126,84 @@ or null fields, duplicate JSON keys and unsupported roles are rejected.
 }
 ```
 
-`switch_theme` accepts 1-32 distinct candidate names. Each candidate must be
-valid UTF-8, 1-256 bytes, contain no NUL and have no leading or trailing
-whitespace; names are never trimmed, translated or reordered. The sole target is
-`theme-selection`. Multiple candidates mean Core selects exactly one at random
-once; the array is not a retry, progressive-switch or fallback order. Duplicate
-candidates, non-string or null elements and unknown fields are rejected.
+Tasks without `adapter` remain raw, even when their type matches a registered
+adapter. `run` and `dry-run` share adapter validation and reject unknown adapter
+names, unsupported versions, mismatched task types and invalid parameters with
+`invalid_plan` (exit `2`) before creating directories or starting a worker.
 
-```json
-{
-  "id": "copilot-1",
-  "type": "Copilot",
-  "adapter": {"name": "copilot", "version": 1},
-  "params": {"copilot_list": [
-    {"filename": "job.json"},
-    {"filename": "job_raid.json", "is_raid": true}
-  ]}
-}
-```
+Preparation selects each adapted task's `objective_policy`: `all` requires every
+target to succeed, `any` requires at least one, and `none` validates input without
+publishing a typed business result. `dry-run` shows the policy selected for the
+actual input. Full parameter constraints and result rules are in the adapter
+reference linked below.
 
-`copilot` requires exactly one of `filename` (a nonempty path string) or
-`copilot_list` (1-128 objects with a required nonempty `filename` plus an
-optional unique signed 32-bit `id`, `nav_name_override` and `is_raid`).
-Formation, support, additional-operator and loop options are validated
-structurally: `operbox_data_path` and `user_additional` require
-`formation=true`, and a list allows `loop_times` omission or 1 only.
-Preparation never opens a referenced file. Each list entry becomes target
-`copilot:<compiled id>` — explicit IDs are reserved and omitted IDs are
-assigned from zero in list order — and uses policy `all`, interpreted as
-per-entry stage results. Single-file and `loop_times` inputs are input-only
-(`none`): they produce no typed results, and a completed single-file chain
-does not prove a stage clear or a safe device handoff; battle actions may
-still be in progress.
+## Output and records
 
-```json
-{
-  "id": "roguelike-1",
-  "type": "Roguelike",
-  "adapter": {"name": "roguelike", "version": 1},
-  "params": {"theme": "Sami", "mode": 6, "monthly_squad_auto_iterate": true}
-}
-```
+Except for text help, stdout contains schema version 1 JSON, one object per line.
+Stderr contains stable diagnostic codes without input values or raw worker logs.
+Pre-run rejections use an `error` envelope with a stable `code`; `doctor` reports
+check failures in its own envelope.
 
-`roguelike` requires an explicit `theme` (`Phantom`, `Mizuki`, `Sami`,
-`Sarkaz`, `JieGarden` or `BlackFlow`) and `mode` from the frozen per-theme
-matrix, and validates common squad, investment and early-stop options plus
-theme- or mode-scoped fields such as `monthly_squad_auto_iterate`,
-`deep_exploration_auto_iterate`, `find_playTime_target` and the `blackflow_*`
-set; unknown or misplaced fields and invalid combinations are rejected. The
-objective policy follows the compiled input: mode 0 uses `all` for one
-declared run and `any` for several (`starts_count` 1-128 with no early-stop
-switch and no reachable investment stop), mode 1 uses `all` only when an
-investment limit can be reached, mode 6 uses `all` only with
-`monthly_squad_auto_iterate=true` and mode 7 only with
-`deep_exploration_auto_iterate=true`, modes 20001 and 30003 use `all`, and
-every other configuration — including modes 6 and 7 with their rotation
-switch off and modes without a reliable terminal fact — is input-only
-(`none`). Roguelike device evidence covers one explicit stop that preserved an
-unobserved objective. Settlement, investment, rotation, target-found and
-start-run facts are not device-verified.
+During execution, read the event stream through the final `type: "terminal"`
+object. Its `result` contains task results, overall `state`, a stable `code` when
+relevant, and separate `cleanup` status. The terminal is emitted after execution
+and cleanup finish and the data-directory lock is released. Worker acceptance,
+a task ID or chain completion alone does not establish an interpreted business
+objective; use the final result and exit code together.
 
-For `run` and `dry-run`, strict input is validated before any directory, lock or
-worker exists. An unknown adapter name or version, a mismatched Core type,
-malformed parameters or an over-budget input exits `2` with code `invalid_plan`,
-and stdout remains one JSON error object. `doctor` does not prepare adapters or
-submit tasks; it accepts the plan only for installation diagnosis. Raw tasks,
-unknown task types and large integer literals are not interpreted or rewritten.
+Business state and cleanup status are independent. Cleanup or persistence failure
+produces exit `6` while preserving an established business result. Incomplete
+objective evidence can leave a completed batch `unknown` with `typed_incomplete`.
+Process termination alone cannot establish that a device action stopped.
 
-## Preview and diagnosis
+Run records are stored at `<data-dir>/runs/<run_id>.json` and retain the original
+plan and confirmed task facts. Keep this directory private: plans, previews and
+records can contain paths and connection data. `--include-raw-events` additionally
+exposes raw Core callback details in run output. Typed events contain filtered
+business facts and require no raw-event opt-in.
 
-```sh
-/tmp/rhodeck-cli dry-run --input plan.json \
-  --worker /tmp/worker --data-dir /var/lib/rhodeck/control
-/tmp/rhodeck-cli doctor --input plan.json \
-  --worker /tmp/worker --data-dir /var/lib/rhodeck/control
-```
+Each run uses a new worker. Failed or interrupted work is never automatically
+reconnected, retried or replayed. The data-directory lock excludes other runtimes
+using that directory; callers must serialize access to the same device across
+different directories or external tools.
 
-`dry-run` validates syntax and budgets, calls `control.PreparePlan` with the same
-registered adapters `run` uses, and prints one JSON object containing:
+## Stopping and timeouts
 
-- `plan`: the explicit plan with each selected adapter's final compiled Core
-  parameters; raw tasks keep their original parameters;
-- `tasks`: the prepared per-task results, including each adapted task's actual
-  `objective_policy` as `control.PreparePlan` selected it for that input —
-  input-only preparations show `none` without a typed result — plus the
-  `unobserved` target IDs and `typed_incomplete` aggregate of interpreted
-  tasks;
-- `sources` and `unverified`: the input/worker/data-dir sources plus
-  installation, Core, device and adapter-specific conditions that local
-  preparation cannot verify (operator identity, skills and prerequisites, theme
-  availability and unlock state, referenced Copilot files and formation state,
-  roguelike resource identifiers, and the adapter branches that are not
-  device-verified).
+SIGINT and SIGTERM request a graceful Core stop, followed by bounded worker
+cleanup. Unconfirmed outcomes remain `unknown`.
 
-`run --dry-run` is equivalent. An unknown adapter, unsupported version, rejected
-strict input or over-budget adapter parameters exits `2` with `invalid_plan`.
-The preview never starts a worker, loads Core, connects a device, appends tasks,
-creates directories or acquires locks. Installation availability, native task
-semantics and device preconditions remain explicitly unverified. The preview
-includes the supplied installation, connection and raw task parameters, so
-private input appears there; strict adapter parameters are shown compiled, and
-target facts are local previews, not execution evidence.
+`--timeout` bounds run or doctor work; its default `0` disables the overall
+deadline. Other timeouts must be positive:
 
-`doctor` checks explicit files/directories and executable permission bits, then
-initializes Core in a supervised worker and closes it. It reports structured
-checks by field with stable codes and the Core/library/resource snapshot when
-initialization succeeds. An unavailable ADB is reported while Core diagnosis can
-still proceed. It never connects, appends or starts a task, runs ADB, downloads
-resources or repairs an installation. It can create the private data directory,
-acquire its lock, recover interrupted local records and let native initialization
-write to the configured Core user directory. A file marked executable is only a
-local path check; device connection and actual task support remain unverified.
-
-## Execution, stopping and machine output
-
-```sh
-/tmp/rhodeck-cli run --input plan.json \
-  --worker /tmp/worker --data-dir /var/lib/rhodeck/control \
-  --timeout 30m
-```
-
-The runtime admits one active run and owns the worker, task association,
-observations, durable record and cleanup. Its generated `run_id` is distinct from
-caller IDs and Core task IDs. A new run uses a new worker; failed work is never
-automatically reconnected, retried or replayed.
-
-All stdout output is schema version 1 JSON, with one object per line during a
-run, except the default text help. Machine callers that ask for help must pass
-`--format json` and read the machine envelope. Diagnostic stderr contains
-stable error codes and no raw worker log tail.
-Run events carry `run_id`, optional `host_run_id`, sequence, time, type and any
-known task/Core association. Native callbacks retain message ID and Core sequence;
-their raw `details` are included only with `--include-raw-events`. This explicit
-local diagnostic opt-in can disclose connection details or other private Core
-data. Records always retain the private input plan; callers choose their own
-retention and access policy for the data directory.
-
-An adapted task result carries the `objective_policy` that preparation selected
-for its input: `all` for `oper_progress`, `switch_theme` and Copilot lists,
-`none` for Copilot single-file and loop inputs, and `all`, `any` or `none` for
-`roguelike` depending on theme, mode and switches. Input-only tasks publish no
-typed events and follow native chain facts without a business-objective claim.
-An interpreted task's `typed` result repeats that policy and carries schema
-version 1, the
-selected `adapter`, an independent business `state`/`code`, the fixed per-task
-`targets` and an optional `summary`. Each changed target fact is validated and saved
-before a `type: "typed"` event carrying the full task result is written; these
-events need no `--include-raw-events` and never include raw callback fields.
-`TaskResult.state` remains the native task-chain fact. Once a business failure is
-established, a chain success cannot overwrite it: any `failed`, `locked` or
-`not_found` target makes the result `failed` with `typed_failed` and exit `4`.
-This applies after a completed batch and also when a stop or deadline interrupts
-a run that already recorded the failure. Every target must be `achieved` or
-`already_set` for success; a completed batch without that evidence is `unknown`
-with `typed_incomplete` and exit `6`. Operator mastery startup reports
-(`reported_target_training_started`, `reported_prerequisite_training_started`)
-and a SwitchTheme confirmation node (`confirmation_observed`) are incomplete
-evidence, not completion. The confirmation node records that the action ran; it
-does not re-read or verify the final theme state. A locked or not-found theme
-fails even when its task chain completes, while a skip stays incomplete.
-Operator failure details keep a stable lowercase reason such as
-`resource_insufficient` or `operator_not_found`.
-
-A worker fault, lost event or unconfirmed stop before a business conclusion makes
-the run `unknown` and exits `6`. If a batch result or failure was already
-established, it is preserved and the fault is reported in `cleanup`; the CLI
-still exits `6` because cleanup did not complete. Persistence failure and failed
-cleanup likewise make the CLI exit `6` without rewriting an established
-`succeeded`, `failed`, `stopped` or `rejected` state. A confirmed stop without
-an established failure remains `stopped`; a stop that already established a
-task or typed failure remains `failed` (including `typed_failed`). A deadline
-that stops an unfinished run exits `6`; an established failure wins with exit
-`4`, and an already completed successful batch stays successful.
-
-When persistence succeeds, the terminal snapshot and the durable record hold the
-same typed facts. A typed persistence failure keeps the in-memory fact in the
-terminal snapshot, does not publish the undurable typed event, and stops the run
-with `record_write_failed`; a later final save may or may not repair the durable
-record. The record keeps the original caller plan while the worker receives the
-compiled parameters.
-
-The final JSON object has `type: "terminal"` and a `result` containing task facts,
-the overall `state`, a stable `code` when relevant, and a separate `cleanup`
-result. It is emitted only after the run's Done boundary, including persistence
-and process cleanup, and the runtime has released its directory lock. A rare
-storage-close failure is reported in this final output even when the preceding
-durable record could not be updated with that failure. A nonzero Core task ID, successful Start response,
-`Running=false`, worker liveness or process exit does not imply business success.
-Success requires matching per-task completion facts and the matching batch
-completion; a task error cannot be overwritten by `AllTasksCompleted`.
-
-SIGINT and SIGTERM use the same control stop path as application cancellation.
-The runtime requests Core stop, waits for a stop observation within the grace
-period, then closes or terminates and reaps its worker. Forced process termination
-does not prove a device action was cancelled. An uncertain result remains
-`unknown`; confirmed task facts remain available separately from cleanup failure.
-
-| Exit code | Meaning |
+| Flag | Default |
 | --- | --- |
-| `0` | Run succeeded and cleanup completed; or a read-only/preview/diagnostic command passed. |
-| `2` | Input or environment rejection with completed cleanup and no persistence failure; a doctor check failed. |
+| `--startup-timeout` | `10s` |
+| `--request-timeout` | `30s` |
+| `--stop-timeout` | `5s` |
+| `--shutdown-timeout` | `5s` |
+| `--output-timeout` | `5s` per run output write |
+
+Cleanup has separate deadlines, so the CLI can continue stopping and cleaning up
+after the overall deadline. A deadline does not overwrite an already established
+successful or failed batch result.
+
+Blocked or broken stdout cancels the run, triggers cleanup and exits `6` without
+another stdout write. The terminal may be undeliverable; inspect the local record
+for persisted facts.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Run succeeded with complete cleanup, or another command passed. |
+| `2` | Input/environment rejection with complete cleanup and no persistence failure, or a failed doctor check. |
 | `3` | Runtime or data directory already owned. |
-| `4` | Failed result with completed cleanup, including `typed_failed` and a stop or deadline that already established a failure. |
-| `5` | Confirmed stop with completed cleanup, no established failure and no deadline. |
-| `6` | Typed-incomplete or unknown result, deadline without an established failure, `record_write_failed` or other persistence failure, worker/transport failure, failed cleanup or output failure. |
+| `4` | Failed result with complete cleanup, including an established failure before a stop or deadline. |
+| `5` | Confirmed stop with complete cleanup, no established failure and no deadline. |
+| `6` | Unknown or typed-incomplete result, deadline on unfinished work, persistence failure, worker/transport failure, failed cleanup or output failure. |
 
-`--timeout` bounds the requested run or doctor work; zero, the default, has no
-overall deadline. Cleanup has its own deadlines. Defaults are
-`--startup-timeout 10s`, `--request-timeout 30s`, `--stop-timeout 5s` and
-`--shutdown-timeout 5s`; all four must be positive. A deadline can therefore be
-followed by bounded stop and worker cleanup before the CLI exits. Output consumers
-must continue reading until the terminal record. During `run`, each output write
-has a separate `--output-timeout` deadline, default five seconds and required to
-be positive. A blocked or broken stdout cancels the run, closes its runtime and
-releases directory ownership, then exits `6` without another stdout write. The
-terminal record may be undeliverable. Already confirmed task facts remain in the
-local run record; a failed output sink is separate from native task and cleanup
-facts. At most one output write can remain blocked until the process exits.
+## References
 
-## Delivery scope
-
-This is the generic execution foundation plus four opt-in local adapters. It
-provides no task presets, scheduler, HTTP API, installer/updater, cross-runtime
-device lock, Docker image or La Pluma Next integration. `oper_progress`,
-`switch_theme`, `copilot` and `roguelike` validate strict input and interpret
-filtered business facts where their input selects a policy. Authorized device
-executions on 2026-11-02 covered limited scenarios for each adapter on one local
-Android device. Their accepted inputs were compared with MAA GUI/Core source
-`d8a98c72a45618f24e9c55fa014809d5ade6bf52`; the implementation review basis is
-MAA source `9b75f9f7b103079458414c6e20216c8c531d6987`. The observed scope per
-adapter is named in `capabilities`; every other branch, Core version,
-platform and device remains unverified, and a source comparison does not prove
-installation or task support. Actual Core and resource combinations are
-recorded and verified separately under the rolling version policy. The open raw
-path still accepts any Core task type. A data directory lock does not establish
-mutual exclusion with another directory, external CLI or host.
-
-Run CLI/control regressions from the repository root:
-
-```sh
-CGO_ENABLED=0 go test ./apps/cli/... ./packages/control/... -count=1 -timeout=3m
-go test -race ./apps/cli/... ./packages/control/... -count=1 -timeout=3m
-```
-
-The CLI tests use real helper processes without a native library or device and
-cover machine output, raw-parameter preservation, strict adapter input and
-preview, mixed raw/adapted batches, typed failure and incomplete exits, record
-and terminal parity, private-field filtering, rejection before directory
-creation, task failure, crash, confirmed cancellation, SIGINT/SIGTERM on Unix,
-and doctor command boundaries. The worker's opt-in real-Core no-device tests
-remain a separate evidence layer.
+- [Adapter inputs and result interpretation](../../packages/control/typed-adapters.md)
+- [Runtime results, stopping and records](../../packages/control/README.md)
+- [Installation provenance and version checks](installation-provenance.md)
