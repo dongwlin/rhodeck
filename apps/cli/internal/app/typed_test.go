@@ -96,7 +96,7 @@ func targetIDs(result *control.TypedResult) []string {
 	return ids
 }
 
-func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.T) {
+func TestCapabilitiesDescribeTheExecutedDeviceScopeOfEachAdapter(t *testing.T) {
 	var out, diagnostics bytes.Buffer
 	code := runCLI("dev", context.Background(), []string{"capabilities"}, strings.NewReader(""), &out, &diagnostics)
 	require.Equal(t, output.ExitSuccess, code, "diagnostics: %s", diagnostics.String())
@@ -132,6 +132,14 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 		"copilot":       {"copilot_list", "all", "filename", "loop_times", "none"},
 		"roguelike":     {"starts_count", "monthly_squad_auto_iterate", "deep_exploration_auto_iterate", "none"},
 	}
+	// Each row names the branch authorized device execution actually covered;
+	// no row falls back to a blanket claim or to another adapter's evidence.
+	wantDevice := map[string]string{
+		"oper_progress": "already-satisfied plan and one authorized training batch",
+		"switch_theme":  "already-set branch",
+		"copilot":       "three stars",
+		"roguelike":     "explicit stop",
+	}
 	for i, got := range caps.TaskAdapters {
 		require.NotEmpty(t, got.Name, "capability %d has no adapter identity: %+v", i, got)
 		require.Positive(t, got.Version, "capability %d has no adapter version: %+v", i, got)
@@ -144,7 +152,8 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 		for _, fragment := range wantSelection[got.Name] {
 			require.Contains(t, got.PolicySelection, fragment, "capability %d policy selection lacks %q: %q", i, fragment, got.PolicySelection)
 		}
-		require.Contains(t, got.Acceptance, "device acceptance: none", "capability %d claims acceptance: %q", i, got.Acceptance)
+		require.Contains(t, got.Acceptance, wantDevice[got.Name], "capability %d device scope: %q", i, got.Acceptance)
+		require.NotContains(t, got.Acceptance, "device acceptance: none", "capability %d claims no executed branch: %q", i, got.Acceptance)
 	}
 	// Input-only branches are named as none inside the descriptive fields; the
 	// capability report keeps no single static objective_policy field.
@@ -152,7 +161,9 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 	require.Contains(t, caps.TaskAdapters[2].Acceptance, "does not prove a clear or a safe device handoff", "copilot acceptance lacks the single-file caveat")
 	require.Contains(t, caps.TaskAdapters[3].Acceptance, "modes without a reliable terminal fact", "roguelike acceptance lacks the input-only modes")
 	require.Contains(t, caps.AdapterBasis, "9b75f9f7", "adapter basis: %q", caps.AdapterBasis)
-	require.Contains(t, caps.AdapterBasis, "not executed", "adapter basis: %q", caps.AdapterBasis)
+	require.Contains(t, caps.AdapterBasis, "d8a98c72", "adapter basis lacks the compared GUI revision: %q", caps.AdapterBasis)
+	require.Contains(t, caps.AdapterBasis, "executed once", "adapter basis hides the executed round: %q", caps.AdapterBasis)
+	require.NotContains(t, caps.AdapterBasis, "not executed", "adapter basis denies the executed round: %q", caps.AdapterBasis)
 	require.NotContains(t, caps.AdapterBasis, "v6.20.1", "source review conflates the release candidate: %q", caps.AdapterBasis)
 	for _, fragment := range []string{"rolling", "caller-provided", "no fixed Core version", "old-version compatibility", "doctor/run/record"} {
 		require.Contains(t, caps.CoreVersionPolicy, fragment, "Core version policy lacks %q: %q", fragment, caps.CoreVersionPolicy)
@@ -160,7 +171,8 @@ func TestCapabilitiesDescribeAdaptersWithoutClaimingDeviceAcceptance(t *testing.
 	require.NotContains(t, out.String(), `"static_snapshot_basis"`, "capabilities retains a fixed release snapshot: %s", out.String())
 	require.NotContains(t, out.String(), "v6.20.1", "capabilities retains a fixed release snapshot: %s", out.String())
 	require.Contains(t, caps.InstallationFacts, "not inspected", "installation facts: %q", caps.InstallationFacts)
-	require.Equal(t, "none", caps.DeviceAcceptance, "device acceptance: %q", caps.DeviceAcceptance)
+	require.Contains(t, caps.DeviceAcceptance, "partial", "device acceptance summary: %q", caps.DeviceAcceptance)
+	require.Contains(t, caps.DeviceAcceptance, "executed branch", "device acceptance summary lacks the per-row scope: %q", caps.DeviceAcceptance)
 	require.False(t, caps.NativeTaskDiscovery, "generic capabilities changed: %+v", caps)
 	require.NotEmpty(t, caps.TaskInput, "generic capabilities changed: %+v", caps)
 	require.NotEmpty(t, caps.TaskAcceptance, "generic capabilities changed: %+v", caps)
@@ -221,7 +233,7 @@ func TestCopilotDryRunSeparatesListPoliciesFromInputOnlySingleFile(t *testing.T)
 	require.Contains(t, text, `"objective_policy":"none"`, "dry-run did not report both per-task policies: %s", text)
 	joined := strings.Join(preview.Unverified, "\n")
 	require.Contains(t, joined, "copilot:", "copilot caveats missing: %v", preview.Unverified)
-	for _, fragment := range []string{"never inspected during preparation", "no authorized device acceptance", "does not prove a clear or a safe device handoff"} {
+	for _, fragment := range []string{"never inspected during preparation", "one list entry clearing with three stars", "does not prove a clear or a safe device handoff"} {
 		require.Contains(t, joined, fragment, "copilot caveats lack %q: %v", fragment, preview.Unverified)
 	}
 	_, err := os.Stat(dir)
@@ -274,7 +286,7 @@ func TestRoguelikeDryRunSelectsPoliciesByModeAndSwitches(t *testing.T) {
 	require.Equal(t, control.ObjectiveAny, preview.Tasks[6].Typed.Policy, "multi-run policy")
 	joined := strings.Join(preview.Unverified, "\n")
 	require.Contains(t, joined, "roguelike:", "roguelike caveats missing: %v", preview.Unverified)
-	require.Contains(t, joined, "no authorized device acceptance", "roguelike caveats missing: %v", preview.Unverified)
+	require.Contains(t, joined, "only an explicit stop was observed", "roguelike caveats missing: %v", preview.Unverified)
 	_, err := os.Stat(dir)
 	require.ErrorIs(t, err, os.ErrNotExist, "dry-run created the data directory")
 }

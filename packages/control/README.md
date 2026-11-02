@@ -41,9 +41,10 @@ The root package depends only on the adapter contracts, without importing any
 concrete adapter or maintaining a global registry. The
 standalone CLI registers all four for `run` and
 `dry-run`; a task still selects one only through `Task.Adapter`. Adapter inputs and
-results are locally implemented and
-tested without authorized device acceptance, so capability output does not claim
-they work on a device.
+results are locally implemented and tested. Device acceptance is partial: one
+authorized round executed each adapter once on 2026-11-02, and the CLI capability
+report names the executed branch per adapter. This package makes no device claim
+of its own.
 
 ## Package boundaries
 
