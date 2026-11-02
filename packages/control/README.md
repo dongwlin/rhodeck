@@ -1,14 +1,14 @@
 # Control application service
 
 `control.Runtime` owns one active run, a fresh supervised worker for that run,
-its business state and a private durable record. Only `core-worker` loads
+its business state and a private durable record. Only `worker` loads
 MaaCore. The [standalone CLI](../../apps/cli/README.md) uses this service without
 an HTTP server or desktop host.
 
 ```go
 rt, err := control.New(control.Config{
     DataDir: "/var/lib/rhodeck",
-    Worker: worker.Config{Executable: "/opt/rhodeck/core-worker"},
+    Worker: worker.Config{Executable: "/opt/rhodeck/worker"},
 })
 if err != nil { return err }
 defer rt.Close(context.Background())

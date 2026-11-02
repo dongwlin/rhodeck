@@ -23,11 +23,11 @@ func TestRealCoreDoctorNoDevice(t *testing.T) {
 		t.Skip("explicit Core library and resource root are required")
 	}
 	dir := t.TempDir()
-	executable := filepath.Join(dir, "core-worker")
+	executable := filepath.Join(dir, "worker")
 	if filepath.Ext(os.Args[0]) == ".exe" {
 		executable += ".exe"
 	}
-	build := exec.Command("go", "build", "-o", executable, "../../apps/core-worker")
+	build := exec.Command("go", "build", "-o", executable, "../../apps/worker")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	output, err := build.CombinedOutput()
 	require.NoError(t, err, "build worker: %s", output)

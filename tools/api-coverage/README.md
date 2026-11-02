@@ -6,7 +6,7 @@
 
     binding 入口 → DTO/传输（或等价合并）→ worker 适配 → 客户端 → 验收用例
 
-工具只使用主项目内容（`packages/maa-go`、`apps/core-worker`、
+工具只使用主项目内容（`packages/maa-go`、`apps/worker`、
 `packages/control/worker`），只读不写，不加载原生库，不属于 maa-go 的运行
 依赖。它不改变绑定生产 API，也不解释原生行为；静态一致只证明清单与源码
 同步，不证明 worker 能力已实现——「已完成」以各任务的实际验证记录为准。

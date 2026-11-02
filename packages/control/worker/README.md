@@ -2,14 +2,14 @@
 
 `worker.Client` owns one child process, its versioned JSONL channel, stderr tail,
 and cleanup. It depends only on Go and the [protocol package](protocol/protocol.go);
-only [core-worker](../../../apps/core-worker/README.md) imports the native binding.
+only [worker](../../../apps/worker/README.md) imports the native binding.
 The wire side is frozen protocol v1: the client verifies the version on the
 greeting and refuses an incompatible worker before sending any request, so no
 device action can cross a version boundary.
 
 ```go
 client, err := worker.Launch(ctx, worker.Config{
-    Executable: "/opt/rhodeck/core-worker",
+    Executable: "/opt/rhodeck/worker",
     RequestTimeout: 30 * time.Second,
     ShutdownTimeout: 5 * time.Second,
 })
@@ -70,7 +70,7 @@ budgets, is a protocol failure.
 ### Frozen client contract for the reserved command set
 
 The protocol freezes the v1 command/event tables (see the
-[core worker README](../../../apps/core-worker/README.md)); the client grows
+[worker README](../../../apps/worker/README.md)); the client grows
 the surfaces below together with the worker commands they drive, and never
 exposes a command the connected build rejects:
 

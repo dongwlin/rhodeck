@@ -1,13 +1,13 @@
-# Core worker
+# Worker
 
-`core-worker` hosts one MaaCore runtime and instance in a dedicated process. It
+`worker` hosts one MaaCore runtime and instance in a dedicated process. It
 loads the native library through [maa-go](../../packages/maa-go/README.md), reuses
 the instance across task batches, and exits after close or initialization failure.
 The parent uses the [supervisor client](../../packages/control/worker/README.md).
 
 ```sh
-CGO_ENABLED=0 go build -o /tmp/core-worker ./apps/core-worker
-/tmp/core-worker -version
+CGO_ENABLED=0 go build -o /tmp/worker ./apps/worker
+/tmp/worker -version
 ```
 
 The build version defaults to `dev`; release builds can set
@@ -240,14 +240,14 @@ exit 1; command-line usage errors are exit 2.
 ## Verification
 
 ```sh
-CGO_ENABLED=0 go test ./apps/core-worker ./packages/control/worker/... -skip TestRealCoreWorker
-go test -race ./apps/core-worker ./packages/control/worker/... -skip TestRealCoreWorker
+CGO_ENABLED=0 go test ./apps/worker/... ./packages/control/worker/... -skip TestRealCoreWorker
+go test -race ./apps/worker/... ./packages/control/worker/... -skip TestRealCoreWorker
 ```
 
 The real-Core test is explicitly enabled with `RHODECK_WORKER_CORE_LIBRARY`,
 `RHODECK_WORKER_RESOURCE_ROOT` (the directory that contains `resource/`),
 `RHODECK_WORKER_LIBRARY_SHA256` and `RHODECK_WORKER_CORE_VERSION`. Run
-`go test ./apps/core-worker -run '^TestRealCoreWorkerNoDevice$' -v -count=1`.
+`go test ./apps/worker/internal/app -run '^TestRealCoreWorkerNoDevice$' -v -count=1`.
 It initializes (once with materialized defaults, once with an explicit limit
 set), verifies the metadata snapshot (version, library and resource digests,
 NullSize, effective limits), checks that the capability report agrees with

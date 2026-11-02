@@ -1,12 +1,12 @@
 /*
- * fixture.c — core-worker 异步完成、故障矩阵与生命周期验证用受控原生库
+ * fixture.c — worker 异步完成、故障矩阵与生命周期验证用受控原生库
  * (asyncfixture)。
  *
  * 定位与边界:
  *   - 本夹具按锁定的 C 头文件 AsstCaller.h 与 AsstCallerExtra.h 独立
  *     手写全部必需导出与可选导出(AsstGetImageBgr、AsstGetMapLevelKey、
  *     AsstGetItemName、AsstAsyncAttachWindow)的真实签名,供真实
- *     core-worker 二进制经 maa-go 绑定动态加载,验收四类异步提交的
+ *     worker 二进制经 maa-go 绑定动态加载,验收四类异步提交的
  *     真实回调完成、实例故障观察与跨方法组合;
  *   - 与既有夹具分工不同:imagefixture 验证跨进程大图像传输(且不导出
  *     实验符号),queryfixture 验证日志与实验查询(从不回调),本夹具
@@ -14,7 +14,7 @@
  *   - 不调用、不依赖任何真实 MaaCore;从不连接设备、从不截图真实
  *     屏幕、从不启动真实任务;全部完成消息由本夹具自己经 AsstApiCallback
  *     发出,内容确定;
- *   - 真实调用发生在 core-worker 子进程内(由监管客户端测试驱动);
+ *   - 真实调用发生在 worker 子进程内(由监管客户端测试驱动);
  *     除测试触发的回调外,本夹具从不输出 stdout。
  *
  * == 已发表契约 ==

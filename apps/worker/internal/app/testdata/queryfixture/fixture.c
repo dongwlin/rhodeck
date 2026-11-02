@@ -1,11 +1,11 @@
 /*
- * fixture.c — core-worker Runtime 日志与实验查询验证用受控原生库
+ * fixture.c — worker Runtime 日志与实验查询验证用受控原生库
  * (queryfixture)。
  *
  * 定位与边界:
  *   - 本夹具按锁定的 C 头文件 AsstCaller.h 与 AsstCallerExtra.h 独立
  *     手写全部必需导出、两个实验导出(AsstGetMapLevelKey、
- *     AsstGetItemName)的真实签名,供真实 core-worker 二进制经 maa-go
+ *     AsstGetItemName)的真实签名,供真实 worker 二进制经 maa-go
  *     绑定动态加载,验收 log / map_level_key / item_name 三条命令的
  *     生产映射;
  *   - 与既有夹具分工不同:abifixture 验证绑定层 ABI 与缓冲区协议
@@ -15,7 +15,7 @@
  *   - 不调用、不依赖任何真实 MaaCore;除记录的日志与实验查询内容
  *     外,行为全部确定为宽松成功(非 NULL 即 1),不验证绑定层已覆盖
  *     的输入校验细节;
- *   - 真实调用发生在 core-worker 子进程内(由监管客户端测试驱动),
+ *   - 真实调用发生在 worker 子进程内(由监管客户端测试驱动),
  *     本夹具从不调用 callback、从不输出 stdout。
  *
  * == 已发表契约 ==

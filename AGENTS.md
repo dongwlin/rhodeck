@@ -9,7 +9,7 @@ Rhodeck 是一个 Go module，提供 MaaCore 动态绑定、独立 Core worker�
 | 路径 | 职责 |
 | --- | --- |
 | `packages/maa-go/` | 包名 `maa`；公开 Go API、输入校验、生命周期、事件与异步操作；`internal/native/` 封装 loader、ABI 和 callback |
-| `apps/core-worker/` | 可执行程序；入口只有 `main.go`，实现位于 `internal/app`，在子进程内持有绑定，把命令和观察转换为 JSONL |
+| `apps/worker/` | 可执行程序；入口只有 `main.go`，实现位于 `internal/app`，在子进程内持有绑定，把命令和观察转换为 JSONL |
 | `apps/cli/` | 独立 `rhodeck-cli`；`internal/output` 拥有机器输出契约与退出码，`internal/plan` 拥有计划服务与适配器注册表，`internal/cmd` 拥有 cobra 命令面，`internal/app` 拥有进程外壳 |
 | `packages/control/` | 应用运行时；运行身份、任务结果、停止、目录互斥与最小执行记录 |
 | `packages/control/adapters/` | 按任务分包的显式类型适配器；严格输入编译、目标选择与回调结果解释 |
@@ -19,7 +19,7 @@ Rhodeck 是一个 Go module，提供 MaaCore 动态绑定、独立 Core worker�
 | `tools/maa-go-check/` | 分层验证入口，分别报告各层执行结果 |
 | `tools/api-coverage/` | 完整 worker 的 API 覆盖清单与漂移门禁：扫描 maa-go 公开面并与冻结清单、五段映射对账 |
 
-依赖方向为 CLI → control 与显式 adapters、adapters → control 契约、control → 监管客户端 → protocol、core-worker → protocol 与 maa、maa → internal/native。CLI 内部按 app → cmd → plan → output 单向依赖，每层只依赖下一层与 control；该分层由 `apps/cli/internal/app` 的层依赖测试守门。control 不导入具体 adapter；control 和监管客户端不加载原生库；protocol 不依赖绑定、进程管理或应用服务。不要将规划中的产品模块当作已实现能力。
+依赖方向为 CLI → control 与显式 adapters、adapters → control 契约、control → 监管客户端 → protocol、worker → protocol 与 maa、maa → internal/native。CLI 内部按 app → cmd → plan → output 单向依赖，每层只依赖下一层与 control；该分层由 `apps/cli/internal/app` 的层依赖测试守门。control 不导入具体 adapter；control 和监管客户端不加载原生库；protocol 不依赖绑定、进程管理或应用服务。不要将规划中的产品模块当作已实现能力。
 
 ## 全局开发约定
 
@@ -46,8 +46,8 @@ Rhodeck 是一个 Go module，提供 MaaCore 动态绑定、独立 Core worker�
 | Linux 绑定与工具验证 | `go run ./tools/maa-go-check --layers ci` |
 | Windows/macOS 绑定与工具验证 | `go run ./tools/maa-go-check --layers static,go,build,fmt` |
 | 绑定 race 检查 | `go run ./tools/maa-go-check --layers race` |
-| control、CLI、worker 与协议测试 | `CGO_ENABLED=0 go test ./apps/cli/... ./apps/core-worker/... ./packages/control/... -skip TestRealCore -count=1 -timeout=3m` |
-| control、CLI、worker race 检查 | `go test -race ./apps/cli/... ./apps/core-worker/... ./packages/control/... -skip TestRealCore -count=1 -timeout=8m` |
+| control、CLI、worker 与协议测试 | `CGO_ENABLED=0 go test ./apps/cli/... ./apps/worker/... ./packages/control/... -skip TestRealCore -count=1 -timeout=3m` |
+| control、CLI、worker race 检查 | `go test -race ./apps/cli/... ./apps/worker/... ./packages/control/... -skip TestRealCore -count=1 -timeout=8m` |
 | API 覆盖漂移检查 | `go run ./tools/api-coverage --root .` |
 
 当前没有单独的 Lint、类型检查脚本或部署工作流；Go 编译与 vet 承担相应检查。CLI 直接执行命令，worker 通过 stdin/stdout JSONL 由父进程驱动，不需要启动 Web 服务；二进制构建与调用示例按模块契约查阅。
@@ -72,7 +72,7 @@ Rhodeck 是一个 Go module，提供 MaaCore 动态绑定、独立 Core worker�
 | 入口 | 用途与阅读时机 |
 | --- | --- |
 | [maa-go 指南](packages/maa-go/AGENTS.md) | 修改绑定、native、C 夹具或声明检查工具时读取 |
-| [core-worker 指南](apps/core-worker/AGENTS.md) | 修改原生适配、worker 会话或进程入口时读取 |
+| [worker 指南](apps/worker/AGENTS.md) | 修改原生适配、worker 会话或进程入口时读取 |
 | [control 指南](packages/control/AGENTS.md) | 修改业务状态、适配器、停止、记录、恢复或目录所有权时读取；监管与协议任务继续按其中导航读取 |
 | [CLI 指南](apps/cli/AGENTS.md) | 修改 CLI 命令、输入、适配器注册、机器输出、退出码或诊断时读取 |
 | [模块配置](go.mod) | 安装环境、升级 Go/purego 时核对版本；依赖校验值由 `go.sum` 维护 |

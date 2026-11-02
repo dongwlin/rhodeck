@@ -1,7 +1,7 @@
 //go:build linux
 
 // This file is the cross-layer acceptance matrix of the full worker: the real
-// core-worker binary loads a controlled native library (compiled at test time)
+// worker binary loads a controlled native library (compiled at test time)
 // whose four async submissions report real AsyncCallInfo completions through
 // the native callback, and whose Log input carries deterministic fault and
 // flood triggers. The supervision client observes completions, faults,

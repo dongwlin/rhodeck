@@ -33,7 +33,7 @@ CLI 分四层，单向依赖 `app → cmd → plan → output`；层依赖由 `i
 
 ## 测试选择
 
-- `internal/app` 的 `cli_test.go` 通过环境开关复用测试可执行文件，分别运行 CLI 和协议夹具，不依赖真实 core-worker 或 MaaCore。输入与适配器的前置拒绝用例检查机器输出、stderr 隐私及未创建目录；文件和 stdin 入口均须覆盖。
+- `internal/app` 的 `cli_test.go` 通过环境开关复用测试可执行文件，分别运行 CLI 和协议夹具，不依赖真实 worker 或 MaaCore。输入与适配器的前置拒绝用例检查机器输出、stderr 隐私及未创建目录；文件和 stdin 入口均须覆盖。
 - 注册表、能力声明和逐任务策略变更覆盖输入选择与预览；typed 执行变更覆盖同类型任务隔离、失败与不完整结果、终态与记录一致性。沿用跨进程夹具验证关联和输出，不能只测静态能力描述。
 - 输出阻塞、断管、取消和超时使用受控 writer 与 helper 进程，检查中止后不再开始写入、目录锁释放与 worker 回收。Unix 信号测试保持相应平台约束；进程退出检查复用 `requireWorkerExited` 的平台处理。
 - 单元测试放在被测层：`internal/cmd` 覆盖命令树与 flag 面，`internal/output` 覆盖信封字段与 writer 语义，`internal/plan` 覆盖适配器注册表。命令树、信封字段和退出码已由进程级用例覆盖时不再重复断言。

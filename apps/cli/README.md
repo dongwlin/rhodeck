@@ -2,7 +2,7 @@
 
 `rhodeck-cli` executes one explicit task batch through the shared
 [`control.Runtime`](../../packages/control/README.md) and a supervised
-[`core-worker`](../core-worker/README.md). It needs no HTTP server, Web app or
+[`worker`](../worker/README.md). It needs no HTTP server, Web app or
 desktop host. Only the worker loads MaaCore. The caller supplies the worker,
 Core library and its native dependencies, resources, ADB and writable directories.
 
@@ -16,7 +16,7 @@ Build the two executables from the repository root:
 
 ```sh
 CGO_ENABLED=0 go build -o /tmp/rhodeck-cli ./apps/cli
-CGO_ENABLED=0 go build -o /tmp/core-worker ./apps/core-worker
+CGO_ENABLED=0 go build -o /tmp/worker ./apps/worker
 /tmp/rhodeck-cli capabilities
 /tmp/rhodeck-cli version
 /tmp/rhodeck-cli help
@@ -267,9 +267,9 @@ unknown task types and large integer literals are not interpreted or rewritten.
 
 ```sh
 /tmp/rhodeck-cli dry-run --input plan.json \
-  --worker /tmp/core-worker --data-dir /var/lib/rhodeck/control
+  --worker /tmp/worker --data-dir /var/lib/rhodeck/control
 /tmp/rhodeck-cli doctor --input plan.json \
-  --worker /tmp/core-worker --data-dir /var/lib/rhodeck/control
+  --worker /tmp/worker --data-dir /var/lib/rhodeck/control
 ```
 
 `dry-run` validates syntax and budgets, calls `control.PreparePlan` with the same
@@ -312,7 +312,7 @@ local path check; device connection and actual task support remain unverified.
 
 ```sh
 /tmp/rhodeck-cli run --input plan.json \
-  --worker /tmp/core-worker --data-dir /var/lib/rhodeck/control \
+  --worker /tmp/worker --data-dir /var/lib/rhodeck/control \
   --timeout 30m
 ```
 

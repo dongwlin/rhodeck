@@ -1,4 +1,4 @@
-# core-worker 维护指南
+# worker 维护指南
 
 ## 进程与适配边界
 

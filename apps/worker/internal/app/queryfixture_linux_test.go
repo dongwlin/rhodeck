@@ -1,7 +1,7 @@
 //go:build linux
 
 // This file verifies the Runtime log and experiment query commands end to
-// end: the real core-worker binary loads a controlled native library
+// end: the real worker binary loads a controlled native library
 // (compiled at test time) whose AsstLog records what actually reached the
 // native boundary — read back through the fixture's UUID observation — and
 // whose AsstGetMapLevelKey/AsstGetItemName serve counter-stamped borrowed

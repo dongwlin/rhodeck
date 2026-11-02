@@ -41,13 +41,13 @@ func workerBinary(t *testing.T) string {
 		if processBinary.err != nil {
 			return
 		}
-		processBinary.path = filepath.Join(processBinary.dir, "core-worker")
+		processBinary.path = filepath.Join(processBinary.dir, "worker")
 		if runtime.GOOS == "windows" {
 			processBinary.path += ".exe"
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "go", "build", "-o", processBinary.path, "github.com/dongwlin/rhodeck/apps/core-worker")
+		cmd := exec.CommandContext(ctx, "go", "build", "-o", processBinary.path, "github.com/dongwlin/rhodeck/apps/worker")
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 		out, err := cmd.CombinedOutput()
 		if err != nil {

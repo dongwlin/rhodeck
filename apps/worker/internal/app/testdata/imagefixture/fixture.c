@@ -1,10 +1,10 @@
 /*
- * fixture.c — core-worker 图像传输验证用受控原生库(imagefixture)。
+ * fixture.c — worker 图像传输验证用受控原生库(imagefixture)。
  *
  * 定位与边界:
  *   - 本夹具按锁定的 C 头文件 AsstCaller.h 独立手写全部必需导出与
  *     两个图像可选项(AsstCreate、AsstGetImageBgr)的真实签名,供真实
- *     core-worker 二进制经 maa-go 绑定动态加载,验收 get_image_png/
+ *     worker 二进制经 maa-go 绑定动态加载,验收 get_image_png/
  *     get_image_bgr 分块传输对大图像的逐字节保真;
  *   - 与 maa-go 的 abifixture(testdata/abifixture/fixture.c)分工不同:
  *     abifixture 验证绑定层 ABI 与缓冲区协议细节,图像固定为 16/12
@@ -12,7 +12,7 @@
  *     验收,两者不混用、互不替代;
  *   - 不调用、不依赖任何真实 MaaCore;除图像内容外行为全部确定为
  *     宽松成功(非 NULL 即 1),不验证绑定层已覆盖的输入校验细节;
- *   - 真实调用发生在 core-worker 子进程内(由监管客户端测试驱动),
+ *   - 真实调用发生在 worker 子进程内(由监管客户端测试驱动),
  *     本夹具从不调用 callback、从不输出 stdout。
  *
  * == 已发表契约 ==

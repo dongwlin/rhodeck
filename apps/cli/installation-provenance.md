@@ -46,7 +46,7 @@ native dependencies, ADB, task support, device state or successful execution.
 ## Reconciliation example
 
 For a chosen installation, run `rhodeck-cli doctor --input plan.json --worker
-/absolute/core-worker --data-dir /absolute/control-data > doctor.json`, recording
+/absolute/worker --data-dir /absolute/control-data > doctor.json`, recording
 its exit status separately. Fill the host manifest from observed metadata and
 independently recorded origins. These checks compare the manifest with a doctor
 report, a terminal envelope or a saved record:

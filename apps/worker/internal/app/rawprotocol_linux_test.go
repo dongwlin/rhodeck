@@ -1,6 +1,6 @@
 //go:build linux
 
-// This file drives the real core-worker binary over raw JSONL, without the
+// This file drives the real worker binary over raw JSONL, without the
 // supervision client, to prove the worker's own wire discipline: malformed
 // payloads and unknown commands are answered with stable codes while the
 // session survives, malicious image chunk requests never serve bytes outside

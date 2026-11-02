@@ -1,7 +1,7 @@
 //go:build linux
 
 // This file verifies the frozen image transfer contract end to end: the real
-// core-worker binary loads a controlled native library (compiled at test time)
+// worker binary loads a controlled native library (compiled at test time)
 // whose AsstGetImage/AsstGetImageBgr serve deterministic images of configured
 // sizes, and the supervision client assembles the chunked transfer and
 // compares byte for byte and by digest. The sizes cross the legacy 8 MiB
