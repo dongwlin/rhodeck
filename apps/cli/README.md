@@ -96,7 +96,7 @@ and command list it reports:
 - `adapter_basis`: the reviewed implementation source revisions (MAA source
   `9b75f9f7b103079458414c6e20216c8c531d6987`, and MAA WPF GUI/Core source
   `d8a98c72a45618f24e9c55fa014809d5ade6bf52` compared for the accepted inputs)
-  and that each adapter was executed once against one local Android device on
+  and that each adapter was executed against one local Android device on
   2026-11-02;
 - `core_version_policy`: rolling validation of the latest caller-provided Core
   and resources, with no fixed Core version or old-version compatibility
@@ -104,8 +104,8 @@ and command list it reports:
 - `installation_facts`: `not inspected`. `capabilities` performs no installation
   discovery or native loading; run `doctor` with an explicit plan to inspect an
   installation;
-- `device_acceptance`: `partial`, summarizing the executed round. It never
-  stands in for a device matrix: each adapter row states the branch that ran and
+- `device_acceptance`: `partial`, summarizing the device executions. It never
+  stands in for a device matrix: each adapter row states the scope that ran and
   every other branch, Core version, platform and device stays unverified.
 
 Adapter names and versions come from the same `Descriptor()` values the runner
@@ -260,8 +260,9 @@ investment limit can be reached, mode 6 uses `all` only with
 `deep_exploration_auto_iterate=true`, modes 20001 and 30003 use `all`, and
 every other configuration — including modes 6 and 7 with their rotation
 switch off and modes without a reliable terminal fact — is input-only
-(`none`). Each interpreted branch was observed once on one local device; no
-other branch, Core version or platform is device-verified.
+(`none`). Roguelike device evidence covers one explicit stop that preserved an
+unobserved objective. Settlement, investment, rotation, target-found and
+start-run facts are not device-verified.
 
 For `run` and `dry-run`, strict input is validated before any directory, lock or
 worker exists. An unknown adapter name or version, a mismatched Core type,
@@ -427,12 +428,12 @@ This is the generic execution foundation plus four opt-in local adapters. It
 provides no task presets, scheduler, HTTP API, installer/updater, cross-runtime
 device lock, Docker image or La Pluma Next integration. `oper_progress`,
 `switch_theme`, `copilot` and `roguelike` validate strict input and interpret
-filtered business facts where their input selects a policy. One authorized round
-executed each adapter once against one local Android device on 2026-11-02 and
-compared their accepted inputs with MAA GUI/Core source
+filtered business facts where their input selects a policy. Authorized device
+executions on 2026-11-02 covered limited scenarios for each adapter on one local
+Android device. Their accepted inputs were compared with MAA GUI/Core source
 `d8a98c72a45618f24e9c55fa014809d5ade6bf52`; the implementation review basis is
-MAA source `9b75f9f7b103079458414c6e20216c8c531d6987`. That round covers one
-branch per adapter, named in `capabilities`; every other branch, Core version,
+MAA source `9b75f9f7b103079458414c6e20216c8c531d6987`. The observed scope per
+adapter is named in `capabilities`; every other branch, Core version,
 platform and device remains unverified, and a source comparison does not prove
 installation or task support. Actual Core and resource combinations are
 recorded and verified separately under the rolling version policy. The open raw

@@ -132,7 +132,7 @@ func TestCapabilitiesDescribeTheExecutedDeviceScopeOfEachAdapter(t *testing.T) {
 		"copilot":       {"copilot_list", "all", "filename", "loop_times", "none"},
 		"roguelike":     {"starts_count", "monthly_squad_auto_iterate", "deep_exploration_auto_iterate", "none"},
 	}
-	// Each row names the branch authorized device execution actually covered;
+	// Each row names the scope authorized device execution actually covered;
 	// no row falls back to a blanket claim or to another adapter's evidence.
 	wantDevice := map[string]string{
 		"oper_progress": "already-satisfied plan and one authorized training batch",
@@ -162,7 +162,7 @@ func TestCapabilitiesDescribeTheExecutedDeviceScopeOfEachAdapter(t *testing.T) {
 	require.Contains(t, caps.TaskAdapters[3].Acceptance, "modes without a reliable terminal fact", "roguelike acceptance lacks the input-only modes")
 	require.Contains(t, caps.AdapterBasis, "9b75f9f7", "adapter basis: %q", caps.AdapterBasis)
 	require.Contains(t, caps.AdapterBasis, "d8a98c72", "adapter basis lacks the compared GUI revision: %q", caps.AdapterBasis)
-	require.Contains(t, caps.AdapterBasis, "executed once", "adapter basis hides the executed round: %q", caps.AdapterBasis)
+	require.Contains(t, caps.AdapterBasis, "each adapter was executed", "adapter basis hides the device executions: %q", caps.AdapterBasis)
 	require.NotContains(t, caps.AdapterBasis, "not executed", "adapter basis denies the executed round: %q", caps.AdapterBasis)
 	require.NotContains(t, caps.AdapterBasis, "v6.20.1", "source review conflates the release candidate: %q", caps.AdapterBasis)
 	for _, fragment := range []string{"rolling", "caller-provided", "no fixed Core version", "old-version compatibility", "doctor/run/record"} {
@@ -172,7 +172,7 @@ func TestCapabilitiesDescribeTheExecutedDeviceScopeOfEachAdapter(t *testing.T) {
 	require.NotContains(t, out.String(), "v6.20.1", "capabilities retains a fixed release snapshot: %s", out.String())
 	require.Contains(t, caps.InstallationFacts, "not inspected", "installation facts: %q", caps.InstallationFacts)
 	require.Contains(t, caps.DeviceAcceptance, "partial", "device acceptance summary: %q", caps.DeviceAcceptance)
-	require.Contains(t, caps.DeviceAcceptance, "executed branch", "device acceptance summary lacks the per-row scope: %q", caps.DeviceAcceptance)
+	require.Contains(t, caps.DeviceAcceptance, "executed scope", "device acceptance summary lacks the per-row scope: %q", caps.DeviceAcceptance)
 	require.False(t, caps.NativeTaskDiscovery, "generic capabilities changed: %+v", caps)
 	require.NotEmpty(t, caps.TaskInput, "generic capabilities changed: %+v", caps)
 	require.NotEmpty(t, caps.TaskAcceptance, "generic capabilities changed: %+v", caps)

@@ -20,11 +20,12 @@ Four child packages provide strict adapters: [`operprogress.New`](adapters/operp
 the root package never imports their implementations. The
 [standalone CLI](../../apps/cli/README.md) registers all four explicitly for
 `run` and `dry-run`; a task still selects one only through `Task.Adapter`.
-Device acceptance is partial: one authorized round executed each adapter once
-on 2026-11-02, and the CLI capability report keeps the reviewed MAA source
-revisions, the rolling Core version policy, the uninspected installation and
-each adapter's executed branch separate. Actual versions and digests come from doctor/run/record; the host
-maintains [installation provenance](../../apps/cli/installation-provenance.md).
+Device acceptance is partial: authorized executions on 2026-11-02 covered
+limited scenarios for each adapter, and the CLI capability report keeps the
+reviewed MAA source revisions, the rolling Core version policy, the uninspected
+installation and each adapter's executed scope separate. Actual versions and
+digests come from doctor/run/record; the host maintains
+[installation provenance](../../apps/cli/installation-provenance.md).
 The OperProgress
 input accepts only exact, case-sensitive `plans` entries with `role`, `name` and
 exactly one of `elite` (1-2), `skill_level` (2-7) or `skill_mastery` (three

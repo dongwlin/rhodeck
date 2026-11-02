@@ -17,16 +17,16 @@ import (
 )
 
 // AdapterBasis records the implementation review behind the bundled adapters.
-// It names the reviewed source revisions and that each adapter was executed
-// once, without extending that run to every accepted input.
+// It names the reviewed source revisions and the limited device executions,
+// without extending the observed scope to every accepted input.
 const AdapterBasis = "MAA source 9b75f9f7b103079458414c6e20216c8c531d6987 static review; MAA WPF GUI/Core source " +
-	"d8a98c72a45618f24e9c55fa014809d5ade6bf52 compared for the accepted inputs; each adapter was executed once " +
+	"d8a98c72a45618f24e9c55fa014809d5ade6bf52 compared for the accepted inputs; each adapter was executed " +
 	"against one local Android device on 2026-11-02"
 
 // DeviceAcceptance summarizes the authorized device evidence of the bundled
-// adapters. Each capability row states the branch that was actually executed,
+// adapters. Each capability row states the scope that was actually executed,
 // so this summary never stands in for a full device matrix.
-const DeviceAcceptance = "partial; each adapter row names its executed branch; " +
+const DeviceAcceptance = "partial; each adapter row names its executed scope; " +
 	"no other branch, Core version, platform or device is verified"
 
 // Spec pairs one locally registered adapter with the Core type it accepts and
@@ -47,7 +47,7 @@ type Spec struct {
 	// results. It becomes part of the acceptance statement; adapters whose
 	// every input selects a policy leave it empty.
 	InputOnlyNote string
-	// DeviceAcceptance names the branch of this adapter that authorized device
+	// DeviceAcceptance names the scope of this adapter that authorized device
 	// execution actually covered. It is appended to the acceptance sentence so
 	// a row never implies branches or platforms that were not run; an empty
 	// value reports none.
@@ -169,8 +169,8 @@ func Adapters() []control.TaskAdapter {
 }
 
 // Rows derives the capability rows from the same descriptors the runner
-// registers. Acceptance text names the executed branch per adapter and never
-// extends one device round to other branches, Core versions or platforms.
+// registers. Acceptance text names the executed scope per adapter and never
+// extends the observed scope to other branches, Core versions or platforms.
 func Rows() []output.AdapterRow {
 	specs := specs()
 	out := make([]output.AdapterRow, 0, len(specs))
