@@ -113,15 +113,16 @@ func TestFrozenInventoryReconcilesWithSource(t *testing.T) {
 
 // TestFinalModeFailsWhileGapsRemain verifies the two-mode gap semantics:
 // registered gaps do not count as coverage, so final mode fails while they
-// exist, and drift mode still passes with them. The live inventory is
-// gap-free since WKR-09, so one done entry is downgraded to a registered gap
-// in memory instead of depending on the live gap count.
+// exist, and drift mode still passes with them. The live inventory carries no
+// gap, so one done entry is downgraded to a registered gap in memory instead
+// of depending on the live gap count.
 func TestFinalModeFailsWhileGapsRemain(t *testing.T) {
 	mappings := mappingsCopy(t)
 	downgraded := ""
 	for key, m := range mappings {
 		if m.Status == "done" {
-			m.Status = "pending:WKR-12"
+			m.Status = "pending"
+			m.Note = "controlled gap for the final-mode check"
 			mappings[key] = m
 			downgraded = key
 			break
@@ -143,7 +144,7 @@ func TestFinalModeFailsWhileGapsRemain(t *testing.T) {
 	}
 	require.True(t, found, "final report does not state the zero-pending requirement")
 	for _, gap := range report.Gaps {
-		require.Contains(t, gap, "pending:WKR-", "gap %q is not attributed to a WKR task", gap)
+		require.Contains(t, gap, "(pending)", "gap %q is not reported as pending", gap)
 	}
 }
 
@@ -352,6 +353,19 @@ func TestNAWithoutReasonIsRejected(t *testing.T) {
 	require.NoError(t, err, "inventory")
 	_, err = checkWith(scan, frozen, mappings, repoRoot(t), ModeDrift)
 	require.Error(t, err, "na status without a reason must be rejected")
+}
+
+// TestPendingWithoutReasonIsRejected: a registered gap must state which
+// mapping is missing, so a bare status cannot hide unfinished coverage.
+func TestPendingWithoutReasonIsRejected(t *testing.T) {
+	mappings := mappingsCopy(t)
+	mappings["capability Capabilities.Create"] = Mapping{Status: "pending"}
+	scan, err := ScanBinding(repoRoot(t))
+	require.NoError(t, err, "scan")
+	frozen, err := inventorySymbols()
+	require.NoError(t, err, "inventory")
+	_, err = checkWith(scan, frozen, mappings, repoRoot(t), ModeDrift)
+	require.Error(t, err, "pending status without a note must be rejected")
 }
 
 // TestInvalidStatusIsRejected: statuses outside the frozen vocabulary are

@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -10,8 +9,8 @@ import (
 // Mode selects the enforcement strength.
 //
 //   - drift: the source must match the frozen inventory exactly, and every
-//     done entry's mapping references must resolve. Pending gaps are allowed
-//     while the full worker implementation tasks are open.
+//     done entry's mapping references must resolve. Registered gaps are
+//     tolerated so an incomplete mapping can still be recorded and checked.
 //   - final: additionally, no pending item may remain. Registered gaps do not
 //     count as coverage; the final check fails while any entry is pending.
 type Mode string
@@ -32,8 +31,6 @@ func parseMode(s string) (Mode, error) {
 	}
 }
 
-var pendingTaskPattern = regexp.MustCompile(`^pending:WKR-(0[1-9]|1[0-2])$`)
-
 // Mapping is the five-segment registration of one inventory item:
 // binding -> DTO/transport (or equivalent merge) -> worker adaptation ->
 // client surface -> acceptance test.
@@ -47,10 +44,10 @@ type Mapping struct {
 	Client string
 	// Test names the acceptance test functions that cover the chain.
 	Test string
-	// Status is "done", "pending:WKR-xx", or "na".
+	// Status is "done", "pending", or "na".
 	Status string
-	// Note records equivalent merges and non-applicable reasons. Required
-	// for "na" statuses.
+	// Note records equivalent merges, gap reasons and non-applicable
+	// reasons. Required for "pending" and "na" statuses.
 	Note string
 }
 
@@ -158,7 +155,7 @@ func checkWith(scan []Symbol, frozen []Symbol, mappings map[string]Mapping, root
 		switch {
 		case m.Status == "done":
 			report.Done++
-		case pendingTaskPattern.MatchString(m.Status):
+		case m.Status == "pending":
 			report.Pending++
 			report.Gaps = append(report.Gaps, key+" ("+m.Status+")")
 		case m.Status == "na":
@@ -186,7 +183,10 @@ func validateStatus(m Mapping) string {
 	switch {
 	case m.Status == "done":
 		return ""
-	case pendingTaskPattern.MatchString(m.Status):
+	case m.Status == "pending":
+		if strings.TrimSpace(m.Note) == "" {
+			return `status "pending" requires a non-empty note stating the missing mapping`
+		}
 		return ""
 	case m.Status == "na":
 		if strings.TrimSpace(m.Note) == "" {
@@ -194,7 +194,7 @@ func validateStatus(m Mapping) string {
 		}
 		return ""
 	default:
-		return fmt.Sprintf("status must be done, na, or pending:WKR-01..12, got %q", m.Status)
+		return fmt.Sprintf("status must be done, pending, or na, got %q", m.Status)
 	}
 }
 

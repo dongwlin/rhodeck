@@ -14,7 +14,7 @@ CLI 分四层，单向依赖 `app → cmd → plan → output`；层依赖由 `i
 - `main.go` 只保留版本注入与入口委托；`internal/app` 的 `Run` 处理进程信号，`runCLI` 接收显式参数、context 和标准流。
 - 计划读取复用 `control.DecodePlan`；`run` 与 `dry-run` 共用 `plan.Service` 与 `control.PreparePlan`。前置输入校验必须早于目录创建、加锁和 worker 启动，不能在 cmd 另建计划或适配器校验规则。
 - 适配器仅由精确的 `task.adapter` 选择，不能按熟悉的任务类型自动启用。修改 `plan` 的适配器注册表时同步输入说明、策略选择和未验证条件；help 与 capabilities 的名称、版本从 `Descriptor()` 派生，逐任务 `objective_policy` 从准备结果读取。
-- capabilities 与 dry-run 只描述实现的输入、结果和本次检查边界；特定日期的设备实跑、源码审查基线、安装验收流程与证据模板归 ops，不写入注册表或机器输出。
+- capabilities 与 dry-run 只描述实现的输入、结果和本次检查边界；特定日期的设备实跑、源码审查基线、安装验收流程与证据模板属于仓库外的验证记录，不写入注册表或机器输出。
 
 ## 命令面
 

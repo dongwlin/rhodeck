@@ -495,10 +495,9 @@ func TestSessionRuntimeLogAndExperimentQueries(t *testing.T) {
 }
 
 // TestSessionUnknownCommandsStayUnsupported proves the stable rejection floor
-// of the frozen v1 table: a command name the build does not implement is
-// answered with the unsupported code and the session survives. The last
-// reserved names (log, map_level_key, item_name) became implemented commands
-// in WKR-07, so this now guards the default branch itself.
+// of the frozen v1 table: a command name outside the table is answered with
+// the unsupported code and the session survives. Every name the table lists is
+// implemented, so this guards the default branch itself.
 func TestSessionUnknownCommandsStayUnsupported(t *testing.T) {
 	f := newFakeEngine()
 	h := harness(t, fakeFactory(f))

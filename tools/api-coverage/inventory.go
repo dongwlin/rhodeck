@@ -9,8 +9,8 @@ package main
 //	binding entry -> DTO/transport (or equivalent merge) -> worker
 //	adaptation -> client surface -> acceptance test
 //
-// Statuses: "done" (all five segments present and verified), "pending:WKR-xx"
-// (registered gap owned by that task; fails the final mode), "na"
+// Statuses: "done" (all five segments present and verified), "pending"
+// (registered gap with a mandatory note; fails the final mode), "na"
 // (non-applicable with a mandatory note). Update this file in the same change
 // that adds, removes, or reshapes any covered API: the drift check fails
 // otherwise.
@@ -21,11 +21,6 @@ func inventorySymbols() ([]Symbol, error) {
 
 func inventoryMappings() map[string]Mapping {
 	return mappings
-}
-
-// gap returns a fully pending mapping owned by a task.
-func gap(task, note string) Mapping {
-	return Mapping{Status: "pending:" + task, Note: note}
 }
 
 // covered returns a fully done mapping with all five segments registered.
@@ -349,7 +344,7 @@ var mappings = map[string]Mapping{
 		Client: "Client.Screencap,Operation.ID,Operation.Wait",
 		Test:   "TestSessionAsyncSubmissionFamily,TestSessionAsyncCompletionOrdering,TestClientAsyncOperationsEndToEnd,TestControlledNativeAsyncCompletionMatrix,TestControlledNativeMixedMethodsShareAssociationAndClose",
 		Status: "done",
-		Note:   "空 payload 受理返回 async_id；截图本身不隐式读取图像，缓存读取由 WKR-06 承载。",
+		Note:   "空 payload 受理返回 async_id；截图本身不隐式读取图像，缓存读取由 get_image_png/get_image_bgr 承载。",
 	},
 	"entry Instance.AttachWindow": {
 		DTO:    "AttachWindow,AttachWindowRequest.Hwnd,AttachWindowRequest.ScreencapMethod,AttachWindowRequest.MouseMethod,AttachWindowRequest.KeyboardMethod,OperationAccepted.AsyncID",
