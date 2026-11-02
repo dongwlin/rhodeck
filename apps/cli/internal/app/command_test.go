@@ -106,12 +106,15 @@ func TestHelpRenderingMatchesTheRequestedFormat(t *testing.T) {
 		require.Contains(t, runText, flag, "run help does not mention %q: %s", flag, runText)
 	}
 
-	// The dry-run command does not offer the run-only --dry-run flag.
-	var dryOut, dryDiagnostics bytes.Buffer
-	code = runCLI("dev", context.Background(), []string{"dry-run", "--help"}, strings.NewReader(""), &dryOut, &dryDiagnostics)
-	require.Equal(t, output.ExitSuccess, code, "stderr: %s", dryDiagnostics.String())
-	require.Empty(t, dryDiagnostics.String(), "unexpected diagnostics")
-	require.NotContains(t, dryOut.String(), "--dry-run", "dry-run help offers the run-only flag: %s", dryOut.String())
+	// Only run offers the preview switch. The other plan commands must not
+	// document it, so they cannot accept it as a silently ignored flag.
+	for _, name := range []string{"dry-run", "doctor"} {
+		var out, diagnostics bytes.Buffer
+		code := runCLI("dev", context.Background(), []string{name, "--help"}, strings.NewReader(""), &out, &diagnostics)
+		require.Equal(t, output.ExitSuccess, code, "%s --help: stderr %s", name, diagnostics.String())
+		require.Empty(t, diagnostics.String(), "%s --help: unexpected diagnostics", name)
+		require.NotContains(t, out.String(), "--dry-run", "%s help offers the run-only flag: %s", name, out.String())
+	}
 
 	// Both spellings of the machine form succeed and report the run help.
 	for _, args := range [][]string{{"help", "run", "--format", "json"}, {"run", "--help", "--format", "json"}} {
