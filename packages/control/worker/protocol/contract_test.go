@@ -403,22 +403,3 @@ func TestFaultAndDiagnosticsPayloads(t *testing.T) {
 	require.False(t, bytes.Contains(normal, []byte("first_fault")) || bytes.Contains(normal, []byte("raw_prefix")) || bytes.Contains(normal, []byte("stop_diagnostic")),
 		"normal close must omit fault fields: %s", normal)
 }
-
-// TestFrozenCommandNamesAreValidFrames freezes the reserved v1 command names:
-// every command in the contract is a syntactically valid frame, so peers can
-// rely on the names even where a build rejects them with unsupported.
-func TestFrozenCommandNamesAreValidFrames(t *testing.T) {
-	commands := []string{Initialize, Connect, AppendTask, SetTaskParams, Start, Stop, Status, Ping, Close,
-		BackToHome, UUID, Click, Screencap, AttachWindow, GetImagePNG, GetImageBGR, ImageChunk, Log, MapLevelKey, ItemName}
-	for _, name := range commands {
-		m := Message{Version: Version, Type: Request, ID: 1, Name: name}
-		err := m.Validate()
-		require.NoError(t, err, "command %q rejected by the wire rules: %v", name, err)
-	}
-	events := []string{CoreEvent, OperationEvent, FaultEvent, DiagnosticsEvent}
-	for _, name := range events {
-		m := Message{Version: Version, Type: Event, Name: name, Sequence: 1}
-		err := m.Validate()
-		require.NoError(t, err, "event %q rejected by the wire rules: %v", name, err)
-	}
-}

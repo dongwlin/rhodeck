@@ -122,40 +122,12 @@ func mappingLimitsFixture() protocol.Limits {
 	}
 }
 
-// TestLimitsMappingTransfersEveryField proves the wire limit set maps onto the
-// binding configuration field by field, including every BufferLimits strategy,
-// and that omission maps to the binding's own default set instead of a partial
-// skeleton.
-func TestLimitsMappingTransfersEveryField(t *testing.T) {
-	in := mappingLimitsFixture()
-	got := bindingLimits(&in)
-	want := maa.Limits{
-		InputStringBytes:  11,
-		InputJSONBytes:    12,
-		ConfigEntries:     13,
-		ConfigBytes:       14,
-		ImagePNG:          maa.BufferLimits{Initial: 21, Max: 22, GrowthRetries: 23},
-		ImageBGR:          maa.BufferLimits{Initial: 31, Max: 32, GrowthRetries: 33},
-		UUID:              maa.BufferLimits{Initial: 41, Max: 42, GrowthRetries: 43},
-		Tasks:             maa.BufferLimits{Initial: 51, Max: 52, GrowthRetries: 53},
-		CallbackBytes:     61,
-		InternalEvents:    62,
-		InternalBytes:     63,
-		PublicEvents:      64,
-		PublicBytes:       65,
-		PendingOperations: 66,
-		EarlyResults:      67,
-		EarlyBytes:        68,
-	}
-	require.Equal(t, want, *got, "binding limits = %+v, want %+v", *got, want)
-	require.Nil(t, bindingLimits(nil), "omitted wire limits must map to the binding's own defaults")
-}
-
 // TestInitializeConfigMappingTransfersEveryField proves the initialize request
 // maps onto the binding runtime and instance configurations: explicit paths,
 // ordered resource roots, static and instance options (empty values included),
 // connection extras with raw JSON preserved, and the limit set.
 func TestInitializeConfigMappingTransfersEveryField(t *testing.T) {
+	require.Nil(t, bindingConfig(protocol.InitializeRequest{}).Limits, "omitted wire limits must map to the binding's own defaults")
 	limits := mappingLimitsFixture()
 	req := protocol.InitializeRequest{
 		SnapshotID:       "snapshot",

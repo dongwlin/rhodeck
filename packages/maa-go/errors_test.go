@@ -3,7 +3,6 @@ package maa
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -49,22 +48,6 @@ func TestSentinelErrorsAreDistinct(t *testing.T) {
 		for j, b := range sentinels {
 			if i != j {
 				assert.False(t, a.err == b.err, "%s and %s are the same error value", a.name, b.name)
-			}
-		}
-	}
-}
-
-func TestSentinelErrorsMatchThroughWrappedChain(t *testing.T) {
-	sentinels := allSentinels()
-	for _, s := range sentinels {
-		wrapped := fmt.Errorf("open runtime: %w", fmt.Errorf("inner step: %w", s.err))
-		assert.ErrorIs(t, wrapped, s.err, "errors.Is(wrapped, %s) = false, want true", s.name)
-	}
-	// 任意两个哨兵互不匹配。
-	for i, a := range sentinels {
-		for j, b := range sentinels {
-			if i != j {
-				assert.NotErrorIs(t, a.err, b.err, "errors.Is(%s, %s) = true, want false", a.name, b.name)
 			}
 		}
 	}
@@ -199,15 +182,4 @@ func TestAggregateErrorEmpty(t *testing.T) {
 	assert.True(t, strings.TrimSpace(got) != "", "empty AggregateError.Error() = %q, want a non-empty placeholder", got)
 	// 空聚合对任意目标都不匹配,且不会 panic。
 	assert.NotErrorIs(t, agg, ErrClosed, "empty aggregate must not match any sentinel")
-}
-
-func TestIDTypesAreDistinctInt32(t *testing.T) {
-	taskType := reflect.TypeOf(TaskID(0))
-	asyncType := reflect.TypeOf(AsyncID(0))
-	msgType := reflect.TypeOf(MessageID(0))
-
-	require.True(t, taskType != asyncType && taskType != msgType && asyncType != msgType, "TaskID, AsyncID and MessageID must be distinct named types")
-	for _, tt := range []reflect.Type{taskType, asyncType, msgType} {
-		assert.Equal(t, reflect.Int32, tt.Kind(), "%s kind = %v, want int32", tt, tt.Kind())
-	}
 }

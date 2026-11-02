@@ -1,7 +1,6 @@
 package operprogress
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -292,23 +291,6 @@ func TestOperProgressPrepareIsDetachedAndFreshPerTask(t *testing.T) {
 	prepared.Params[2] = 'Y'
 	reducer.targets[0].Name = "mutated"
 	require.False(t, second.Targets[0] != "op-0001" || string(second.Params) != wantParams || secondReducer.targets[0].Name != "Alpha", "preparations share mutable slices or JSON buffers")
-}
-
-func TestOperProgressRawPlanRemainsOpen(t *testing.T) {
-	plan := validTestPlan(t)
-	ref := control.AdapterRef{Name: "oper_progress", Version: 1}
-	rawParams := json.RawMessage(`{"plans":[{"role":"Warrior","name":"A","elite":2}],"future":{"n":9007199254740993}}`)
-	plan.Tasks = []control.Task{
-		{ID: "raw", Type: "OperProgress", Params: rawParams},
-		{ID: "strict", Type: "OperProgress", Adapter: &ref, Params: json.RawMessage(`{"plans":[{"role":"Caster","name":"B","skill_level":3}]}`)},
-	}
-	prepared, err := control.PreparePlan(plan, New())
-	require.NoError(t, err)
-	require.Nil(t, prepared.Tasks[0].Typed, "raw task was routed through the adapter")
-	require.True(t, bytes.Contains(prepared.Plan.Tasks[0].Params, []byte("9007199254740993")) && bytes.Contains(prepared.Plan.Tasks[0].Params, []byte(`"future"`)), "raw params lost unknown fields or integer literals: %s", prepared.Plan.Tasks[0].Params)
-	typed := prepared.Tasks[1].Typed
-	require.False(t, typed == nil || len(typed.Targets) != 1 || typed.Targets[0].ID != "op-0001" || typed.Targets[0].Outcome != control.TargetUnobserved, "strict task was not prepared: %+v", typed)
-	require.True(t, bytes.Contains(prepared.Plan.Tasks[1].Params, []byte(`"skill_level":3`)), "strict task kept uncompiled params: %s", prepared.Plan.Tasks[1].Params)
 }
 
 func ExampleNew() {

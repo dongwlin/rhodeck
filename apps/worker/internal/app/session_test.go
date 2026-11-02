@@ -1061,37 +1061,6 @@ func TestSessionAsyncCompletionOrdering(t *testing.T) {
 	require.NoError(t, <-h.done)
 }
 
-// TestSessionCloseSettlesPendingOperations proves a close settles every
-// pending operation as a lifecycle result (invalid_state, no fabricated What)
-// before the close response, and the worker still exits cleanly.
-func TestSessionCloseSettlesPendingOperations(t *testing.T) {
-	f := newFakeEngine()
-	op := newFakeOperation(41)
-	op.result = protocol.OperationResult{AsyncID: 41}
-	op.err = maa.ErrClosed
-	f.op = op
-	h := harness(t, fakeFactory(f))
-	h.initialize()
-	accepted := h.call(protocol.Connect, protocol.ConnectRequest{})
-	require.Nil(t, accepted.Error, "unexpected error: %v", accepted.Error)
-	m := h.call(protocol.Close, nil)
-	require.Nil(t, m.Error, "unexpected error: %v", m.Error)
-	// The terminal diagnostics and the operation settlement race each other on
-	// the way out (neither ordering is frozen), so filter by name instead of
-	// assuming one precedes the other.
-	settlements := namedEvents(h, protocol.OperationEvent)
-	require.Len(t, settlements, 1, "expected exactly one settlement event, got %d", len(settlements))
-	var settlement protocol.OperationResult
-	require.NoError(t, protocol.Decode(settlements[0].Payload, &settlement))
-	require.Equal(t, accepted.ID, settlement.RequestID, "close settlement: %+v", settlement)
-	require.Equal(t, int32(41), settlement.AsyncID, "close settlement: %+v", settlement)
-	require.False(t, settlement.OK, "close settlement: %+v", settlement)
-	require.Empty(t, settlement.What, "close settlement: %+v", settlement)
-	require.NotNil(t, settlement.Error, "lifecycle settlement must be invalid_state: %+v", settlement.Error)
-	require.Equal(t, protocol.InvalidState, settlement.Error.Code, "lifecycle settlement must be invalid_state: %+v", settlement.Error)
-	require.NoError(t, <-h.done)
-}
-
 // TestSessionCloseReleasesRetainedTransfersAndSettlesOperations proves close
 // drains the session's own state in one pass: a partially served snapshot
 // stays owned until the close, the pending operation is settled as a

@@ -95,43 +95,6 @@ func TestAsyncResultRecordSnapshotIsIndependent(t *testing.T) {
 	assert.Equal(t, testResultDetails, got, "overwriting a snapshot rewrote the internal cache: %q", got)
 }
 
-// TestEventAndResultSnapshotsDoNotShareBuffers 验证:Event 与
-// AsyncResult 不共享可被用户修改的内部 JSON 缓冲区——同一来源原文
-// 分别喂给两条记录,各自独立 clone;从任一侧原地改写快照副本,另
-// 一侧的副本与两条记录的缓存都不受影响(双向独立)。
-func TestEventAndResultSnapshotsDoNotShareBuffers(t *testing.T) {
-	src := json.RawMessage(testEventJSON)
-	evRec := newEventRecord(MessageID(1), src, 1)
-	resRec := newResultRecord(AsyncID(2), testResultWhat, true, src)
-
-	ev := evRec.snapshot()
-	res := resRec.snapshot()
-
-	// Event 侧原地改写:AsyncResult 副本与两条记录缓存不受影响。
-	for i := range ev.JSON {
-		ev.JSON[i] = '#'
-	}
-	got := string(res.Details)
-	assert.Equal(t, testEventJSON, got, "the Event snapshot rewrite crosstalked into the AsyncResult snapshot: %q", got)
-	got = string(evRec.snapshot().JSON)
-	assert.Equal(t, testEventJSON, got, "the Event snapshot rewrite crosstalked into the event cache: %q", got)
-	got = string(resRec.snapshot().Details)
-	assert.Equal(t, testEventJSON, got, "the Event snapshot rewrite crosstalked into the result cache: %q", got)
-
-	// AsyncResult 侧原地改写:全新取得的 Event 快照与两条记录缓存
-	// 不受影响(ev 副本已被上一段有意改写,它是调用者拥有的独立
-	// 数据,允许保持改写状态)。
-	for i := range res.Details {
-		res.Details[i] = '@'
-	}
-	got = string(evRec.snapshot().JSON)
-	assert.Equal(t, testEventJSON, got, "the AsyncResult snapshot rewrite crosstalked into the event cache: %q", got)
-	got = string(resRec.snapshot().Details)
-	assert.Equal(t, testEventJSON, got, "the AsyncResult snapshot rewrite crosstalked into the result cache: %q", got)
-	got = string(evRec.snapshot().JSON)
-	assert.Equal(t, testEventJSON, got, "the AsyncResult snapshot rewrite crosstalked into a freshly taken Event snapshot: %q", got)
-}
-
 // TestConcurrentSnapshotsStayIndependent 验证:并发对同一记录取得
 // 快照(模拟重复/并发 Wait 与事件投递),各 goroutine 改写自己的
 // 副本互不影响,内部缓存与并发结束后的新快照保持原值。

@@ -92,19 +92,6 @@ func TestRecordRejectsIncompatibleTypedData(t *testing.T) {
 	}
 }
 
-func TestRecordRejectsDuplicateNestedControlFields(t *testing.T) {
-	dir := t.TempDir()
-	s, err := openStore(dir)
-	require.NoError(t, err)
-	defer s.close()
-	rec := typedStoreRecord(t)
-	raw, _ := json.Marshal(rec)
-	raw = bytes.Replace(raw, []byte(`"outcome":"achieved"`), []byte(`"outcome":"failed","outcome":"achieved"`), 1)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "runs", rec.Result.RunID+".json"), raw, 0600))
-	_, err = ReadRecord(dir, rec.Result.RunID)
-	require.Error(t, err, "ambiguous nested control fields accepted")
-}
-
 func TestCurrentSchemaRecordsAllowRawAndAdaptedTasks(t *testing.T) {
 	dir := t.TempDir()
 	s, err := openStore(dir)

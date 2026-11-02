@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/ebitengine/purego"
@@ -37,7 +36,7 @@ func TestLoadFlagsFrozen(t *testing.T) {
 func TestOpenMissingLibraryReportsSystemCause(t *testing.T) {
 	const missing = "/nonexistent/libMaaCore.so"
 
-	lib, err := newLoader(dlopenPrimitives{}, abiProfile).Open(missing)
+	lib, err := NewLoader().Open(missing)
 	require.Nil(t, lib, "opening a nonexistent library must not return a Library, got %+v", lib)
 	var lle *LibraryLoadError
 	require.ErrorAs(t, err, &lle, "errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
@@ -61,7 +60,7 @@ func TestOpenRejectsInvalidELF(t *testing.T) {
 	err := os.WriteFile(path, []byte("this file is not an ELF object, just plain bytes"), 0o755)
 	require.NoError(t, err, "failed to write the fixture file: %v", err)
 
-	lib, err := newLoader(dlopenPrimitives{}, abiProfile).Open(path)
+	lib, err := NewLoader().Open(path)
 	require.Nil(t, lib, "opening a non-ELF file must not return a Library, got %+v", lib)
 	var lle *LibraryLoadError
 	require.ErrorAs(t, err, &lle, "errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
@@ -89,7 +88,7 @@ func TestOpenAndLookupRealSystemLibrary(t *testing.T) {
 		t.Skip("no candidate libm.so.6 exists on this machine; skipping the real loader smoke test; a skip does not count as a pass")
 	}
 
-	lib, err := newLoader(dlopenPrimitives{}, abiProfile).Open(found)
+	lib, err := NewLoader().Open(found)
 	require.NoError(t, err, "failed to open the real system library %s: %v", found, err)
 	assert.Equal(t, found, lib.Path(), "Library.Path() = %q, want %q", lib.Path(), found)
 	assert.Equal(t, "libm.so.6", lib.Name(), "Library.Name() = %q, want %q", lib.Name(), "libm.so.6")
@@ -104,25 +103,4 @@ func TestOpenAndLookupRealSystemLibrary(t *testing.T) {
 	require.ErrorAs(t, err, &sle, "errors.As did not yield a *SymbolLookupError, got %T: %v", err, err)
 	assert.True(t, sle.Symbol == absent && sle.LibraryPath == found && sle.Profile == abiProfile,
 		"diagnostic fields mismatch: %+v", sle)
-}
-
-// TestNewLoaderProductionWiring 验证生产构造入口 NewLoader 接线正确:
-// 使用冻结 ABI 组合标识与真实平台原语。用真实系统 loader 打开不存在
-// 的库,失败必须是携带系统「文件不存在」原因的 *LibraryLoadError,
-// 证明请求确实进入了 dlopenPrimitives,而非某个假原语。全程不调用
-// 任何函数地址。
-func TestNewLoaderProductionWiring(t *testing.T) {
-	const missing = "/nonexistent/rhodeck-libMaaCore.so"
-
-	ldr := NewLoader()
-	require.NotNil(t, ldr, "NewLoader must return the production loader")
-	assert.Equal(t, abiProfile, ldr.profile, "production loader ABI profile = %q, want %q", ldr.profile, abiProfile)
-
-	lib, err := ldr.Open(missing)
-	require.Nil(t, lib, "opening a nonexistent library must not return a Library, got %+v", lib)
-	var lle *LibraryLoadError
-	require.ErrorAs(t, err, &lle, "errors.As did not yield a *LibraryLoadError, got %T: %v", err, err)
-	assert.Equal(t, missing, lle.Path, "Path = %q, want %q", lle.Path, missing)
-	assert.True(t, lle.Err != nil && strings.Contains(lle.Err.Error(), "No such file or directory"),
-		"underlying error = %v, want the system loader's \"No such file or directory\" cause preserved", lle.Err)
 }

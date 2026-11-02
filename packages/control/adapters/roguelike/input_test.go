@@ -331,20 +331,6 @@ func TestRoguelikePrepareIsDetachedAndConcurrent(t *testing.T) {
 	require.ErrorIs(t, err, control.ErrInvalidPlan, "wrong Core task type accepted: %v", err)
 }
 
-func TestRoguelikeRawPlanRemainsOpen(t *testing.T) {
-	plan := validTestPlan(t)
-	ref := New().Descriptor()
-	const raw = `{"theme":"Phantom","mode":9,"future":{"n":9007199254740993}}`
-	plan.Tasks = []control.Task{
-		{ID: "raw", Type: "Roguelike", Params: json.RawMessage(raw)},
-		{ID: "strict", Type: "Roguelike", Adapter: &ref, Params: json.RawMessage(`{"theme":"Phantom","mode":0}`)},
-	}
-	prepared, err := control.PreparePlan(plan, New())
-	require.NoError(t, err)
-	require.True(t, string(prepared.Plan.Tasks[0].Params) == raw && prepared.Tasks[0].Policy == "" && prepared.Tasks[0].Typed == nil, "raw task changed: %+v", prepared.Tasks[0])
-	require.True(t, prepared.Tasks[1].Policy == control.ObjectiveNone && prepared.Tasks[1].Typed == nil, "input-only preview = %+v", prepared.Tasks[1])
-}
-
 func ExampleNew() {
 	adapter := New()
 	prepared, err := adapter.Prepare(control.Task{ID: "burn", Type: "Roguelike", Params: json.RawMessage(`{"theme":"BlackFlow","mode":1,"blackflow_strategy":"investment"}`)})

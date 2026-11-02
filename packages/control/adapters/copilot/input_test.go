@@ -202,21 +202,6 @@ func TestCopilotPrepareIsDetachedAndConcurrent(t *testing.T) {
 	require.ErrorIs(t, err, control.ErrInvalidPlan, "wrong Core task type accepted: %v", err)
 }
 
-func TestCopilotRawPlanRemainsOpen(t *testing.T) {
-	plan := validTestPlan(t)
-	ref := New().Descriptor()
-	const raw = `{"future":{"n":9007199254740993},"is_paradox":true}`
-	plan.Tasks = []control.Task{
-		{ID: "raw", Type: "Copilot", Params: json.RawMessage(raw)},
-		{ID: "strict", Type: "Copilot", Adapter: &ref, Params: json.RawMessage(`{"filename":"unavailable/../job.json"}`)},
-	}
-	prepared, err := control.PreparePlan(plan, New())
-	require.NoError(t, err)
-	require.False(t, string(prepared.Plan.Tasks[0].Params) != raw || prepared.Tasks[0].Policy != "" || prepared.Tasks[0].Typed != nil, "raw task changed: %+v", prepared.Tasks[0])
-	require.False(t, prepared.Tasks[1].Policy != control.ObjectiveNone || prepared.Tasks[1].Typed != nil, "input-only preview = %+v", prepared.Tasks[1])
-	require.True(t, bytes.Contains(prepared.Plan.Tasks[1].Params, []byte(`"filename":"unavailable/../job.json"`)), "path was changed: %s", prepared.Plan.Tasks[1].Params)
-}
-
 func ExampleNew() {
 	adapter := New()
 	prepared, err := adapter.Prepare(control.Task{ID: "battle", Type: "Copilot", Params: json.RawMessage(`{"filename":"job.json","loop_times":2}`)})

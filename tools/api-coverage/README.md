@@ -44,7 +44,7 @@ go run ./tools/api-coverage --emit                  # 打印扫描得到的符�
 
 ## 测试
 
-`go test ./tools/api-coverage` 覆盖：清单与源码对账、扫描可重复性、32 个
-公开入口逐项登记、final 模式对缺口的失败语义，以及变异反例（新增方法/
+`go test ./tools/api-coverage` 覆盖：清单与源码对账、扫描可重复性、
+final 模式对缺口的失败语义，以及变异反例（新增方法/
 字段/常量、改名方法/错误哨兵、改签名/字段类型、漏 DTO/worker 分支/
 客户端方法、伪造测试引用、能力标记冒充覆盖、非法状态）。

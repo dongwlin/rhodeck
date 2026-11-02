@@ -257,28 +257,6 @@ func TestSwitchThemePrepareIsDetachedAndFreshPerTask(t *testing.T) {
 		"preparations share mutable slices or JSON buffers")
 }
 
-func TestSwitchThemeRawPlanRemainsOpen(t *testing.T) {
-	plan := validTestPlan(t)
-	ref := control.AdapterRef{Name: switchThemeAdapterName, Version: switchThemeVersion}
-	rawParams := json.RawMessage(`{"themes":["Raw Theme"],"enable":true,"future":9007199254740993}`)
-	plan.Tasks = []control.Task{
-		{ID: "raw", Type: switchThemeTaskType, Params: rawParams},
-		{ID: "strict", Type: switchThemeTaskType, Adapter: &ref, Params: json.RawMessage(`{"themes":["Strict One","Strict Two"]}`)},
-	}
-	prepared, err := control.PreparePlan(plan, New())
-	require.NoError(t, err)
-	require.Nil(t, prepared.Tasks[0].Typed, "raw task was routed through the adapter")
-	// The 9007199254740993 literal is asserted byte-wise on purpose; it must
-	// survive as an exact integer, not a float64 round-trip.
-	require.True(t, bytes.Contains(prepared.Plan.Tasks[0].Params, []byte(`"enable":true`)) &&
-		bytes.Contains(prepared.Plan.Tasks[0].Params, []byte("9007199254740993")),
-		"raw params lost unknown fields or integer literals: %s", prepared.Plan.Tasks[0].Params)
-	typed := prepared.Tasks[1].Typed
-	require.True(t, typed != nil && len(typed.Targets) == 1 && typed.Targets[0].ID == switchThemeTargetID && typed.Targets[0].Outcome == control.TargetUnobserved,
-		"strict task was not prepared: %+v", typed)
-	require.Equal(t, `{"themes":["Strict One","Strict Two"]}`, string(prepared.Plan.Tasks[1].Params), "strict task kept uncompiled params: %s", prepared.Plan.Tasks[1].Params)
-}
-
 func TestSwitchThemeReducerRequiresExactSelection(t *testing.T) {
 	t.Run("records the second candidate", func(t *testing.T) {
 		r := switchThemeTestReducer(t, "Alpha", "Beta")

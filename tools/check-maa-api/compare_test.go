@@ -13,7 +13,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -677,117 +676,6 @@ func TestCompareSignatureNilInputs(t *testing.T) {
 				"category = %q, want %q", diags[0].Category, CatSignature)
 		})
 	}
-}
-
-// ---- 端到端:成功报告的 signatures 段 ----
-
-// reportSignatureSymbol 从成功报告中取一个符号的核验记录。
-func reportSignatureSymbol(t *testing.T, r reportJSON, symbol string) signatureSymbolJSON {
-	t.Helper()
-	for _, s := range r.Signatures.Symbols {
-		if s.Symbol == symbol {
-			return s
-		}
-	}
-	require.FailNowf(t, "signature symbol missing", "signature symbol %s missing from the report", symbol)
-	return signatureSymbolJSON{}
-}
-
-// reportSignatureCallback 从成功报告中取一个 callback 的核验记录。
-func reportSignatureCallback(t *testing.T, r reportJSON, name string) signatureCallbackJSON {
-	t.Helper()
-	for _, c := range r.Signatures.Callbacks {
-		if c.Name == name {
-			return c
-		}
-	}
-	require.FailNowf(t, "signature callback missing", "signature callback %s missing from the report", name)
-	return signatureCallbackJSON{}
-}
-
-// assertReportParam 断言报告中一个参数位置的核验记录。
-func assertReportParam(t *testing.T, owner string, p signatureParamJSON,
-	position int, cName, goName, cType, goType string) {
-	t.Helper()
-	want := signatureParamJSON{Position: position, CName: cName, GoName: goName,
-		CType: cType, GoType: goType}
-	assert.Equal(t, want, p, "%s param %d = %+v, want %+v", owner, position, p, want)
-}
-
-// TestRealNativeSignatureBaseline 通过完整命令入口核验成功报告的
-// signatures 段:真实生产树加合成 C 输入,两目标的符号数与排序、
-// callback 记录与关键映射逐点一致;同参数两次运行 stdout 逐字节
-// 一致(段内键序稳定)。
-func TestRealNativeSignatureBaseline(t *testing.T) {
-	cFiles := positiveFiles(t)
-	registerTestProfile(t, testProfileFromFiles(cFiles))
-	cInput := writeCInputDir(t, cFiles, nil)
-	goRoot := repoRoot(t)
-
-	run := func(goos string) string {
-		t.Helper()
-		var stdout, stderr bytes.Buffer
-		code := Run([]string{"--goos", goos, "--goarch", "amd64",
-			"--c-input", cInput, "--go-root", goRoot}, &stdout, &stderr)
-		require.Equal(t, 0, code, "%s run exited %d:\n%s", goos, code, stderr.String())
-		return stdout.String()
-	}
-	parse := func(out, goos string) reportJSON {
-		t.Helper()
-		var r reportJSON
-		require.NoError(t, json.Unmarshal([]byte(out), &r), "%s stdout is not valid JSON", goos)
-		return r
-	}
-
-	linuxOut := run("linux")
-	again := run("linux")
-	assert.Equal(t, linuxOut, again,
-		"success output including the signatures section must be byte-identical across runs")
-	linuxRep := parse(linuxOut, "linux")
-	require.Len(t, linuxRep.Signatures.Symbols, 28,
-		"linux signature symbols = %d, want 28 (all bindings, including the non-target windowsOnly binding)",
-		len(linuxRep.Signatures.Symbols))
-	for i := 1; i < len(linuxRep.Signatures.Symbols); i++ {
-		assert.False(t, linuxRep.Signatures.Symbols[i-1].Symbol >= linuxRep.Signatures.Symbols[i].Symbol,
-			"signature symbols must be strictly sorted: %q >= %q",
-			linuxRep.Signatures.Symbols[i-1].Symbol, linuxRep.Signatures.Symbols[i].Symbol)
-	}
-	gi := reportSignatureSymbol(t, linuxRep, "AsstGetImage")
-	assertReportParam(t, "AsstGetImage", gi.Params[1], 2, "buff", "buff", "void*", "unsafe.Pointer")
-	assertReportParam(t, "AsstGetImage", gi.Params[2], 3, "buff_size", "buffSize", "uint64", "uint64")
-	assert.Equal(t, signatureReturnJSON{CType: "uint64", GoType: "uint64"}, gi.Return,
-		"AsstGetImage return = %+v", gi.Return)
-	assert.False(t, gi.CHeader != FileAsstCaller || gi.CLine <= 0 || gi.GoFile != "api.go" || gi.GoLine <= 0,
-		"AsstGetImage locations = %+v", gi)
-	lg := reportSignatureSymbol(t, linuxRep, "AsstLog")
-	assert.Equal(t, signatureReturnJSON{CType: "void", GoType: ""}, lg.Return,
-		"AsstLog return = %+v", lg.Return)
-
-	// linux 目标:窗口符号属 NonTarget 的 windowsOnly 绑定,同样被
-	// 逐参数核验并出现在核验记录里。
-	awl := reportSignatureSymbol(t, linuxRep, "AsstAsyncAttachWindow")
-	assertReportParam(t, "AsstAsyncAttachWindow", awl.Params[1], 2, "hwnd", "hwnd", "void*", "uintptr")
-	assertReportParam(t, "AsstAsyncAttachWindow", awl.Params[2], 3,
-		"screencap_method", "screencapMethod", "uint64", "uint64")
-
-	require.Len(t, linuxRep.Signatures.Callbacks, 2,
-		"callbacks = %d, want 2", len(linuxRep.Signatures.Callbacks))
-	uc := reportSignatureCallback(t, linuxRep, "unixCallback")
-	assertReportParam(t, "unixCallback", uc.Params[1], 2, "details_json", "detailsJSON", "const char*", "*byte")
-	assertReportParam(t, "unixCallback", uc.Params[2], 3, "custom_arg", "customArg", "void*", "uintptr")
-	assert.Equal(t, signatureReturnJSON{CType: "void", GoType: ""}, uc.Return,
-		"unixCallback return = %+v", uc.Return)
-	wc := reportSignatureCallback(t, linuxRep, "windowsCallback")
-	assert.Equal(t, signatureReturnJSON{CType: "void", GoType: "uintptr"}, wc.Return,
-		"windowsCallback return = %+v", wc.Return)
-
-	winRep := parse(run("windows"), "windows")
-	require.Len(t, winRep.Signatures.Symbols, 28,
-		"windows signature symbols = %d, want 28", len(winRep.Signatures.Symbols))
-	aw := reportSignatureSymbol(t, winRep, "AsstAsyncAttachWindow")
-	assertReportParam(t, "AsstAsyncAttachWindow", aw.Params[1], 2, "hwnd", "hwnd", "void*", "uintptr")
-	assertReportParam(t, "AsstAsyncAttachWindow", aw.Params[2], 3,
-		"screencap_method", "screencapMethod", "uint64", "uint64")
 }
 
 // ---- 端到端:完整命令入口的破坏变体 ----

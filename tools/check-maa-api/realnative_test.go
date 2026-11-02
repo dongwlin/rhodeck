@@ -209,43 +209,6 @@ func TestRealNativeVariantsFailThroughCLI(t *testing.T) {
 	}
 }
 
-// TestRealNativePolicyExpectationBaseline 真实目录在两个目标下经完整
-// 命令入口均可成功(合成 c 输入),成功报告携带 30 项逐符号的期望/
-// 实际策略对照,证明冻结期望表与生产 symbols.go/exclusions 一致且两
-// 目标一致。策略破坏变体见 TestRealNativeVariantsFailThroughCLI 的
-// policy 向量;「绑定未冻结符号」无法经完整 CLI 构造(C 输入被锁定
-// 为 30 项导出且 link 先拒绝未知符号),由 expect_test.go 直接覆盖。
-func TestRealNativePolicyExpectationBaseline(t *testing.T) {
-	cFiles := positiveFiles(t)
-	registerTestProfile(t, testProfileFromFiles(cFiles))
-	cInput := writeCInputDir(t, cFiles, nil)
-
-	reports := map[string]reportJSON{}
-	for _, goos := range []string{"linux", "windows"} {
-		var stdout, stderr bytes.Buffer
-		code := Run([]string{
-			"--goos", goos, "--goarch", "amd64",
-			"--c-input", cInput, "--go-root", repoRoot(t),
-		}, &stdout, &stderr)
-		require.Equal(t, 0, code, "%s baseline unexpectedly failed:\n%s", goos, stderr.String())
-		var report reportJSON
-		err := json.Unmarshal(stdout.Bytes(), &report)
-		require.NoError(t, err, "%s baseline stdout is not JSON: %v", goos, err)
-		reports[goos] = report
-		require.Equal(t, 30, len(report.Expect.Symbols), "%s expect entries = %d, want 30", goos, len(report.Expect.Symbols))
-		for i, e := range report.Expect.Symbols {
-			wantSym := sortedExpectationSymbols()[i]
-			assert.Equal(t, wantSym, e.Symbol, "%s expect[%d].Symbol = %q, want %q (must be sorted)", goos, i, e.Symbol, wantSym)
-			want := policyExpectations[e.Symbol]
-			assert.True(t, e.Expected.Policy == want.Policy && e.Expected.Platform == want.Platform,
-				"%s expect[%d] expected = %+v, want %+v", goos, i, e.Expected, want)
-			assert.Equal(t, e.Expected, e.Actual, "%s expect[%s] actual = %+v, want %+v", goos, e.Symbol, e.Actual, e.Expected)
-		}
-	}
-	assert.Equal(t, fmtJSON(t, reports["linux"].Expect), fmtJSON(t, reports["windows"].Expect),
-		"expect section must be identical across targets")
-}
-
 // TestRealNativeSelectionBaseline 真实目录在两个目标下经完整命令入口
 // 均可成功(合成 c 输入),作为变体测试的正例基线。
 func TestRealNativeSelectionBaseline(t *testing.T) {

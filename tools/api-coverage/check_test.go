@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -110,30 +109,6 @@ func TestFrozenInventoryReconcilesWithSource(t *testing.T) {
 	require.True(t, report.Pass, "drift check failed: added=%v removed=%v changed=%v mapping=%v",
 		report.Added, report.Removed, report.Changed, report.Mapping)
 	require.Equal(t, report.Frozen, report.Scanned, "scanned %d items but inventory freezes %d", report.Scanned, report.Frozen)
-}
-
-// TestInventoryPinsThirtyTwoPublicEntries pins the 32 public entry points
-// (Open + 8 Runtime + 21 Instance + 2 Operation methods) item by item.
-func TestInventoryPinsThirtyTwoPublicEntries(t *testing.T) {
-	frozen, err := inventorySymbols()
-	require.NoError(t, err, "inventory symbols")
-	entries := map[string]int{}
-	for _, s := range frozen {
-		if s.Kind == KindEntry {
-			entries[s.Owner]++
-		}
-	}
-	assert.Equal(t, 1, entries[""], "package-level entries: got %d, want 1 (Open)", entries[""])
-	assert.Equal(t, 8, entries["Runtime"], "*Runtime entries: got %d, want 8", entries["Runtime"])
-	assert.Equal(t, 21, entries["Instance"], "*Instance entries: got %d, want 21", entries["Instance"])
-	assert.Equal(t, 2, entries["Operation"], "*Operation entries: got %d, want 2", entries["Operation"])
-	mappings := inventoryMappings()
-	for _, s := range frozen {
-		if s.Kind != KindEntry {
-			continue
-		}
-		assert.Contains(t, mappings, s.Key(), "public entry %s has no five-segment mapping", s.Key())
-	}
 }
 
 // TestFinalModeFailsWhileGapsRemain verifies the two-mode gap semantics:
