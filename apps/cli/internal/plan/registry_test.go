@@ -28,9 +28,6 @@ func TestInputOnlyCapabilityMakesNoResultInterpretationClaim(t *testing.T) {
 	require.Len(t, got.ObjectivePolicies, 1, "input-only capability claims interpreted results: %+v", got)
 	require.Equal(t, control.ObjectiveNone, got.ObjectivePolicies[0], "input-only capability claims interpreted results: %+v", got)
 	require.Equal(t, "none", got.ResultInterpretation, "input-only capability claims interpreted results: %+v", got)
-	require.Contains(t, got.Acceptance, "local preparation only", "input-only capability claims interpreted results: %+v", got)
-	require.Contains(t, got.Acceptance, "device acceptance: none", "input-only capability claims interpreted results: %+v", got)
-	require.NotContains(t, got.Acceptance, "preparation and result interpretation", "input-only capability claims interpreted results: %+v", got)
 }
 
 // TestAdapterRegistryFeedsEveryCommandSurface pins the four bundled adapters:

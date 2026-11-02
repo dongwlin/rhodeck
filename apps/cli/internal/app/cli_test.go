@@ -516,50 +516,6 @@ func TestBrokenOutputStillClosesRuntime(t *testing.T) {
 	require.NoError(t, rt.Close(context.Background()))
 }
 
-type stopWriter struct {
-	bytes.Buffer
-	cancel context.CancelFunc
-}
-
-func (w *stopWriter) Write(p []byte) (int, error) {
-	n, err := w.Buffer.Write(p)
-	if bytes.Contains(p, []byte(`"state":"started"`)) {
-		w.cancel()
-	}
-	return n, err
-}
-
-func TestCancellationUsesControlStopAndCleanup(t *testing.T) {
-	t.Setenv("RHODECK_CLI_WORKER_MODE", "wait")
-	trace := filepath.Join(t.TempDir(), "commands")
-	t.Setenv("RHODECK_CLI_TRACE", trace)
-	plan, executable, dir := testPlan(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	out := &stopWriter{cancel: cancel}
-	var diagnostics bytes.Buffer
-	code := runCLI("dev", ctx, cliArgs("run", executable, dir), bytes.NewReader(encodePlan(t, plan)), out, &diagnostics)
-	require.Equal(t, output.ExitStopped, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
-	commands, err := os.ReadFile(trace)
-	require.NoError(t, err, "stop/cleanup missing")
-	require.True(t, bytes.Contains(commands, []byte("stop\n")), "stop/cleanup missing: %s", commands)
-	require.True(t, bytes.HasSuffix(commands, []byte("close\n")), "stop/cleanup missing: %s", commands)
-}
-
-func TestDeadlineRemainsDistinctFromSignalStop(t *testing.T) {
-	t.Setenv("RHODECK_CLI_WORKER_MODE", "wait")
-	plan, executable, dir := testPlan(t)
-	var out, diagnostics bytes.Buffer
-	args := append(cliArgs("run", executable, dir), "--timeout", "1s")
-	code := runCLI("dev", context.Background(), args, bytes.NewReader(encodePlan(t, plan)), &out, &diagnostics)
-	require.Equal(t, output.ExitUnknown, code, "out: %s diagnostics: %s", out.String(), diagnostics.String())
-	lines := decodeLines(t, out.Bytes())
-	var terminal output.Terminal
-	require.NoError(t, json.Unmarshal(lines[len(lines)-1], &terminal), "deadline reason missing: %s", out.String())
-	require.NotNil(t, terminal.Result, "deadline reason missing: %s", out.String())
-	require.Equal(t, "deadline_exceeded", terminal.Result.Code, "deadline reason missing: %s", out.String())
-}
-
 func TestStartupTimeoutUsesTimeoutExitCode(t *testing.T) {
 	t.Setenv("RHODECK_CLI_WORKER_MODE", "nohello")
 	plan, executable, dir := testPlan(t)

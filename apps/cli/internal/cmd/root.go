@@ -72,8 +72,8 @@ func (a *App) usageText() string {
 		"[--timeout DURATION] [--startup-timeout 10s] [--request-timeout 30s] [--stop-timeout 5s] [--shutdown-timeout 5s] " +
 		"[--output-timeout 5s] [--include-raw-events]; run also accepts --dry-run. Explicit task adapters " +
 		plan.Summary() + " require task.adapter; tasks without it stay raw. dry-run compiles selected adapters and " +
-		"previews each task's actual objective policy and unobserved targets without side effects. Adapters are locally " +
-		"implemented; capabilities states the executed device scope of each adapter."
+		"previews each task's actual objective policy and unobserved targets without side effects. capabilities describes " +
+		"adapter inputs, objective policies and result interpretation."
 }
 
 // newRootCommand builds the command tree. The declaration order of the

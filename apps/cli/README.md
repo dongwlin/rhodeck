@@ -80,7 +80,7 @@ establish device readiness or task support.
 | `run` | Execute one task batch; also accepts `--dry-run`. |
 | `dry-run` | Validate and preview a plan without side effects. |
 | `doctor` | Check an explicit installation and initialize Core. |
-| `capabilities` | Report the platform, worker protocol, adapter inputs, policies and device validation scope. |
+| `capabilities` | Report the platform, worker protocol, adapter inputs, policies and result interpretation. |
 | `version` | Print the CLI build version. |
 | `help [command]` | Show usage and flags, for example `help run`. |
 
@@ -90,8 +90,8 @@ receive `{"schema_version":1,"type":"help","usage":"..."}`. `--format` accepts
 
 `capabilities` describes the locally registered adapters. It does not inspect the
 installation or enumerate every task supported by Core. Use `doctor` for actual
-Core/library/resource metadata; adapter device validation covers only the scope
-reported for each adapter, not every branch, version, platform or device.
+Core/library/resource metadata and `dry-run` for the policy selected by a task's
+input.
 
 ## Plan and adapters
 
@@ -206,4 +206,4 @@ for persisted facts.
 
 - [Adapter inputs and result interpretation](../../packages/control/typed-adapters.md)
 - [Runtime results, stopping and records](../../packages/control/README.md)
-- [Installation provenance and version checks](installation-provenance.md)
+- [Installation metadata and version checks](installation-provenance.md)

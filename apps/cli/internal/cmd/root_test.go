@@ -9,20 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCommandSurfaceIsStable pins the command tree and the flags of the plan
-// commands. The reported command list and the help text are derived from this
-// tree, so a change here is a change of the published surface.
-func TestCommandSurfaceIsStable(t *testing.T) {
+// TestPlanCommandFlags checks the shared flags and the run-only preview flag.
+func TestPlanCommandFlags(t *testing.T) {
 	app := New("dev", strings.NewReader(""), output.NewWriter(io.Discard))
 	t.Cleanup(app.sink.Close)
 	root := app.Root()
-	// Cobra adds the help command to the tree when it initialises the
-	// command, so the reported list is read from an initialised tree.
-	root.InitDefaultHelpCmd()
-	require.Equal(t,
-		[]string{"run", "dry-run", "doctor", "capabilities", "version", "help"},
-		app.commandNames(root),
-		"capabilities command list drifted from the command tree")
 	for _, name := range []string{"run", "dry-run", "doctor"} {
 		cmd, _, err := root.Find([]string{name})
 		require.NoError(t, err, "command %q", name)

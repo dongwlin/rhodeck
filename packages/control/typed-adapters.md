@@ -20,11 +20,9 @@ Four child packages provide strict adapters: [`operprogress.New`](adapters/operp
 the root package never imports their implementations. The
 [standalone CLI](../../apps/cli/README.md) registers all four explicitly for
 `run` and `dry-run`; a task still selects one only through `Task.Adapter`.
-Device acceptance is partial: authorized executions on 2026-11-02 covered
-limited scenarios for each adapter, and the CLI capability report keeps the
-reviewed MAA source revisions, the rolling Core version policy, the uninspected
-installation and each adapter's executed scope separate. Actual versions and
-digests come from doctor/run/record; the host maintains
+The CLI capability report describes local input and result contracts without
+inspecting the installed Core or resources. Actual versions and digests come
+from doctor/run/record; the host maintains
 [installation provenance](../../apps/cli/installation-provenance.md).
 The OperProgress
 input accepts only exact, case-sensitive `plans` entries with `role`, `name` and
@@ -141,13 +139,8 @@ do not manufacture clears. Missing evidence remains `typed_incomplete` even
 after chain success. Identical facts are idempotent; contradictory facts
 preserve the first fact and trigger `typed_conflict`.
 
-This scope relies on Core's synchronous list execution and FIFO callbacks,
-reviewed at upstream revision `9b75f9f7b103079458414c6e20216c8c531d6987`;
-it does not pin or guarantee compatibility with a Core version. Local tests
-cover preparation, interpretation, lifecycle faults and durable recovery. One
-copilot_list entry was observed clearing on a local device; actual installation
-callbacks for the other branches, other Core versions and other devices remain
-unverified. Result
+This scope relies on Core's synchronous list execution and FIFO callbacks;
+it does not pin or guarantee compatibility with a Core version. Result
 integration describes lists as `stage_results` with policy `all` and
 single-file/loop inputs as `none`; the CLI capability report states the same
 selection through `objective_policies` and `policy_selection`, and its dry-run
@@ -199,9 +192,7 @@ counted per declared run in arrival order, and the extra-info facts
 `RoguelikeJieGardenTargetFound` and the BlackFlow start-run status establish
 their single objective exactly. Chain completion, stops and unknown statuses
 never create facts; missing evidence stays unobserved and is never inferred
-from `AllTasksCompleted`. Roguelike device evidence covers one explicit stop
-that preserved an unknown objective; settlements, investment, rotation and full
-runs are not device-verified. The CLI dry-run shows the policy each task actually
+from `AllTasksCompleted`. The CLI dry-run shows the policy each task actually
 selected.
 
 ## Preparation and policies

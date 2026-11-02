@@ -14,6 +14,7 @@ CLI 分四层，单向依赖 `app → cmd → plan → output`；层依赖由 `i
 - `main.go` 只保留版本注入与入口委托；`internal/app` 的 `Run` 处理进程信号，`runCLI` 接收显式参数、context 和标准流。
 - 计划读取复用 `control.DecodePlan`；`run` 与 `dry-run` 共用 `plan.Service` 与 `control.PreparePlan`。前置输入校验必须早于目录创建、加锁和 worker 启动，不能在 cmd 另建计划或适配器校验规则。
 - 适配器仅由精确的 `task.adapter` 选择，不能按熟悉的任务类型自动启用。修改 `plan` 的适配器注册表时同步输入说明、策略选择和未验证条件；help 与 capabilities 的名称、版本从 `Descriptor()` 派生，逐任务 `objective_policy` 从准备结果读取。
+- capabilities 与 dry-run 只描述实现的输入、结果和本次检查边界；特定日期的设备实跑、源码审查基线、安装验收流程与证据模板归 ops，不写入注册表或机器输出。
 
 ## 命令面
 
@@ -37,10 +38,11 @@ CLI 分四层，单向依赖 `app → cmd → plan → output`；层依赖由 `i
 - 注册表、能力声明和逐任务策略变更覆盖输入选择与预览；typed 执行变更覆盖同类型任务隔离、失败与不完整结果、终态与记录一致性。沿用跨进程夹具验证关联和输出，不能只测静态能力描述。
 - 输出阻塞、断管、取消和超时使用受控 writer 与 helper 进程，检查中止后不再开始写入、目录锁释放与 worker 回收。Unix 信号测试保持相应平台约束；进程退出检查复用 `requireWorkerExited` 的平台处理。
 - 单元测试放在被测层：`internal/cmd` 覆盖命令树与 flag 面，`internal/output` 覆盖信封字段与 writer 语义，`internal/plan` 覆盖适配器注册表。命令树、信封字段和退出码已由进程级用例覆盖时不再重复断言。
+- 测试围绕可观察行为与稳定结构选择，不逐句锁定 help、输入说明或未验证提示，也不为已移除的历史版本、字段或验收措辞逐项增加否定断言。
 
 ## 延伸阅读
 
 | 入口 | 用途与阅读时机 |
 | --- | --- |
 | [CLI 契约](README.md) | 修改命令、参数、JSON 输出、退出码或交付范围时读取 |
-| [安装来源记录](installation-provenance.md) | 修改安装诊断、快照和资源来源说明时读取；附 manifest 模板入口 |
+| [安装元数据与版本校验](installation-provenance.md) | 修改安装诊断、快照标识、摘要覆盖范围或期望版本/摘要校验时读取 |

@@ -63,9 +63,7 @@ type Version struct {
 }
 
 // Capabilities reports the platform, the worker protocol version, the
-// registered task adapters and the task input contract. Device scope stays in
-// the adapter rows that observed it; the report carries no top-level summary
-// or review basis that could outlive the evidence behind it.
+// registered task adapters and the task input contract.
 type Capabilities struct {
 	Header
 	Version             string       `json:"cli_version"`
@@ -83,8 +81,8 @@ type Capabilities struct {
 
 // AdapterRow describes one registered adapter in machine output. The name and
 // version come from the adapter descriptor, the remaining fields document what
-// the runner accepts, which objective policies the inputs can select and which
-// evidence is still missing.
+// the runner accepts, which objective policies the inputs can select and how
+// results are interpreted.
 type AdapterRow struct {
 	Name                 string                    `json:"name"`
 	Version              int                       `json:"version"`

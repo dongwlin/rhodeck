@@ -34,22 +34,8 @@ type Spec struct {
 	// results. It becomes part of the acceptance statement; adapters whose
 	// every input selects a policy leave it empty.
 	InputOnlyNote string
-	// DeviceAcceptance names the scope of this adapter that authorized device
-	// execution actually covered. It is appended to the acceptance sentence so
-	// a row never implies branches or platforms that were not run; an empty
-	// value reports none.
-	DeviceAcceptance string
-	Unverified       []string
-	newAdapter       func() control.TaskAdapter
-}
-
-// deviceAcceptance returns the executed scope of this adapter, defaulting to
-// none so a spec cannot inherit another adapter's evidence.
-func (s Spec) deviceAcceptance() string {
-	if s.DeviceAcceptance == "" {
-		return "none"
-	}
-	return s.DeviceAcceptance
+	Unverified    []string
+	newAdapter    func() control.TaskAdapter
 }
 
 // Row builds the capability row of one spec. result_interpretation names the
@@ -70,7 +56,7 @@ func (s Spec) Row() output.AdapterRow {
 	return output.AdapterRow{
 		Name: ref.Name, Version: ref.Version, CoreType: s.CoreType, Input: s.Input,
 		ObjectivePolicies: s.ObjectivePolicies, PolicySelection: s.PolicySelection,
-		ResultInterpretation: interpretation, Acceptance: acceptance + "; authorized device acceptance: " + s.deviceAcceptance(),
+		ResultInterpretation: interpretation, Acceptance: acceptance,
 	}
 }
 
@@ -86,11 +72,8 @@ func specs() []Spec {
 			Input:                "strict plans: 1-128 entries with role (Pioneer, Warrior, Tank, Sniper, Caster, Medic, Support, Special), name (valid UTF-8, 1-256 bytes, no NUL, not all whitespace) and exactly one of elite 1-2, skill_level 2-7 or skill_mastery (three 0-3 integers, exactly one nonzero slot); targets op-0001..op-0128",
 			Unverified: []string{
 				"oper_progress: operator identity, role agreement with installed battle data, skill existence, elite prerequisites, materials, inventory and training-room state",
-				"oper_progress: target achievements and training-start reports were observed once on one local device; other plans, operators and failure modes are not device-verified",
 				"oper_progress: a mastery Completed report means training at the target level started; it does not prove training finished or was independently confirmed",
 			},
-			DeviceAcceptance: "one already-satisfied plan and one authorized training batch on 2026-11-02 " +
-				"(target mastery training started while another target failed); other plans, operators and failure modes are not verified",
 			newAdapter: operprogress.New,
 		},
 		{
@@ -101,11 +84,8 @@ func specs() []Spec {
 			Input:                "strict themes: 1-32 distinct names (valid UTF-8, 1-256 bytes, no NUL, no leading or trailing whitespace); sole target theme-selection; Core selects one candidate at random once, not a retry or fallback sequence",
 			Unverified: []string{
 				"switch_theme: theme availability, unlock state and the final theme state",
-				"switch_theme: only the already-set branch was observed on one local device; actual changes, locked, not-found and confirmation observations are not device-verified",
-				"switch_theme: multiple candidates are a single random selection, not a sequential retry, progressive-switch list or failure fallback; this is not device-verified",
+				"switch_theme: multiple candidates are a single random selection, not a sequential retry, progressive-switch list or failure fallback",
 			},
-			DeviceAcceptance: "the already-set branch on 2026-11-02; actual changes, locked, not-found, " +
-				"multi-candidate selection and confirmation are not verified",
 			newAdapter: switchtheme.New,
 		},
 		{
@@ -117,11 +97,8 @@ func specs() []Spec {
 			InputOnlyNote:        "single-file and loop inputs interpret no results (none); a completed single-file chain does not prove a clear or a safe device handoff",
 			Unverified: []string{
 				"copilot: file existence and contents, stage support, navigation and recognition against the installed resources, and formation or operbox state are never inspected during preparation",
-				"copilot: one list entry clearing with three stars was observed on one local device; multi-entry files, raids, loops, failures and single-file runs are not device-verified",
 				"copilot: load success, append acceptance and chain completion do not establish stage facts; a completed single-file or loop chain does not prove a clear or a safe device handoff",
 			},
-			DeviceAcceptance: "one copilot_list entry clearing an official job with three stars on 2026-11-02; " +
-				"multi-entry files, raids, loops, failures and single-file runs are not verified",
 			newAdapter: copilot.New,
 		},
 		{
@@ -133,11 +110,8 @@ func specs() []Spec {
 			InputOnlyNote:        "modes 6 and 7 with their rotation switch off, modes without a reliable terminal fact and the BlackFlow strategy profiles interpret no results (none)",
 			Unverified: []string{
 				"roguelike: theme availability, operator and squad names, seeds, foldartal and paradigm names and reward identifiers against the installed resources, and device readiness are never inspected during preparation",
-				"roguelike: only an explicit stop was observed on one local device; run settlement, investment, rotation, target-found and start-run facts are not device-verified",
 				"roguelike: missing settlement evidence stays unobserved even after chain completion and is never inferred from finished tasks",
 			},
-			DeviceAcceptance: "an explicit stop that preserved an unobserved objective on 2026-11-02; " +
-				"settlement, investment, rotation and full runs are not verified",
 			newAdapter: roguelike.New,
 		},
 	}
@@ -156,8 +130,7 @@ func Adapters() []control.TaskAdapter {
 }
 
 // Rows derives the capability rows from the same descriptors the runner
-// registers. Acceptance text names the executed scope per adapter and never
-// extends the observed scope to other branches, Core versions or platforms.
+// registers. Each row describes local preparation and result interpretation.
 func Rows() []output.AdapterRow {
 	specs := specs()
 	out := make([]output.AdapterRow, 0, len(specs))
