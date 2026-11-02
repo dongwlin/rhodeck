@@ -231,8 +231,7 @@ plan in the private record. Mutating a preview cannot alter an admitted run.
 | TypedResult | Absent | `schema_version: 1`, matching `objective_policy: "all"` or `"any"` |
 | CLI envelope | `schema_version: 1` | `schema_version: 1` |
 
-The schema is under development and extends version 1 directly before the first
-release. Unpublished snapshots have no compatibility guarantee. Adapter versions
+Unpublished schema snapshots have no compatibility guarantee. Adapter versions
 select reducer implementations and do not denote product releases.
 
 `DecodePlan` and `ValidatePlan` check structural versions and budgets.

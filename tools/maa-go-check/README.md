@@ -3,8 +3,6 @@
 `maa-go-check` 是 maa-go 的分层验收入口。它把静态声明检查、Go 故障
 注入、loader/ABI/callback fixture 与真实 MaaCore 无设备链路分成独立的
 层运行，并逐层报告 `PASS`、`UNVERIFIED`、`FAIL` 或 `NOT SELECTED`。
-它存在的目的只有一个：让"跳过不是通过"成为可执行的退出码，而不是
-报告里的一句话。
 
 ## 用法
 
@@ -66,14 +64,8 @@ go build -o maa-go-check ./tools/maa-go-check
 | `fmt` | `gofmt -l .`，有输出即失败 | 无 | 是 |
 | `race` | `go test ./packages/maa-go/... -race`，另以 `-skip` 排除 TestRealCore（Go 并发/单元测试；真实核心由 core 覆盖） | `cc`/`gcc`（race 需要 cgo） | 独立任务 |
 
-`race` 层由 `raceGoTestStep` 固定携带 `Race: true`，`goTestArgs` 因此
-追加 `-race`；同时固定 `-skip 'TestRealCore'`，只跑 Go 并发/单元测试。
-被 `-skip` 排除的 TestRealCore 是真实库子进程验收，不属于 Go 并发
-检查，且 CI 没有发行包；它不会出现在 `go test -json` 的 skip 事件里，
-所以该层 `Skipped=0`，报告的 `skip_filter` 字段与详情会写明排除模式。
-真实核心生命周期由 `core` 层单独覆盖。
-`TestGoTestArgsIncludesRaceOnlyWhenRequested` 同时钉住 `-race` 与该
-`-skip` 值。
+`race` 层使用 `-race` 与 `-skip TestRealCore`，仅运行 Go 并发/单元测试。
+被排除的测试不计入 `Skipped`，报告的 `skip_filter` 写明排除模式。
 
 `--layers ci` 是 `static,go,loader,abi,callback,build,fmt`。
 `--layers all` 包含 `core` 与 `race`；缺少实际安装输入或编译器时对应层为
@@ -95,8 +87,8 @@ go build -o maa-go-check ./tools/maa-go-check
 Linux 额外执行 loader/ABI/callback 独立 fixture 层。Windows 使用 runner
 预装的 MinGW gcc，macOS 使用系统 C 编译器。`static` 在所有 runner 上检查选定头文件的
 `linux/amd64`、`windows/amd64` 两个声明目标，不把宿主架构当成新的
-声明目标。Windows/macOS 生产 loader 由本机原生库与夹具测试验证；
-真实 MaaCore、设备与 Docker 运行不在上述 CI 测试覆盖范围内。
+声明目标。Windows/macOS loader 用例需要本机原生库与夹具；
+上述 CI 不运行 `core` 层或启动设备与 Docker。
 
 ## 状态与退出码
 

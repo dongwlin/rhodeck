@@ -74,7 +74,7 @@ check-maa-api --goos windows --goarch amd64 \
 | 类别 | 覆盖 |
 |---|---|
 | `input` | 命令参数、清单/文件/摘要/来源/目标、Go 文件选择(目录缺失、共用声明文件缺失或被约束隐藏) |
-| `c-syntax` | C 输入的受限语法、宏、条件与 typedef(第一段冻结) |
+| `c-syntax` | C 输入的受限语法、宏、条件与 typedef |
 | `go-syntax` | Go 解析、声明形式、raw 类型词表、名字遮蔽、unsafe 导入形态、重复声明、空清单、共用文件自带 build 约束 |
 | `relation` | C↔Go 一对一关联:未知导出、漏绑、重复绑定、错误/重复 Target、多余 raw 字段、陈旧或重复排除、实验发现未排除或被绑定、平台矛盾 |
 | `policy` | 独立绑定策略期望比对:绑定未冻结符号、D/实验项改绑、required↔optional 互换、allPlatforms↔windowsOnly 互换、期望绑定符号被排除或缺失绑定;诊断含条目文件/行号/符号与 expected/actual 策略 |
@@ -84,7 +84,7 @@ check-maa-api --goos windows --goarch amd64 \
 
 支持的声明语法边界如下。**支持**:
 
-- C 侧(第一段冻结):`#pragma once`、注释、冻结 include 集合、
+- C 侧：`#pragma once`、注释、冻结 include 集合、
   AsstPort.h 的锁定宏表、冻结的条件拼写(非活跃分支同样检查)、
   标量 typedef 链、`AsstHandle`、`AsstApiCallback` 函数指针、普通
   `返回类型 ASSTAPI 名称(参数列表);`、唯一的
@@ -155,37 +155,14 @@ GOOS/GOARCH、`CGO_ENABLED=0` 与工具链 release tags 用标准库 go/build
 
 [仓库头快照](testdata/snapshot/README.md)保留来源和许可，目录与 `snapshot_id` 不带发行版本。升级时替换头文件并更新清单实测摘要；来源 tag 只说明本次输入，不是可接受版本白名单。新的声明、宏或 ABI 形态不在支持范围内时明确失败，需审查和更新绑定及独立期望。静态通过不证明该发行库或设备能力可用。
 
-## 反例覆盖
+## 测试范围
 
-反例按类别以**完整命令入口**验收:每个反例在
-进程内走 Run 的完整 CLI 路径(参数解析 → 摘要校验 → 文件读取 → C
-提取 → Go 选择/提取 → 关联 → 期望比对 → 签名比对 → 退出),断言非
-零退出、stdout 无内容且无 PASS、stderr 含目标头（声明阶段还含快照身份）、诊断类别
-与文件/行号/符号定位。C 侧变体重新计算调用方清单的文件摘要，从而通过输入完整性核对后到达解析与比对;Go 侧变体用复制后的真实 native 目录改
-写。拒绝层如实归属:被更早层冻结规则拒绝的向量钉死在该层,不强行移
-到比对层。
+测试覆盖输入完整性、受限 C 提取、Go 文件选择与声明提取、C↔Go 关联、
+独立策略和签名比对，以及符号、宽度、指针、参数次序、callback 和平台
+策略的破坏变体。命令级用例要求失败时 stdout 为空，并核对诊断类别与
+源码定位。测试输入通过各自的来源清单校验，不依赖网络或默认缓存。
 
-| 类别 | Run() 级反例测试 | 拒绝层 |
-|---|---|---|
-| 输入/目标 | `TestRunArgumentFailures`(缺 flag、已移除的 profile flag、未知目标)、`TestRunInputFailures`(缺头、缺清单、缺 native 目录)、`TestCounterexampleCInputThroughCLI`(空文件、盘上摘要不符、清单路径越界)、`TestRealNativeVariantsFailThroughCLI`(空 API/符号/排除表) | input |
-| C 提取 | `TestCounterexampleCExtractionThroughCLI`(未知 typedef、循环别名、非活跃分支未知条件、GetVersion 特殊拼写、ASST_CALL 右值与外部预定义、零参数函数加参) | c-syntax |
-| 覆盖/关系 | `TestRealNativeVariantsFailThroughCLI`(漏绑、重复绑定、Name 拼错、不存在字段、字段无条目)、`TestCounterexampleCoverageRelationThroughCLI`(Target 指向另一存在字段、helper/计算构造、拼接符号名、别名 unsafe 导入) | relation / go-syntax |
-| 策略/平台 | `TestRealNativeVariantsFailThroughCLI`(R↔O 互换、D 项改绑、适用导出被排除、平台互换) | policy / relation(平台互换被 link 先拒绝,期望比对独立性由 expect_test.go 直接钉死) |
-| 宽度/符号 | `TestRealNativeSignatureVariantsFailThroughCLI`(uint64→uintptr 等)、`TestCounterexampleSignatureThroughCLI`(uint8→bool、int32→int/uint32、void 虚构 uint8 返回、增删参数) | signature / go-syntax(词表外拼写) |
-| 指针/角色 | `TestRealNativeSignatureVariantsFailThroughCLI`(图像 unsafe.Pointer→uintptr、const char*→uint8_t*、丢 const)、`TestCounterexampleSignatureThroughCLI`(char* 返回→uintptr、*int32→unsafe.Pointer;char** 以 c-syntax 拒绝) | signature / c-syntax(多级指针) |
-| 参数次序 | `TestRealNativeSignatureVariantsFailThroughCLI`(x/y)、`TestCounterexampleSignatureThroughCLI`(level/message、callback/customArg、窗口 method) | signature |
-| 精确排除 | `TestRealNativeVariantsFailThroughCLI`(改名失效排除)、`TestCounterexampleExclusionThroughCLI`(重复、空原因、通配符样式、排除已绑定项、实验导出删除/新增/脱离守卫) | relation / go-syntax(空原因)/ c-syntax(发现集) |
-| callback | `TestCounterexampleCallbackThroughCLI`(Unix 增返回、Windows 少返回/返回非 uintptr、两平台参数调序/错类型、C 侧 void 改非 void/丢 ASST_CALL;比对层等价向量见 compare_test.go) | go-syntax(返回形态)/ signature(参数)/ c-syntax(C 侧拼写) |
-| 文件选择 | `TestRealNativeVariantsFailThroughCLI`(共用文件缺失/被约束隐藏)、`TestCounterexampleFileSelectionThroughCLI`(平台 tag、ignore tag、_test.go 中的正确副本均不掩盖生产错误) | input / signature / go-syntax |
-| 独立性 | `TestRealNativeVariantsFailThroughCLI`(只改 Go 派生表的 policy 破坏)、`TestCounterexampleIndependenceThroughCLI`(字段+Target 同步改名、Go 自洽参数调序) | relation / signature / policy |
-
-「以默认 feature=0 漏做 Extra 发现」的路径被结构性关闭:实验发现
-pass 恒以 `ASST_WITH_EXTRA_CALLERS=1` 运行,其结果集被钉死为两个锁
-定实验符号(cextract.go),任何扰动(删除、新增、脱离守卫)都以
-c-syntax 拒绝;正例基线同时断言成功报告的 `discovery_exports` 恰为
-两项(main_test.go)。
-
-### 范围边界
+## 范围边界
 
 静态 checker 只证明**声明层**的一致性,它不能证明:
 
@@ -200,10 +177,8 @@ c-syntax 拒绝;正例基线同时断言成功报告的 `discovery_exports` 恰�
   解析声明并核验 Windows 分支拼写,不声称 Windows 库执行通过。
 
 命令不提供 skip-hash、`-D` 或自定义 build tags；显式输入仍须通过完整性、声明、关系、独立策略和签名检查。生产代码没有 profile 注册表。
-宏环境固定(无外部 `-D`/host 继承),外部预定义 `ASST_CALL` 在
-进入 AsstPort.h 前即被拒绝,Wine 调用约定分支的拼写冻结在 Port 宏
-表内——外部 ASST_CALL/Wine 配置没有输入通道
-(TestPassZeroAndHostileEnv、TestNewMacroEnv)。
+宏环境固定，不继承外部 `-D` 或宿主预定义宏。外部 `ASST_CALL` 与
+Wine 配置没有输入通道；对应调用约定只按头文件中的受支持拼写解析。
 
 ## 测试
 
@@ -211,11 +186,5 @@ c-syntax 拒绝;正例基线同时断言成功报告的 `discovery_exports` 恰�
 CGO_ENABLED=0 go test ./tools/check-maa-api/... -count=1
 ```
 
-覆盖:C 输入校验与受限 C 提取(含失败向量)、Go 文件选择、Go 提取
-形式向量、C↔Go 关联向量、冻结期望表逐项钉死与期望比对失败向量、
-宽度级签名比对的冻结映射表钉死与接受/拒绝向量(真实生产树正例、
-Go/C 两侧过错方定位、callback 平台适配、C callback 变体的 c-syntax
-拒绝归属)、真实目录破坏变体与按目录类别归组的完整命令入
-口反例集(counterexample_cli_test.go,含 C 提取、输入摘要、覆盖/
-关系、精确排除与实验发现、宽度/指针/次序、callback、文件选择正确
-副本不掩盖、独立性)、有来源头快照的两目标端到端正例与 signatures 段确定性。`CHECK_MAA_API_INPUT` 可显式覆盖集成测试的输入目录，错误输入失败；默认使用仓库快照，不查找发行包缓存。`TestVendoredInputRun` 核对快照的完整报告，`TestRunAcceptsCallerInputWithoutVersionRegistry` 证明其他调用方输入无需注册版本。全部测试 `CGO_ENABLED=0` 可跑，无网络与绝对路径依赖。
+`CHECK_MAA_API_INPUT` 可显式覆盖集成测试的输入目录，错误输入失败；
+默认使用仓库快照，不查找发行包缓存。

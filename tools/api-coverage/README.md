@@ -9,14 +9,14 @@
 工具只使用主项目内容（`packages/maa-go`、`apps/worker`、
 `packages/control/worker`），只读不写，不加载原生库，不属于 maa-go 的运行
 依赖。它不改变绑定生产 API，也不解释原生行为；静态一致只证明清单与源码
-同步，不证明 worker 能力已实现——「已完成」以各任务的实际验证记录为准。
+同步，不能证明原生行为或任务执行结果。
 
 ## 两种模式
 
-| 模式 | 含义 | 当前预期结果 |
-| --- | --- | --- |
-| `--mode drift`（默认） | 源码必须与冻结清单逐项一致（新增/删除/改签名/改字段/改常量/改错误都算漂移）；`done` 条目的四段引用必须全部可解析；`pending:WKR-xx` 缺口允许存在 | 通过（当前零已登记缺口） |
-| `--mode final` | 在漂移检查之上，要求零 `pending` 项；已登记缺口不算覆盖 | 通过（零 pending）；出现新缺口即失败 |
+| 模式 | 含义 |
+| --- | --- |
+| `--mode drift`（默认） | 源码必须与清单逐项一致（新增、删除、签名、字段、常量或错误变化都算漂移）；`done` 条目的四段引用必须全部可解析；允许登记 `pending` 缺口 |
+| `--mode final` | 在漂移检查之上，要求零 `pending` 项；已登记缺口不算覆盖 |
 
 `na` 条目（如 `Capabilities.Create`：公共层统一走 CreateEx，无公开入口）
 必须附注理由与等价映射，不计缺口也不计覆盖。
@@ -25,7 +25,7 @@
 
 ```sh
 go run ./tools/api-coverage --root .                # 漂移检查（CI/日常门禁）
-go run ./tools/api-coverage --root . --mode final   # 最终完整性检查（WKR-12 复验）
+go run ./tools/api-coverage --root . --mode final   # 完整性检查
 go run ./tools/api-coverage --emit                  # 打印扫描得到的符号表（对账用）
 ```
 
@@ -38,9 +38,8 @@ go run ./tools/api-coverage --emit                  # 打印扫描得到的符�
   失败；测试函数的引用必须真实存在，伪造引用会被解析失败拦下。
 - `done` 条目的五段缺一不可：只写能力布尔标记（如 capabilities 里的一个
   bool）而没有 worker 分支、客户端方法与验收用例，检查一律失败。
-- 缺口按 `pending:WKR-xx` 登记归属，`--mode final` 要求清零。当前清单
-  零 pending：新增能力必须先登记映射与用例再交付；重构缺口归属任务时
-  同步改写登记，不以「以后按需补」关闭。
+- 缺口状态格式为 `pending:WKR-01..12`，`--mode final` 要求清零。新增
+  能力需同时登记映射与用例；变更缺口归属时同步改写登记。
 
 ## 测试
 

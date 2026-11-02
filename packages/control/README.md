@@ -40,11 +40,7 @@ and register their instances in `Config.Adapters` or pass them to `PreparePlan`.
 The root package depends only on the adapter contracts, without importing any
 concrete adapter or maintaining a global registry. The
 standalone CLI registers all four for `run` and
-`dry-run`; a task still selects one only through `Task.Adapter`. Adapter inputs and
-results are locally implemented and tested. Device acceptance is partial:
-authorized executions on 2026-11-02 covered limited scenarios for each adapter,
-and the CLI capability report names the executed scope per adapter. This package
-makes no device claim of its own.
+`dry-run`; a task still selects one only through `Task.Adapter`.
 
 ## Package boundaries
 
@@ -134,9 +130,8 @@ their typed event is published. The record retains the original caller plan;
 the worker receives the separately compiled parameters. Records use private
 file permissions, a flushed temporary file and
 atomic replacement. Newly created directories and replacements are synced on
-Linux/macOS; Windows flushes record contents before replacement, and power-loss
-durability of directory metadata has not been verified. Process-crash recovery
-and file replacement are covered separately from platform power-loss behavior.
+Linux/macOS; Windows flushes record contents before replacement. These operations
+do not guarantee directory-metadata durability across power loss.
 A record persistence failure wraps `ErrRecordWrite`. This includes the admission
 save returned by `Runtime.Run`, later run saves and a recovery resave during
 `New`; the corresponding code is `record_write_failed`. It is a persistence
@@ -154,10 +149,9 @@ inspection; it does not acquire execution ownership.
 Records include raw task parameters, paths and connection data and may contain
 secrets. Keep the data directory private. Retention, backup and deletion belong
 to its owner; this version neither uploads records nor deletes old evidence.
-Raw callback streams are transient and are not journaled. The current schema
-is still under development and is extended directly before the first release;
-unpublished snapshots have no compatibility or migration guarantee. Unsupported
-versions and malformed records are rejected without deleting or replaying them.
+Raw callback streams are transient and are not journaled. Unpublished snapshots
+have no compatibility or migration guarantee. Unsupported versions and malformed
+records are rejected without deleting or replaying them.
 
 `Doctor` acquires directory ownership and initializes an explicit installation
 in a supervised child, then closes and reaps it. It never connects, appends or
@@ -165,6 +159,5 @@ starts tasks, though native initialization can write Core logs to `user_dir`.
 Capabilities report native symbols and installation facts, not an enumeration
 of supported task types or proof of device compatibility.
 
-This stage provides no scheduler, execution queue, named configurations,
-network API, automatic updater, cross-runtime device lock or task-specific
-presets. Those can reuse the application service when separately implemented.
+This service provides no scheduler, execution queue, named configurations,
+network API, automatic updater, cross-runtime device lock or task-specific presets.
