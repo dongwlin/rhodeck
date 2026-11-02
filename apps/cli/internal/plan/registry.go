@@ -16,19 +16,6 @@ import (
 	"github.com/dongwlin/rhodeck/packages/control/adapters/switchtheme"
 )
 
-// AdapterBasis records the implementation review behind the bundled adapters.
-// It names the reviewed source revisions and the limited device executions,
-// without extending the observed scope to every accepted input.
-const AdapterBasis = "MAA source 9b75f9f7b103079458414c6e20216c8c531d6987 static review; MAA WPF GUI/Core source " +
-	"d8a98c72a45618f24e9c55fa014809d5ade6bf52 compared for the accepted inputs; each adapter was executed " +
-	"against one local Android device on 2026-11-02"
-
-// DeviceAcceptance summarizes the authorized device evidence of the bundled
-// adapters. Each capability row states the scope that was actually executed,
-// so this summary never stands in for a full device matrix.
-const DeviceAcceptance = "partial; each adapter row names its executed scope; " +
-	"no other branch, Core version, platform or device is verified"
-
 // Spec pairs one locally registered adapter with the Core type it accepts and
 // the facts strict preparation cannot verify locally. Adapter identity in
 // capability output comes from Descriptor, so name and version are declared

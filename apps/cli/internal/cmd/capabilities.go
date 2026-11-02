@@ -35,10 +35,8 @@ func (a *App) capabilitiesCommand(root *cobra.Command) *cobra.Command {
 				Commands:          a.commandNames(root),
 				TaskInput:         "string task type and raw JSON object parameters",
 				TaskAdapters:      plan.Rows(),
-				AdapterBasis:      plan.AdapterBasis,
 				CoreVersionPolicy: coreVersionPolicy,
 				InstallationFacts: installationFacts,
-				DeviceAcceptance:  plan.DeviceAcceptance,
 				TaskAcceptance:    "determined by the explicitly selected Core and resources at execution",
 			}
 			if err := a.sink.Emit(cmd.Context(), report, nil, nil); err != nil {

@@ -63,7 +63,9 @@ type Version struct {
 }
 
 // Capabilities reports the platform, the worker protocol version, the
-// registered task adapters and the task input contract.
+// registered task adapters and the task input contract. Device scope stays in
+// the adapter rows that observed it; the report carries no top-level summary
+// or review basis that could outlive the evidence behind it.
 type Capabilities struct {
 	Header
 	Version             string       `json:"cli_version"`
@@ -73,10 +75,8 @@ type Capabilities struct {
 	Commands            []string     `json:"commands"`
 	TaskInput           string       `json:"task_input"`
 	TaskAdapters        []AdapterRow `json:"task_adapters"`
-	AdapterBasis        string       `json:"adapter_basis"`
 	CoreVersionPolicy   string       `json:"core_version_policy"`
 	InstallationFacts   string       `json:"installation_facts"`
-	DeviceAcceptance    string       `json:"device_acceptance"`
 	NativeTaskDiscovery bool         `json:"native_task_discovery"`
 	TaskAcceptance      string       `json:"task_acceptance"`
 }
