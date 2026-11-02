@@ -8,10 +8,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// coreVersionPolicy describes installation selection without claiming that a
-// source review verifies any installed library, resources or task capability.
-const coreVersionPolicy = "rolling; use the latest caller-provided Core and resources; no fixed Core version or old-version compatibility guarantee; no automatic downloads or updates; only the actual combination verified by doctor/run/record is evidence"
-
 // installationFacts states what capability discovery knows about an installed
 // Core. Discovery takes no plan and never loads native code.
 const installationFacts = "not inspected; capabilities performs no installation discovery or native loading; run doctor with an explicit plan to inspect an installation"
@@ -35,7 +31,7 @@ func (a *App) capabilitiesCommand(root *cobra.Command) *cobra.Command {
 				Commands:          a.commandNames(root),
 				TaskInput:         "string task type and raw JSON object parameters",
 				TaskAdapters:      plan.Rows(),
-				CoreVersionPolicy: coreVersionPolicy,
+				CoreVersionPolicy: "no fixed Core version",
 				InstallationFacts: installationFacts,
 				TaskAcceptance:    "determined by the explicitly selected Core and resources at execution",
 			}

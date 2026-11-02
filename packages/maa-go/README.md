@@ -5,41 +5,19 @@
 `MaaCore.dll`（Windows），不把 MaaCore 链接进 Go 二进制，
 生产 Go 包可以 `CGO_ENABLED=0` 构建。
 
-**验证边界**：Linux amd64 / glibc 是真实库无设备验证入口；下方公开面
-描述绑定提供的 API。支持结论只覆盖实际验证并记录的 Core、资源与平台
-组合，不随版本滚动继承。其他平台和未执行的层保持未验证。
-
-## 支持矩阵
-
-| 平台 | 架构 | 运行环境 | 结论 |
-|---|---|---|---|
-| Linux | amd64 | glibc | 真实库无设备入口；以实际安装组合的执行记录为准 |
-| Linux | arm64 | CI 仅交叉编译包与测试二进制 | 未执行单测或真实 Core |
-| macOS | arm64 | CI 执行 Go/fake-native 与原生 loader 测试 | loader 已实现；结果以 CI run 为准 |
-| macOS | amd64 | CI 执行 Go/fake-native 与原生 loader 测试 | loader 已实现；结果以 CI run 为准 |
-| Windows | amd64 | CI 执行 Go/fake-native 与原生 loader 测试 | loader 已实现；结果以 CI run 为准 |
-| Windows | arm64 | CI 仅交叉编译包与测试二进制 | loader 已实现；未执行单测或真实 Core |
-
-上述 CI 条目描述[工作流配置](../../.github/workflows/maa-go.yml)；具体
-执行结果以对应 CI run 为准。交叉编译只验证编译兼容，不计为实际单测
-执行或真实 MaaCore 运行支持。原生 loader 与夹具测试也不替代真实
-MaaCore 运行验证。
-
 ## ABI 与依赖
 
 Go 工具链与 purego 版本见 [go.mod](../../go.mod)。绑定跟随调用方提供的
 MaaCore 头文件与安装组合，不固定发行版本，也不保证旧版本兼容。
 静态 checker 独立比较 C 头与 Go raw 声明；仓库内未版本化的
 [头文件快照](../../tools/check-maa-api/testdata/snapshot/README.md)记录来源、
-摘要与许可证，仅作为可复验的声明输入，不证明任何安装已验证。
+摘要与许可证，作为静态声明输入。
 `AsstGetNullSize()` 的 `math.MaxUint64` 哨兵仍是输出缓冲区 ABI 约束。
 
-真实库测试显式接收 `MAA_CORE_LIB_PATH` + `MAA_CORE_RESOURCE_ROOT`，或
-`MAA_CORE_TARBALL`，不搜索缓存、不自动下载或更新；输入不完整时报告
-SKIP/UNVERIFIED。实际版本、库和版本文件 SHA256 分别记录；调用方可提供
-期望版本/摘要，不匹配仍失败。命令与变量见[测试夹具说明](testdata/README.md)。
-资源来源及摘要覆盖范围由安装宿主管理；CLI 元数据的对账方式见
-[宿主资源溯源](../../apps/cli/installation-provenance.md)。
+安装的实际版本、库和资源版本文件摘要可通过
+[CLI 安装元数据](../../apps/cli/installation-provenance.md)读取；资源来源与
+摘要覆盖范围由安装宿主管理。真实库测试的输入与可选期望值见
+[测试夹具说明](testdata/README.md)。
 
 测试夹具与 race 层另需 C 编译器：前者按系统生成 `.so`、`.dylib` 或
 `.dll`，后者使用 `-race` 所需的 cgo 运行时；生产 `CGO_ENABLED=0`
@@ -47,8 +25,7 @@ SKIP/UNVERIFIED。实际版本、库和版本文件 SHA256 分别记录；调用
 
 仓库内可重复执行的分层检查包括：静态 checker 双目标、Go 故障注入、
 loader fixture、真实 ABI fixture、原生线程 callback fixture，以及真实库
-无设备链路。各层由 `go run ./tools/maa-go-check --layers …` 独立报告；
-没有运行的层保持未验证。
+无设备链路。各层由 `go run ./tools/maa-go-check --layers …` 独立运行和报告。
 
 ## 公开面
 
@@ -123,8 +100,7 @@ func observe(in *maa.Instance, handleEvent func(maa.Event)) error {
   遗漏依赖可能在 dlopen 时失败；
 - MaaCore 自己依赖系统库，Linux 运行环境需与发行包要求的 glibc
   兼容；不保证 musl、静态单文件或无系统动态库部署；
-- 原生库与资源不随本仓库分发，也不在 `go test` 中打包；真实库测试从
-  显式安装路径或发行包读取并记录摘要，缺失时明确报告受阻，不冒充通过；
+- 原生库与资源不随本仓库分发，由安装宿主提供；
 - 连接参数（ADB 路径、地址、profile）由调用方提供；本包不做设备发现、
   不做 shell 展开、不记录设备地址。
 
@@ -203,60 +179,28 @@ go run ./tools/maa-go-check --layers race
 `go build -o maa-go-check ./tools/maa-go-check` 再运行二进制。CI 使用
 构建后的二进制，因此保留 2/1 的区分。
 
-CI [工作流](../../.github/workflows/maa-go.yml)在 Linux amd64 运行 `ci` 与
-独立 `race`；Windows amd64、macOS 两种架构运行 `static,go,build,fmt`。
-Go 层包含真实系统库与小型原生依赖夹具的加载、函数调用和回调测试。
-Linux、Windows、macOS × amd64、arm64 的全部 6 个组合另做交叉编译，
-构建全部包与测试二进制；Linux/Windows arm64 不执行测试。
-工作流不运行 `core`，也不把任何跳过算作通过。`race` 层以 `-skip` 排除
-`TestRealCore`（真实核心），被排除的测试不会出现在 `go test -json` 的
-skip 事件中、因此不计入 `Skipped`；详情与 JSON 的 `skip_filter` 会写明
-排除模式，真实核心由 `core` 层单独覆盖。
-
-状态含义：`PASS` 表示该层所有检查实际执行并通过；`PASS (expected skips)`
-表示该层只有明确声明的预期跳过，跳过的测试没有验证任何行为，详情会
-列出；`UNVERIFIED` 表示跳过、匹配不到测试或缺少外部资源，**不是通过**，
-二进制退出 2（`go run` 统一显示为 1）；`FAIL` 退出 1；`NOT SELECTED`
-未运行、不做声明。空的 `-run` 选择也是 `UNVERIFIED`。
-
-分层不能互相借结论：静态 checker 只证明声明层；loader fixture 只证明
-装载/解析/注册，空导出绝不可调用；ABI/callback fixture 只证明手写 C
-签名与调用约定；真实库测试证明所提供安装的初始化/生命周期；`race`
-层只跑 Go 并发/单元测试（`-skip TestRealCore`），不证明真实核心行为。
-任何一层没有运行，都不能由另一层替代。
+完整的选层、外部输入、报告状态和退出码见
+[maa-go-check](../../tools/maa-go-check/README.md)；平台与构建矩阵见
+[CI 工作流](../../.github/workflows/maa-go.yml)。
 
 ## 已知限制
 
 - `GetImageBGR` 返回原始 BGR 字节，不公开宽、高与步长元数据，通道序与
   步长由 Core 决定；符号缺席时返回 `ErrUnsupported`，只有能力探测结果。
-- 真实 MaaCore 无设备验证入口面向 Linux amd64/glibc；macOS、Windows 的
-  测试覆盖原生 loader 与夹具，真实 MaaCore 运行未验证；musl 与静态
-  单文件部署未验证。
 - 每进程单 Runtime、单活动实例；无 Dlclose、热重载、同进程重建。
 - `Close` 在原生卡住时可能阻塞；没有自设回收超时，依赖外部 supervisor。
-- 仓库内测试不连接真机；真机连接、截图与任务执行不在自动验收范围内。
 - 任务参数与消息按原文透传；binding 不提供任务类型封闭枚举或培养业务
   模型，未知字段/大整数不被丢弃或改写。
 
-## 版本升级复验
+## 更换 MaaCore 安装
 
-升级 MaaCore/purego/Go 或更换资源包时，按顺序执行并在同一组合上记录
-OS/架构、Go、purego、Core 文件摘要、源码 commit 与资源版本：
+本包不以版本字符串推断兼容性。调用方提供库、完整原生依赖和资源；
+必需符号缺失时加载失败，可选符号缺失时对应能力返回 `ErrUnsupported`。
+版本字符串也不能证明某个任务或回调可用。
 
-1. 显式选择有来源和摘要的头文件输入；使用 `--c-input DIR` 传给
-   `maa-go-check`，先跑 `--layers static`（linux 与 windows 两个目标
-   都必须通过）。若 ABI 变化，同步独立期望表与 raw 声明；仓库快照
-   更新时同步 `inputs.json` 与许可证。
-2. 若签名/常量变化，同步 fixture 与 raw 声明；跑 `--layers loader`、
-   `--layers abi`、`--layers callback`。
-3. 用新发行包跑 `--layers core`，确认真实 Version/NullSize、初始化
-   事务、无设备链路与退出。
-4. 跑 `--layers build`、`--layers fmt`、`--layers race` 与
-   `--layers all`；全绿后才更新本页支持矩阵。
-5. 任何跳过的层保持“未验证”；升级不能把旧平台的旧证据直接继承。
-
-本包不以版本字符串推断兼容性；符号集合、头文件、fixture 与
-真实库结果必须对同一实际组合成立；版本字符串不证明任务能力。
+静态核对可通过 `maa-go-check --c-input DIR --layers static` 选择对应头文件。
+头文件、宏或 ABI 形态改变时，需要同步绑定、独立期望表和夹具。
+安装切换应在旧 worker 退出后进行；运行期间保持库、依赖和资源不变。
 
 ## 相关文档
 

@@ -19,7 +19,7 @@
 
 - 命令状态与时序通过 `session_test.go` 的 fake engine 验证；字段映射、默认值与错误分类补 `backend_test.go`。涉及管道、stdout、退出或信号时，补真实 worker 子进程用例。
 - 原生适配变更使用相应 Linux C 夹具验证接受、拒绝、异步结果与清理；fake engine 不能替代生产适配路径。图像变更覆盖快照所有权、并发准入、分块边界与关闭释放。
-- `TestRealCoreWorkerNoDevice` 位于 `internal/app` 包，使用显式库、资源、SHA256 和版本。保留未连接状态下的本地拒绝探测，不引入设备发现、连接或任务启动。
+- `TestRealCoreWorkerNoDevice` 位于 `internal/app` 包，使用显式库、资源及调用方本次期望的 SHA256 和版本，不设固定发行版。保留未连接状态下的本地拒绝探测，不引入设备发现、连接或任务启动。
 
 ## 延伸阅读
 

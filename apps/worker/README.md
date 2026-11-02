@@ -51,9 +51,8 @@ Paths must be explicit and absolute. `resource_roots` is ordered; each root
 contains `resource/`. Optional `static_options`, `instance_options` and
 `connection_extras` use the [protocol DTOs](../../packages/control/worker/protocol/protocol.go).
 Optional `expected_core_version` and `expected_library_sha256` check the caller's
-chosen installation; no version is imposed by the repository. Use the latest
-host-provided combination and record its actual metadata and
-[host-maintained resource provenance](../cli/installation-provenance.md).
+chosen installation; no version is imposed by the repository. Keep actual metadata
+and [host-maintained resource provenance](../cli/installation-provenance.md) with it.
 
 `limits` is the full explicit [binding limit configuration](../../packages/control/worker/protocol/contract.go)
 (`Limits`); omitting it selects the binding's whole default set, and a present
@@ -248,21 +247,9 @@ The real-Core test is explicitly enabled with `RHODECK_WORKER_CORE_LIBRARY`,
 `RHODECK_WORKER_RESOURCE_ROOT` (the directory that contains `resource/`),
 `RHODECK_WORKER_LIBRARY_SHA256` and `RHODECK_WORKER_CORE_VERSION`. Run
 `go test ./apps/worker/internal/app -run '^TestRealCoreWorkerNoDevice$' -v -count=1`.
-It initializes (once with materialized defaults, once with an explicit limit
-set), verifies the metadata snapshot (version, library and resource digests,
-NullSize, effective limits), checks that the capability report agrees with
-command outcomes for the optional query interfaces, reads log and UUID without
-implying a connection, and asserts native rejections (unknown task type,
-unknown task id) plus an unconnected Screencap probe that settles as
-`native_rejected` without touching any device. It closes cleanly, observes the
-terminal diagnostics snapshot and buffered events, and never connects, starts
-tasks, or performs device actions. Without explicit inputs the test skips; a
-skip is not real-Core verification.
+The test checks initialization, metadata, local API rejections and cleanup without
+connecting a device or submitting tasks. Missing explicit inputs skip the test.
 
-[Worker CI](../../.github/workflows/worker.yml) runs unit/process tests on Linux
-and Windows amd64 and both macOS architectures, race tests on Linux amd64, and
-cross-compiles Linux/Windows/macOS for amd64/arm64. The Linux jobs also execute
-the native-fixture tests and the API coverage drift gate
-(`tools/api-coverage`). Real MaaCore checks remain opt-in. Compilation and
-fixture tests do not establish native Core support on a platform; see maa-go's
-support and deployment contract.
+The platform, fixture and cross-compilation matrix is defined by
+[Worker CI](../../.github/workflows/worker.yml). Deployment dependencies are
+described in the [maa-go README](../../packages/maa-go/README.md).

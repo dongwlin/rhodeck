@@ -5,10 +5,8 @@
 // 测试 fixture(模拟原生库的 C 代码)与 race 检查(-race 需要 cgo
 // 运行时),不是生产构建或运行依赖。
 //
-// 真实库无设备验证入口为 Linux amd64/glibc,结论限于记录的实际组合。
-// 本包不固定 Core 版本,不保证旧版本兼容。其他平台的支持状态不因交叉编译
-// 或声明层检查而成立;本包不承诺任何未经验证的平台。支持声明、
-// 已知限制与版本升级复验步骤见仓库 packages/maa-go/README.md。
+// 本包不固定 Core 版本,不保证旧版本兼容。可选绑定能力由实际符号集合决定,
+// 不从版本字符串推断;部署依赖与使用说明见 packages/maa-go/README.md。
 // Linux/macOS loader 使用 dlopen/dlsym,Windows 使用 LoadLibraryExW/
 // GetProcAddress;依赖由系统 loader 解析,库保持加载到进程退出。
 //
@@ -198,14 +196,12 @@
 // # 部署与外部监督
 //
 // 生产绑定可以 CGO_ENABLED=0 构建,但这不是 MaaCore 无原生依赖的
-// 声明:运行时仍需匹配的 libMaaCore.so、发行包根目录同放的 8 个捆绑
-// 依赖.so(DT_RUNPATH=$ORIGIN)、resource/ 资源根、可写用户目录与
-// ADB;MaaCore 及其系统依赖(本基线 glibc)仍由系统 loader 加载。不
-// 保证 musl、静态单文件或无系统动态库部署。原生库与资源不随本包
-// 分发。真实 MaaCore 运行支持仅限 Linux amd64/glibc;其他平台的
-// loader 与夹具测试不替代真实 MaaCore 验证。一个实例关闭后 Runtime
-// 终止使用,恢复只能退出进程并启动新 worker,不支持同进程
-// Dlclose/热重载/重建。
+// 声明:运行时仍需目标平台的 MaaCore 库、发行包要求的完整原生依赖、
+// 包含 resource/ 的资源根、可写用户目录与 ADB。依赖集合随安装变化,
+// 由系统 loader 解析;Linux 系统库需满足发行包的 glibc 要求。
+// 本包不保证 musl、静态单文件或无系统动态库部署,也不分发库与资源。
+// 一个实例关闭后 Runtime 终止使用,恢复只能退出进程并启动新 worker,
+// 不支持同进程 Dlclose/热重载/重建。
 //
 // 依赖方向固定且单向:公开层 → internal/native → purego / 系统 loader
 // → MaaCore。internal/native 不向公开层导出 raw 函数类型、handle、

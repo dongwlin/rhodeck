@@ -1,6 +1,7 @@
 # Installation metadata and version checks
 
-Rhodeck validates the latest Core and resource combination supplied by the host.
+Rhodeck uses the Core and resource combination supplied by the host; it imposes
+no fixed Core version.
 It does not install, update, discover resource origins or guarantee compatibility
 with older versions. Keep the selected library, dependencies and resources
 immutable for the entire worker lifetime. Revalidate after any change; a version

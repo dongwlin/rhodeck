@@ -46,7 +46,7 @@ CGO_ENABLED=0 go test ./packages/maa-go -run 'TestRealCore' -count=1 -v -timeout
 | `MAA_CORE_EXPECTED_TARBALL_SHA256` | 可选显式 tarball SHA256 期望 |
 | `MAA_CORE_EXPECTED_VERSION_SHA256` | 可选 `resource/version.json` SHA256 期望，仅覆盖该文件 |
 
-例如使用本批次选定的发行包（不填写固定版本或默认路径）：
+也可显式指定发行包：
 
 ```sh
 MAA_CORE_TARBALL=/absolute/input/core.tar.gz \

@@ -25,8 +25,8 @@ info, err := client.Initialize(ctx, protocol.InitializeRequest{
 // Check err and info before connecting. Consume client.Events() in one goroutine.
 ```
 
-Core selection follows the latest caller-provided installation, without a fixed
-release or old-version compatibility guarantee. Optional `ExpectedCoreVersion`
+Core selection uses the caller-provided installation, without a fixed release
+or old-version compatibility guarantee. Optional `ExpectedCoreVersion`
 and `ExpectedLibrarySHA256` reject mismatches against caller-supplied values.
 Keep actual metadata and [host provenance](../../../apps/cli/installation-provenance.md)
 associated with the snapshot ID; a version string does not prove task support.
