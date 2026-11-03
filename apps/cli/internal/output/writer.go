@@ -30,8 +30,6 @@ type Writer struct {
 	grace time.Duration
 }
 
-// writeJob is one queued machine object. The writer goroutine performs the
-// write and reports the result.
 type writeJob struct {
 	write  func() error
 	result chan error
@@ -153,8 +151,6 @@ func (w *Writer) submit(ctx context.Context, write func() error, done <-chan str
 	}
 }
 
-// callRelease runs the producer's release hook once per trigger. The producer
-// keeps it idempotent.
 func callRelease(release func()) {
 	if release != nil {
 		release()

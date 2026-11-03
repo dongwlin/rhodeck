@@ -350,8 +350,6 @@ func (s *session) commands(factory engineFactory) (result error) {
 					out, err = core.ItemName(query)
 				}
 			case protocol.GetImagePNG, protocol.GetImageBGR:
-				// Reading the cache is not a screencap: the snapshot is taken
-				// under the transfer budgets and served chunk by chunk.
 				if err = emptyPayload(req.Payload); err == nil {
 					read := core.GetImagePNG
 					if req.Name == protocol.GetImageBGR {

@@ -5,8 +5,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// runCommand builds the run command. It executes one explicit task batch
-// through the shared control runtime and accepts the run-only preview switch.
 func (a *App) runCommand() *cobra.Command {
 	var opts Options
 	cmd := &cobra.Command{
@@ -28,10 +26,6 @@ func (a *App) runCommand() *cobra.Command {
 	return cmd
 }
 
-// execute runs one explicit batch through the shared control runtime. The
-// machine output carries the run events and the terminal snapshot; the
-// terminal snapshot is written only after the run finished and the runtime
-// released its directory lock.
 func (a *App) execute(cmd *cobra.Command, opts *Options) error {
 	if err := opts.validate(); err != nil {
 		return output.Reject(output.CodeInvalidArguments)

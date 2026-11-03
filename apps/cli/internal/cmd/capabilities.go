@@ -8,12 +8,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// installationFacts states what capability discovery knows about an installed
-// Core. Discovery takes no plan and never loads native code.
 const installationFacts = "not inspected; capabilities performs no installation discovery or native loading; run doctor with an explicit plan to inspect an installation"
 
-// capabilitiesCommand builds the capabilities command. The report performs no
-// installation discovery and loads no native code.
 func (a *App) capabilitiesCommand(root *cobra.Command) *cobra.Command {
 	return &cobra.Command{
 		Use:   "capabilities",

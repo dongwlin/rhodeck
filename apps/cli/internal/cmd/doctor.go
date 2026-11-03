@@ -5,8 +5,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// doctorCommand builds the doctor command. It diagnoses an explicit
-// installation and never submits a device action.
 func (a *App) doctorCommand() *cobra.Command {
 	var opts Options
 	cmd := &cobra.Command{
@@ -23,9 +21,6 @@ func (a *App) doctorCommand() *cobra.Command {
 	return cmd
 }
 
-// diagnose reports the explicit installation. The report carries the failure
-// itself; a rejected or failed diagnosis writes no separate error envelope and
-// no diagnostic line.
 func (a *App) diagnose(cmd *cobra.Command, opts *Options) error {
 	if err := opts.validate(); err != nil {
 		return output.Reject(output.CodeInvalidArguments)

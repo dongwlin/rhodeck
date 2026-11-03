@@ -7,8 +7,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// helpCommand builds the help command. The command surface has no --help
-// flag of its own; the root help function serves every command.
 func (a *App) helpCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "help [command]",
@@ -35,8 +33,6 @@ func (a *App) helpCommand() *cobra.Command {
 	}
 }
 
-// findSubCommand resolves one help topic by name. Hidden helper commands are
-// not help topics.
 func findSubCommand(root *cobra.Command, name string) *cobra.Command {
 	for _, cmd := range root.Commands() {
 		if cmd.Hidden {
@@ -49,8 +45,6 @@ func findSubCommand(root *cobra.Command, name string) *cobra.Command {
 	return nil
 }
 
-// commandNames reports the live command tree in declaration order. The help
-// command is not an available command, so it is added explicitly.
 func (a *App) commandNames(root *cobra.Command) []string {
 	names := make([]string, 0, len(root.Commands()))
 	for _, cmd := range root.Commands() {
@@ -61,7 +55,6 @@ func (a *App) commandNames(root *cobra.Command) []string {
 	return names
 }
 
-// formatFor reads the --format value that was parsed for the running command.
 func (a *App) formatFor(cmd *cobra.Command) string {
 	if cmd != nil {
 		if value, err := cmd.Flags().GetString("format"); err == nil && value != "" {
@@ -74,8 +67,6 @@ func (a *App) formatFor(cmd *cobra.Command) string {
 	return formatText
 }
 
-// renderHelp writes the help of one command. The text format is human
-// readable; the json format returns the same text in the machine envelope.
 func (a *App) renderHelp(cmd *cobra.Command, format string) error {
 	cmd.InitDefaultHelpFlag()
 	text := helpText(cmd)
@@ -92,7 +83,6 @@ func (a *App) renderHelp(cmd *cobra.Command, format string) error {
 	return nil
 }
 
-// helpText is the long description of one command followed by its usage block.
 func helpText(cmd *cobra.Command) string {
 	usage := cmd.UsageString()
 	if cmd.Long != "" {

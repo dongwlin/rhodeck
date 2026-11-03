@@ -60,8 +60,6 @@ func (s Spec) Row() output.AdapterRow {
 	}
 }
 
-// specs returns the locally registered adapters. The registry is the only
-// place a task adapter enters the CLI.
 func specs() []Spec {
 	return []Spec{
 		{
@@ -152,9 +150,6 @@ func Summary() string {
 	return strings.Join(parts, ", ")
 }
 
-// unverified returns the preview caveats for the adapters that one source plan
-// actually selects. Raw plans add nothing because they exercise no
-// adapter-specific validation.
 func adapterUnverified(p control.Plan) []string {
 	var out []string
 	for _, spec := range specs() {

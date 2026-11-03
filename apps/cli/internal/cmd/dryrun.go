@@ -7,8 +7,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// dryRunCommand builds the dry-run command. It previews one explicit plan
-// without side effects.
 func (a *App) dryRunCommand() *cobra.Command {
 	var opts Options
 	cmd := &cobra.Command{
@@ -25,9 +23,6 @@ func (a *App) dryRunCommand() *cobra.Command {
 	return cmd
 }
 
-// preview compiles the selected adapters and reports the preview. It creates
-// no directory, takes no lock, launches no worker, loads no native code and
-// connects no device.
 func (a *App) preview(opts *Options) error {
 	if err := opts.validate(); err != nil {
 		return output.Reject(output.CodeInvalidArguments)
