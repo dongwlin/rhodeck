@@ -709,9 +709,6 @@ func (c *Client) wait() {
 	// terminal Client must not retain request state it can never resolve.
 	c.pending = make(map[uint64]*pendingRequest)
 	c.mu.Unlock()
-	c.mu.Lock()
-	c.finished = true
-	c.mu.Unlock()
 	c.cancel(ErrClosed)
 	_ = c.stdin.Close()
 	_ = c.stdout.Close()
