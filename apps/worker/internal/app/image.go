@@ -11,11 +11,6 @@ import (
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
 
-// imageSnapshot is one owned copy of the cached image, retained so that
-// image_chunk requests can be served from an immutable snapshot: later cache
-// updates never change a transfer that is already in flight. The command-loop
-// goroutine creates, serves and releases every snapshot, so the registry
-// needs no lock of its own.
 type imageSnapshot struct {
 	data   []byte
 	served uint64

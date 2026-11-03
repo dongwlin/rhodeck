@@ -326,9 +326,6 @@ func (e *nativeEngine) GetImagePNG() ([]byte, error) { return e.instance.GetImag
 
 func (e *nativeEngine) GetImageBGR() ([]byte, error) { return e.instance.GetImageBGR() }
 
-// instanceObservations is the observation surface of one native instance that
-// Observe consumes. *maa.Instance satisfies it; the indirection keeps the
-// observation pipeline testable without a native library.
 type instanceObservations interface {
 	Events() <-chan maa.Event
 	Fault() <-chan struct{}
@@ -355,8 +352,6 @@ func (e *nativeEngine) Observe(ctx context.Context, emit eventEmitter) error {
 	return observeInstance(ctx, e.instance, emit)
 }
 
-// observeInstance implements the observation pipeline against one instance's
-// channels. See nativeEngine.Observe for the frozen delivery contract.
 func observeInstance(ctx context.Context, in instanceObservations, emit eventEmitter) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

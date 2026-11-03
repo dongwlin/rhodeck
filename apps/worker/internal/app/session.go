@@ -18,21 +18,16 @@ import (
 const shutdownGrace = 5 * time.Second
 
 type session struct {
-	ctx      context.Context
-	fail     context.CancelCauseFunc
-	out      *protocol.Queue
-	requests chan protocol.Message
-	mu       sync.Mutex // Orders all event producers and their sequence allocation.
-	sequence uint64
-	// transfers is the retained-image registry of the session. Only the
-	// command-loop goroutine creates, serves and releases snapshots; cleanup
-	// drops them on close and on every failure path.
+	ctx            context.Context
+	fail           context.CancelCauseFunc
+	out            *protocol.Queue
+	requests       chan protocol.Message
+	mu             sync.Mutex
+	sequence       uint64
 	transfers      map[uint64]*imageSnapshot
 	nextTransferID uint64
 }
 
-// serve bounds graceful cleanup even when a native call never returns. main
-// exits after it returns; a supervisor imposes its own independent deadline.
 func serve(ctx context.Context, input io.ReadCloser, output io.Writer, factory engineFactory, grace time.Duration, version string) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)

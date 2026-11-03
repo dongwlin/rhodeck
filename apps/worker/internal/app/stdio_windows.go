@@ -8,8 +8,6 @@ import (
 	"syscall"
 )
 
-// Redirect the OS standard handle before loading MaaCore and its C runtime.
-// The duplicated protocol handle is private and is not inherited by ADB.
 func isolateStdout() (*os.File, error) {
 	process, err := syscall.GetCurrentProcess()
 	if err != nil {

@@ -7,8 +7,6 @@ import (
 	"syscall"
 )
 
-// Duplicate the protocol pipe before redirecting fd 1. This also catches native
-// constructors, C stdio and C++ streams; changing os.Stdout alone would not.
 func isolateStdout() (*os.File, error) {
 	fd, err := syscall.Dup(int(os.Stdout.Fd()))
 	if err != nil {
