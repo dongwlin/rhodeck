@@ -17,7 +17,7 @@ type Run struct {
 	persistMu       sync.Mutex
 	runtime         *Runtime
 	plan            Plan
-	sourcePlan      Plan // Preserve explicit input separately from compiled Core params.
+	sourcePlan      Plan
 	result          Result
 	events          chan Event
 	done            chan struct{}
@@ -100,8 +100,6 @@ func (r *Run) state(state State) {
 }
 
 func (r *Run) persist() error {
-	// Serialize the snapshot and save together: an earlier driver snapshot
-	// must never replace a newer fact already saved by the callback monitor.
 	r.persistMu.Lock()
 	defer r.persistMu.Unlock()
 	r.mu.Lock()

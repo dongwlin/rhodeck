@@ -7,8 +7,6 @@ import (
 	"github.com/dongwlin/rhodeck/packages/control/worker/protocol"
 )
 
-// coreFields reads only the correlation fields; unknown native content remains
-// in the raw callback. Ambiguous duplicate fields never settle task outcomes.
 func coreFields(raw json.RawMessage) (taskID *int32, finished []int32, err error) {
 	d := json.NewDecoder(bytes.NewReader(raw))
 	first, err := d.Token()
@@ -201,9 +199,6 @@ func (r *Run) observe(m protocol.Message) {
 	}
 	settled := terminal(t.State) && t.State != previous
 	r.mu.Unlock()
-	// Only terminal task facts require a durable update. The driver persists
-	// admission/configuration before Start, and waits for this sole monitor
-	// before its final write, so a later write cannot erase a settled task.
 	if settled {
 		if err := r.persist(); err != nil {
 			r.fail("record_write_failed")
@@ -213,9 +208,6 @@ func (r *Run) observe(m protocol.Message) {
 	r.notify()
 }
 
-// observeTyped runs on the sole worker-event monitor. Reducers receive detached
-// input outside the result lock; only validated, bounded, immutable facts enter
-// the snapshot, and every change is persisted before it is published.
 func (r *Run) observeTyped(callback protocol.Callback, id *int32, parseErr error) bool {
 	r.mu.Lock()
 	if len(r.reducers) == 0 {
@@ -233,9 +225,6 @@ func (r *Run) observeTyped(callback protocol.Callback, id *int32, parseErr error
 	reducer := r.reducers[i]
 	if !known || reducer == nil {
 		if !known && parseErr == nil && id != nil && *id == 0 {
-			// Reducers may recognize exact pre-admission diagnostics
-			// emitted before Core allocates a task ID. They cannot return facts
-			// here or exempt missing/foreign execution associations.
 			var classifiers []UnassociatedObservationClassifier
 			for _, candidate := range r.reducers {
 				if classifier, ok := candidate.(UnassociatedObservationClassifier); ok {
@@ -243,8 +232,6 @@ func (r *Run) observeTyped(callback protocol.Callback, id *int32, parseErr error
 				}
 			}
 			if len(classifiers) > 0 {
-				// Like Observe, extension code runs on the sole monitor outside
-				// the result lock and receives its own detached callback bytes.
 				r.mu.Unlock()
 				progress := false
 				for _, classifier := range classifiers {
@@ -264,14 +251,9 @@ func (r *Run) observeTyped(callback protocol.Callback, id *int32, parseErr error
 				}
 			}
 		}
-		// Callbacks belonging to a known raw task stay on the raw path. For
-		// unassociated subtask events, a matching typed chain cannot be guessed.
 		relevant := false
 		if !known && callback.MessageID >= 20000 && callback.MessageID <= 20004 {
 			if parseErr != nil {
-				// An ambiguous correlation object cannot prove that the event
-				// belongs to an unrelated chain. Do not select a duplicate's
-				// last value through a permissive second decode.
 				relevant = true
 			} else {
 				var fields struct {

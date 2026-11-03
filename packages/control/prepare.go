@@ -46,7 +46,6 @@ func PreparePlan(p Plan, adapters ...TaskAdapter) (PreparedPlan, error) {
 		if !ok {
 			return bad("unsupported adapter or version")
 		}
-		// Prepare receives an independent copy of every mutable input field.
 		input := clonePlan(Plan{Tasks: []Task{task}}).Tasks[0]
 		prepared, err := adapter.Prepare(input)
 		if err != nil {

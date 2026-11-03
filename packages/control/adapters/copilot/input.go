@@ -17,8 +17,6 @@ const (
 	copilotMaxEntries  = control.MaxTypedTargetsPerTask
 )
 
-// copilotEntry keeps the submitted identity separate from the source file.
-// SourceIndex is zero-based; the same filename may occur in several entries.
 type copilotEntry struct {
 	ID              int32
 	SourceIndex     int
@@ -73,8 +71,6 @@ func copilotReject(format string, args ...any) error {
 	return fmt.Errorf("%w: copilot: %s", control.ErrInvalidPlan, fmt.Sprintf(format, args...))
 }
 
-// compileCopilot returns detached Core params and the stable list mapping for
-// task-local result interpretation. It has no file, native or device effects.
 func compileCopilot(raw json.RawMessage) (json.RawMessage, []copilotEntry, error) {
 	if !strictjson.ValidObject(raw, control.MaxAdapterParamsBytes) {
 		return nil, nil, copilotReject("params must be a JSON object of at most %d bytes", control.MaxAdapterParamsBytes)

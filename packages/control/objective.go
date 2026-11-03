@@ -173,7 +173,7 @@ func validateTypedResults(tasks []TaskResult) error {
 			continue
 		}
 		count += len(task.Typed.Targets)
-		raw, _ := json.Marshal(task.Typed) // Validated above.
+		raw, _ := json.Marshal(task.Typed)
 		size += len(raw)
 		if count > MaxTypedTargetsPerRun || size > MaxTypedResultBytes {
 			return typedBudget("run result exceeds count or byte limit")

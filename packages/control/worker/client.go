@@ -54,21 +54,11 @@ type Config struct {
 type pendingRequest struct {
 	name     string
 	response chan protocol.Message
-	// op is the shared operation state of an accepted async submission. The
-	// read loop assigns it before delivering the acceptance response, so the
-	// handle exists before any operation event can be dispatched.
-	op *operationState
+	op       *operationState
 }
 
-// maxTrackedOperations bounds the operations the client tracks between
-// acceptance and settlement. It mirrors the binding's default pending-operation
-// budget; the worker rejects submissions beyond its own limit first.
 const maxTrackedOperations = 128
 
-// operationState is the shared terminal-state record of one accepted async
-// operation. The read loop creates it on acceptance, settles it exactly once
-// from the matching operation event, and drops it from its tracking map; waiters
-// reach it only through their Operation handle.
 type operationState struct {
 	requestID uint64
 	id        int32
@@ -79,8 +69,6 @@ type operationState struct {
 	result    protocol.OperationResult
 }
 
-// settle records the first terminal observation. Later calls never rewrite it:
-// a confirmed result survives every subsequent fault or close.
 func (s *operationState) settle(r protocol.OperationResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -92,8 +80,6 @@ func (s *operationState) settle(r protocol.OperationResult) {
 	close(s.done)
 }
 
-// cloneError returns an independent copy of a structured wire error, so no
-// two callers ever share a mutable Detail pointer.
 func cloneError(e *protocol.Error) *protocol.Error {
 	if e == nil {
 		return nil
@@ -106,8 +92,6 @@ func cloneError(e *protocol.Error) *protocol.Error {
 	return &c
 }
 
-// cloneOperationResult returns an independent copy: the details bytes and the
-// structured error are cloned so no two callers ever share a mutable buffer.
 func cloneOperationResult(r protocol.OperationResult) protocol.OperationResult {
 	r.Details = bytes.Clone(r.Details)
 	r.Error = cloneError(r.Error)
@@ -133,9 +117,6 @@ func (s InstanceSnapshot) clone() InstanceSnapshot {
 	return s
 }
 
-// decodeInstanceSnapshot converts a validated diagnostics report into the
-// client-side snapshot: the raw prefix is decoded back to the original bytes,
-// which may be neither valid UTF-8 nor valid JSON.
 func decodeInstanceSnapshot(report *protocol.InstanceDiagnostics) *InstanceSnapshot {
 	snap := &InstanceSnapshot{
 		LostEvents:     report.LostEvents,
@@ -143,7 +124,6 @@ func decodeInstanceSnapshot(report *protocol.InstanceDiagnostics) *InstanceSnaps
 		StopDiagnostic: cloneError(report.StopDiagnostic),
 	}
 	if report.RawPrefix != "" {
-		// The report passed Validate, so the standard decoding cannot fail.
 		raw, err := base64.StdEncoding.DecodeString(report.RawPrefix)
 		if err != nil {
 			raw = nil
@@ -200,10 +180,7 @@ func (o *Operation) Wait(ctx context.Context) (protocol.OperationResult, error) 
 		}
 		select {
 		case <-o.state.done:
-			// The terminal state is published; loop to read it.
 		case <-ctx.Done():
-			// The terminal state may have been published in the same instant;
-			// a published result wins over this wait's cancellation.
 			o.state.mu.Lock()
 			settled := o.state.settled
 			o.state.mu.Unlock()
@@ -245,8 +222,8 @@ type Client struct {
 	greeting          protocol.Greeting
 	hello             chan protocol.Greeting
 	events            chan protocol.Message
-	faultNotify       chan struct{} // Closed once the fault event was received.
-	instanceDone      chan struct{} // Closed once the diagnostics event was received.
+	faultNotify       chan struct{}
+	instanceDone      chan struct{}
 	instanceFault     *protocol.Error
 	instanceSnapshot  *InstanceSnapshot
 	readDone          chan struct{}
@@ -462,9 +439,6 @@ func (c *Client) read() {
 					c.abort(&Failure{Code: "protocol_error", Unknown: true, Cause: errors.New("invalid operation acceptance")})
 					return
 				}
-				// The shared state is assigned before the response is delivered:
-				// the submitting goroutine receives a complete handle, and the
-				// dispatch below can never race its creation.
 				state := &operationState{requestID: m.ID, id: accepted.AsyncID, what: expectedWhat(m.Name), done: make(chan struct{})}
 				operations[accepted.AsyncID] = state
 				pending.op = state
@@ -491,9 +465,6 @@ func (c *Client) read() {
 					return
 				}
 				state := operations[result.AsyncID]
-				// A completion carries its submission's what; a lifecycle
-				// settlement (close or fault) carries no what at all. A wrong
-				// ID/what or a duplicate result is a protocol failure.
 				if state == nil || state.requestID != result.RequestID || (result.What != "" && result.What != state.what) {
 					c.abort(&Failure{Code: "protocol_error", Unknown: true, Cause: errors.New("unmatched operation result")})
 					return
@@ -510,9 +481,6 @@ func (c *Client) read() {
 					c.abort(&Failure{Code: "protocol_error", Unknown: true, Cause: err})
 					return
 				}
-				// Exactly one fault event per session: the worker reports the
-				// first instance fault once, before the terminal snapshot. A
-				// repeated or late notice is a contract breach.
 				select {
 				case <-c.faultNotify:
 					c.abort(&Failure{Code: "protocol_error", Unknown: true, Cause: errors.New("duplicate or late fault event")})
@@ -528,9 +496,6 @@ func (c *Client) read() {
 				c.mu.Lock()
 				c.instanceFault = &notice.Error
 				c.mu.Unlock()
-				// The supervisor-level observation closes before the event
-				// enters the consumer's queue, so a stalled consumer can delay
-				// delivery of the event but never the fault observation.
 				close(c.faultNotify)
 			case protocol.DiagnosticsEvent:
 				var report protocol.InstanceDiagnostics
@@ -548,9 +513,6 @@ func (c *Client) read() {
 					return
 				default:
 				}
-				// The first fault is reported by the fault event before the
-				// terminal snapshot; a snapshot that names a fault nobody
-				// reported is a contract breach, not a discovery.
 				if report.FirstFault != nil {
 					select {
 					case <-c.faultNotify:
@@ -567,8 +529,6 @@ func (c *Client) read() {
 				c.abort(&Failure{Code: "protocol_error", Unknown: true, Cause: errors.New("unknown worker event")})
 				return
 			}
-			// Only this goroutine sends events. Channel length tells us how many
-			// oldest reservations the consumer has released since the last send.
 			consumed := len(sizes) - len(c.events)
 			for _, size := range sizes[:consumed] {
 				retainedBytes -= size
@@ -595,8 +555,6 @@ func (c *Client) read() {
 	}
 }
 
-// isAsyncOperationCommand reports whether a response name is one of the four
-// async submissions whose acceptance creates a waitable operation.
 func isAsyncOperationCommand(name string) bool {
 	switch name {
 	case protocol.Connect, protocol.Click, protocol.Screencap, protocol.AttachWindow:
@@ -605,8 +563,6 @@ func isAsyncOperationCommand(name string) bool {
 	return false
 }
 
-// expectedWhat returns the native completion what the frozen Core reports for
-// an accepted async submission command.
 func expectedWhat(name string) string {
 	switch name {
 	case protocol.Click:
@@ -620,8 +576,6 @@ func expectedWhat(name string) string {
 	}
 }
 
-// Validate before waking a caller or acknowledging close. A fast child exit
-// must not seal a clean session while another goroutine still decodes bad facts.
 func validateResponse(m protocol.Message) error {
 	if m.Error != nil {
 		return nil
@@ -654,9 +608,6 @@ func validateResponse(m protocol.Message) error {
 	}
 	switch r := target.(type) {
 	case *protocol.RuntimeInfo:
-		// The frozen initialize contract always reports the applied limit set
-		// and the native null_size sentinel; an omitted set or a set above the
-		// wire budgets means the peer cannot deliver what it accepted.
 		if r.CoreVersion == "" || r.SnapshotID == "" || len(r.LibrarySHA256) != 64 || len(r.Resources) == 0 || r.NullSize == 0 || r.Limits == nil {
 			return errors.New("worker: incomplete runtime information")
 		}
@@ -668,8 +619,6 @@ func validateResponse(m protocol.Message) error {
 			return errors.New("worker: zero task ID")
 		}
 	case *protocol.ImageTransfer:
-		// The transfer description bounds every later allocation and each
-		// chunk request, so it is verified before it can reach a caller.
 		if err := r.Validate(); err != nil {
 			return err
 		}
@@ -683,8 +632,6 @@ func validateResponse(m protocol.Message) error {
 
 func (c *Client) wait() {
 	err := c.cmd.Wait()
-	// Pipes are owned by Client, not Cmd.Wait, so a fast exit cannot discard a
-	// final response. Bound draining if a descendant inherited a stdout handle.
 	timer := time.NewTimer(250 * time.Millisecond)
 	select {
 	case <-c.readDone:
@@ -704,9 +651,6 @@ func (c *Client) wait() {
 	}
 	c.mu.Lock()
 	c.finished = true
-	// Release every pending response association: all waiters were unblocked
-	// through the session cause, nothing reads those channels anymore, and the
-	// terminal Client must not retain request state it can never resolve.
 	c.pending = make(map[uint64]*pendingRequest)
 	c.mu.Unlock()
 	c.cancel(ErrClosed)
@@ -717,9 +661,6 @@ func (c *Client) wait() {
 	close(c.done)
 }
 
-// openRequest validates session admission, reserves the next request ID, and
-// enqueues the frame. The returned entry owns the response channel; the read
-// loop matches responses to it by ID and name.
 func (c *Client) openRequest(name string, input any, closing bool) (*pendingRequest, error) {
 	c.mu.Lock()
 	if c.ctx.Err() != nil || (c.closing && !closing) {
@@ -752,10 +693,6 @@ func (c *Client) openRequest(name string, input any, closing bool) (*pendingRequ
 	return pending, nil
 }
 
-// awaitResponse waits for one response. A timeout or cancellation while the
-// request might already have reached the worker terminates the session and
-// reports unknown under the frozen failure discipline; the response, if it
-// arrives in the same instant, still wins.
 func (c *Client) awaitResponse(ctx context.Context, pending *pendingRequest) (protocol.Message, error) {
 	var response protocol.Message
 	select {
@@ -820,11 +757,6 @@ func (c *Client) Initialize(ctx context.Context, req protocol.InitializeRequest)
 	return r, err
 }
 
-// submitOperation sends one async submission command and returns the handle to
-// its waitable terminal state. The read loop attaches the shared state before
-// the acceptance response is delivered, so the handle always exists before any
-// operation event can be dispatched. A rejection returns the worker's
-// *protocol.Error and no operation.
 func (c *Client) submitOperation(ctx context.Context, name string, input any) (*Operation, error) {
 	if ctx == nil {
 		return nil, errors.New("worker: request requires a context")
@@ -846,8 +778,6 @@ func (c *Client) submitOperation(ctx context.Context, name string, input any) (*
 		return nil, response.Error
 	}
 	if pending.op == nil {
-		// The read loop aborts the session on an acceptance it cannot pair with
-		// a state; reaching this means that guarantee was violated.
 		failure := &Failure{Code: "protocol_error", Unknown: true, Cause: errors.New("acceptance without an operation state")}
 		c.abort(failure)
 		return nil, failure
@@ -901,18 +831,6 @@ func (c *Client) GetImageBGR(ctx context.Context) ([]byte, error) {
 	return c.fetchImage(ctx, protocol.GetImageBGR)
 }
 
-// fetchImage runs one bounded image transfer. The acceptance describes an
-// immutable snapshot (total length, whole-payload SHA256, chunk length); the
-// chunks are pulled with at most one outstanding request per transfer so
-// chunk traffic cannot flood the outbound queue. Every chunk is checked
-// against its request (transfer ownership, offset, decoded length) before it
-// is placed, and the payload is delivered only after the assembled bytes
-// match the declared SHA256 — a truncated, duplicated, out-of-range,
-// interrupted or mismatched transfer fails instead of publishing a partial
-// success. Each request carries the supervisor's request deadline; the
-// caller's context bounds the whole transfer, and a cancellation while a
-// chunk request might already have executed terminates the session under the
-// frozen failure discipline.
 func (c *Client) fetchImage(ctx context.Context, name string) ([]byte, error) {
 	if ctx == nil {
 		return nil, errors.New("worker: request requires a context")
@@ -928,9 +846,6 @@ func (c *Client) fetchImage(ctx context.Context, name string) ([]byte, error) {
 		return nil, failure
 	}
 	if transfer.TotalBytes > protocol.ImageTransferMaxBytes {
-		// The read loop rejects this contract breach before the response is
-		// delivered; the check keeps the assembly allocation bounded even if
-		// that upstream guarantee were ever relaxed.
 		failure := &Failure{Code: "protocol_error", Unknown: true, Cause: fmt.Errorf("worker: total_bytes %d exceeds the transfer budget of %d bytes", transfer.TotalBytes, uint64(protocol.ImageTransferMaxBytes))}
 		c.abort(failure)
 		return nil, failure

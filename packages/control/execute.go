@@ -15,8 +15,6 @@ func (r *Run) execute() {
 	outcome, code := Stopped, "cancelled_before_start"
 	initialized, deviceIssued := false, false
 	defer func() {
-		// Stop and shutdown have independent budgets. Once the driver leaves
-		// execution, the supervisor's ShutdownTimeout owns process cleanup.
 		close(r.stopSettled)
 		cleanup, cleanupCode := "complete", ""
 		if client != nil {
@@ -38,9 +36,6 @@ func (r *Run) execute() {
 				cleanup, cleanupCode = "failed", r.fatal
 			}
 		}
-		// Cleanup is reported separately. A late cleanup failure changes the
-		// cleanup fields and the CLI exit code, never an established business
-		// state such as succeeded, failed, stopped or rejected.
 		r.result.State, r.result.Code = outcome, code
 		r.result.Cleanup, r.result.CleanupCode = cleanup, cleanupCode
 		r.result.FinishedAt = time.Now().UTC()
@@ -64,8 +59,6 @@ func (r *Run) execute() {
 		}
 		r.mu.Lock()
 		r.emitLocked(Event{Type: "terminal", State: r.result.State, Code: r.result.Code})
-		// A terminal event may itself encounter an already full consumer queue.
-		// The finalized snapshot has already accounted for all prior loss.
 		close(r.events)
 		r.mu.Unlock()
 		r.runtime.mu.Lock()

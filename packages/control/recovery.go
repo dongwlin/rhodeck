@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// recover changes only unconfirmed records, without launching a worker. A host
-// crash does not establish whether an old device action completed or stopped.
 func (s *store) recover() error {
 	return s.files.Scan(func(entry fs.DirEntry) error {
 		name := entry.Name()

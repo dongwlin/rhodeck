@@ -20,6 +20,4 @@ func lockFile(f *os.File) error {
 	return err
 }
 
-// Windows does not support fsync on directory handles through os.File.Sync.
-// The record itself is flushed before its atomic replacement.
 func syncDirectory(string) error { return nil }
