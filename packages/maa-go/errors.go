@@ -1,10 +1,3 @@
-// maa 包的公开错误面。全部错误唯一定义于 raw 边界层
-// (packages/maa-go/internal/native/errors.go),本文件以类型别名与
-// 同名变量再导出:公开名称、错误文本与类型同一性同迁移前逐项
-// 一致——别名与定义是同一类型,errors.Is / errors.As 的错误链行为
-// 不变,既有调用方代码无需任何修改。字段级构造契约见定义处;
-// 以下注释面向调用方,保留完整语义。
-
 package maa
 
 import "github.com/dongwlin/rhodeck/packages/maa-go/internal/native"
