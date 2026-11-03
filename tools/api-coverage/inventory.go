@@ -1,20 +1,5 @@
 package main
 
-// This file is the frozen coverage inventory of the full-worker capability
-// baseline. It is reconciled against a fresh source scan on every run: the
-// symbol table below must list exactly the exported binding surface of
-// packages/maa-go (plus the capability methods re-exported through the
-// Capabilities alias), and each item must carry the five-segment mapping
-//
-//	binding entry -> DTO/transport (or equivalent merge) -> worker
-//	adaptation -> client surface -> acceptance test
-//
-// Statuses: "done" (all five segments present and verified), "pending"
-// (registered gap with a mandatory note; fails the final mode), "na"
-// (non-applicable with a mandatory note). Update this file in the same change
-// that adds, removes, or reshapes any covered API: the drift check fails
-// otherwise.
-
 func inventorySymbols() ([]Symbol, error) {
 	return frozenSymbols, nil
 }
@@ -23,20 +8,17 @@ func inventoryMappings() map[string]Mapping {
 	return mappings
 }
 
-// covered returns a fully done mapping with all five segments registered.
 func covered(dto, worker, client, test, note string) Mapping {
 	return Mapping{DTO: dto, Worker: worker, Client: client, Test: test, Status: "done", Note: note}
 }
 
 var frozenSymbols = []Symbol{
-	// ---- Capability methods re-exported through the Capabilities alias ----
 	{Kind: "capability", Owner: "Capabilities", Name: "AsyncAttachWindow", Detail: "func (Capabilities) AsyncAttachWindow() bool"},
 	{Kind: "capability", Owner: "Capabilities", Name: "Create", Detail: "func (Capabilities) Create() bool"},
 	{Kind: "capability", Owner: "Capabilities", Name: "ImageBgr", Detail: "func (Capabilities) ImageBgr() bool"},
 	{Kind: "capability", Owner: "Capabilities", Name: "ItemName", Detail: "func (Capabilities) ItemName() bool"},
 	{Kind: "capability", Owner: "Capabilities", Name: "MapLevelKey", Detail: "func (Capabilities) MapLevelKey() bool"},
 
-	// ---- Constants ----
 	{Kind: "const", Name: "Win32InputAnchoredTouch", Detail: "Win32InputMethod = 1 << 10"},
 	{Kind: "const", Name: "Win32InputInterception", Detail: "Win32InputMethod = 1 << 9"},
 	{Kind: "const", Name: "Win32InputLegacyEvent", Detail: "Win32InputMethod = 1 << 3"},
@@ -57,7 +39,6 @@ var frozenSymbols = []Symbol{
 	{Kind: "const", Name: "Win32ScreencapPrintWindow", Detail: "Win32ScreencapMethod = 1 << 4"},
 	{Kind: "const", Name: "Win32ScreencapScreenDC", Detail: "Win32ScreencapMethod = 1 << 5"},
 
-	// ---- Public entry points (Open + Runtime/Instance/Operation) ----
 	{Kind: "entry", Name: "Open", Detail: "func Open(cfg RuntimeConfig) (*Runtime, error)"},
 	{Kind: "entry", Owner: "Instance", Name: "AppendTask", Detail: "func (*Instance) AppendTask(taskType string, params json.RawMessage) (TaskID, error)"},
 	{Kind: "entry", Owner: "Instance", Name: "AttachWindow", Detail: "func (*Instance) AttachWindow(hwnd uintptr, screencapMethod Win32ScreencapMethod, mouseMethod, keyboardMethod Win32InputMethod) (*Operation, error)"},
@@ -91,7 +72,6 @@ var frozenSymbols = []Symbol{
 	{Kind: "entry", Owner: "Runtime", Name: "NullSize", Detail: "func (*Runtime) NullSize() uint64"},
 	{Kind: "entry", Owner: "Runtime", Name: "Version", Detail: "func (*Runtime) Version() string"},
 
-	// ---- Error sentinels ----
 	{Kind: "error", Name: "ErrBufferLimit", Detail: "native.ErrBufferLimit"},
 	{Kind: "error", Name: "ErrClosed", Detail: "native.ErrClosed"},
 	{Kind: "error", Name: "ErrClosing", Detail: "native.ErrClosing"},
@@ -104,7 +84,6 @@ var frozenSymbols = []Symbol{
 	{Kind: "error", Name: "ErrRuntimeTerminated", Detail: "native.ErrRuntimeTerminated"},
 	{Kind: "error", Name: "ErrUnsupported", Detail: "native.ErrUnsupported"},
 
-	// ---- Exported struct fields ----
 	{Kind: "field", Owner: "AsyncResult", Name: "Details", Detail: "json.RawMessage"},
 	{Kind: "field", Owner: "AsyncResult", Name: "ID", Detail: "AsyncID"},
 	{Kind: "field", Owner: "AsyncResult", Name: "OK", Detail: "bool"},
@@ -156,7 +135,6 @@ var frozenSymbols = []Symbol{
 	{Kind: "field", Owner: "StaticOption", Name: "Key", Detail: "int32"},
 	{Kind: "field", Owner: "StaticOption", Name: "Value", Detail: "string"},
 
-	// ---- Exported types ----
 	{Kind: "type", Name: "AggregateError", Detail: "alias native.AggregateError"},
 	{Kind: "type", Name: "AsyncID", Detail: "int32"},
 	{Kind: "type", Name: "AsyncResult", Detail: "struct"},
@@ -185,7 +163,6 @@ var frozenSymbols = []Symbol{
 }
 
 var mappings = map[string]Mapping{
-	// ---- Public entry points ----
 	"entry Open": {
 		DTO:    "InitializeRequest",
 		Worker: "openEngine",
@@ -443,7 +420,6 @@ var mappings = map[string]Mapping{
 		Note:   "终态快照一次交付：饱和 lost_events、结构化 first_fault/stop_diagnostic、base64 raw_prefix；客户端解码为字节快照且每次访问独立副本，丢失时明确报告不可得。",
 	},
 
-	// ---- Capability methods ----
 	"capability Capabilities.Create": {
 		Status: "na",
 		Note:   "AsstCreate 仅保留能力覆盖，公共层首期统一使用 CreateEx，无公开入口；协议不承载 create 能力，实例创建的等价映射为 initialize（entry Runtime.NewInstance）。",
@@ -481,7 +457,6 @@ var mappings = map[string]Mapping{
 		Note:   "能力布尔随 initialize 报告；能力快照的完整区分由 entry Runtime.Capabilities 承载。",
 	},
 
-	// ---- Types ----
 	"type Runtime": {
 		DTO:    "InitializeRequest",
 		Worker: "openEngine",
@@ -680,7 +655,6 @@ var mappings = map[string]Mapping{
 		Note:   "errors.As 按成员遍历映射，码与结构化原因取首个匹配成员，全部成员保真在有界诊断消息中。",
 	},
 
-	// ---- Fields ----
 	"field RuntimeConfig.LibraryPath": {
 		DTO: "InitializeRequest.LibraryPath", Worker: "openEngine", Client: "Client.Initialize",
 		Test: "TestWorkerProcess", Status: "done",
@@ -814,7 +788,6 @@ var mappings = map[string]Mapping{
 	"field BufferLimits.Max":                   covered("BufferLimits.Max", "bindingBufferLimits", "Client.Initialize", "TestInitializeConfigMappingTransfersEveryField", "随冻结的 protocol.BufferLimits.Max 逐字段映射到绑定容量探测策略。"),
 	"field BufferLimits.GrowthRetries":         covered("BufferLimits.GrowthRetries", "bindingBufferLimits", "Client.Initialize", "TestInitializeConfigMappingTransfersEveryField", "随冻结的 protocol.BufferLimits.GrowthRetries 逐字段映射到绑定容量探测策略。"),
 
-	// ---- Constants ----
 	"const Win32ScreencapNone":                 covered("AttachWindowRequest.ScreencapMethod", "nativeEngine.AttachWindow", "Client.AttachWindow", "TestSessionAsyncSubmissionFamily,TestClientAttachWindowWireIsLossless", "随 AttachWindowRequest.ScreencapMethod（uint64）按位组合无损透传。"),
 	"const Win32ScreencapGDI":                  covered("AttachWindowRequest.ScreencapMethod", "nativeEngine.AttachWindow", "Client.AttachWindow", "TestSessionAsyncSubmissionFamily,TestClientAttachWindowWireIsLossless", "随 AttachWindowRequest.ScreencapMethod（uint64）按位组合无损透传。"),
 	"const Win32ScreencapFramePool":            covered("AttachWindowRequest.ScreencapMethod", "nativeEngine.AttachWindow", "Client.AttachWindow", "TestSessionAsyncSubmissionFamily,TestClientAttachWindowWireIsLossless", "随 AttachWindowRequest.ScreencapMethod（uint64）按位组合无损透传。"),
@@ -835,7 +808,6 @@ var mappings = map[string]Mapping{
 	"const Win32InputInterception":             covered("AttachWindowRequest.MouseMethod,AttachWindowRequest.KeyboardMethod", "nativeEngine.AttachWindow", "Client.AttachWindow", "TestSessionAsyncSubmissionFamily,TestClientAttachWindowWireIsLossless", "随 AttachWindowRequest.MouseMethod/KeyboardMethod（uint64）按位组合无损透传。"),
 	"const Win32InputAnchoredTouch":            covered("AttachWindowRequest.MouseMethod,AttachWindowRequest.KeyboardMethod", "nativeEngine.AttachWindow", "Client.AttachWindow", "TestSessionAsyncSubmissionFamily,TestClientAttachWindowWireIsLossless", "随 AttachWindowRequest.MouseMethod/KeyboardMethod（uint64）按位组合无损透传。"),
 
-	// ---- Error sentinels ----
 	"error ErrClosed": {
 		DTO: "Error", Worker: "classify", Client: "Client.Err", Test: "TestNativeErrorCodes",
 		Status: "done",

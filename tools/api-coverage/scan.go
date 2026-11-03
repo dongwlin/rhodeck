@@ -1,6 +1,3 @@
-// api-coverage scans the public binding surface of packages/maa-go and
-// reconciles it against the frozen coverage inventory. It never modifies the
-// binding; the scanner is read-only over the source tree.
 package main
 
 import (
@@ -15,32 +12,24 @@ import (
 	"strings"
 )
 
-// Kind classifies one coverage item. Every item corresponds to exactly one
-// exported source declaration; nothing outside these kinds is part of the
-// worker capability baseline.
 type Kind string
 
 const (
-	KindEntry      Kind = "entry"      // Open + Runtime/Instance/Operation methods.
-	KindCapability Kind = "capability" // Methods re-exported through the Capabilities alias.
-	KindType       Kind = "type"       // Exported types (struct, alias, or named scalar).
-	KindField      Kind = "field"      // Exported fields of exported struct types.
-	KindConst      Kind = "const"      // Exported constants.
-	KindError      Kind = "error"      // Exported error sentinel variables.
+	KindEntry      Kind = "entry"
+	KindCapability Kind = "capability"
+	KindType       Kind = "type"
+	KindField      Kind = "field"
+	KindConst      Kind = "const"
+	KindError      Kind = "error"
 )
 
-// Symbol is one scanned declaration. Detail is a canonical rendering of the
-// declaration (signature, underlying type, alias target, or constant value);
-// any textual change to the declaration changes Detail and is reported as
-// drift.
 type Symbol struct {
 	Kind   Kind
-	Owner  string // Receiver or enclosing type; "" for package level.
+	Owner  string
 	Name   string
 	Detail string
 }
 
-// Key is the stable checklist identity of the symbol.
 func (s Symbol) Key() string {
 	if s.Owner == "" {
 		return fmt.Sprintf("%s %s", s.Kind, s.Name)
@@ -55,7 +44,6 @@ func (s Symbol) String() string {
 	return fmt.Sprintf("%s %s.%s: %s", s.Kind, s.Owner, s.Name, s.Detail)
 }
 
-// Binding directories, relative to the repository root.
 const (
 	bindingDir      = "packages/maa-go"
 	nativeDir       = "packages/maa-go/internal/native"
@@ -67,9 +55,6 @@ const (
 	packageFunction = "Open"
 )
 
-// ScanBinding scans the public binding surface: package root declarations plus
-// the capability methods re-exported through the Capabilities type alias in
-// internal/native. Test files are excluded; private declarations are excluded.
 func ScanBinding(root string) ([]Symbol, error) {
 	symbols, err := scanDir(filepath.Join(root, bindingDir))
 	if err != nil {
@@ -83,7 +68,6 @@ func ScanBinding(root string) ([]Symbol, error) {
 	return symbols, nil
 }
 
-// scanDir collects every exported declaration of one package directory.
 func scanDir(dir string) ([]Symbol, error) {
 	files, err := goFiles(dir)
 	if err != nil {
@@ -101,9 +85,6 @@ func scanDir(dir string) ([]Symbol, error) {
 	return symbols, nil
 }
 
-// scanCapabilityMethods collects exported methods whose receiver is
-// Capabilities. The public package re-exports the type by alias, so methods
-// declared in internal/native are part of the public surface.
 func scanCapabilityMethods(dir string) ([]Symbol, error) {
 	files, err := goFiles(dir)
 	if err != nil {
@@ -135,7 +116,6 @@ func scanCapabilityMethods(dir string) ([]Symbol, error) {
 	return symbols, nil
 }
 
-// scanFile extracts one package file's exported declarations.
 func scanFile(file *ast.File) []Symbol {
 	var symbols []Symbol
 	for _, decl := range file.Decls {
@@ -145,7 +125,6 @@ func scanFile(file *ast.File) []Symbol {
 				continue
 			}
 			if d.Recv == nil || len(d.Recv.List) == 0 {
-				// Package-level function: the binding's single Open entry.
 				symbols = append(symbols, Symbol{Kind: KindEntry, Name: d.Name.Name, Detail: renderFuncDetail(d)})
 				continue
 			}
@@ -154,13 +133,8 @@ func scanFile(file *ast.File) []Symbol {
 			case entryRecvTypesSplit[0], entryRecvTypesSplit[1], entryRecvTypesSplit[2]:
 				symbols = append(symbols, Symbol{Kind: KindEntry, Owner: recv, Name: d.Name.Name, Detail: renderFuncDetail(d)})
 			case capabilityRecv:
-				// Capability methods declared in the binding root would shadow
-				// the alias; none exist today, and if one appears it must be
-				// registered. Report it as a capability item.
 				symbols = append(symbols, Symbol{Kind: KindCapability, Owner: recv, Name: d.Name.Name, Detail: renderFuncDetail(d)})
 			default:
-				// Exported methods on other types are not part of the frozen
-				// baseline; they surface as unmatched drift.
 				symbols = append(symbols, Symbol{Kind: KindEntry, Owner: recv, Name: d.Name.Name, Detail: renderFuncDetail(d)})
 			}
 		case *ast.GenDecl:
@@ -183,13 +157,10 @@ func scanFile(file *ast.File) []Symbol {
 	return symbols
 }
 
-// scanFields collects the exported fields of one exported struct type.
 func scanFields(owner string, st *ast.StructType) []Symbol {
 	var symbols []Symbol
 	for _, field := range st.Fields.List {
 		if len(field.Names) == 0 {
-			// Embedded field: none exist in the frozen baseline; report it so
-			// one cannot appear silently.
 			symbols = append(symbols, Symbol{Kind: KindField, Owner: owner, Name: "(embedded)", Detail: exprString(field.Type)})
 			continue
 		}
@@ -203,8 +174,6 @@ func scanFields(owner string, st *ast.StructType) []Symbol {
 	return symbols
 }
 
-// scanValues collects exported constants and variables. Variables are the
-// error sentinel surface; constants carry their type and value expression.
 func scanValues(tok token.Token, spec *ast.ValueSpec) []Symbol {
 	var symbols []Symbol
 	kind := KindError
@@ -235,8 +204,6 @@ func scanValues(tok token.Token, spec *ast.ValueSpec) []Symbol {
 
 var entryRecvTypesSplit = strings.Split(entryRecvTypes, ",")
 
-// renderFuncDetail renders a canonical function or method signature,
-// including the receiver type and the full parameter and result types.
 func renderFuncDetail(fd *ast.FuncDecl) string {
 	var b strings.Builder
 	b.WriteString("func ")
@@ -250,7 +217,6 @@ func renderFuncDetail(fd *ast.FuncDecl) string {
 	return b.String()
 }
 
-// renderSignature renders a parameter/result list from a *ast.FuncType.
 func renderSignature(ft *ast.FuncType) string {
 	var b strings.Builder
 	b.WriteString("(")
@@ -269,8 +235,6 @@ func renderSignature(ft *ast.FuncType) string {
 	return b.String()
 }
 
-// fieldStrings renders each parameter/result field, expanding a shared type
-// across multiple names ("x, y int32" stays one item).
 func fieldStrings(fl *ast.FieldList) []string {
 	if fl == nil {
 		return nil
@@ -293,8 +257,6 @@ func fieldStrings(fl *ast.FieldList) []string {
 	return out
 }
 
-// renderTypeDetail renders the type shape: alias target, underlying scalar,
-// or "struct" (fields are checked as their own field items).
 func renderTypeDetail(spec *ast.TypeSpec) string {
 	if spec.Assign.IsValid() {
 		return "alias " + exprString(spec.Type)
@@ -309,7 +271,6 @@ func renderTypeDetail(spec *ast.TypeSpec) string {
 
 func exprString(x ast.Expr) string { return types.ExprString(x) }
 
-// receiverBase returns the base type name of a receiver expression.
 func receiverBase(x ast.Expr) string {
 	if star, ok := x.(*ast.StarExpr); ok {
 		x = star.X
@@ -320,7 +281,6 @@ func receiverBase(x ast.Expr) string {
 	return ""
 }
 
-// goFiles lists the non-test Go files of dir in sorted order.
 func goFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

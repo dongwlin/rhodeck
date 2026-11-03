@@ -1,7 +1,3 @@
-// Static checker execution: build the check-maa-api binary once and run it
-// against the selected, provenance-backed C input for both targets.
-// The parsed report is checked for the expected bound/excluded/signature
-// counts so a no-op or empty run cannot be reported as a pass.
 package main
 
 import (
@@ -16,8 +12,6 @@ import (
 	"time"
 )
 
-// checkerReport is the subset of check-maa-api's JSON output used by the
-// layered entry. The checker itself owns the full schema.
 type checkerReport struct {
 	Input  checkerInputReport `json:"input"`
 	Target struct {
@@ -38,8 +32,6 @@ type checkerReport struct {
 	} `json:"expect"`
 }
 
-// The checker validates provenance and actual file digests. Retain that
-// evidence in the layer report without including the input's local path.
 type checkerInputReport struct {
 	SchemaVersion int               `json:"schema_version"`
 	SnapshotID    string            `json:"snapshot_id"`
@@ -47,8 +39,6 @@ type checkerInputReport struct {
 	Files         []json.RawMessage `json:"files"`
 }
 
-// buildChecker compiles the checker into a temporary directory. The caller
-// must invoke the returned cleanup function.
 func buildChecker(ctx context.Context, env environment) (string, func(), error) {
 	dir, err := os.MkdirTemp("", "maa-go-check-*")
 	if err != nil {
@@ -73,9 +63,6 @@ func buildChecker(ctx context.Context, env environment) (string, func(), error) 
 	return bin, cleanup, nil
 }
 
-// runCheckerTarget runs the built checker for one static target and verifies
-// the policy counts that make the output meaningful. A zero-test or
-// wrong-policy run is a failure, not an unverified skip.
 func runCheckerTarget(ctx context.Context, env environment, bin, goos string, bound, nonTarget, excluded int) layerResult {
 	res := newLayerResult("static/" + goos)
 	args := []string{

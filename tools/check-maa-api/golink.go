@@ -1,22 +1,3 @@
-// golink.go 用第一段的 C 提取结果(完整集合/适用集合/实验发现)与
-// Go 提取结果建立一对一关系,任何无法建立的关系失败并给出双方可定位
-// 的 relation 类诊断:
-//   - 每个发现的 C 导出必须恰属其一:适用 R/O 绑定(Name 相等、Target
-//     指向存在字段且字段名=符号去 Asst 前缀)、已知非目标平台条目
-//     (Linux 目标下的 windowsOnly 绑定)或精确排除(Name 相等且 Header
-//     与 C 来源头一致);实验导出只能以 optional + allPlatforms 绑定
-//     (构建选项条件,缺席由能力快照关闭),否则必须被排除精确覆盖;
-//   - 反向:每条 symbolSpec 必须有同名 C 导出;每条 exclusion 必须对应
-//     真实存在的 C 声明(陈旧排除失败);同一清单内 Name 重复失败;
-//   - windows 条件导出与 allPlatforms 绑定、all 平台导出与 windowsOnly
-//     绑定、required 绑定实验导出的平台/策略矛盾失败;
-//   - api 字段必须恰被一条条目指向,多余 raw func 字段失败。
-//
-// R/O 策略与独立期望比对在 link 成功之后执行,
-// 见 expect.go 的 CompareExpectations(policy 类诊断);宽度级逐参数
-// 签名比对与 callback 平台适配比对在其后执行,见 compare.go 的
-// CompareSignatures(signature 类诊断)。
-
 package main
 
 import (
@@ -25,7 +6,6 @@ import (
 	"strings"
 )
 
-// LinkBound 是一条适用 R/O 绑定分类。
 type LinkBound struct {
 	Symbol   string
 	Field    string
@@ -33,16 +13,12 @@ type LinkBound struct {
 	Platform string
 }
 
-// LinkResult 是 C↔Go 关联结果:Bound 为目标适用的 R/O 绑定,NonTarget
-// 为本目标不适用但已有 windowsOnly 绑定的符号,Excluded 为被精确排除
-// 覆盖的符号。三个列表均按符号名排序。
 type LinkResult struct {
 	Bound     []LinkBound
 	NonTarget []string
 	Excluded  []string
 }
 
-// LinkCGo 执行 C↔Go 关联;失败返回单条 relation 诊断(定位到过错方)。
 func LinkCGo(c *CExtraction, g *GoExtraction, target Target) (*LinkResult, []Diagnostic) {
 	fail := func(d Diagnostic) (*LinkResult, []Diagnostic) { return nil, []Diagnostic{d} }
 	if c == nil || g == nil {
@@ -51,14 +27,11 @@ func LinkCGo(c *CExtraction, g *GoExtraction, target Target) (*LinkResult, []Dia
 			Message: "linking requires validated c and go extraction results"})
 	}
 
-	// api 字段集合。
 	fieldPos := map[string]GoField{}
 	for _, f := range g.Fields {
 		fieldPos[f.Name] = f
 	}
 
-	// 条目集合:Name 唯一、Target 指向存在字段、字段名=符号去前缀、
-	// 同一字段不得被两条条目指向(重复绑定)。
 	specByName := map[string]GoSymbolSpec{}
 	boundFields := map[string]string{}
 	for _, s := range g.Specs {
@@ -87,7 +60,6 @@ func LinkCGo(c *CExtraction, g *GoExtraction, target Target) (*LinkResult, []Dia
 		}
 		boundFields[s.Field] = s.Name
 	}
-	// 反向:每个 api 字段必须被恰一条条目指向(多余 raw func 字段失败)。
 	for _, f := range g.Fields {
 		if _, ok := boundFields[f.Name]; !ok {
 			return fail(Diagnostic{Category: CatRelation, File: f.File, Line: f.Line, Symbol: f.Name,
@@ -96,7 +68,6 @@ func LinkCGo(c *CExtraction, g *GoExtraction, target Target) (*LinkResult, []Dia
 		}
 	}
 
-	// 排除集合:Name 唯一。
 	exclByName := map[string]GoExclusion{}
 	for _, e := range g.Exclusions {
 		if _, dup := exclByName[e.Name]; dup {
@@ -107,7 +78,6 @@ func LinkCGo(c *CExtraction, g *GoExtraction, target Target) (*LinkResult, []Dia
 		exclByName[e.Name] = e
 	}
 
-	// C 导出集合与适用集合。
 	cByName := map[string]CFunction{}
 	for i := range c.Functions {
 		cByName[c.Functions[i].Name] = c.Functions[i]
@@ -117,7 +87,6 @@ func LinkCGo(c *CExtraction, g *GoExtraction, target Target) (*LinkResult, []Dia
 		applicable[c.Applicable[i].Name] = true
 	}
 
-	// 每条 symbolSpec 必须有同名 C 导出(漏绑方向的 Go 侧失败)。
 	for _, s := range g.Specs {
 		if _, ok := cByName[s.Name]; !ok {
 			return fail(Diagnostic{Category: CatRelation, File: s.File, Line: s.Line, Symbol: s.Name,
@@ -126,7 +95,6 @@ func LinkCGo(c *CExtraction, g *GoExtraction, target Target) (*LinkResult, []Dia
 		}
 	}
 
-	// 被排除项不得同时被绑定(D/实验项改绑失败)。
 	for _, s := range g.Specs {
 		if _, excluded := exclByName[s.Name]; excluded {
 			return fail(Diagnostic{Category: CatRelation, File: s.File, Line: s.Line, Symbol: s.Name,
@@ -135,8 +103,6 @@ func LinkCGo(c *CExtraction, g *GoExtraction, target Target) (*LinkResult, []Dia
 		}
 	}
 
-	// 每条 exclusion 必须对应真实存在的 C 声明(陈旧排除失败),且
-	// Header 与 C 来源头一致(归档相对路径取基名比对)。
 	for _, e := range g.Exclusions {
 		fn, ok := cByName[e.Name]
 		if !ok {
@@ -151,12 +117,6 @@ func LinkCGo(c *CExtraction, g *GoExtraction, target Target) (*LinkResult, []Dia
 		}
 	}
 
-	// 平台一致性:windows 条件导出不得绑成 allPlatforms,all 平台导出
-	// 不得绑成 windowsOnly;实验导出只能绑成 optional + allPlatforms
-	// (ASST_WITH_EXTRA_CALLERS 是构建选项条件而非平台条件,发行包缺
-	// 席该导出时由能力快照关闭,required 绑定会在缺导出的平台拒绝初
-	// 始化,windowsOnly 绑定会在非 Windows 平台恒关能力,两者都失真);
-	// 实验导出不得绑成 required。
 	for _, s := range g.Specs {
 		fn := cByName[s.Name]
 		switch {
@@ -179,7 +139,6 @@ func LinkCGo(c *CExtraction, g *GoExtraction, target Target) (*LinkResult, []Dia
 		}
 	}
 
-	// 正向分类:每个发现的 C 导出恰属其一。
 	res := &LinkResult{}
 	for i := range c.Functions {
 		fn := c.Functions[i]

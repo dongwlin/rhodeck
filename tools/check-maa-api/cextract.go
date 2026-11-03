@@ -1,25 +1,13 @@
-// cextract.go 把受限预处理后的声明项解释为规范化提取结果:标量
-// typedef 链、AsstHandle、AsstApiCallback 函数指针、Caller 两个
-// Windows enum 的命名值、Extra 的 AsstMapLevelKey 四指针成员核验,
-// 以及普通 `返回类型 ASSTAPI 名称(参数列表);` 声明与唯一的
-// ASSTAPI_PORT AsstGetVersion 拼写。类型规范化保留宽度、符号位、
-// const、指针层级与 pointee 语义;ASSTAPI 必须展开为 import/export
-// 修饰加正确调用约定。提取结果暴露完整集合、目标适用集合与实验
-// 发现三个视图,供下一段做 Go 关联。
-
 package main
 
 import "strconv"
 
-// Platform 标注声明来源条件:all 为无条件,windows 来自 _WIN32 分支,
-// extra 来自 ASST_WITH_EXTRA_CALLERS 分支。
 const (
 	PlatformAll     = "all"
 	PlatformWindows = "windows"
 	PlatformExtra   = "extra"
 )
 
-// CallConv 是展开后的调用约定;Linkage 是展开后的导出修饰。
 const (
 	CallConvNone    = ""
 	CallConvStdcall = "__stdcall"
@@ -32,8 +20,6 @@ const (
 	LinkageVisibilityHidden  = "visibility-hidden"
 )
 
-// CFunction 是一条提取的导出函数声明:Platform 取 all/windows/extra,
-// Spelling 为声明的原始 token 拼写(规范化空白,宏不展开)。
 type CFunction struct {
 	Name     string
 	Header   string
@@ -46,7 +32,6 @@ type CFunction struct {
 	Spelling string
 }
 
-// CTypedef 是一条 typedef 记录;Type 为规范化展开结果。
 type CTypedef struct {
 	Name     string
 	Header   string
@@ -55,13 +40,11 @@ type CTypedef struct {
 	Platform string
 }
 
-// CEnumValue 是 enum 的一个命名值。
 type CEnumValue struct {
 	Name  string
 	Value int64
 }
 
-// CEnum 是一条 enum 记录(仅 Caller 两个 Windows enum)。
 type CEnum struct {
 	Tag      string
 	Header   string
@@ -70,13 +53,11 @@ type CEnum struct {
 	Platform string
 }
 
-// CStructMember 是结构体的一个成员。
 type CStructMember struct {
 	Name string
 	Type CType
 }
 
-// CStruct 是一条结构体定义记录(仅 Extra 的 AsstMapLevelKey)。
 type CStruct struct {
 	Tag      string
 	Header   string
@@ -85,10 +66,6 @@ type CStruct struct {
 	Platform string
 }
 
-// CExtraction 是 C 提取结果:Functions 为完整声明集合(Caller 28 项
-// 加 ASST_WITH_EXTRA_CALLERS=1 发现的 Extra 2 项),Applicable 为按
-// 目标过滤的适用集合(非 Windows 不含窗口符号,extra 恒不在内),
-// Discovery 为实验导出发现(=0 时为空,=1 时恰为两个实验导出)。
 type CExtraction struct {
 	Functions  []CFunction
 	Applicable []CFunction
@@ -105,7 +82,6 @@ type passResult struct {
 	Structs   []CStruct
 }
 
-// 冻结的 Caller 导出名(28 项,归档顺序)与实验导出名(2 项)。
 var frozenCallerOrder = []string{
 	"AsstSetUserDir", "AsstLoadResource", "AsstSetStaticOption",
 	"AsstCreate", "AsstCreateEx", "AsstDestroy", "AsstSetInstanceOption",
@@ -124,11 +100,8 @@ var frozenExperimentalOrder = []string{"AsstGetMapLevelKey", "AsstGetItemName"}
 
 var frozenExperimental = newSet(frozenExperimentalOrder...)
 
-// 仅这三个符号允许以归档空 () 按零参数解释;(void) 形式任何函数
-// 都可识别。
 var frozenZeroArgFunctions = newSet("AsstCreate", "AsstGetNullSize", "AsstGetVersion")
 
-// frozenTypedefs 是锁定 typedef 链:名称 → 规范拼写(忽略空白)。
 var frozenTypedefs = map[string]string{
 	"AsstBool":              "typedefuint8_tAsstBool",
 	"AsstSize":              "typedefuint64_tAsstSize",
@@ -156,9 +129,6 @@ var frozenStructTag = "AsstMapLevelKey"
 
 var frozenStructMembers = []string{"stage_id", "code", "level_id", "name"}
 
-// runParsePass 以给定宏环境完整解析一次 c 输入:Caller 为根(引入
-// Port),Extra 为第二根;两个 pass 都检查全部分支结构,区别仅在
-// extra 内容是否进入结果集合。
 func runParsePass(input *CInput, env macroEnv) (*passResult, *Diagnostic) {
 	p := newCParser(input, env)
 	if d := p.parseFile(FileAsstCaller); d != nil {
@@ -169,7 +139,6 @@ func runParsePass(input *CInput, env macroEnv) (*passResult, *Diagnostic) {
 	}
 	res := p.result
 	if env.intValue("ASST_WITH_EXTRA_CALLERS") == 0 {
-		// =0 pass:extra 内容已做全分支结构检查,但不进入结果集合。
 		res = &passResult{}
 		for _, f := range p.result.Functions {
 			if f.Platform != PlatformExtra {
@@ -195,9 +164,6 @@ func runParsePass(input *CInput, env macroEnv) (*passResult, *Diagnostic) {
 	return res, nil
 }
 
-// ExtractC 对已校验的 c 输入执行完整提取:先以 ASST_WITH_EXTRA_CALLERS=0
-// 跑生产 profile(实验导出必须不脱离守卫出现),再以 =1 做实验导出
-// 发现(必须恰为两个锁定实验符号),随后给出完整/适用/发现三个视图。
 func ExtractC(input *CInput, target Target) (*CExtraction, []Diagnostic) {
 	fail := func(d Diagnostic) (*CExtraction, []Diagnostic) { return nil, []Diagnostic{d} }
 	if input == nil {
@@ -266,8 +232,6 @@ func ExtractC(input *CInput, target Target) (*CExtraction, []Diagnostic) {
 	}, nil
 }
 
-// checkFunctionSet 要求非 extra 声明恰好构成锁定的 28 项 caller 导出
-// (无缺失、无未知、无重复),全部声明名称唯一。
 func checkFunctionSet(res *passResult) *Diagnostic {
 	seen := map[string]bool{}
 	inCaller := map[string]bool{}
@@ -317,7 +281,6 @@ func discoveryNames(fns []CFunction) string {
 	return sprintfNames(names)
 }
 
-// processItem 按首 token 分派声明项。
 func (p *cparser) processItem(item []token, line int) *Diagnostic {
 	plat := p.platformLabel()
 	switch {
@@ -345,8 +308,6 @@ func itemHasBrace(item []token) bool {
 	return false
 }
 
-// processTypedef 处理标量/指针 typedef:先按当前 typedef 表解析底层
-// 类型(未知名字或环即失败),再对照锁定拼写链。
 func (p *cparser) processTypedef(item []token, line int, plat string) *Diagnostic {
 	if len(item) < 3 {
 		return p.diag(line, "typedef", "typedef with underlying type and name", tokenCanon(item),
@@ -382,14 +343,12 @@ func (p *cparser) processTypedef(item []token, line int, plat string) *Diagnosti
 	return nil
 }
 
-// processCallbackTypedef 处理唯一的 AsstApiCallback 函数指针 typedef。
 func (p *cparser) processCallbackTypedef(item []token, line int, plat string) *Diagnostic {
 	canon := tokenCanon(item)
 	if canon != frozenCallbackCanon {
 		return p.diag(line, "AsstApiCallback", frozenCallbackReadable, canon,
 			"callback typedef does not match the locked spelling")
 	}
-	// 形状固定:typedef void (ASST_CALL * AsstApiCallback) (params)
 	closeIdx := -1
 	for i := 3; i < len(item); i++ {
 		if item[i].is(")") {
@@ -428,8 +387,6 @@ func (p *cparser) processCallbackTypedef(item []token, line int, plat string) *D
 	return nil
 }
 
-// processEnum 处理 Caller 的两个 Windows enum:仅整数常量与 1 << n,
-// 允许尾逗号;其余表达式失败。
 func (p *cparser) processEnum(item []token, line int, plat string) *Diagnostic {
 	if len(item) < 6 || !item[3].is("{") || !item[len(item)-2].is("}") {
 		return p.diag(line, "enum", "typedef enum Tag { entries } Name", tokenCanon(item),
@@ -471,7 +428,7 @@ func (p *cparser) parseEnumEntries(entries []token) ([]CEnumValue, *Diagnostic) 
 	for gi, g := range groups {
 		if len(g) == 0 {
 			if gi == len(groups)-1 {
-				continue // 尾逗号
+				continue
 			}
 			return nil, p.diag(0, "enum entry", "Name = value", "empty entry",
 				"empty enum entry")
@@ -526,7 +483,6 @@ func (p *cparser) parseEnumValue(expr []token) (int64, *Diagnostic) {
 		"unsupported enum value expression")
 }
 
-// processForwardDecl 仅认 struct AsstExtAPI; 前置声明。
 func (p *cparser) processForwardDecl(item []token, line int) *Diagnostic {
 	if len(item) == 2 && item[1].is("AsstExtAPI") {
 		return nil
@@ -535,8 +491,6 @@ func (p *cparser) processForwardDecl(item []token, line int) *Diagnostic {
 		"unknown forward declaration")
 }
 
-// processStructDef 仅认 AsstMapLevelKey 的四个 const char* 成员
-// (stage_id/code/level_id/name,顺序固定);新增成员或类型变化失败。
 func (p *cparser) processStructDef(item []token, line int, plat string) *Diagnostic {
 	if len(item) < 5 || !item[2].is("{") || !item[len(item)-1].is("}") {
 		return p.diag(line, "struct", "struct definition", tokenCanon(item),
@@ -577,8 +531,6 @@ func (p *cparser) processStructDef(item []token, line int, plat string) *Diagnos
 	return nil
 }
 
-// processFunction 分派普通 ASSTAPI 声明与唯一的 ASSTAPI_PORT
-// AsstGetVersion 拼写;ASSTLOCAL 等其他宏在声明中的出现一律失败。
 func (p *cparser) processFunction(item []token, line int, plat string) *Diagnostic {
 	apiCount, portCount, otherMacro := scanFunctionMacros(item)
 	switch {
@@ -620,14 +572,12 @@ func scanFunctionMacros(item []token) (apiCount, portCount int, otherMacro strin
 	return apiCount, portCount, otherMacro
 }
 
-// processGetVersion 处理唯一允许的 ASSTAPI_PORT 特殊拼写。
 func (p *cparser) processGetVersion(item []token, line int, plat string) *Diagnostic {
 	canon := tokenCanon(item)
 	if canon != frozenGetVersionCanon {
 		return p.diag(line, "AsstGetVersion", frozenGetVersionReadable, canon,
 			"ASSTAPI_PORT is only accepted for the frozen AsstGetVersion spelling")
 	}
-	// token 形状固定:[ASSTAPI_PORT, const, char, *, ASST_CALL, AsstGetVersion, ()]
 	if len(item) != 8 {
 		return p.diag(line, "AsstGetVersion", frozenGetVersionReadable, canon,
 			"malformed AsstGetVersion declaration")
@@ -657,7 +607,6 @@ func (p *cparser) processGetVersion(item []token, line int, plat string) *Diagno
 	return nil
 }
 
-// processStandardFunction 处理 `返回类型 ASSTAPI 名称(参数列表);`。
 func (p *cparser) processStandardFunction(item []token, line int, plat string) *Diagnostic {
 	apiIdx := -1
 	for i, t := range item {
@@ -715,8 +664,6 @@ func (p *cparser) processStandardFunction(item []token, line int, plat string) *
 	return nil
 }
 
-// parseParamRegion 处理参数区:空 () 仅对三个锁定零参数符号按零参数
-// 解释,(void) 对任何函数可识别;其余交给通用参数解析。
 func (p *cparser) parseParamRegion(region []token, fnName string, line int) ([]CParam, *Diagnostic) {
 	if len(region) == 0 {
 		if !frozenZeroArgFunctions[fnName] {
@@ -732,8 +679,6 @@ func (p *cparser) parseParamRegion(region []token, fnName string, line int) ([]C
 	return p.parseParams(region, line, fnName)
 }
 
-// parseParams 解析逗号分隔的具名参数;每个参数必须带普通标识符名,
-// 不接受匿名参数、变参与嵌套声明器。
 func (p *cparser) parseParams(region []token, line int, context string) ([]CParam, *Diagnostic) {
 	for _, t := range region {
 		if t.is("(") {
@@ -771,9 +716,6 @@ func (p *cparser) parseParams(region []token, line int, context string) ([]CPara
 	return params, nil
 }
 
-// resolveType 解析受限类型拼写:const 前缀、void、stdint 固定标量、
-// char、struct Tag、已知 typedef;至多一层指针,指针后不得再带
-// const 或其他 token。经别名展开时在 Via 保留使用处原名。
 func (p *cparser) resolveType(toks []token, line int) (CType, *Diagnostic) {
 	i := 0
 	isConst := false
@@ -838,9 +780,6 @@ func (p *cparser) resolveType(toks []token, line int) (CType, *Diagnostic) {
 	return base, nil
 }
 
-// expandExportMacro 展开导出宏并收集修饰:必须得到非空 import/export
-// 修饰(不允许靠剥掉大写词蒙混)且调用约定只能为空或 __stdcall;
-// sysv_abi(Wine)不属于本 profile。
 func (p *cparser) expandExportMacro(name string, line int) (string, string, *Diagnostic) {
 	linkage, callconv, d := p.collectModifiersFromMacro(name, line)
 	if d != nil {
@@ -857,7 +796,6 @@ func (p *cparser) expandExportMacro(name string, line int) (string, string, *Dia
 	return linkage, callconv, nil
 }
 
-// expandCallConvMacro 展开纯调用约定宏(ASST_CALL)。
 func (p *cparser) expandCallConvMacro(name string, line int) (string, *Diagnostic) {
 	linkage, callconv, d := p.collectModifiersFromMacro(name, line)
 	if d != nil {
@@ -887,7 +825,6 @@ func (p *cparser) collectModifiersFromMacro(name string, line int) (string, stri
 	return linkage, callconv, nil
 }
 
-// expandMacro 展开 Port 宏(含嵌套引用,带环防御);未定义的宏失败。
 func (p *cparser) expandMacro(name string, line int, depth int) ([]token, *Diagnostic) {
 	if depth > maxMacroDepth {
 		return nil, p.diag(line, name, "macro expansion without cycles", "expansion depth exceeded",
@@ -913,8 +850,6 @@ func (p *cparser) expandMacro(name string, line int, depth int) ([]token, *Diagn
 	return out, nil
 }
 
-// collectModifiers 从展开 token 中收集导出修饰与调用约定,遇到首个
-// 非 modifier token 停止。
 func (p *cparser) collectModifiers(toks []token, line int) (string, string, []token, *Diagnostic) {
 	linkage, callconv := LinkageNone, CallConvNone
 	match := func(pos int, want ...string) bool {

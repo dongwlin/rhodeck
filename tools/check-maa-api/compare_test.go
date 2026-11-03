@@ -20,8 +20,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ---- 直接构造用的规范化 C 类型小构造器 ----
-
 func sigCScalar(name string, bits int, signed bool) CType {
 	return CType{Kind: CKindScalar, Name: name, Bits: bits, Signed: signed}
 }
@@ -40,8 +38,6 @@ func sigCFuncPtr() CType {
 		Params: []CParam{{Name: "msg", Type: sigCScalar("int32", 32, true)}},
 	}}
 }
-
-// ---- 提取基线与改动辅助 ----
 
 // mustSignatureBase 用合成 C 正例加真实生产 native 包构造 link 成功
 // 后的比对基线(linux 目标,25 条 Bound + 1 条 NonTarget 的
@@ -109,8 +105,6 @@ func mustSigFail(t *testing.T, c *CExtraction, g *GoExtraction, link *LinkResult
 	}
 	return d
 }
-
-// ---- 冻结映射表钉死 ----
 
 // TestApprovedParamNameMapping 钉死冻结的 8 个参数名重命名,
 // 并确认其余名字原样保留(同名规则)。
@@ -208,8 +202,6 @@ func TestPermittedGoTypesTable(t *testing.T) {
 		})
 	}
 }
-
-// ---- 正例:冻结映射与生产声明逐字段一致 ----
 
 // TestCompareSignaturesPositiveRealNative 用真实生产 native 包加合成
 // C 正例证明冻结映射与生产 api.go/callback_types.go 逐字段一致:两
@@ -349,8 +341,6 @@ func TestCompareSignaturesPositiveRealNative(t *testing.T) {
 		aw.Params[2].CType != "uint64" || aw.Params[2].GoType != "uint64",
 		"AsstAsyncAttachWindow screencap_method = %+v", aw.Params[2])
 }
-
-// ---- 失败向量:Go 侧改动定位到 Go 声明,C 侧定位到 C 声明 ----
 
 // TestCompareSignatureGoSideFailures 是 Go 侧破坏向量:每个变体从真实
 // 生产提取结果出发改一处,断言 signature 诊断定位到过错方并给出参数
@@ -593,8 +583,6 @@ func TestCompareSignatureCharPointeeConstFailures(t *testing.T) {
 	})
 }
 
-// ---- 失败向量:callback 平台适配 ----
-
 // TestCompareSignatureCallbackFailures 是 callback 侧破坏向量:平台
 // 适配规则(unix 无返回、windows 恰返回 uintptr、参数逐位置具名映
 // 射)被破坏时诊断定位到 callback_types.go 的类型声明行。
@@ -677,8 +665,6 @@ func TestCompareSignatureNilInputs(t *testing.T) {
 		})
 	}
 }
-
-// ---- 端到端:完整命令入口的破坏变体 ----
 
 // TestRealNativeSignatureVariantsFailThroughCLI 是签名比对的端到端
 // 验收:Go 侧与 C 侧破坏变体都走完整命令入口 Run,断言非零退出、

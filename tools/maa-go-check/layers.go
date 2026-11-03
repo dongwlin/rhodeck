@@ -1,7 +1,3 @@
-// Layer definitions for maa-go-check. Each layer is independently selected
-// and reported; the "ci" alias only contains layers that are runnable on a
-// clean Linux amd64 machine with a C compiler and the vendored checker
-// input. The real-MaaCore layer is local-only.
 package main
 
 import (
@@ -73,9 +69,6 @@ func definitions() []layer {
 	}
 }
 
-// runStatic combines the checker's own unit/counterexample suite with two
-// real runs over the selected C input. Header tests requiring external input
-// are excluded here; runCheckerTarget asserts the policy counts independently.
 func runStatic(ctx context.Context, env environment) layerResult {
 	res := newLayerResult("static")
 	res.Detail = "checker tests plus selected C input (linux/windows)"
@@ -102,9 +95,6 @@ func runStatic(ctx context.Context, env environment) layerResult {
 	return res
 }
 
-// runGo runs the fake-native, lifecycle, snapshot, platform loader, and tool
-// unit tests. Platform loader tests compile small C fixtures. MaaCore release
-// acceptance tests have their own layer so a missing tarball cannot hide here.
 func runGo(ctx context.Context, env environment) layerResult {
 	res := newLayerResult("go")
 	res.merge(runGoTest(ctx, env, goTestStep{
@@ -213,9 +203,6 @@ func runFmt(ctx context.Context, env environment) layerResult {
 	return res
 }
 
-// raceGoTestStep is the single source of the race layer's test spec. It must
-// carry Race: true; without the actual -race flag the layer would only run
-// the ordinary test binary and report a false green.
 func raceGoTestStep() goTestStep {
 	return goTestStep{
 		Name:     "race detector",

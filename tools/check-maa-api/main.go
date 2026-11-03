@@ -1,5 +1,3 @@
-// Command check-maa-api 对显式 MaaCore 头文件与 Go raw 声明进行独立比对。
-
 package main
 
 import (
@@ -25,8 +23,6 @@ func main() {
 	os.Exit(Run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// reportJSON 是成功输出的顶层 JSON 结构:字段顺序即键序,列表一律
-// 按名称排序,保证输出确定性。
 type reportJSON struct {
 	Input      manifest        `json:"input"`
 	Target     targetJSON      `json:"target"`
@@ -171,7 +167,6 @@ type signatureReport struct {
 	Callbacks []signatureCallbackJSON `json:"callbacks"`
 }
 
-// Run 承载全部命令逻辑;返回进程退出码。stdout 只在成功时收到 JSON。
 func Run(args []string, stdout, stderr io.Writer) int {
 	snapshotID := ""
 	goosArg, goarchArg := "", ""
@@ -268,7 +263,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// printFailure 输出输入身份/目标头信息与诊断;失败路径绝不输出 PASS。
 func printFailure(stderr io.Writer, snapshotID string, target Target, diags []Diagnostic) {
 	if snapshotID != "" {
 		fmt.Fprintf(stderr, "check-maa-api: input snapshot: %s\n", snapshotID)
@@ -281,13 +275,6 @@ func printFailure(stderr io.Writer, snapshotID string, target Target, diags []Di
 	}
 }
 
-// buildReport 组装确定性成功输出:所有列表按名称排序;空列表输出
-// 为 [],不输出 null。expect 段给出冻结期望表的逐符号 policy/platform
-// 期望与实际对照(30 项,按符号名排序,与目标无关);signatures 段
-// 给出宽度级逐参数核验记录(全部绑定符号——目标适用绑定与非目标平
-// 台的 windowsOnly 绑定,两目标均为 28 项——按符号名排序,两个
-// callback 固定顺序),含每个参数位置的 C/Go 名称与类型、返回映射与
-// 双方声明位置。
 func buildReport(target Target, cext *CExtraction, gext *GoExtraction,
 	sel *GoSelection, link *LinkResult, expect *ExpectResult, signatures *SignatureResult) reportJSON {
 	report := reportJSON{
