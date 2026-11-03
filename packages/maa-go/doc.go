@@ -21,23 +21,16 @@
 // 的 ErrInvalidInput,不静默截断或夹取。
 //
 // Runtime.NewInstance(InstanceConfig) 执行实例创建事务并返回
-// *Instance:校验并复制实例配置 → 预留唯一实例名额并登记创建 lease
-// → 建立实例状态、事件入口、callback 门与 token → CreateEx → 按序
-// 应用实例选项 → 在 Runtime 同一状态门内复核可发布性与早到故障并发
-// 布 ready Instance。全部步骤成功才返回实例;CreateEx=0、选项被原生
-// 拒绝、早到故障或发布被 closing 抢先都走统一单次关闭/回滚流程清理,
-// Runtime 终止使用,调用者拿不到半初始化实例。
+// *Instance:全部步骤成功才返回实例;CreateEx=0、选项被原生拒绝、早到
+// 故障或发布被 closing 抢先都走统一单次关闭/回滚流程清理,Runtime 终止
+// 使用,调用者拿不到半初始化实例。
 //
-// Runtime.Close 同步完成绑定使用的关闭(幂等,不卸载原生库):先关
-// 闭创建准入(此后 NewInstance 在预留处返回 ErrClosing;终止使用后
-// 返回包装 ErrRuntimeTerminated 的错误),再等待已登记的创建
-// lease——没有 ready 实例时同样检查 initializing 实例,未发布的创
-// 建实例由创建者完成统一回滚并释放 lease,回滚完成之前 Close 不返回、
-// 也不重复 Destroy;已发布的活动实例交给唯一关闭者(与 Instance.
-// Close 同一单次关闭流程)。多次或并发的 Runtime.Close 与 Instance.
-// Close 收到同一稳定最终结果,终止后的重复关闭不再进入 native;Close
-// 后进程进入终止使用状态,后续 Open 与 NewInstance 返回包装
-// ErrRuntimeTerminated 的错误。
+// Runtime.Close 同步完成绑定使用的关闭(幂等,不卸载原生库):关闭
+// 创建准入后等待进行中的创建事务收尾,未发布实例的回滚完成之前 Close
+// 不返回,也不重复 Destroy;已发布的活动实例交给唯一关闭者。多次或并发
+// 的 Runtime.Close 与 Instance.Close 收到同一稳定最终结果,终止后的
+// 重复关闭不再进入 native;Close 后进程进入终止使用状态,后续 Open 与
+// NewInstance 返回包装 ErrRuntimeTerminated 的错误。
 //
 // Instance 的公开面为同步生命周期、任务方法与异步提交:Close 同步、
 // 幂等的单次关闭流程,返回后不再允许原生调用;AppendTask(taskType,
@@ -51,8 +44,7 @@
 // 以 block=false 异步提交并返回 *Operation:非零 ID 只表示提交被接
 // 受,最终结果由 AsyncCallInfo 按 async_call_id 关联确认后经
 // Operation.Wait 取得(可重复等待,取消只结束本次等待,不撤销已提
-// 交的原生动作);完成回调先于 raw 返回时按 token + ID + 预期 what
-// 接合,不依赖消息到达顺序。AttachWindow(AsstAsyncAttachWindow)
+// 交的原生动作)。AttachWindow(AsstAsyncAttachWindow)
 // 只在 Windows 平台生效——底层符号仅 Windows 参与查找,非 Windows
 // 平台与能力缺席时一律返回 ErrUnsupported,binding 不在其他系统上
 // 模拟成功;三个 method 掩码以 Win32ScreencapMethod/Win32InputMethod
@@ -102,13 +94,10 @@
 // 返回原始 BGR 字节,通道序/步长由 Core 决定,binding 不返回图像尺
 // 寸);UUID 按原生返回的长度读取并转换为 string,不寻找、不要求尾
 // 部 NUL,内容含 NUL 或非法 UTF-8 为 ErrProtocol;Tasks 返回已入队
-// 任务的 ID 列表,容量与返回值均按 int32 元素数处理。四者都复用有
-// 界输出缓冲区探测:每次调用分配实际非空 buffer 并传真实容量(不以
-// nil/0 查询所需容量),返回值校验顺序固定为 NullSize 哨兵 → 实际
-// 容量 → Go int 上限 → 转换/切片,耗尽返回可辨识的 ErrBufferLimit
-// (NullSize 原因不明),原生返回值超过实际容量为 ErrProtocol;合法
-// 0 长度返回空结果。返回的都是独立 Go 快照,可长期持有、修改,不影
-// 响后续调用。
+// 任务的 ID 列表,容量与返回值均按 int32 元素数处理。四者都复用有界
+// 输出缓冲区探测:耗尽返回可辨识的 ErrBufferLimit(NullSize 原因不明),
+// 原生返回值超过实际容量为 ErrProtocol,合法 0 长度返回空结果。返回的
+// 都是独立 Go 快照,可长期持有、修改,不影响后续调用。
 //
 // # 事件流与故障观察
 //
@@ -121,9 +110,8 @@
 // Fault 在首次实例故障时独立关闭,不依赖事件队列有空间,也不表示
 // 清理完成。正常关闭或仅关闭 Stop 拒绝不触发 Fault;观察者应同时
 // 选择 Done。Done 只在实例关闭完成时关闭,任务完成由事件表达。
-// Close 不依赖事件读者:全部 callback 退出、Operation 结算、最终
-// 错误与 closed 状态发布后,先关闭 Events 并等待分发器退出,再通知
-// Done 与等待关闭的调用者;已缓冲事件在关闭后仍可读取。
+// Close 不依赖事件读者:Done 与等待关闭的调用者晚于 Events 关闭被通知,
+// 已缓冲事件在关闭后仍可读取。
 //
 // Err 在 ready 时为 nil,故障后立即可见首因,关闭期间可加入 Stop
 // 拒绝诊断;Done 关闭或任意 Close 返回后,Err 与 Close 返回同一份
@@ -150,21 +138,15 @@
 //     快照;Open 返回后修改原配置(包括 slice 元素、RawMessage 与
 //     Limits 字段)不影响已初始化 Runtime。调用者在 Open 返回前不得
 //     并发修改输入。
-//   - 初始化步骤顺序:Version 复制与 NullSize 核验 → 用户目录 →
-//     静态选项(先于资源加载)→ 资源根(按配置顺序)→ 连接 extras
-//     (按配置顺序);extras 为 C void 调用,不伪造原生成功码。
-//   - Runtime.Close 终止使用:先关闭创建准入,再等待创建 lease 与未
-//     发布实例的统一回滚,已发布实例交给唯一关闭者,最后进程级生命
-//     周期进入 terminated;多次/并发 Close 共享同一最终结果,重复关
-//     闭不再进入 native。原生库保持加载到进程退出,Close 不卸载。
+//   - Runtime.Close 终止使用:多次/并发 Close 共享同一最终结果,重复
+//     关闭不再进入 native。原生库保持加载到进程退出,Close 不卸载。
 //
 // Runtime、Instance、Operation 的指针语义:只能经 Open、NewInstance、
 // 异步提交方法或 Operation.Wait 返回的指针使用;零值不可用,不按值
-// 复制。按值复制会复制内部状态/通道引用,使两个副本越过单次关闭、
-// 并发准入与 token 归属,因此不受支持。Runtime 的只读元数据方法
-// 并发安全;Open 并发安全(由生命周期门串行化预占);Runtime.Close
-// 与 Instance.Close 并发安全(并发申请共享同一关闭结果);Instance
-// 的业务方法可并发调用,由实例状态准入与 raw 串行门禁约束;
+// 复制。按值复制会复制内部状态/通道引用,使两个副本越过单次关闭与并发
+// 准入,因此不受支持。Runtime 的只读元数据方法并发安全;Open 并发安全
+// (由生命周期门串行化预占);Runtime.Close 与 Instance.Close 并发安全
+// (并发申请共享同一关闭结果);Instance 的业务方法可并发调用;
 // Operation.Wait 可重复、可并发。
 //
 // # 取消与关闭边界

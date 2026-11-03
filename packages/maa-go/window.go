@@ -1,15 +1,3 @@
-// 本文件实现 Win32 窗口绑定(AsstAsyncAttachWindow)的公开入口与
-// 方法掩码类型。该接口只在 Windows 平台生效:底层符号由符号表的
-// windowsOnly 条目标注,仅 Windows 参与查找;非 Windows 平台一律
-// 返回 ErrUnsupported,binding 不在其他系统上模拟成功,也不静默降级。
-// Windows 上符号仍可能缺席(可选符号,部分发行包裁剪),由能力快照
-// 二次把关,同样返回 ErrUnsupported。
-//
-// 绑定是异步提交:与 Connect/Click/Screencap 同一提交纪律,最终结果
-// 由 AsyncCallInfo(what=AttachWindow)按 async_call_id 关联确认后经
-// Operation.Wait 取得——非零 ID 只表示提交被接受,不是绑定已建立的
-// 证明。
-
 package maa
 
 import (
@@ -24,7 +12,6 @@ import (
 // 解释组合语义,binding 不做业务枚举封闭。
 type Win32ScreencapMethod uint64
 
-// Win32 截图方式(逐字对应 AsstCaller.h:11-20)。
 const (
 	Win32ScreencapNone                 Win32ScreencapMethod = 0
 	Win32ScreencapGDI                  Win32ScreencapMethod = 1
@@ -40,7 +27,6 @@ const (
 // 组合,由 Core 解释组合语义,binding 不做业务枚举封闭。
 type Win32InputMethod uint64
 
-// Win32 输入方式(逐字对应 AsstCaller.h:23-38)。
 const (
 	Win32InputNone                     Win32InputMethod = 0
 	Win32InputSeize                    Win32InputMethod = 1
