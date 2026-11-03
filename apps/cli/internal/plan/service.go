@@ -80,8 +80,6 @@ func (s *Service) Prepare(p control.Plan) (control.PreparedPlan, []string, error
 // returned after the run finished and the runtime released its directory lock.
 func (s *Service) Execute(ctx context.Context, p control.Plan, o Options, sink Sink) (control.Result, error) {
 	adapters := Adapters()
-	// Reject unknown adapter selections and strict input before New creates or
-	// locks the data directory. The runtime prepares again for the submission.
 	if _, err := control.PreparePlan(p, adapters...); err != nil {
 		return control.Result{}, output.Reject(output.CodeInvalidPlan)
 	}
@@ -123,8 +121,6 @@ func (s *Service) Execute(ctx context.Context, p control.Plan, o Options, sink S
 			}
 		})
 	}
-	// Done includes final persistence and worker cleanup; events alone never
-	// establish a final result. A failed output stream still triggers cleanup.
 	events, done := run.Events(), run.Done()
 	for events != nil || done != nil {
 		select {
@@ -137,9 +133,6 @@ func (s *Service) Execute(ctx context.Context, p control.Plan, o Options, sink S
 				continue
 			}
 			if err := sink.Emit(ctx, event, done, closeRuntime); err != nil {
-				// No more output is queued after a failed write. In particular,
-				// do not report through the caller: the same stdout sink may be
-				// permanently blocked.
 				cancel()
 				closeRuntime()
 				return control.Result{}, output.Broken(output.WriteFailureCode(err))

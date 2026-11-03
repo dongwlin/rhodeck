@@ -30,15 +30,11 @@ func runCLI(version string, parent context.Context, args []string, stdin io.Read
 	app := cmd.New(version, stdin, sink)
 	root := app.Root()
 	if args == nil {
-		// A nil argument list makes cobra fall back to os.Args[1:]; an empty
-		// list keeps the caller's explicit invocation.
 		args = []string{}
 	}
 	root.SetArgs(args)
 	_, err := root.ExecuteContextC(parent)
 	if err == nil {
-		// The help renderer cannot return an error, so it reports a failed
-		// write through the command tree.
 		err = app.HelpError()
 	}
 	if err == nil {
@@ -54,7 +50,6 @@ func report(sink *output.Writer, diagnostics *output.Diagnostics, err error) int
 	}
 	if failure.Emission == output.EmitEnvelope {
 		if writeErr := sink.Emit(context.Background(), failure.Envelope, nil, nil); writeErr != nil {
-			// The machine output stream is broken and must not be written again.
 			failure = &output.Failure{
 				Code:     output.WriteFailureCode(writeErr),
 				Exit:     output.ExitUnknown,

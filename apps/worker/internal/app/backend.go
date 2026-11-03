@@ -180,8 +180,6 @@ func openEngine(req protocol.InitializeRequest) (_ engine, info protocol.Runtime
 	caps := rt.Capabilities()
 	info.Capabilities = protocol.Capabilities{ImageBGR: caps.ImageBgr(), AttachWindow: caps.AsyncAttachWindow(), MapLevelKey: caps.MapLevelKey(), ItemName: caps.ItemName()}
 	info.NullSize = rt.NullSize()
-	// The applied limit set is what the session passed in; report a detached
-	// copy so the response never aliases the request.
 	if req.Limits != nil {
 		applied := *req.Limits
 		info.Limits = &applied
@@ -372,9 +370,6 @@ func observeInstance(ctx context.Context, in instanceObservations, emit eventEmi
 				return
 			case event, ok := <-in.Events():
 				if !ok {
-					// The stream ends as the instance reaches its terminal
-					// state; the outcome itself travels as the diagnostics
-					// event instead of a reader failure.
 					readerDone <- nil
 					return
 				}
@@ -395,12 +390,6 @@ func observeInstance(ctx context.Context, in instanceObservations, emit eventEmi
 		case <-in.Fault():
 			reportFault(in, emit)
 		case <-in.Done():
-			// Done and Fault may become ready together: the notification is
-			// closed forever once fired, and every fault is recorded before
-			// the close completion is published, so a non-blocking re-check
-			// settles whether a first fault linearized before the terminal
-			// state. Missing it here would report the first cause only
-			// through the diagnostics snapshot.
 			select {
 			case <-in.Fault():
 				reportFault(in, emit)
@@ -425,12 +414,6 @@ func observeInstance(ctx context.Context, in instanceObservations, emit eventEmi
 		}
 	}()
 
-	// Both watchers always terminate — on the context, on their observation,
-	// or released by the cancellation below — and the observation is over
-	// only when both have, so the close path (which waits for Observe)
-	// always answers after the snapshot was enqueued. A failed emission has
-	// already failed the session; cancelling then releases the other watcher
-	// instead of waiting for a fact the broken transport can no longer carry.
 	var readerErr, terminalErr error
 	for readerDone != nil || terminal != nil {
 		select {
@@ -513,9 +496,6 @@ func classify(err error) *protocol.Error {
 		code = protocol.LoadFailed
 		detail = &protocol.ErrorDetail{Kind: "library_load", Field: boundDetail(load.LibraryName)}
 	case errors.As(err, &symbol):
-		// errors.As traverses an AggregateError member by member, so an
-		// aggregate maps to the family of its first matching member and the
-		// full member list stays in the bounded message.
 		code = protocol.SymbolMissing
 		detail = &protocol.ErrorDetail{Kind: "symbol_lookup", Field: boundDetail(symbol.Symbol)}
 	case errors.As(err, &registration):

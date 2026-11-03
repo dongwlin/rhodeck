@@ -187,9 +187,6 @@ func (s *session) commands(factory engineFactory) (result error) {
 	var observed <-chan struct{}
 	var operations sync.WaitGroup
 	cleanup := func() error {
-		// Retained image snapshots never outlive the command loop: freeing
-		// them first releases the aggregate in-flight image memory before the
-		// potentially blocking native close.
 		s.releaseImageTransfers()
 		if core == nil {
 			return nil
@@ -220,13 +217,6 @@ func (s *session) commands(factory engineFactory) (result error) {
 					_ = s.respond(req, nil, err, false)
 					continue
 				}
-				// Omitted limits select the whole default set as one applied
-				// configuration. The frozen wire budgets are enforced before
-				// the native factory, so an undeliverable configuration fails
-				// with limit_exceeded and the effective maximum instead of a
-				// mid-session delivery failure; the binding's own range and
-				// cross-field validation happens inside the factory and any
-				// failure there is terminal.
 				limits := effectiveLimits(config.Limits)
 				if err := protocol.CheckWireLimits(&limits); err != nil {
 					_ = s.respond(req, nil, err, false)

@@ -140,7 +140,6 @@ func (w *Writer) submit(ctx context.Context, write func() error, done <-chan str
 			done = nil
 			callRelease(release)
 		case <-timeout:
-			// A completed write wins a simultaneous deadline observation.
 			select {
 			case err := <-result:
 				return err

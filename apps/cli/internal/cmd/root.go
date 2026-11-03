@@ -85,7 +85,6 @@ func (a *App) newRootCommand() *cobra.Command {
 			return output.Reject(output.CodeCommandRequired)
 		},
 	}
-	// Nothing cobra prints may reach the machine output stream.
 	root.SetOut(io.Discard)
 	root.SetErr(io.Discard)
 	root.CompletionOptions.DisableDefaultCmd = true
@@ -109,9 +108,6 @@ func (a *App) newRootCommand() *cobra.Command {
 	root.AddCommand(a.versionCommand())
 	a.helpCmd = a.helpCommand()
 	root.SetHelpCommand(a.helpCmd)
-	// The shell completion helper is not part of the command surface. It is
-	// rejected like any other unknown word so that it can never write to the
-	// machine output stream.
 	root.AddCommand(&cobra.Command{
 		Use:                cobra.ShellCompRequestCmd + " [command-line]",
 		Hidden:             true,
