@@ -1,10 +1,8 @@
 # Rhodeck 开发指南
 
-本文件是仓库唯一阅读入口。先遵守全局规则，再按修改范围从“延伸阅读”选择子目录指南；无需预读所有模块文档。
-
 ## 项目与边界
 
-Rhodeck 是一个 Go module，提供 MaaCore 动态绑定、独立 Core worker、父进程监管客户端、control 应用运行时与独立 CLI。原生绑定通过 purego 调用 C ABI，生产代码可用 `CGO_ENABLED=0` 构建；MaaCore、资源和 ADB 由调用方另行提供。
+Rhodeck 是一个面向 MaaCore 的 Go module；原生绑定通过 purego 调用 C ABI，生产代码可用 `CGO_ENABLED=0` 构建，MaaCore、资源和 ADB 由调用方另行提供。分层职责见下表。
 
 | 路径 | 职责 |
 | --- | --- |
@@ -19,17 +17,18 @@ Rhodeck 是一个 Go module，提供 MaaCore 动态绑定、独立 Core worker�
 | `tools/maa-go-check/` | 分层验证入口，分别报告各层执行结果 |
 | `tools/api-coverage/` | 完整 worker 的 API 覆盖清单与漂移门禁：扫描 maa-go 公开面并与冻结清单、五段映射对账 |
 
-依赖方向为 CLI → control 与显式 adapters、adapters → control 契约、control → 监管客户端 → protocol、worker → protocol 与 maa、maa → internal/native。CLI 内部按 app → cmd → plan → output 单向依赖，每层只依赖下一层与 control；该分层由 `apps/cli/internal/app` 的层依赖测试守门。control 不导入具体 adapter；control 和监管客户端不加载原生库；protocol 不依赖绑定、进程管理或应用服务。不要将规划中的产品模块当作已实现能力。
-
 ## 全局开发约定
 
 - raw 任务类型与参数、连接 extras 和原生消息保持开放；显式适配器按各自契约严格校验。使用 `json.RawMessage` 保留未知字段和大整数，禁止经 `map[string]any` 的 float64 往返破坏精度。
 - 请求被接受、获得 task/async ID、`Running=false`、IPC 可响应都不能推导为任务成功；业务完成依据 Core 事件解释。故障后不自动重连、重试或重放设备动作，未确认结果保留为未知。
 - Events 流只设一个消费者，并同时观察相应 Done/Err；关闭完成后仍可读取缓冲事件，清理不能依赖消费者继续排空。
 - 错误通过 `errors.Is` / `errors.As`、协议稳定 Code 判别；诊断文本不作为控制逻辑。新增错误和测试诊断沿用英文，注释沿用所在文件的语言。
+- 生产代码默认零注释：注释不得叙述代码在做什么，不得向读者传话或描述本次改动。仅允许三类例外：许可证头；无法从代码推导的“为什么”（隐藏约束、微妙不变量、特定缺陷的 workaround）且注明可追溯依据（如关联 issue）；跟随存量风格的公共 API doc comment（如 Go 导出标识符的 godoc，不额外创造惯例）。
+- TODO、FIXME、空 catch 或空错误分支占位、装饰性分隔注释和注释掉的代码一律禁止；确需占位语义时用显式实现或直接删除。
 - Go 导出标识符使用 CamelCase，协议字段沿用 `snake_case` JSON tag；测试放在对应包的 `*_test.go`，平台差异沿用文件后缀和 build constraints。
 - 测试断言统一使用 testify：失败即止的前置条件用 `require`，可继续的检查用 `assert`；testify 消息参数为急切求值，并发写入的缓冲区只能在失败路径或进程 Wait 之后读取。
 - 新增行为或修复 Bug 时，在负责该行为的层补接受、拒绝或回归用例；并发修改需覆盖相关竞态与关闭路径，优先用通道/受控阻塞确认时序。
+- 测试不得用虚假 mock 绕过断言，不得为覆盖率堆砌无意义用例；测试验证可观察行为，而不是锚定实现细节。
 - maa-go 不以具体 MaaCore 发行版本设准入门槛；按 ABI 与实际符号处理能力，保留调用方显式指定的期望版本和摘要校验。
 - 可复用接口契约留在包文档和 README；任务编号、实施过程与个人验收证据不写入生产源码。
 - 指南只补充所在层的维护规则，不重复展开已有契约。文档链接集中于各指南的“延伸阅读”，每个目标只列一次并注明阅读时机；指南之间仅向子目录引用，普通文档不反向要求读取指南。
@@ -66,9 +65,11 @@ Rhodeck 是一个 Go module，提供 MaaCore 动态绑定、独立 Core worker�
 - commit message 使用英文并遵循 **Conventional Commits**：`<type>[optional scope]: <description>`。
 - 每个 commit 聚焦一个目的，不混入与当前任务无关的重构。
 - branch 使用 `<type>/<kebab-case-description>`，`<type>` 与本次主要修改类型一致；不得使用 Agent、模型或工具名称作为 prefix。示例：`test/agent-server-callback-test`。
-- change type vocabulary 应采用项目 Development Guide 的定义。当前仓库没有该指南；现有 Git 历史可确认的类型为 `feat`、`fix`、`docs`、`refactor`、`test`、`ci`、`chore`，沿用这些类型。若后续补入 Development Guide，以其中词表统一维护，不另建冲突规则。
+- change type vocabulary 应采用 `feat`、`fix`、`docs`、`refactor`、`test`、`ci`、`chore`。
 
 ## 延伸阅读
+
+### 子目录指南
 
 | 入口 | 用途与阅读时机 |
 | --- | --- |
@@ -76,7 +77,11 @@ Rhodeck 是一个 Go module，提供 MaaCore 动态绑定、独立 Core worker�
 | [worker 指南](apps/worker/AGENTS.md) | 修改原生适配、worker 会话或进程入口时读取 |
 | [control 指南](packages/control/AGENTS.md) | 修改业务状态、适配器、停止、记录、恢复或目录所有权时读取；监管与协议任务继续按其中导航读取 |
 | [CLI 指南](apps/cli/AGENTS.md) | 修改 CLI 命令、输入、适配器注册、机器输出、退出码或诊断时读取 |
-| [模块配置](go.mod) | 安装环境、升级 Go/purego 时核对版本；依赖校验值由 `go.sum` 维护 |
+
+### 工具与 CI
+
+| 入口 | 用途与阅读时机 |
+| --- | --- |
 | [API 覆盖清单说明](tools/api-coverage/README.md) | 修改公开绑定面或跨层映射时读取清单维护纪律与检查模式 |
 | [maa-go CI](.github/workflows/maa-go.yml) | 修改验证工具、原生支持或工具链时核对矩阵、选层和路径过滤 |
 | [worker CI](.github/workflows/worker.yml) | 修改 worker/监管验证时核对测试、race 和交叉编译要求 |

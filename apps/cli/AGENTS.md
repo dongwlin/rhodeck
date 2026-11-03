@@ -2,7 +2,7 @@
 
 ## 维护边界
 
-CLI 分四层，单向依赖 `app → cmd → plan → output`；层依赖由 `internal/app/layers_test.go` 守门。运行状态、任务关联、停止与记录恢复留在 control，参数编译和业务结果解释留在相应 adapter。
+CLI 分四层，单向依赖 `app → cmd → plan → output`，每层只允许依赖更低层，`control` 仅由 `plan` 和 `output` 直接依赖；层依赖由 `internal/app/layers_test.go` 守门。运行状态、任务关联、停止与记录恢复留在 control，参数编译和业务结果解释留在相应 adapter。
 
 | 层 | 职责 | 不变量 |
 | --- | --- | --- |
