@@ -145,8 +145,6 @@ func buildCallbackFixture(t *testing.T) string {
 	return outPath
 }
 
-// == 子进程辅助 ==
-
 // cbFixtureOpenChild 在子进程内装载夹具:断言.so 路径为绝对路径并
 // 经生产 NewLoader().Open 打开,失败时向 stderr 打印诊断并返回
 // ok=false(子进程将以非零退出码失败)。cbfx_* 导出不是 Asst 符号,
@@ -238,8 +236,6 @@ func checkNoCallbackFault(scope string) bool {
 	}
 	return true
 }
-
-// == 三组子进程入口 ==
 
 // runCallbackFixtureRoundtripChild 验证参数往返:3 个并发原生线程各
 // 带不同负 msg(含 MinInt32)、不同非零整数 token、不同 details,回调
@@ -484,8 +480,6 @@ func runCallbackFixturePanicChild() int {
 		panicFaultOKMarker, int64(cbFixturePanicMsg), uint64(cbFixturePanicToken))
 	return 0
 }
-
-// == 父进程用例:每组独立子进程,复验标记行与关键字段 ==
 
 // TestCallbackFixtureNativeThreadRoundtrip 验证独立原生线程进入 Unix 无返
 // 回 Go callback:负消息 ID(含 MinInt32)、details 全文与非零整数

@@ -1,35 +1,11 @@
-// 本文件是唯一定义的 raw API 表类型:api struct 保存 MaaCore 首期 28 个
-// R/O raw 函数字段,每次加载构造自己的临时表,发布后只读;不采用可被
-// 外部复制的包级全局函数变量,raw 函数与函数表不向公开层导出。
-//
-// 字段名 = C 符号去掉 Asst 前缀(如 AsstGetUUID → GetUUID);字段类型
-// 严格按冻结的 C 宽度取用——AsstBool→uint8、AsstId/AsstOptionKey→int32、
-// AsstSize→uint64、handle/callback 地址/customArg token/hwnd→uintptr、
-// UTF-8 字符串与 UUID 缓冲区→*byte、任务列表→*int32。unsafe.Pointer 仅
-// 允许 GetImage 与 GetImageBgr 的 buff 参数(C void* 图像缓冲区),其余
-// 指针不因此取得映射许可;C void 返回(Destroy、SetConnectionExtras、
-// Log)写成无结果列表,不虚构成功码。mapLevelKey 是 AsstGetMapLevelKey
-// 按值返回的 struct AsstMapLevelKey 的唯一 raw 同构声明:四个 *byte
-// 字段的顺序与拼写冻结自 AsstCallerExtra.h(stage_id/code/level_id/
-// name),成员指针全部由 Core 借出,不 free、不外泄。
-//
-// 本文件无平台条件:28 个字段共同声明于所有平台,Windows 特有的
-// AsyncAttachWindow 由 symbols.go 的 windowsOnly 条目标注适用范围,
-// 非 Windows 平台不查找该符号;ASST_WITH_EXTRA_CALLERS 条件的两个
-// 实验导出(GetMapLevelKey、GetItemName)由 symbols.go 的 optional
-// 条目标注,缺失只关闭对应能力。声明形式由 symbols_static_test.go
-// 以 AST 断言逐字钉死。
-
 package native
 
 import "unsafe"
 
-// mapLevelKey 是 struct AsstMapLevelKey 的 raw 同构声明(按值返回):
-// 四个借用 char* 成员按 C 定义顺序排列,布局与 C ABI 一致(4 个指针,
-// 全平台 amd64/arm64 下按内存返回)。成员指针由 Core 持有——
-// AsstGetMapLevelKey 的实现写入 thread_local 存储,只在本次调用与
-// 同线程的下一次调用之间有效;调用方必须立即有界复制为 Go 数据,
-// 不 free、不缓存、不外泄视图。找不到匹配关卡时全部成员为 nil。
+// mapLevelKey 的成员指针由 Core 借出:实现写入 thread_local 存储,只在
+// 本次调用与同线程的下一次调用之间有效,调用方必须立即有界复制;依据
+// 见 packages/maa-go/query.go 的同类说明与 abifixture_linux_test.go 的
+// thread-local 用例。
 type mapLevelKey struct {
 	StageID *byte
 	Code    *byte
@@ -37,8 +13,6 @@ type mapLevelKey struct {
 	Name    *byte
 }
 
-// api 是私有 raw 函数表:每字段一个具名 func 类型,由符号表按
-// R/O 策略注册;签名冻结,禁止自定义宽度别名。
 type api struct {
 	SetUserDir          func(path *byte) uint8
 	LoadResource        func(path *byte) uint8
