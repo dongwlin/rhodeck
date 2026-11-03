@@ -55,9 +55,6 @@ func ReadRecord(dataDir, runID string) (Record, error) {
 	return record, nil
 }
 
-// Records require complete plan/result associations without loading an adapter
-// or installation. Recovery only preserves facts; it never prepares or resumes
-// device work. Unknown data formats are rejected instead of migrated.
 func validateRecord(record Record) error {
 	if record.SchemaVersion != SchemaVersion || record.Result.SchemaVersion != SchemaVersion ||
 		record.Plan.SchemaVersion != SchemaVersion || !runIDPattern.MatchString(record.Result.RunID) {

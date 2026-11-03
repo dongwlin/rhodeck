@@ -23,7 +23,6 @@ func Run(version string) int {
 	return runCLI(version, ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 }
 
-// runCLI executes one command and returns the process exit code.
 func runCLI(version string, parent context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	sink := output.NewWriter(stdout)
 	defer sink.Close()
@@ -31,15 +30,11 @@ func runCLI(version string, parent context.Context, args []string, stdin io.Read
 	app := cmd.New(version, stdin, sink)
 	root := app.Root()
 	if args == nil {
-		// A nil argument list makes cobra fall back to os.Args[1:]; an empty
-		// list keeps the caller's explicit invocation.
 		args = []string{}
 	}
 	root.SetArgs(args)
 	_, err := root.ExecuteContextC(parent)
 	if err == nil {
-		// The help renderer cannot return an error, so it reports a failed
-		// write through the command tree.
 		err = app.HelpError()
 	}
 	if err == nil {
@@ -48,8 +43,6 @@ func runCLI(version string, parent context.Context, args []string, stdin io.Read
 	return report(sink, diagnostics, err)
 }
 
-// report prints what a failed command still owes the caller and returns the
-// process exit code.
 func report(sink *output.Writer, diagnostics *output.Diagnostics, err error) int {
 	var failure *output.Failure
 	if !errors.As(err, &failure) {
@@ -57,7 +50,6 @@ func report(sink *output.Writer, diagnostics *output.Diagnostics, err error) int
 	}
 	if failure.Emission == output.EmitEnvelope {
 		if writeErr := sink.Emit(context.Background(), failure.Envelope, nil, nil); writeErr != nil {
-			// The machine output stream is broken and must not be written again.
 			failure = &output.Failure{
 				Code:     output.WriteFailureCode(writeErr),
 				Exit:     output.ExitUnknown,
@@ -66,9 +58,6 @@ func report(sink *output.Writer, diagnostics *output.Diagnostics, err error) int
 		}
 	}
 	if failure.Emission != output.EmitNothing {
-		// The machine envelope and the diagnostic line are the whole output of
-		// a rejected command. The diagnostic line never echoes input values or
-		// raw worker diagnostics.
 		diagnostics.Write(failure.Code)
 	}
 	return failure.Exit

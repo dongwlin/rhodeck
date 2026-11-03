@@ -26,8 +26,6 @@ type Options struct {
 	includeRaw      bool
 }
 
-// register binds the shared plan flags to one command. The names, defaults
-// and usage strings are the accepted CLI contract.
 func (o *Options) register(cmd *cobra.Command) {
 	flags := cmd.Flags()
 	flags.StringVar(&o.input, "input", "", "plan JSON file, or - for stdin")
@@ -42,14 +40,10 @@ func (o *Options) register(cmd *cobra.Command) {
 	flags.BoolVar(&o.includeRaw, "include-raw-events", false, "include private raw Core callback JSON")
 }
 
-// registerDryRun binds the preview switch that only run accepts.
 func (o *Options) registerDryRun(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "validate and preview without native or device actions")
 }
 
-// validate rejects unusable options. It runs before the plan is read, so an
-// unusable invocation never reports a plan problem. A zero timeout is legal
-// and disables the deadline; every other deadline must be positive.
 func (o *Options) validate() error {
 	if o.input == "" || !validAbsolutePath(o.worker) || !validAbsolutePath(o.dataDir) ||
 		o.timeout < 0 || o.startupTimeout <= 0 || o.requestTimeout <= 0 || o.stopTimeout <= 0 ||
@@ -63,7 +57,6 @@ func validAbsolutePath(path string) bool {
 	return filepath.IsAbs(path) && utf8.ValidString(path) && !strings.ContainsRune(path, 0)
 }
 
-// planOptions returns the validated options the plan layer needs.
 func (o *Options) planOptions() plan.Options {
 	return plan.Options{
 		Input:           o.input,

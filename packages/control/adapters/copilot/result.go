@@ -21,8 +21,6 @@ const (
 
 func copilotTargetID(id int32) string { return "copilot:" + strconv.FormatInt(int64(id), 10) }
 
-// Core's Windows path-to-UTF-8 conversion replaces backslashes with slashes.
-// Preserve the caller's params and all other path components and spelling.
 func copilotCallbackFilename(filename string, windows bool) string {
 	if windows {
 		return strings.ReplaceAll(filename, `\`, "/")
@@ -30,11 +28,6 @@ func copilotCallbackFilename(filename string, windows bool) string {
 	return filename
 }
 
-// A successful list-file load explicitly names the entry about to execute.
-// Core runs each entry's load, navigation, battle and settlement synchronously,
-// with FIFO callbacks. The settlement ProcessTask retains its original first
-// node even though AbstractTask strips namespaces from details.task. Neither a
-// filename nor the arrival count can identify an entry on its own.
 type copilotReducer struct {
 	entries []copilotEntry
 	byID    map[int32]int
@@ -56,10 +49,6 @@ func newCopilotReducer(entries []copilotEntry) control.TaskReducer {
 	return r
 }
 
-// IsUnassociatedProgress recognizes only source-reviewed pre-admission diagnostics.
-// Core emits these during set_params, before assigning a task ID. Its message
-// thread can deliver them after Start, so arrival time cannot identify them.
-// They neither establish an entry scope nor decide native AppendTask acceptance.
 func (*copilotReducer) IsUnassociatedProgress(o control.Observation) bool {
 	if o.MessageID != copilotMessageExtra && o.MessageID != 20000 || !json.Valid(o.JSON) {
 		return false
@@ -128,16 +117,12 @@ func (r *copilotReducer) Observe(o control.Observation) (control.TypedUpdate, er
 	r.coreID = coreID
 	subtask, _ := strictjson.FieldString(top, "subtask")
 	if o.MessageID == copilotMessageStart && subtask == "MultiCopilotTask" {
-		// A new entry has begun even if its later file-load callback is absent.
-		// Its settlement must not inherit the preceding entry's association.
 		r.active = -1
 		return control.TypedUpdate{}, nil
 	}
 	if o.MessageID == copilotMessageExtra {
 		what, _ := strictjson.FieldString(top, "what")
 		if what == copilotWhatLoaded {
-			// Even an unusable load boundary invalidates the previous scope;
-			// a missing id must never attribute the next stage to that entry.
 			previous := r.active
 			r.active = -1
 			fields, ok := strictjson.ObjectField(top, "details")
@@ -175,8 +160,6 @@ func (r *copilotReducer) Observe(o control.Observation) (control.TypedUpdate, er
 	case "StageDrops-Stars-3":
 		code = "three_star_clear"
 	case "StageDrops-Stars-Adverse":
-		// Core's stage-drop analyzer maps this adverse-mode marker to three
-		// stars. It is not evidence of a non-three-star clear.
 		code = "adverse_clear"
 	case "FightMissionFailed":
 		outcome, code = control.TargetFailed, "mission_failed"

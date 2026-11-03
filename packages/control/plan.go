@@ -144,8 +144,6 @@ func ValidatePlan(p Plan) error {
 }
 
 func inputBudgets(i protocol.InitializeRequest) (str, object, config, entries uint64) {
-	// Input defaults of the frozen worker v1 binding profile. This is a local
-	// admission bound, not a duplicate of native limit cross-field validation.
 	if i.Limits == nil {
 		return 65536, 1 << 20, protocol.MaxConfigBytes, 256
 	}

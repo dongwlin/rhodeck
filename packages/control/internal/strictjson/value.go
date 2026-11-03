@@ -127,8 +127,6 @@ func String(raw json.RawMessage) (string, error) {
 	return out.String(), nil
 }
 
-// hexUnit decodes the \uXXXX escape starting at b[start] and returns
-// the UTF-16 code unit plus the index just past the escape.
 func hexUnit(b []byte, start, end int) (uint64, int, error) {
 	if start+6 > end {
 		return 0, 0, errors.New("truncated unicode escape")

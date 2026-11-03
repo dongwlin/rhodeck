@@ -18,7 +18,3 @@ type AsyncID int32
 // 与 TaskID、AsyncID 一样基于 C 的 int32_t,但语义不同:
 // 它区分回调消息的种类,而非标识某次提交或某个任务。
 type MessageID int32
-
-// TaskID、AsyncID、MessageID 是三个互不混用的命名类型:
-// 尽管底层类型都是 int32,Go 类型系统要求显式转换才能互换,
-// 防止把异步 ID 当任务 ID、或把消息类型当标识符使用。

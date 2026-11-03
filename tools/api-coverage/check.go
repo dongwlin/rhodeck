@@ -6,13 +6,6 @@ import (
 	"strings"
 )
 
-// Mode selects the enforcement strength.
-//
-//   - drift: the source must match the frozen inventory exactly, and every
-//     done entry's mapping references must resolve. Registered gaps are
-//     tolerated so an incomplete mapping can still be recorded and checked.
-//   - final: additionally, no pending item may remain. Registered gaps do not
-//     count as coverage; the final check fails while any entry is pending.
 type Mode string
 
 const (
@@ -31,27 +24,15 @@ func parseMode(s string) (Mode, error) {
 	}
 }
 
-// Mapping is the five-segment registration of one inventory item:
-// binding -> DTO/transport (or equivalent merge) -> worker adaptation ->
-// client surface -> acceptance test.
 type Mapping struct {
-	// DTO names the protocol DTO type, field, or command constant that
-	// carries the capability (comma-separated references).
-	DTO string
-	// Worker names the worker app adaptation identifiers.
+	DTO    string
 	Worker string
-	// Client names the supervision client identifiers.
 	Client string
-	// Test names the acceptance test functions that cover the chain.
-	Test string
-	// Status is "done", "pending", or "na".
+	Test   string
 	Status string
-	// Note records equivalent merges, gap reasons and non-applicable
-	// reasons. Required for "pending" and "na" statuses.
-	Note string
+	Note   string
 }
 
-// Finding is one check failure.
 type Finding struct {
 	Item    string
 	Problem string
@@ -64,7 +45,6 @@ func (f Finding) String() string {
 	return fmt.Sprintf("%s: %s", f.Item, f.Problem)
 }
 
-// Report is the check result.
 type Report struct {
 	Mode    Mode
 	Pass    bool
@@ -80,9 +60,6 @@ type Report struct {
 	Gaps    []string
 }
 
-// Check reconciles the scanned surface against the frozen inventory and
-// verifies the five-segment mappings. root locates the protocol, worker, and
-// client packages for reference resolution.
 func Check(scan []Symbol, root string, mode Mode) (*Report, error) {
 	frozen, err := inventorySymbols()
 	if err != nil {
@@ -91,8 +68,6 @@ func Check(scan []Symbol, root string, mode Mode) (*Report, error) {
 	return checkWith(scan, frozen, inventoryMappings(), root, mode)
 }
 
-// checkWith is Check with an explicit inventory; tests use it to exercise
-// mapping mutations without editing the frozen file.
 func checkWith(scan []Symbol, frozen []Symbol, mappings map[string]Mapping, root string, mode Mode) (*Report, error) {
 	report := &Report{Mode: mode, Scanned: len(scan), Frozen: len(frozen)}
 	scanByKey := map[string]Symbol{}
@@ -110,8 +85,6 @@ func checkWith(scan []Symbol, frozen []Symbol, mappings map[string]Mapping, root
 		frozenByKey[s.Key()] = s
 	}
 
-	// Inventory self-consistency: every frozen symbol needs a mapping and
-	// vice versa; statuses must be well-formed.
 	for _, key := range keysOf(frozenByKey) {
 		m, ok := mappings[key]
 		if !ok {
@@ -127,7 +100,6 @@ func checkWith(scan []Symbol, frozen []Symbol, mappings map[string]Mapping, root
 		}
 	}
 
-	// Drift: set equality plus per-item detail equality.
 	for _, key := range keysOf(scanByKey) {
 		if _, ok := frozenByKey[key]; !ok {
 			report.Added = append(report.Added, key+" ("+scanByKey[key].Detail+")")
@@ -144,8 +116,6 @@ func checkWith(scan []Symbol, frozen []Symbol, mappings map[string]Mapping, root
 		}
 	}
 
-	// Mapping verification against the real tree. Performed even when drift
-	// was found, so one run reports everything it can see.
 	idx, err := NewRefIndex(root)
 	if err != nil {
 		return nil, err
@@ -178,7 +148,6 @@ func checkWith(scan []Symbol, frozen []Symbol, mappings map[string]Mapping, root
 	return report, nil
 }
 
-// validateStatus rejects malformed statuses before any comparison runs.
 func validateStatus(m Mapping) string {
 	switch {
 	case m.Status == "done":
@@ -198,12 +167,6 @@ func validateStatus(m Mapping) string {
 	}
 }
 
-// verifyMapping checks one entry's five-segment registration. Done entries
-// need all four segments present and every reference resolvable; pending and
-// na entries verify the references they do declare, so typos fail too.
-// Because every done segment must carry resolvable references, a bare
-// capability marker (a flag with no worker branch, client method, and
-// acceptance test) can never satisfy the final check.
 func verifyMapping(m Mapping, idx *RefIndex) []string {
 	var problems []string
 	segments := []struct {

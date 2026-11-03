@@ -16,12 +16,9 @@ const (
 	operProgressAdapterName  = "oper_progress"
 	operProgressVersion      = 1
 	operProgressMaxNameBytes = 256
-	// One strict plan yields one target, so the plan count shares the fixed
-	// per-task target budget.
-	operProgressMaxPlans = control.MaxTypedTargetsPerTask
+	operProgressMaxPlans     = control.MaxTypedTargetsPerTask
 )
 
-// operProgressAction names the single training action of one strict plan entry.
 type operProgressAction string
 
 const (
@@ -30,19 +27,14 @@ const (
 	operProgressActionSkillMastery operProgressAction = "skill_mastery"
 )
 
-// operProgressPlan is one validated plan entry. Exactly one action is selected;
-// Expected is the target elite level, target skill level or mastery level.
 type operProgressPlan struct {
 	Role        string
 	Name        string
 	Action      operProgressAction
 	Expected    int
-	MasterySlot int // 1-3 for skill mastery; 0 for other actions
+	MasterySlot int
 }
 
-// operProgressTarget maps one caller-visible target ID back to its source plan.
-// SourceIndex is zero-based; IDs are one-based (op-0001..op-0128). MasterySlot
-// is exposed as 1-3 and addresses the three-element mastery array as 0-2.
 type operProgressTarget struct {
 	ID          string
 	SourceIndex int
@@ -126,8 +118,6 @@ func (operProgressAdapter) Prepare(task control.Task) (control.PreparedTask, err
 	return control.PreparedTask{Params: params, Targets: ids, Reducer: newOperProgressReducer(targets)}, nil
 }
 
-// operProgressReject wraps every input rejection with ErrInvalidPlan so callers
-// classify failures with errors.Is instead of inspecting diagnostics.
 func operProgressReject(format string, args ...any) error {
 	return fmt.Errorf("%w: oper_progress: %s", control.ErrInvalidPlan, fmt.Sprintf(format, args...))
 }
@@ -136,14 +126,11 @@ func decodeOperProgressPlans(raw json.RawMessage) ([]operProgressPlan, error) {
 	if !strictjson.ValidObject(raw, control.MaxAdapterParamsBytes) {
 		return nil, operProgressReject("params must be a JSON object of at most %d bytes", control.MaxAdapterParamsBytes)
 	}
-	// Duplicate keys at any depth are rejected before names are interpreted.
 	keys := json.NewDecoder(bytes.NewReader(raw))
 	keys.UseNumber()
 	if err := strictjson.CheckKeys(keys); err != nil {
 		return nil, operProgressReject("params contain duplicate or malformed fields")
 	}
-	// RawMessage values keep number literals exact; map keys are exact too, so
-	// case variants such as PLANS or Role stay distinct and are rejected below.
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, operProgressReject("params must be a JSON object")
@@ -259,8 +246,6 @@ func decodeOperProgressPlan(raw json.RawMessage, index int) (operProgressPlan, e
 	return out, nil
 }
 
-// decodeOperProgressMastery requires exactly three integers where exactly one
-// slot is 1-3 and the remaining slots are 0.
 func decodeOperProgressMastery(raw json.RawMessage) (slot, level int, err error) {
 	values, err := strictjson.Array(raw)
 	if err != nil || len(values) != 3 {
@@ -285,8 +270,6 @@ func decodeOperProgressMastery(raw json.RawMessage) (slot, level int, err error)
 	return slot, level, nil
 }
 
-// strictjson.Array accepts only a JSON array. Null and other values are
-// rejected instead of being silently decoded as an empty array.
 func operProgressValidRole(role string) bool {
 	switch role {
 	case "Pioneer", "Warrior", "Tank", "Sniper", "Caster", "Medic", "Support", "Special":
@@ -300,8 +283,6 @@ type operProgressCoreParams struct {
 	Plans []operProgressCorePlan `json:"plans"`
 }
 
-// operProgressCorePlan is the final Core shape. Field order keeps the compiled
-// preview deterministic.
 type operProgressCorePlan struct {
 	Role         string `json:"role"`
 	Name         string `json:"name"`

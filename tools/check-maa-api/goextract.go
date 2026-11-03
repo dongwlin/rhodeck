@@ -1,19 +1,3 @@
-// goextract.go 对入选 Go 文件执行受限 AST 提取: 冻结的声明形式——
-// 唯一 type api struct(字段名=C 符号去 Asst 前缀,每字段恰好一个具名
-// func 类型,禁止嵌入/匿名参数/变参/多返回值,无返回值=无结果列表,
-// 有返回值=恰一个未命名结果)、唯一 symbolSpecs(单条直接 return 的
-// []symbolSpec 字面量,每条目恰好四个具名 key,Policy/Platform 只能
-// 引用包内冻结常量,禁止 helper/append/循环/条件/拼接/反射/间接目标)、
-// 唯一 var exclusions(直接 []exclusionSpec 字面量,三 key,Header 为
-// 裸文件名,Reason 非空)、两个 callback 类型(Unix 无返回、Windows 返
-// 回 uintptr)与唯一 type mapLevelKey(struct AsstMapLevelKey 按值返回
-// 的 raw 同构,四字段顺序与 *byte 类型冻结)。参数/返回类型只允许真实
-// 预声明 uint8/int32/uint64/uintptr/byte、精确 import "unsafe" 的
-// unsafe.Pointer(指针位置仅 *byte、*int32)与 mapLevelKey 同构名;
-// 包级不得遮蔽这些名字及 any/iota/unsafe,禁止别名导入 unsafe。跨入
-// 选文件的重复声明失败。规范化类型保留宽度、符号位、const、指针层级
-// 与指针用途,不合并。
-
 package main
 
 import (
@@ -26,62 +10,45 @@ import (
 	"strings"
 )
 
-// GoSourceType 是规范化 raw 类型拼写:保留宽度、符号位与指针用途,
-// 各自独立不合并(*byte、*int32、unsafe.Pointer、uintptr 与各标量)。
 type GoSourceType string
 
-// GoTypeUnsafePointer 是标准库 unsafe.Pointer 的规范化拼写;其余拼写
-// 直接使用类型名(*byte/*int32 以星号前缀保留指针用途)。
 const GoTypeUnsafePointer GoSourceType = "unsafe.Pointer"
 
-// GoTypeMapLevelKey 是 struct AsstMapLevelKey 按值返回的唯一许可 Go
-// 同构类型名(raw struct,四个 *byte 字段);按值返回的结构体不做
-// 别名合并,只接受该名字。
 const GoTypeMapLevelKey GoSourceType = "mapLevelKey"
 
-// goRawScalarTypes 是 raw 声明允许的预声明标量;byte 与 uint8 拼写
-// 独立保留,不做同宽合并。
 var goRawScalarTypes = map[string]bool{
 	"uint8": true, "int32": true, "uint64": true, "uintptr": true, "byte": true,
 }
 
-// goShadowNames 是禁止在包级遮蔽的名字:raw 类型词表与 any/iota/unsafe。
 var goShadowNames = map[string]bool{
 	"uint8": true, "int32": true, "uint64": true, "uintptr": true, "byte": true,
 	"any": true, "iota": true, "unsafe": true,
 }
 
-// symbolSpecsParamName 是冻结的 symbolSpecs 参数名;Target 必须
-// 是对该参数的字段取址。
 const symbolSpecsParamName = "table"
 
-// GoParam 是一个具名参数:参数名与规范化类型。
 type GoParam struct {
 	Name string
 	Type GoSourceType
 }
 
-// GoField 是 api struct 的一个 raw 字段及其来源位置(File 为 native
-// 目录内相对名,Line 为声明行)。
 type GoField struct {
 	Name   string
 	File   string
 	Line   int
 	Params []GoParam
-	Result GoSourceType // "" 表示无结果列表(C void)
+	Result GoSourceType
 }
 
-// GoSymbolSpec 是 symbolSpecs 的一条条目。
 type GoSymbolSpec struct {
-	Name     string // C 符号字符串字面量
-	Field    string // Target 指向的 api 字段
-	Policy   string // required/optional
-	Platform string // allPlatforms/windowsOnly
+	Name     string
+	Field    string
+	Policy   string
+	Platform string
 	File     string
 	Line     int
 }
 
-// GoExclusion 是 exclusions 的一条条目。
 type GoExclusion struct {
 	Name   string
 	Header string
@@ -90,7 +57,6 @@ type GoExclusion struct {
 	Line   int
 }
 
-// GoCallback 是一个 callback 类型声明及其签名。
 type GoCallback struct {
 	Name   string
 	File   string
@@ -99,8 +65,6 @@ type GoCallback struct {
 	Result GoSourceType
 }
 
-// GoStruct 是一个 raw struct 同构声明:字段名与规范化类型按声明
-// 顺序记录(当前仅 AsstMapLevelKey 的同构 mapLevelKey)。
 type GoStruct struct {
 	Name   string
 	File   string
@@ -108,8 +72,6 @@ type GoStruct struct {
 	Fields []GoParam
 }
 
-// GoExtraction 是 Go 提取结果:Fields 为 api 字段(声明顺序),Specs
-// 为符号条目(声明顺序),Exclusions 为排除条目(声明顺序)。
 type GoExtraction struct {
 	Files           []GoSourceFile
 	PackageName     string
@@ -121,8 +83,6 @@ type GoExtraction struct {
 	MapLevelKey     *GoStruct
 }
 
-// ExtractGo 解析并校验全部入选文件;任何形式、词表、遮蔽或重复声明
-// 失败都以 go-syntax 类诊断报告(文件为 native 目录内相对名)。
 func ExtractGo(sel *GoSelection) (*GoExtraction, []Diagnostic) {
 	fail := func(d Diagnostic) (*GoExtraction, []Diagnostic) { return nil, []Diagnostic{d} }
 	if sel == nil || len(sel.Files) == 0 {
@@ -259,7 +219,7 @@ func ExtractGo(sel *GoSelection) (*GoExtraction, []Diagnostic) {
 				}
 			case *ast.FuncDecl:
 				if gd.Recv != nil {
-					continue // 方法不参与包级声明检查
+					continue
 				}
 				if d := checkShadowName(fset, pf.rel, gd.Pos(), gd.Name.Name); d != nil {
 					return fail(*d)
@@ -279,7 +239,6 @@ func ExtractGo(sel *GoSelection) (*GoExtraction, []Diagnostic) {
 		}
 	}
 
-	// 唯一性收尾:缺失的冻结声明以的期望文件定位。
 	switch {
 	case seenAPI == 0:
 		return fail(Diagnostic{Category: CatGoSyntax, File: "api.go", Symbol: "api",
@@ -309,7 +268,6 @@ func ExtractGo(sel *GoSelection) (*GoExtraction, []Diagnostic) {
 	return ext, nil
 }
 
-// firstParseErrorLine 从 go/parser 的 scanner.ErrorList 取首个位置行号。
 func firstParseErrorLine(err error) int {
 	if el, ok := err.(scanner.ErrorList); ok && len(el) > 0 {
 		return el[0].Pos.Line
@@ -332,9 +290,6 @@ func checkShadowName(fset *gotoken.FileSet, rel string, pos gotoken.Pos, name st
 		Message: "package-level declaration shadows a raw type name (uint8/int32/uint64/uintptr/byte/any/iota/unsafe)"}
 }
 
-// checkFileImports 校验单文件的 import 遮蔽与 unsafe 导入形态:别名
-// 导入不得使用 raw 词表内的名字(含 unsafe);非别名导入的路径末段
-// 除 "unsafe" 本体外不得撞上词表名。
 func checkFileImports(rel string, f *ast.File, fset *gotoken.FileSet) *Diagnostic {
 	importsUnsafe := false
 	for _, imp := range f.Imports {
@@ -384,8 +339,6 @@ func checkFileImports(rel string, f *ast.File, fset *gotoken.FileSet) *Diagnosti
 	return nil
 }
 
-// importPathBase 取导入路径的最后一段作为默认本地名(遮蔽检查的
-// 保守近似)。
 func importPathBase(path string) string {
 	if i := strings.LastIndexByte(path, '/'); i >= 0 {
 		path = path[i+1:]
@@ -393,16 +346,12 @@ func importPathBase(path string) string {
 	return path
 }
 
-// constDecl 记录一个包级常量声明:声明的(或继承的)类型名与位置。
 type constDecl struct {
 	typeName string
 	file     string
 	line     int
 }
 
-// collectConsts 按 Go 的常量声明规则收集包级常量的有效类型名:带类型
-// 的 spec 设置类型;同块内无类型无值的 spec 继承前一个 spec 的类型
-// (经典 iota 枚举形式);带值的无类型 spec 终止继承。
 func collectConsts(fset *gotoken.FileSet, f *ast.File, out map[string]constDecl) {
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
@@ -434,7 +383,6 @@ func collectConsts(fset *gotoken.FileSet, f *ast.File, out map[string]constDecl)
 	}
 }
 
-// extractAPIFields 校验 api struct 字段形式并记录来源。
 func extractAPIFields(fset *gotoken.FileSet, rel string, st *ast.StructType) ([]GoField, *Diagnostic) {
 	if st.Fields == nil || len(st.Fields.List) == 0 {
 		return nil, &Diagnostic{Category: CatGoSyntax, File: rel, Line: fset.Position(st.Pos()).Line,
@@ -471,8 +419,6 @@ func extractAPIFields(fset *gotoken.FileSet, rel string, st *ast.StructType) ([]
 	return fields, nil
 }
 
-// extractSignature 校验一个 raw func 类型的参数与结果形式,返回规范化
-// 记录。
 func extractSignature(fset *gotoken.FileSet, rel, owner string, ft *ast.FuncType) ([]GoParam, GoSourceType, *Diagnostic) {
 	params, d := extractParams(fset, rel, owner, ft.Params)
 	if d != nil {
@@ -512,7 +458,7 @@ func extractParams(fset *gotoken.FileSet, rel, owner string, fl *ast.FieldList) 
 
 func extractResults(fset *gotoken.FileSet, rel, owner string, fl *ast.FieldList) (GoSourceType, *Diagnostic) {
 	if fl == nil || len(fl.List) == 0 {
-		return "", nil // 无结果列表 = C void
+		return "", nil
 	}
 	if len(fl.List) != 1 {
 		return "", &Diagnostic{Category: CatGoSyntax, File: rel, Line: fset.Position(fl.Pos()).Line,
@@ -533,7 +479,6 @@ func extractResults(fset *gotoken.FileSet, rel, owner string, fl *ast.FieldList)
 	return typ, nil
 }
 
-// goTypeOfExpr 解析冻结词表内的类型表达式;词表外失败。
 func goTypeOfExpr(fset *gotoken.FileSet, rel, owner string, e ast.Expr) (GoSourceType, *Diagnostic) {
 	pos := fset.Position(e.Pos())
 	if _, variadic := e.(*ast.Ellipsis); variadic {
@@ -564,7 +509,6 @@ func goTypeOfExpr(fset *gotoken.FileSet, rel, owner string, e ast.Expr) (GoSourc
 		Message:  "raw declaration uses a type outside the frozen vocabulary"}
 }
 
-// extractSymbolSpecs 校验唯一的 symbolSpecs 形式并提取条目。
 func extractSymbolSpecs(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, consts map[string]constDecl) ([]GoSymbolSpec, *Diagnostic) {
 	line := fset.Position(fn.Pos()).Line
 	formDiag := func(expected, actual, msg string) *Diagnostic {
@@ -575,7 +519,6 @@ func extractSymbolSpecs(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, con
 		return nil, formDiag("non-generic function", "type parameters",
 			"symbolSpecs must not be generic")
 	}
-	// 签名:恰好一个名为 table 的 *api 参数,返回 []symbolSpec。
 	if fn.Type.Params == nil || len(fn.Type.Params.List) != 1 ||
 		len(fn.Type.Params.List[0].Names) != 1 {
 		return nil, formDiag("exactly one named *api parameter", "unexpected parameter list",
@@ -605,7 +548,6 @@ func extractSymbolSpecs(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, con
 			"symbolSpecs must return []symbolSpec")
 	}
 
-	// 函数体:单条 return []symbolSpec{...} 复合字面量。
 	bodyMsg := "symbolSpecs must contain exactly one return statement; helpers, loops and conditions are rejected"
 	if fn.Body == nil || len(fn.Body.List) != 1 {
 		return nil, formDiag("single return statement of a []symbolSpec literal",
@@ -637,9 +579,6 @@ func extractSymbolSpecs(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, con
 	return specs, nil
 }
 
-// extractSymbolSpecEntry 校验单条目:恰好四个具名 key(Name/Target/
-// Policy/Platform),Name 为字符串字面量,Target 为 &table.<字段>,
-// Policy/Platform 为解析到冻结常量的标识符引用。
 func extractSymbolSpecEntry(fset *gotoken.FileSet, rel string, elt ast.Expr, consts map[string]constDecl) (*GoSymbolSpec, *Diagnostic) {
 	pos := fset.Position(elt.Pos())
 	lit, ok := elt.(*ast.CompositeLit)
@@ -683,7 +622,6 @@ func extractSymbolSpecEntry(fset *gotoken.FileSet, rel string, elt ast.Expr, con
 			Message: "symbolSpec entries must not carry extra keys"}
 	}
 
-	// Name:原文字符串字面量。
 	nameLit, ok := keys["Name"].(*ast.BasicLit)
 	if !ok || nameLit.Kind != gotoken.STRING {
 		return nil, &Diagnostic{Category: CatGoSyntax, File: rel, Line: fset.Position(keys["Name"].Pos()).Line,
@@ -697,13 +635,11 @@ func extractSymbolSpecEntry(fset *gotoken.FileSet, rel string, elt ast.Expr, con
 			Message: "Name string literal cannot be decoded"}
 	}
 
-	// Target:&table.<字段> 一元取址选择器。
 	target, d := extractSpecTarget(fset, rel, keys["Target"])
 	if d != nil {
 		return nil, d
 	}
 
-	// Policy/Platform:解析到包内冻结常量的标识符。
 	policy, d := extractPolicyIdent(fset, rel, keys["Policy"], consts, "Policy",
 		map[string]bool{"required": true, "optional": true}, "symbolPolicy")
 	if d != nil {
@@ -719,8 +655,6 @@ func extractSymbolSpecEntry(fset *gotoken.FileSet, rel string, elt ast.Expr, con
 		File: rel, Line: pos.Line}, nil
 }
 
-// extractSpecTarget 解析 Target 值:&table.<字段>(一元取址 + 对
-// symbolSpecs 参数的直接字段选择),禁止间接变量目标。
 func extractSpecTarget(fset *gotoken.FileSet, rel string, e ast.Expr) (string, *Diagnostic) {
 	pos := fset.Position(e.Pos())
 	un, ok := unwrapParen(e).(*ast.UnaryExpr)
@@ -745,8 +679,6 @@ func extractSpecTarget(fset *gotoken.FileSet, rel string, e ast.Expr) (string, *
 	return sel.Sel.Name, nil
 }
 
-// extractPolicyIdent 校验 Policy/Platform 值:必须是允许集合内的普通
-// 标识符,且解析到包内带期望类型名的常量声明。
 func extractPolicyIdent(fset *gotoken.FileSet, rel string, e ast.Expr, consts map[string]constDecl,
 	key string, allowed map[string]bool, wantType string) (string, *Diagnostic) {
 	pos := fset.Position(e.Pos())
@@ -775,7 +707,6 @@ func extractPolicyIdent(fset *gotoken.FileSet, rel string, e ast.Expr, consts ma
 	return id.Name, nil
 }
 
-// allowedList 以固定顺序输出允许的常量名,保证诊断稳定。
 func allowedList(m map[string]bool) string {
 	order := []string{"required", "optional", "allPlatforms", "windowsOnly"}
 	var out []string
@@ -794,7 +725,6 @@ func allowedList(m map[string]bool) string {
 	return s
 }
 
-// extractExclusions 校验唯一的 var exclusions 形式并提取条目。
 func extractExclusions(fset *gotoken.FileSet, rel string, vs *ast.ValueSpec) ([]GoExclusion, *Diagnostic) {
 	line := fset.Position(vs.Pos()).Line
 	if len(vs.Values) != 1 {
@@ -889,8 +819,6 @@ func extractExclusions(fset *gotoken.FileSet, rel string, vs *ast.ValueSpec) ([]
 	return out, nil
 }
 
-// extractCallback 校验 callback 类型声明的形式;windows 为真时要求
-// 恰好一个未命名 uintptr 结果,否则要求无结果。
 func extractCallback(fset *gotoken.FileSet, rel string, ts *ast.TypeSpec, windows bool) (*GoCallback, *Diagnostic) {
 	line := fset.Position(ts.Pos()).Line
 	if ts.TypeParams != nil {
@@ -925,11 +853,6 @@ func extractCallback(fset *gotoken.FileSet, rel string, ts *ast.TypeSpec, window
 	return &GoCallback{Name: ts.Name.Name, File: rel, Line: line, Params: params, Result: result}, nil
 }
 
-// extractMapLevelKeyStruct 校验唯一的 type mapLevelKey 同构声明:
-// 直接是 struct 类型,恰好四个字段,顺序与拼写冻结自 struct
-// AsstMapLevelKey 的四个 const char* 成员(StageID/Code/LevelID/
-// Name),每字段恰好一个名字且类型恰为 *byte;嵌入、分组、类型漂移
-// 一律失败。
 func extractMapLevelKeyStruct(fset *gotoken.FileSet, rel string, ts *ast.TypeSpec) (*GoStruct, *Diagnostic) {
 	line := fset.Position(ts.Pos()).Line
 	failDiag := func(expected, actual, msg string) *Diagnostic {
@@ -985,7 +908,6 @@ func extractMapLevelKeyStruct(fset *gotoken.FileSet, rel string, ts *ast.TypeSpe
 	return out, nil
 }
 
-// structFieldCount 统计 struct 字段数(fl.Fields 为 nil 时为 0)。
 func structFieldCount(st *ast.StructType) int {
 	if st.Fields == nil {
 		return 0
@@ -993,7 +915,6 @@ func structFieldCount(st *ast.StructType) int {
 	return len(st.Fields.List)
 }
 
-// stringLiteralValue 提取字符串字面量的解码值。
 func stringLiteralValue(fset *gotoken.FileSet, rel string, e ast.Expr, key string) (string, *Diagnostic) {
 	lit, ok := e.(*ast.BasicLit)
 	if !ok || lit.Kind != gotoken.STRING {
@@ -1010,8 +931,6 @@ func stringLiteralValue(fset *gotoken.FileSet, rel string, e ast.Expr, key strin
 	return v, nil
 }
 
-// isBareFileName 判断裸文件名:非空、不含路径分隔符与盘符冒号、
-// 不是. 或..。
 func isBareFileName(s string) bool {
 	if s == "" || s == "." || s == ".." {
 		return false
@@ -1019,7 +938,6 @@ func isBareFileName(s string) bool {
 	return !strings.ContainsAny(s, `/\:`)
 }
 
-// isSliceOfIdent 判断表达式是否为元素为指定标识符的切片类型。
 func isSliceOfIdent(e ast.Expr, elem string) bool {
 	arr, ok := unwrapParen(e).(*ast.ArrayType)
 	if !ok || arr.Len != nil {
@@ -1039,7 +957,6 @@ func unwrapParen(e ast.Expr) ast.Expr {
 	}
 }
 
-// typeNameForDiag 输出类型表达式的可读拼写(仅用于诊断 Actual)。
 func typeNameForDiag(e ast.Expr) string {
 	switch t := e.(type) {
 	case nil:

@@ -22,13 +22,8 @@ type operation interface {
 	Wait(context.Context) (protocol.OperationResult, error)
 }
 
-// eventEmitter delivers one named session event with its payload. Emission
-// never waits for a consumer: the outbound queue is bounded and a full queue
-// fails the session, so every report is either enqueued or loudly lost.
 type eventEmitter func(name string, payload any) error
 
-// The command loop owns all native calls. Observe consumes the binding's
-// observations independently; it never writes to IPC on a callback thread.
 type engine interface {
 	Connect(protocol.ConnectRequest) (operation, error)
 	Click(protocol.ClickRequest) (operation, error)
@@ -77,11 +72,6 @@ var bindingDefaultLimits = protocol.Limits{
 	EarlyBytes:        1 << 20,
 }
 
-// effectiveLimits returns the limit set the worker applies: a detached copy of
-// the explicit configuration, or the whole materialized default set when
-// limits are omitted. Omission never selects an empty skeleton that fields
-// would be backfilled into, and an explicit zero stays zero for the binding to
-// reject — only a missing Limits selects the default set as a whole.
 func effectiveLimits(l *protocol.Limits) protocol.Limits {
 	if l == nil {
 		return bindingDefaultLimits
@@ -89,10 +79,6 @@ func effectiveLimits(l *protocol.Limits) protocol.Limits {
 	return *l
 }
 
-// bindingLimits maps the wire limit set onto the binding configuration,
-// including every BufferLimits probe strategy. nil maps to nil (the binding's
-// own default set); the session materializes defaults before the factory, so
-// production requests always carry the complete applied configuration.
 func bindingLimits(l *protocol.Limits) *maa.Limits {
 	if l == nil {
 		return nil
@@ -121,11 +107,6 @@ func bindingBufferLimits(b protocol.BufferLimits) maa.BufferLimits {
 	return maa.BufferLimits{Initial: b.Initial, Max: b.Max, GrowthRetries: b.GrowthRetries}
 }
 
-// bindingConfig maps the initialize request onto the binding runtime
-// configuration: explicit paths, ordered resource roots, ordered static
-// options, connection extras with their raw JSON preserved byte for byte, and
-// the complete limit set. The binding deep-copies the configuration when it
-// validates, so the mapped value is transient.
 func bindingConfig(req protocol.InitializeRequest) maa.RuntimeConfig {
 	cfg := maa.RuntimeConfig{
 		LibraryPath:   req.LibraryPath,
@@ -142,8 +123,6 @@ func bindingConfig(req protocol.InitializeRequest) maa.RuntimeConfig {
 	return cfg
 }
 
-// bindingInstanceConfig maps the ordered instance options; instance
-// configuration does not override the runtime's limit set.
 func bindingInstanceConfig(req protocol.InitializeRequest) maa.InstanceConfig {
 	var cfg maa.InstanceConfig
 	for _, opt := range req.InstanceOptions {
@@ -201,8 +180,6 @@ func openEngine(req protocol.InitializeRequest) (_ engine, info protocol.Runtime
 	caps := rt.Capabilities()
 	info.Capabilities = protocol.Capabilities{ImageBGR: caps.ImageBgr(), AttachWindow: caps.AsyncAttachWindow(), MapLevelKey: caps.MapLevelKey(), ItemName: caps.ItemName()}
 	info.NullSize = rt.NullSize()
-	// The applied limit set is what the session passed in; report a detached
-	// copy so the response never aliases the request.
 	if req.Limits != nil {
 		applied := *req.Limits
 		info.Limits = &applied
@@ -258,9 +235,6 @@ func (e *nativeEngine) Screencap() (operation, error) {
 	return nativeOperation{op}, nil
 }
 
-// hwndFromUint64 converts the wire window handle to platform pointer width.
-// The check rejects any value the platform pointer cannot hold before the
-// native call, so a wide handle is a rejection instead of a silent truncation.
 func hwndFromUint64(v uint64) (uintptr, error) {
 	hwnd, ok := protocol.PointerFromUint64(v)
 	if !ok {
@@ -269,10 +243,6 @@ func hwndFromUint64(v uint64) (uintptr, error) {
 	return hwnd, nil
 }
 
-// AttachWindow submits the Win32 window binding. The handle is width-checked
-// before the native call and the three method masks pass through bit for bit;
-// a non-Windows platform or a missing optional symbol surfaces the binding's
-// unsupported rejection and never falls back to an ADB submission.
 func (e *nativeEngine) AttachWindow(req protocol.AttachWindowRequest) (operation, error) {
 	hwnd, err := hwndFromUint64(req.Hwnd)
 	if err != nil {
@@ -309,9 +279,6 @@ func (e *nativeEngine) Stop() (bool, error) {
 	return !running && err == nil, err
 }
 
-// BackToHome requests the instance to return to the home screen. The binding
-// wraps a native false into ErrNativeRejected, which classifies as
-// native_rejected; a nil return never implies the screen action completed.
 func (e *nativeEngine) BackToHome() error { return e.instance.BackToHome() }
 func (e *nativeEngine) Status() (protocol.ExecutionStatus, error) {
 	var s protocol.ExecutionStatus
@@ -330,26 +297,15 @@ func (e *nativeEngine) Status() (protocol.ExecutionStatus, error) {
 	return s, err
 }
 
-// UUID reads the device UUID from the Core buffer. The read never connects or
-// performs any other device action, and the empty string is a normal result.
 func (e *nativeEngine) UUID() (protocol.UUIDResult, error) {
 	uuid, err := e.instance.UUID()
 	return protocol.UUIDResult{UUID: uuid}, err
 }
 
-// Log feeds the process-level native log (AsstLog). The binding validates the
-// level and message before the native call; the C void return means a nil
-// error only states that the call was issued and returned — it is not a native
-// success confirmation and implies nothing about what Core did with the text.
 func (e *nativeEngine) Log(req protocol.LogRequest) error {
 	return e.runtime.Log(req.Level, req.Message)
 }
 
-// MapLevelKey runs the experiment level lookup (AsstGetMapLevelKey). The
-// binding gates on the optional symbol (a missing export surfaces the stable
-// unsupported rejection without any native call), copies the four borrowed
-// strings immediately, and maps the zero value to "not found" — a normal
-// result, never an error.
 func (e *nativeEngine) MapLevelKey(req protocol.MapLevelKeyRequest) (protocol.MapLevelKeyResult, error) {
 	mk, err := e.runtime.MapLevelKey(req.Key)
 	if err != nil {
@@ -358,9 +314,6 @@ func (e *nativeEngine) MapLevelKey(req protocol.MapLevelKeyRequest) (protocol.Ma
 	return protocol.MapLevelKeyResult{StageID: mk.StageID, Code: mk.Code, LevelID: mk.LevelID, Name: mk.Name}, nil
 }
 
-// ItemName runs the experiment item lookup (AsstGetItemName). The empty result
-// and the native "Unknown" are normal results; a native contract breach (null
-// pointer, invalid UTF-8, missing NUL) arrives as the binding's protocol_error.
 func (e *nativeEngine) ItemName(req protocol.ItemNameRequest) (protocol.ItemNameResult, error) {
 	name, err := e.runtime.ItemName(req.ID)
 	if err != nil {
@@ -369,21 +322,10 @@ func (e *nativeEngine) ItemName(req protocol.ItemNameRequest) (protocol.ItemName
 	return protocol.ItemNameResult{Name: name}, nil
 }
 
-// GetImagePNG reads the Core's cached PNG encoding (AsstGetImage). The read
-// never triggers a screencap — a fresh image requires the caller to wait for
-// a Screencap operation first. Buffer-limit exhaustion surfaces as
-// limit_exceeded and stays distinguishable from a native rejection.
 func (e *nativeEngine) GetImagePNG() ([]byte, error) { return e.instance.GetImagePNG() }
 
-// GetImageBGR reads the cached BGR pixels (AsstGetImageBgr) when the optional
-// symbol is loaded; a missing symbol surfaces the binding's stable unsupported
-// rejection and never falls back to another read. Size, stride and channel
-// order are decided by Core: the bytes stay opaque and are not interpreted.
 func (e *nativeEngine) GetImageBGR() ([]byte, error) { return e.instance.GetImageBGR() }
 
-// instanceObservations is the observation surface of one native instance that
-// Observe consumes. *maa.Instance satisfies it; the indirection keeps the
-// observation pipeline testable without a native library.
 type instanceObservations interface {
 	Events() <-chan maa.Event
 	Fault() <-chan struct{}
@@ -410,12 +352,7 @@ func (e *nativeEngine) Observe(ctx context.Context, emit eventEmitter) error {
 	return observeInstance(ctx, e.instance, emit)
 }
 
-// observeInstance implements the observation pipeline against one instance's
-// channels. See nativeEngine.Observe for the frozen delivery contract.
 func observeInstance(ctx context.Context, in instanceObservations, emit eventEmitter) error {
-	// The internal context releases every watcher as soon as the observation
-	// ends — cleanly or through a failure — so a failed report never leaks a
-	// goroutine into a session that is already being torn down.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -428,9 +365,6 @@ func observeInstance(ctx context.Context, in instanceObservations, emit eventEmi
 				return
 			case event, ok := <-in.Events():
 				if !ok {
-					// The stream ends as the instance reaches its terminal
-					// state; the outcome itself travels as the diagnostics
-					// event instead of a reader failure.
 					readerDone <- nil
 					return
 				}
@@ -442,8 +376,6 @@ func observeInstance(ctx context.Context, in instanceObservations, emit eventEmi
 		}
 	}()
 
-	// faultComplete closes once the fault report was enqueued, once the
-	// instance terminated without a fault, or once the session gave up.
 	faultComplete := make(chan struct{})
 	go func() {
 		defer close(faultComplete)
@@ -453,12 +385,6 @@ func observeInstance(ctx context.Context, in instanceObservations, emit eventEmi
 		case <-in.Fault():
 			reportFault(in, emit)
 		case <-in.Done():
-			// Done and Fault may become ready together: the notification is
-			// closed forever once fired, and every fault is recorded before
-			// the close completion is published, so a non-blocking re-check
-			// settles whether a first fault linearized before the terminal
-			// state. Missing it here would report the first cause only
-			// through the diagnostics snapshot.
 			select {
 			case <-in.Fault():
 				reportFault(in, emit)
@@ -483,12 +409,6 @@ func observeInstance(ctx context.Context, in instanceObservations, emit eventEmi
 		}
 	}()
 
-	// Both watchers always terminate — on the context, on their observation,
-	// or released by the cancellation below — and the observation is over
-	// only when both have, so the close path (which waits for Observe)
-	// always answers after the snapshot was enqueued. A failed emission has
-	// already failed the session; cancelling then releases the other watcher
-	// instead of waiting for a fact the broken transport can no longer carry.
 	var readerErr, terminalErr error
 	for readerDone != nil || terminal != nil {
 		select {
@@ -507,10 +427,6 @@ func observeInstance(ctx context.Context, in instanceObservations, emit eventEmi
 	return errors.Join(readerErr, terminalErr)
 }
 
-// reportFault enqueues the one-shot fault event. The first fault is recorded
-// before the notification closes, so the reason is always present; a missing
-// reason is reported as an internal error instead of an unattributable fault.
-// Emission failures have already failed the session.
 func reportFault(in instanceObservations, emit eventEmitter) {
 	cause := in.Diagnostics().FirstFault
 	if cause == nil {
@@ -519,11 +435,6 @@ func reportFault(in instanceObservations, emit eventEmitter) {
 	_ = emit(protocol.FaultEvent, protocol.FaultNotice{Error: *classify(cause)})
 }
 
-// wireDiagnostics maps the binding's bounded diagnostics snapshot onto the
-// frozen wire form. The snapshot already holds independent copies; the raw
-// prefix travels as standard base64 so bytes that are neither valid UTF-8 nor
-// valid JSON survive byte for byte, and a normal close leaves the three
-// optional fields absent.
 func wireDiagnostics(snap maa.InstanceDiagnostics) protocol.InstanceDiagnostics {
 	var out protocol.InstanceDiagnostics
 	out.LostEvents = snap.LostEvents
@@ -551,10 +462,6 @@ func wireError(code, message string) *protocol.Error {
 	return &protocol.Error{Code: code, Message: message}
 }
 
-// boundDetail clamps a structured-detail string to the wire's 128-byte bound
-// on a rune boundary, mirroring wireError's message handling. The detail
-// fields qualify the stable code; truncation never turns a long diagnostic
-// into an invalid frame.
 func boundDetail(s string) string {
 	if len(s) <= 128 {
 		return s
@@ -566,13 +473,6 @@ func boundDetail(s string) string {
 	return s
 }
 
-// classify maps one binding error onto the stable wire error. The code is the
-// only control-plane discriminator and is never derived from diagnostic text;
-// the bounded structured detail carries only facts the binding's error types
-// expose as data. Limit sentinels are wrapped errors whose numbers exist only
-// in their diagnostic text, so their details name the reason family and leave
-// the numeric fields absent — absent means unknown here, never zero, and no
-// number is parsed out of text or invented.
 func classify(err error) *protocol.Error {
 	if err == nil {
 		return nil
@@ -591,9 +491,6 @@ func classify(err error) *protocol.Error {
 		code = protocol.LoadFailed
 		detail = &protocol.ErrorDetail{Kind: "library_load", Field: boundDetail(load.LibraryName)}
 	case errors.As(err, &symbol):
-		// errors.As traverses an AggregateError member by member, so an
-		// aggregate maps to the family of its first matching member and the
-		// full member list stays in the bounded message.
 		code = protocol.SymbolMissing
 		detail = &protocol.ErrorDetail{Kind: "symbol_lookup", Field: boundDetail(symbol.Symbol)}
 	case errors.As(err, &registration):

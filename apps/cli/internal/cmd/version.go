@@ -5,8 +5,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// versionCommand builds the version command. It reports the build version as
-// one machine envelope.
 func (a *App) versionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",

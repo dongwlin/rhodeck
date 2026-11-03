@@ -10,19 +10,13 @@ import (
 	"strings"
 )
 
-// RefIndex resolves the five-segment mapping references against the actual
-// source tree. A mapping is only trustworthy when every named identifier
-// still exists where the segment claims it lives.
 type RefIndex struct {
-	protocol map[string]bool // Types, struct fields ("Type.Field"), and constants.
-	worker   map[string]bool // Package functions and methods ("Recv.Method").
-	client   map[string]bool // Client methods and package functions.
-	tests    map[string]bool // Acceptance test function names.
+	protocol map[string]bool
+	worker   map[string]bool
+	client   map[string]bool
+	tests    map[string]bool
 }
 
-// NewRefIndex scans the protocol, worker, and client packages plus their test
-// files. Directories outside this fixed set are deliberately not consulted:
-// the checklist and this index use only main-project content.
 func NewRefIndex(root string) (*RefIndex, error) {
 	idx := &RefIndex{
 		protocol: map[string]bool{},
@@ -53,8 +47,6 @@ func NewRefIndex(root string) (*RefIndex, error) {
 	return idx, nil
 }
 
-// scanProtocol indexes exported type names, their exported fields, and
-// package-level constants of the protocol package.
 func (idx *RefIndex) scanProtocol(dir string) error {
 	return scanDecls(dir, func(file *ast.File) {
 		for _, decl := range file.Decls {
@@ -91,9 +83,6 @@ func (idx *RefIndex) scanProtocol(dir string) error {
 	})
 }
 
-// scanWorker indexes package-level functions and methods of the worker app.
-// Unexported identifiers are indexed too: worker internals (engine methods,
-// session helpers) are the legitimate mapping targets.
 func (idx *RefIndex) scanWorker(dir string) error {
 	return scanDecls(dir, func(file *ast.File) {
 		for _, decl := range file.Decls {
@@ -113,8 +102,6 @@ func (idx *RefIndex) scanWorker(dir string) error {
 	})
 }
 
-// scanClient indexes Client methods and package-level functions of the
-// supervision package (top level only; the protocol subpackage is separate).
 func (idx *RefIndex) scanClient(dir string) error {
 	return scanDecls(dir, func(file *ast.File) {
 		for _, decl := range file.Decls {
@@ -134,7 +121,6 @@ func (idx *RefIndex) scanClient(dir string) error {
 	})
 }
 
-// scanTests indexes test function names in a directory's test files.
 func (idx *RefIndex) scanTests(dir string) error {
 	return scanDecls(dir, func(file *ast.File) {
 		for _, decl := range file.Decls {
@@ -157,7 +143,6 @@ const (
 	allGoFiles
 )
 
-// scanDecls parses the Go files of dir and applies fn to each file.
 func scanDecls(dir string, fn func(*ast.File), filters ...fileFilter) error {
 	entries, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
@@ -193,9 +178,6 @@ func scanDecls(dir string, fn func(*ast.File), filters ...fileFilter) error {
 	return nil
 }
 
-// resolveRefs splits a comma-separated reference list and verifies each
-// reference against the segment's index. It returns the list of unresolved
-// references.
 func (idx *RefIndex) resolveRefs(segment string, refs string) []string {
 	var missing []string
 	for _, ref := range strings.Split(refs, ",") {

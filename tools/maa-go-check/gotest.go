@@ -1,6 +1,3 @@
-// Go test and command execution for the layered checker. The parser
-// deliberately classifies a skip as UNVERIFIED unless the layer declares the
-// exact test as an expected skip; an empty selection is also UNVERIFIED.
 package main
 
 import (
@@ -17,8 +14,6 @@ import (
 	"time"
 )
 
-// noCGO is the environment for production-facing Go checks. The race layer
-// overrides CGO_ENABLED=1 explicitly and is reported separately.
 var noCGO = []string{"CGO_ENABLED=0", "GOWORK=off"}
 
 type goTestStep struct {
@@ -40,9 +35,6 @@ type testEvent struct {
 	Output  string `json:"Output"`
 }
 
-// goTestArgs builds the exact `go test` argv. -race is emitted only when the
-// step asks for it; the race layer must request it explicitly or its PASS
-// would be a false green.
 func goTestArgs(spec goTestStep) []string {
 	args := []string{"test", "-json", "-count=1"}
 	if spec.Race {
@@ -60,9 +52,6 @@ func goTestArgs(spec goTestStep) []string {
 	return append(args, spec.Packages...)
 }
 
-// runGoTest runs one `go test -json` invocation and converts its events into
-// a layer result. A test-level skip never increments Passed. Subtests are
-// tracked separately so a skipped subtest cannot hide behind a passing parent.
 func runGoTest(ctx context.Context, env environment, spec goTestStep) layerResult {
 	res := newLayerResult(spec.Name)
 	res.SkipFilter = spec.Skip
@@ -109,7 +98,7 @@ func runGoTest(ctx context.Context, env environment, spec goTestStep) layerResul
 	for scanner.Scan() {
 		var ev testEvent
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
-			continue // non-JSON lines belong to stderr/command diagnostics
+			continue
 		}
 		switch ev.Action {
 		case "output":
@@ -245,8 +234,6 @@ func rootDir(env environment, dir string) string {
 	return filepath.Join(env.Root, dir)
 }
 
-// runCommand runs a non-Go-test command. For gofmt, any output is a failure;
-// formatting problems must be visible rather than printed and ignored.
 func runCommand(ctx context.Context, env environment, name string, args []string, envVars []string, timeout time.Duration, failOnOutput bool) layerResult {
 	res := newLayerResult(name)
 	if timeout <= 0 {

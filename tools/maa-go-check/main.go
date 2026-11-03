@@ -1,16 +1,3 @@
-// Command maa-go-check runs the layered verification entry for maa-go and
-// reports every layer separately.
-//
-// The command exists to keep "a skip is not a pass" executable: a selected
-// layer that skips, matches no tests, or lacks an external resource is
-// reported as UNVERIFIED and makes the process exit 2. A selected layer
-// with a real failure exits 1. Only layers where every required check
-// actually ran and passed produce exit 0.
-//
-// The CI selection (--layers ci) contains only layers that can run on a
-// clean Linux amd64 machine with a C compiler and the vendored checker
-// input. The real-MaaCore layer (--layers core) is local-only: it needs the
-// explicitly supplied installation or tarball, and CI never claims it.
 package main
 
 import (
@@ -32,9 +19,6 @@ import (
 	"time"
 )
 
-// Layer status values. Statuses are deliberately not booleans: UNVERIFIED
-// exists so a missing toolchain or native library can never be rendered as
-// a pass.
 const (
 	statusPass         = "PASS"
 	statusPassExpected = "PASS (expected skips)"
@@ -43,9 +27,6 @@ const (
 	statusNotSelected  = "NOT SELECTED"
 )
 
-// layerResult is the per-layer report. Passed counts executed checks (a
-// top-level Go test or a command step); Skipped counts tests that never ran
-// their assertions; Failed counts failed tests or commands.
 type layerResult struct {
 	Name            string              `json:"name"`
 	Status          string              `json:"status"`
@@ -64,9 +45,6 @@ func newLayerResult(name string) layerResult {
 	return layerResult{Name: name, Status: statusPass}
 }
 
-// merge folds one check into a layer aggregate. FAIL dominates UNVERIFIED;
-// UNVERIFIED dominates PASS. Detail strings are concatenated for the
-// summary table.
 func (r *layerResult) merge(other layerResult) {
 	r.Passed += other.Passed
 	r.Skipped += other.Skipped
@@ -103,9 +81,6 @@ func (r *layerResult) merge(other layerResult) {
 	}
 }
 
-// environment is the runtime context shared by layer definitions. Root is
-// intentionally not serialized: reports must not contain absolute home
-// paths or repository-external locations.
 type environment struct {
 	Root              string
 	GoVersion         string
@@ -216,8 +191,6 @@ func main() {
 	os.Exit(exitCode(rep))
 }
 
-// runLayer checks external requirements before invoking a layer. A missing
-// requirement is UNVERIFIED, never a skip that could be mistaken for a pass.
 func runLayer(ctx context.Context, env environment, def layer) layerResult {
 	for _, req := range def.Requires {
 		if err := requirementError(req, env); err != nil {
@@ -395,9 +368,6 @@ func firstLookPath(names ...string) string {
 	return ""
 }
 
-// coreInputKind classifies presence only. Invalid explicit paths and
-// conflicting inputs are passed to the acceptance tests so they fail rather
-// than being hidden behind an UNVERIFIED preflight.
 func coreInputKind(tarball, library, resources string) string {
 	if tarball != "" {
 		if library != "" || resources != "" {
@@ -414,9 +384,6 @@ func coreInputKind(tarball, library, resources string) string {
 	return ""
 }
 
-// Acceptance tests validate explicit expectations before classifying missing
-// inputs. Let them reject invalid expectations rather than hiding the error
-// behind the layer's missing-resource preflight.
 func hasCoreExpectations(values []string) bool {
 	for _, entry := range values {
 		name, value, _ := strings.Cut(entry, "=")

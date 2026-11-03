@@ -18,8 +18,6 @@ func (r *Run) emit(e Event) {
 }
 
 func (r *Run) emitLocked(e Event) {
-	// Account for entries consumed since the previous send. Only sends and
-	// this size ledger use the mutex; receiving never participates in cleanup.
 	for len(r.eventSizes) > len(r.events) {
 		r.eventBytes -= r.eventSizes[0]
 		if r.eventTyped[0] {
@@ -35,7 +33,6 @@ func (r *Run) emitLocked(e Event) {
 	e.Details = bytes.Clone(e.Details)
 	e.Typed = cloneTypedResult(e.Typed)
 	b, err := json.Marshal(e)
-	// Reserve space for the terminal observation even when a consumer stops.
 	full := len(r.events) >= cap(r.events)-1 || len(b)+4096 > runEventBytes-r.eventBytes
 	if e.Type == "terminal" {
 		full = len(r.events) == cap(r.events) || len(b) > runEventBytes-r.eventBytes

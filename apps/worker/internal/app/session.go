@@ -18,21 +18,16 @@ import (
 const shutdownGrace = 5 * time.Second
 
 type session struct {
-	ctx      context.Context
-	fail     context.CancelCauseFunc
-	out      *protocol.Queue
-	requests chan protocol.Message
-	mu       sync.Mutex // Orders all event producers and their sequence allocation.
-	sequence uint64
-	// transfers is the retained-image registry of the session. Only the
-	// command-loop goroutine creates, serves and releases snapshots; cleanup
-	// drops them on close and on every failure path.
+	ctx            context.Context
+	fail           context.CancelCauseFunc
+	out            *protocol.Queue
+	requests       chan protocol.Message
+	mu             sync.Mutex
+	sequence       uint64
 	transfers      map[uint64]*imageSnapshot
 	nextTransferID uint64
 }
 
-// serve bounds graceful cleanup even when a native call never returns. main
-// exits after it returns; a supervisor imposes its own independent deadline.
 func serve(ctx context.Context, input io.ReadCloser, output io.Writer, factory engineFactory, grace time.Duration, version string) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -187,9 +182,6 @@ func (s *session) commands(factory engineFactory) (result error) {
 	var observed <-chan struct{}
 	var operations sync.WaitGroup
 	cleanup := func() error {
-		// Retained image snapshots never outlive the command loop: freeing
-		// them first releases the aggregate in-flight image memory before the
-		// potentially blocking native close.
 		s.releaseImageTransfers()
 		if core == nil {
 			return nil
@@ -220,13 +212,6 @@ func (s *session) commands(factory engineFactory) (result error) {
 					_ = s.respond(req, nil, err, false)
 					continue
 				}
-				// Omitted limits select the whole default set as one applied
-				// configuration. The frozen wire budgets are enforced before
-				// the native factory, so an undeliverable configuration fails
-				// with limit_exceeded and the effective maximum instead of a
-				// mid-session delivery failure; the binding's own range and
-				// cross-field validation happens inside the factory and any
-				// failure there is terminal.
 				limits := effectiveLimits(config.Limits)
 				if err := protocol.CheckWireLimits(&limits); err != nil {
 					_ = s.respond(req, nil, err, false)
@@ -350,8 +335,6 @@ func (s *session) commands(factory engineFactory) (result error) {
 					out, err = core.ItemName(query)
 				}
 			case protocol.GetImagePNG, protocol.GetImageBGR:
-				// Reading the cache is not a screencap: the snapshot is taken
-				// under the transfer budgets and served chunk by chunk.
 				if err = emptyPayload(req.Payload); err == nil {
 					read := core.GetImagePNG
 					if req.Name == protocol.GetImageBGR {

@@ -17,8 +17,6 @@ const (
 	switchThemeMaxThemes     = 32
 	switchThemeMaxThemeBytes = 256
 
-	// A theme task has one business target: the single theme that Core selects
-	// from the ordered candidate set. Candidates are not execution targets.
 	switchThemeTargetID = "theme-selection"
 )
 
@@ -93,8 +91,6 @@ func (switchThemeAdapter) Prepare(task control.Task) (control.PreparedTask, erro
 	}, nil
 }
 
-// switchThemeReject wraps every input rejection with ErrInvalidPlan so callers
-// classify failures with errors.Is instead of inspecting diagnostics.
 func switchThemeReject(format string, args ...any) error {
 	return fmt.Errorf("%w: switch_theme: %s", control.ErrInvalidPlan, fmt.Sprintf(format, args...))
 }
@@ -103,14 +99,11 @@ func decodeSwitchThemeThemes(raw json.RawMessage) ([]string, error) {
 	if !strictjson.ValidObject(raw, control.MaxAdapterParamsBytes) {
 		return nil, switchThemeReject("params must be a JSON object of at most %d bytes", control.MaxAdapterParamsBytes)
 	}
-	// Duplicate keys at any depth are rejected before a theme name is read.
 	keys := json.NewDecoder(bytes.NewReader(raw))
 	keys.UseNumber()
 	if err := strictjson.CheckKeys(keys); err != nil {
 		return nil, switchThemeReject("params contain duplicate or malformed fields")
 	}
-	// RawMessage values keep strings exact; map keys are exact too, so case
-	// variants such as THEMES or Themes stay distinct and are rejected below.
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, switchThemeReject("params must be a JSON object")
@@ -124,9 +117,6 @@ func decodeSwitchThemeThemes(raw json.RawMessage) ([]string, error) {
 	if !ok {
 		return nil, switchThemeReject("themes is required")
 	}
-	// Reuse the package's strict JSON array and string decoders: null and other
-	// non-array shapes are rejected, numbers never round-trip through float64 and
-	// unpaired surrogate escapes cannot rename a candidate.
 	items, err := strictjson.Array(themesRaw)
 	if err != nil {
 		return nil, switchThemeReject("themes must be an array")

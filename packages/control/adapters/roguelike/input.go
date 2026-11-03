@@ -17,7 +17,6 @@ const (
 	roguelikeMaxOperatorNameBytes = 256
 )
 
-// Theme names are exact, case-sensitive Core identifiers.
 const (
 	roguelikeThemePhantom   = "Phantom"
 	roguelikeThemeMizuki    = "Mizuki"
@@ -27,18 +26,17 @@ const (
 	roguelikeThemeBlackFlow = "BlackFlow"
 )
 
-// Mode values follow the frozen Core whitelist. Modes 2 and 3 are never valid.
 const (
 	roguelikeModeExp                 = 0
 	roguelikeModeInvestment          = 1
-	roguelikeModeCollapsalParadigm   = 5     // Sami only
-	roguelikeModeCollectible         = 4     // every theme except BlackFlow
-	roguelikeModeSquad               = 6     // every theme except BlackFlow
-	roguelikeModeExploration         = 7     // every theme except BlackFlow
-	roguelikeModeFastPass            = 10001 // Sarkaz only
-	roguelikeModeFindPlaytime        = 20001 // JieGarden only
-	roguelikeModeBlackFlowBabyAnimal = 30001 // BlackFlow only
-	roguelikeModeBlackFlowStartRun   = 30003 // BlackFlow only
+	roguelikeModeCollapsalParadigm   = 5
+	roguelikeModeCollectible         = 4
+	roguelikeModeSquad               = 6
+	roguelikeModeExploration         = 7
+	roguelikeModeFastPass            = 10001
+	roguelikeModeFindPlaytime        = 20001
+	roguelikeModeBlackFlowBabyAnimal = 30001
+	roguelikeModeBlackFlowStartRun   = 30003
 )
 
 var roguelikeThemes = []string{
@@ -46,9 +44,6 @@ var roguelikeThemes = []string{
 	roguelikeThemeSarkaz, roguelikeThemeJieGarden, roguelikeThemeBlackFlow,
 }
 
-// Frozen Core value sets for BlackFlow string fields. An unknown value would
-// only disable the Core lifecycle plugin, which is not an observable failure,
-// so the adapter rejects it instead.
 var (
 	roguelikeBlackFlowStrategies = []string{
 		"baby_animal", "baby_animal_floor3", "burn", "burn_with_investment",
@@ -59,8 +54,7 @@ var (
 		"swaddled_cat", "swaddled_dog", "swaddled_cerberus", "swaddled_feathered_serpent",
 	}
 	roguelikeBlackFlowDiagnostics = []string{"normal", "detailed", "full"}
-	// Reward ids in bit order of blackflow_start_rewards.
-	roguelikeBlackFlowRewardIDs = []string{
+	roguelikeBlackFlowRewardIDs   = []string{
 		"unnumbered_item", "survey_advance", "space_lease", "regression_compensation",
 		"forest_ride", "nest_parasitism", "pegasus", "hippogriff",
 		"dragon", "hydra", "bai_ze", "golden_crow",
@@ -189,62 +183,36 @@ func (roguelikeAdapter) Prepare(task control.Task) (control.PreparedTask, error)
 	return control.PreparedTask{Params: params, Policy: policy, Targets: targets, Reducer: reducer}, nil
 }
 
-// roguelikeReject wraps every input rejection with ErrInvalidPlan so callers
-// classify failures with errors.Is instead of inspecting diagnostics.
 func roguelikeReject(format string, args ...any) error {
 	return fmt.Errorf("%w: roguelike: %s", control.ErrInvalidPlan, fmt.Sprintf(format, args...))
 }
 
-// roguelikeConfig is the compiled input structure this adapter keeps in
-// package scope for objective interpretation. Effective values reflect the
-// Core defaults of omitted switches so interpretation can rely on them; they
-// are never injected into the compiled Core params.
 type roguelikeConfig struct {
-	Theme string
-	Mode  int
-	// MonthlySquadAutoIterate and DeepExplorationAutoIterate select whether the
-	// corresponding rotation callbacks can appear at all (Core default false).
+	Theme                      string
+	Mode                       int
 	MonthlySquadAutoIterate    bool
 	DeepExplorationAutoIterate bool
-	// FindPlayTimeTarget is 1-3 for the JieGarden playtime mode and 0 otherwise.
-	FindPlayTimeTarget int
-	// StartsCount and InvestmentsCount are -1 when the field is absent,
-	// otherwise the validated non-negative value. StopAtFinalBoss,
-	// StopAtMaxLevel and StopWhenInvestmentFull keep the submitted switch
-	// state with Core's false default. The experience, investment and
-	// early-stop values select the mode 0 and mode 1 interpretations.
-	StartsCount            int
-	InvestmentsCount       int
-	StopAtFinalBoss        bool
-	StopAtMaxLevel         bool
-	StopWhenInvestmentFull bool
-	// BlackFlow profile switches. Core derives the start-run profile from the
-	// animal count and the investment flag, so both keep their effective
-	// values: InvestmentEnabled defaults to true and BlackFlowStartAnimals is
-	// -1 when the field is absent, otherwise the validated 0-2 entry count.
-	// BlackFlowStartSerpent records whether that list carries the feathered
-	// serpent, which gates the start-run reward bits above 0x3F.
-	InvestmentEnabled     bool
-	BlackFlowStartAnimals int
-	BlackFlowStartSerpent bool
-	BlackFlowUtopia       bool
+	FindPlayTimeTarget         int
+	StartsCount                int
+	InvestmentsCount           int
+	StopAtFinalBoss            bool
+	StopAtMaxLevel             bool
+	StopWhenInvestmentFull     bool
+	InvestmentEnabled          bool
+	BlackFlowStartAnimals      int
+	BlackFlowStartSerpent      bool
+	BlackFlowUtopia            bool
 }
 
-// compileRoguelike validates the strict roguelike input and returns the final
-// Core params plus the compiled configuration. It is deterministic and has no
-// file, native or device effects.
 func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, error) {
 	if !strictjson.ValidObject(raw, control.MaxAdapterParamsBytes) {
 		return nil, roguelikeConfig{}, roguelikeReject("params must be a JSON object of at most %d bytes", control.MaxAdapterParamsBytes)
 	}
-	// Duplicate keys at any depth are rejected before any field is interpreted.
 	keys := json.NewDecoder(bytes.NewReader(raw))
 	keys.UseNumber()
 	if err := strictjson.CheckKeys(keys); err != nil {
 		return nil, roguelikeConfig{}, roguelikeReject("params contain duplicate or malformed fields")
 	}
-	// RawMessage values keep number literals exact and string bytes verbatim;
-	// map keys are exact too, so case variants such as Theme stay distinct.
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, roguelikeConfig{}, roguelikeReject("params must be a JSON object")
@@ -258,7 +226,6 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 		}
 	}
 
-	// theme and mode must be explicit; Core defaults never apply here.
 	themeRaw, ok := fields["theme"]
 	if !ok {
 		return nil, roguelikeConfig{}, roguelikeReject("theme is required")
@@ -282,13 +249,11 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 	cfg := roguelikeConfig{
 		Theme:                 theme,
 		Mode:                  mode,
-		InvestmentEnabled:     true, // Core default
+		InvestmentEnabled:     true,
 		StartsCount:           -1,
 		InvestmentsCount:      -1,
 		BlackFlowStartAnimals: -1,
 	}
-	// startRewards keeps the validated blackflow_start_rewards value, or -1
-	// when the field is absent, for the start-run reward bit rule.
 	startRewards := -1
 	for name, value := range fields {
 		if !roguelikeAllowsField(name, theme, mode) {
@@ -296,7 +261,6 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 		}
 		switch name {
 		case "theme", "mode":
-			// Already validated and captured before this loop.
 		case "use_support", "use_nonfriend_support", "stop_at_final_boss", "stop_at_max_level",
 			"investment_enabled", "investment_with_more_score", "stop_when_investment_full",
 			"start_with_elite_two", "only_start_with_elite_two", "collectible_mode_shopping",
@@ -328,8 +292,6 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 			if err != nil {
 				return nil, roguelikeConfig{}, err
 			}
-			// Frozen from Core difficulty selection: keep the current value,
-			// the OCR enumeration range 0-20, or the pull-to-maximum sentinel.
 			if n != -1 && n != 2147483647 && (n < 0 || n > 20) {
 				return nil, roguelikeConfig{}, roguelikeReject("difficulty must be -1, an integer 0-20 or 2147483647")
 			}
@@ -421,7 +383,6 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 		}
 	}
 
-	// Combination constraints that span several fields.
 	if _, ok := fields["only_start_with_elite_two"]; ok {
 		start, hasStart := fields["start_with_elite_two"]
 		if !hasStart || string(bytes.TrimSpace(start)) != "true" {
@@ -440,15 +401,10 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 		if _, ok := fields["blackflow_start_rewards"]; !ok {
 			return nil, roguelikeConfig{}, roguelikeReject("mode 30003 requires blackflow_start_rewards")
 		}
-		// Core silently truncates reward bits above 0x3F when the animal list
-		// carries no feathered serpent; rejecting the divergence keeps the run
-		// from differing from the submitted input.
 		if !cfg.BlackFlowStartSerpent && (startRewards&^0x3F) != 0 {
 			return nil, roguelikeConfig{}, roguelikeReject("mode 30003 requires swaddled_feathered_serpent for blackflow_start_rewards bits above 0x3F")
 		}
 		if _, ok := fields["blackflow_strategy"]; ok {
-			// Core overrides any explicit strategy for this mode; accepting it
-			// would silently diverge from the submitted input.
 			return nil, roguelikeConfig{}, roguelikeReject("mode 30003 does not accept an explicit blackflow_strategy")
 		}
 	}
@@ -463,8 +419,6 @@ func compileRoguelike(raw json.RawMessage) (json.RawMessage, roguelikeConfig, er
 		}
 	}
 
-	// json.Marshal sorts map keys, keeps RawMessage values byte-faithful and
-	// never routes numbers through float64.
 	params, err := json.Marshal(fields)
 	if err != nil || len(params) > control.MaxAdapterParamsBytes {
 		return nil, roguelikeConfig{}, roguelikeReject("compiled params exceed %d bytes", control.MaxAdapterParamsBytes)
@@ -481,7 +435,6 @@ func roguelikeValidTheme(theme string) bool {
 	return false
 }
 
-// roguelikeValidMode mirrors the frozen Core theme/mode whitelist.
 func roguelikeValidMode(theme string, mode int) bool {
 	switch mode {
 	case roguelikeModeExp, roguelikeModeInvestment:
@@ -501,9 +454,6 @@ func roguelikeValidMode(theme string, mode int) bool {
 	}
 }
 
-// roguelikeKnownField reports whether name is part of the frozen roguelike
-// input schema at all. Scope checks against the selected theme and mode are
-// separate so diagnostics can distinguish unknown fields from misplaced ones.
 func roguelikeKnownField(name string) bool {
 	switch name {
 	case "theme", "mode",
@@ -529,9 +479,6 @@ func roguelikeKnownField(name string) bool {
 	}
 }
 
-// roguelikeAllowsField reports whether the schema field belongs to the
-// selected theme and mode. Misplaced fields are rejected instead of being
-// silently ignored by Core.
 func roguelikeAllowsField(name, theme string, mode int) bool {
 	switch name {
 	case "theme", "mode",
@@ -544,8 +491,6 @@ func roguelikeAllowsField(name, theme string, mode int) bool {
 		"collectible_mode_shopping", "collectible_mode_start_list":
 		return mode == roguelikeModeCollectible
 	case "collectible_mode_squad":
-		// Core consumes this field for the collectible mode and for the
-		// BlackFlow start-run preparation squad alike.
 		return mode == roguelikeModeCollectible ||
 			(theme == roguelikeThemeBlackFlow && mode == roguelikeModeBlackFlowStartRun)
 	case "refresh_trader_with_dice":
@@ -571,7 +516,6 @@ func roguelikeAllowsField(name, theme string, mode int) bool {
 	}
 }
 
-// roguelikeBoolField accepts only the JSON literals true and false.
 func roguelikeBoolField(raw json.RawMessage, name string) (bool, error) {
 	switch string(bytes.TrimSpace(raw)) {
 	case "true":
@@ -583,7 +527,6 @@ func roguelikeBoolField(raw json.RawMessage, name string) (bool, error) {
 	}
 }
 
-// roguelikeIntField accepts only an unquoted JSON integer literal.
 func roguelikeIntField(raw json.RawMessage, name string) (int, error) {
 	n, err := strictjson.Integer(raw)
 	if err != nil {
@@ -592,9 +535,6 @@ func roguelikeIntField(raw json.RawMessage, name string) (int, error) {
 	return n, nil
 }
 
-// roguelikeStringField decodes one exact JSON string field. Empty,
-// all-whitespace, NUL-containing, invalid UTF-8 and unpaired surrogate values
-// are rejected; the decoded value is otherwise preserved verbatim.
 func roguelikeStringField(raw json.RawMessage, name string, max int) (string, error) {
 	s, err := strictjson.String(raw)
 	if err != nil {
@@ -606,7 +546,6 @@ func roguelikeStringField(raw json.RawMessage, name string, max int) (string, er
 	return s, nil
 }
 
-// roguelikeEnumField validates a string field against a frozen value set.
 func roguelikeEnumField(raw json.RawMessage, name string, allowed []string) (string, error) {
 	s, err := roguelikeStringField(raw, name, control.MaxAdapterParamsBytes)
 	if err != nil {
@@ -620,9 +559,6 @@ func roguelikeEnumField(raw json.RawMessage, name string, allowed []string) (str
 	return "", roguelikeReject("%s must be one of %s", name, strings.Join(allowed, ", "))
 }
 
-// roguelikeOperListField validates a core_char_list-style array. Elements are
-// objects with a required nonempty name and an optional boolean use_support;
-// an empty array is valid and means no preferred operators.
 func roguelikeOperListField(raw json.RawMessage, name string) error {
 	items, err := strictjson.Array(raw)
 	if err != nil {
@@ -659,9 +595,6 @@ func roguelikeOperListField(raw json.RawMessage, name string) error {
 	return nil
 }
 
-// roguelikeFoldartalListField requires a nonempty array of nonempty foldartal
-// names: Core skips empty entries and hard-rejects an all-empty list, so the
-// adapter rejects both shapes up front.
 func roguelikeFoldartalListField(raw json.RawMessage) error {
 	items, err := strictjson.Array(raw)
 	if err != nil {
@@ -679,8 +612,6 @@ func roguelikeFoldartalListField(raw json.RawMessage) error {
 	return nil
 }
 
-// roguelikeParadigmListField accepts an array of nonempty collapsal paradigm
-// names; an empty array is valid and selects no paradigms.
 func roguelikeParadigmListField(raw json.RawMessage) error {
 	items, err := strictjson.Array(raw)
 	if err != nil {
@@ -695,8 +626,6 @@ func roguelikeParadigmListField(raw json.RawMessage) error {
 	return nil
 }
 
-// roguelikeBlackFlowAnimalsField validates the start-run animal list and
-// returns the entry count (0-2) plus whether the feathered serpent is present.
 func roguelikeBlackFlowAnimalsField(raw json.RawMessage) (int, bool, error) {
 	items, err := strictjson.Array(raw)
 	if err != nil {
@@ -731,8 +660,6 @@ func roguelikeBlackFlowAnimalsField(raw json.RawMessage) (int, bool, error) {
 	return len(items), serpents > 0, nil
 }
 
-// roguelikeBlackFlowRewardPriorityField requires a nonempty array of distinct
-// known reward ids.
 func roguelikeBlackFlowRewardPriorityField(raw json.RawMessage) error {
 	items, err := strictjson.Array(raw)
 	if err != nil {
@@ -765,10 +692,6 @@ func roguelikeBlackFlowRewardPriorityField(raw json.RawMessage) error {
 	return nil
 }
 
-// roguelikeCollectibleStartListField validates the mode-4 start selection
-// object. Sub-keys are booleans; key and dice belong to Mizuki, ideas to
-// Sarkaz and ticket to JieGarden, and a misplaced sub-key is rejected instead
-// of being silently ignored by Core.
 func roguelikeCollectibleStartListField(raw json.RawMessage, theme string) error {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {

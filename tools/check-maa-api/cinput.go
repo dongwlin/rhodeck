@@ -1,7 +1,3 @@
-// cinput.go 校验调用方显式提供的 C 输入及其来源清单。
-// 清单摘要用于关联输入字节，不证明来源可信；声明与独立 Go 策略
-// 仍分别核验。生产代码不维护发行版本、摘要或 profile 注册表。
-
 package main
 
 import (
@@ -39,7 +35,6 @@ type manifest struct {
 	Files         []manifestFile `json:"files"`
 }
 
-// CInput 保存已核对的身份、来源和文件字节；提取不再读取磁盘。
 type CInput struct {
 	Dir      string
 	Profile  Profile
@@ -47,8 +42,6 @@ type CInput struct {
 	Manifest manifest
 }
 
-// LoadCInput 校验显式输入。expected 仅供内部调用方追加身份与摘要
-// 期望；命令入口直接使用调用方清单，不查询版本注册表。
 func LoadCInput(dir string, expected ...Profile) (*CInput, []Diagnostic) {
 	manifestPath := filepath.Join(dir, "inputs.json")
 	fail := func(symbol, want, got, message string) (*CInput, []Diagnostic) {
@@ -191,7 +184,6 @@ func sortedProfileFiles(p Profile) []string {
 	return keys
 }
 
-// validateRelPath 限定归档相对路径，拒绝空分量、点分量和跨平台绝对路径。
 func validateRelPath(p string) *Diagnostic {
 	switch {
 	case p == "":

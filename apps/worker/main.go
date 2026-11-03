@@ -8,7 +8,6 @@ import (
 	"github.com/dongwlin/rhodeck/apps/worker/internal/app"
 )
 
-// Set with -ldflags '-X main.version=...'. Local builds identify themselves.
 var version = "dev"
 
 func main() { os.Exit(app.Run(version)) }

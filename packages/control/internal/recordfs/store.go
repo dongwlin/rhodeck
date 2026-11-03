@@ -74,8 +74,6 @@ func (s *Store) Scan(visit func(fs.DirEntry) error) error {
 		}
 		for _, entry := range entries {
 			if strings.HasPrefix(entry.Name(), ".record-") {
-				// A concurrent replacement may finish between enumeration and
-				// cleanup. Serialize removal with Write before inspecting its file.
 				s.mu.Lock()
 				var err error
 				if s.lock != nil {
@@ -187,15 +185,12 @@ func validDirectory(path string) bool {
 	return filepath.IsAbs(path) && utf8.ValidString(path) && !strings.ContainsRune(path, 0)
 }
 
-// Persist newly created directory names before a record may authorize device
-// work. Syncing only the final file's directory would not persist its parent.
 func makePrivateDirectory(path string) error {
 	info, err := os.Stat(path)
 	if err == nil {
 		if !info.IsDir() {
 			return errors.New("recordfs: expected directory")
 		}
-		// Complete a preceding creator's interrupted directory sync as well.
 		return syncDirectory(filepath.Dir(path))
 	}
 	if !errors.Is(err, os.ErrNotExist) {

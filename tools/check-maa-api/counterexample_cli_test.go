@@ -79,8 +79,6 @@ func mustFailWithGoMutation(t *testing.T, goos, cInput string, mutate func(t *te
 	mustFailThroughCLI(t, goos, cInput, goRoot, wantCat, wantLocs...)
 }
 
-// ---- 输入/目标类:摘要校验层未在 CLI 级覆盖的向量 ----
-
 // TestCounterexampleCInputThroughCLI 钉死输入类的完整命令入口行为:
 // 空文件、盘上内容与摘要不符、清单路径越界都在 input 类诊断下非零退
 // 出并定位到具体文件/条目。
@@ -116,8 +114,6 @@ func TestCounterexampleCInputThroughCLI(t *testing.T) {
 		mustFailThroughCLI(t, "linux", dir, repoRoot(t), CatInput, "archive_path")
 	})
 }
-
-// ---- C 提取类:解析破坏样例经测试 profile 注册表走完整命令路径 ----
 
 // TestCounterexampleCExtractionThroughCLI 是 C 提取类的 CLI 级验收:
 // 未知 typedef/循环别名/未知条件(含非活跃分支)/GetVersion 特殊拼
@@ -170,8 +166,6 @@ func TestCounterexampleCExtractionThroughCLI(t *testing.T) {
 	}
 }
 
-// ---- 覆盖/关系类:helper/计算构造与伪 unsafe 导入的 CLI 级向量 ----
-
 // TestCounterexampleCoverageRelationThroughCLI 补齐覆盖/关系类在 CLI
 // 级的缺口:Target 指向另一存在字段、helper/计算构造的清单、计算拼
 // 接的符号名与别名 unsafe 导入均失败;漏绑/重复绑定/Name 拼错/不存在
@@ -215,8 +209,6 @@ func TestCounterexampleCoverageRelationThroughCLI(t *testing.T) {
 		})
 	}
 }
-
-// ---- 精确排除类:重复/空原因/通配符/排除已绑定项与实验发现 ----
 
 // TestCounterexampleExclusionThroughCLI 钉死精确排除类的完整命令入口
 // 反例:重复排除、空原因、通配符样式排除、排除已绑定项,以及实验导
@@ -292,8 +284,6 @@ func TestCounterexampleExclusionThroughCLI(t *testing.T) {
 		})
 	}
 }
-
-// ---- 宽度/符号、指针/角色与参数次序类 ----
 
 // TestCounterexampleSignatureThroughCLI 是宽度/符号、指针/角色与参数
 // 次序类的 CLI 级补充向量:Go 侧改动用真实目录副本,C 侧改动经测试
@@ -392,8 +382,6 @@ func TestCounterexampleSignatureThroughCLI(t *testing.T) {
 	})
 }
 
-// ---- callback 类 ----
-
 // TestCounterexampleCallbackThroughCLI 钉死 callback 类的完整命令入口
 // 反例与拒绝层归属:Go 侧返回值形态破坏在 go-syntax 层被冻结形式拒
 // 绝(比对层的等价向量由 compare_test.go 直接改动提取结果钉死);参数
@@ -461,8 +449,6 @@ func TestCounterexampleCallbackThroughCLI(t *testing.T) {
 	}
 }
 
-// ---- 文件选择类:正确副本不能掩盖生产错误 ----
-
 // TestCounterexampleFileSelectionThroughCLI 钉死文件选择类的反例:生
 // 产错误声明与不参与目标构建的正确副本并存(loader_linux/loader_other
 // 形态)、正确副本隐藏于 tag、正确类型只放在 _test.go——生产文件照常
@@ -509,8 +495,6 @@ func TestCounterexampleFileSelectionThroughCLI(t *testing.T) {
 		mustFailThroughCLI(t, "linux", cInput, goRoot, CatSignature, "AsstLog")
 	})
 }
-
-// ---- 独立性类:Go 侧自洽不能替代独立 C 输入 ----
 
 // TestCounterexampleIndependenceThroughCLI 钉死独立性类:同时修改 Go
 // 字段与其符号条目使 Go 侧内部一致(字段名/Target 同步改名、字段签名

@@ -12,7 +12,7 @@ type InstanceDiagnostics struct {
 	// JSON 或有效 UTF-8;没有保留原文时为 nil。调用方可安全修改它。
 	RawPrefix []byte
 	// StopDiagnostic 是关闭流程中 AsstStop 返回 0 的诊断;没有拒绝
-	// 时为 nil。它不触发 Fault,且在 Destroy 返回前即可读取。
+	// 时为 nil。它不触发 Fault。
 	StopDiagnostic error
 }
 
@@ -24,9 +24,8 @@ func (in *Instance) Events() <-chan Event {
 	return in.inst.disp.events()
 }
 
-// Done 在实例关闭完成后关闭,不表示任务或 Operation 完成。届时全部
-// callback 已退出、Operation 已结算、Events 已关闭、分发器已退出,
-// Err 和 Diagnostics 已稳定。观察 Done 无需先消费 Events。
+// Done 在实例关闭完成后关闭,不表示任务或 Operation 完成。Done 关闭时
+// Err 和 Diagnostics 已稳定,观察 Done 无需先消费 Events。
 func (in *Instance) Done() <-chan struct{} {
 	return in.inst.state.done()
 }

@@ -18,9 +18,6 @@ func Decode(raw []byte, target any) error {
 	if !utf8.Valid(raw) {
 		return errors.New("worker: invalid UTF-8")
 	}
-	// Check the control object's keys before normal struct decoding. JSON's
-	// usual last-key-wins behavior could otherwise change an ID or command.
-	// Nested RawMessage contents retain their own native schema.
 	keys := json.NewDecoder(bytes.NewReader(raw))
 	start, err := keys.Token()
 	if err != nil || start != json.Delim('{') {
@@ -55,10 +52,6 @@ func Decode(raw []byte, target any) error {
 	return nil
 }
 
-// validateBoundedError checks one structured wire error: a stable code, a
-// bounded message, and bounded detail strings. Frame-level validation and the
-// fault/diagnostics payload validation share it, so a nested error obeys the
-// same bounds as a top-level one.
 func validateBoundedError(e *Error) error {
 	if e.Code == "" || len(e.Code) > 64 || e.Message == "" || len(e.Message) > 4096 {
 		return errors.New("worker: invalid error payload")

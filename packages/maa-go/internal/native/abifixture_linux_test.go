@@ -144,9 +144,6 @@ func buildABIFixture(t *testing.T) string {
 	return outPath
 }
 
-// == 数值折叠的 Go 镜像:与 fixture.c 的 C 实现逐项对应,互不从对方
-// 生成;uint32 乘法在 Go 中回绕,与 C 无符号乘法一致。 ==
-
 // abiFoldAsyncConnect 镜像 AsstAsyncConnect 的 5 参数确定性折叠:
 // handle 低 32 位、三个 strlen 与 block,各位置运算结构不同(address
 // 步经 rotate,避免与 config 步可交换,槽位对调必变)。
@@ -179,8 +176,6 @@ func abiFoldAsyncAttachWindow(handle, hwnd uintptr, screencap, mouse, keyboard u
 	acc ^= abiRotl32(uint32(block), 17)
 	return int32(acc)
 }
-
-// == 子进程辅助 ==
 
 // abiFixtureOpenChild 在子进程内装载夹具并完成解析注册:断言.so 路
 // 径为绝对路径(NewLoader().Open → ResolveAndRegister),失败时向
@@ -232,8 +227,6 @@ func abiCString(p *byte, limit int) string {
 	}
 	return string(out)
 }
-
-// == 四组子进程入口 ==
 
 // runABIFixtureNumericChild 验证数值往返:MaxUint64 哨兵、uint8 的
 // 0/1/255、恒 2 的非零真值、小端负 int32 往返与未深测符号的确定返回。
@@ -795,8 +788,6 @@ func runABIFixtureQueriesChild() int {
 	return 0
 }
 
-// == 父进程用例:每组独立子进程,复验标记行与关键字段 ==
-
 // TestABIFixtureNumeric 验证数值往返组:子进程全部断言通过后打印
 // 标记,父进程独立复验关键字段(纵深防御)。
 func TestABIFixtureNumeric(t *testing.T) {
@@ -946,8 +937,6 @@ func TestABIFixtureBuffers(t *testing.T) {
 
 	t.Logf("the buffers child's real ABI verification passed (buffer protocol, legal zero/sentinel distinguishable, uint64 high bits, NUL-free UUID, element-count unit):%s", line)
 }
-
-// == 标记行解析辅助 ==
 
 // parseABIMarkerFields 解析标记行 key=value 字段为映射;值可含逗号
 // 与点号,不含空白。

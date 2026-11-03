@@ -44,8 +44,6 @@ func (a *App) Root() *cobra.Command { return a.root }
 // cannot return one.
 func (a *App) HelpError() error { return a.helpErr }
 
-// formatValue is the --format flag value. Only the accepted formats parse;
-// every other value is a flag error.
 type formatValue struct {
 	value string
 }
@@ -64,9 +62,6 @@ func (f *formatValue) Set(value string) error {
 
 func (f *formatValue) Type() string { return "string" }
 
-// usageText is the root command's long description. It restates the command
-// surface, the explicit adapter selection rule and the preview and acceptance
-// boundaries.
 func (a *App) usageText() string {
 	return "rhodeck-cli capabilities|version; rhodeck-cli run|dry-run|doctor --input FILE|- --worker ABS_PATH --data-dir ABS_PATH " +
 		"[--timeout DURATION] [--startup-timeout 10s] [--request-timeout 30s] [--stop-timeout 5s] [--shutdown-timeout 5s] " +
@@ -76,8 +71,6 @@ func (a *App) usageText() string {
 		"adapter inputs, objective policies and result interpretation."
 }
 
-// newRootCommand builds the command tree. The declaration order of the
-// subcommands is the reported command order, so cobra must not sort them.
 func (a *App) newRootCommand() *cobra.Command {
 	cobra.EnableCommandSorting = false
 
@@ -92,7 +85,6 @@ func (a *App) newRootCommand() *cobra.Command {
 			return output.Reject(output.CodeCommandRequired)
 		},
 	}
-	// Nothing cobra prints may reach the machine output stream.
 	root.SetOut(io.Discard)
 	root.SetErr(io.Discard)
 	root.CompletionOptions.DisableDefaultCmd = true
@@ -116,9 +108,6 @@ func (a *App) newRootCommand() *cobra.Command {
 	root.AddCommand(a.versionCommand())
 	a.helpCmd = a.helpCommand()
 	root.SetHelpCommand(a.helpCmd)
-	// The shell completion helper is not part of the command surface. It is
-	// rejected like any other unknown word so that it can never write to the
-	// machine output stream.
 	root.AddCommand(&cobra.Command{
 		Use:                cobra.ShellCompRequestCmd + " [command-line]",
 		Hidden:             true,
@@ -131,8 +120,6 @@ func (a *App) newRootCommand() *cobra.Command {
 	return root
 }
 
-// rejectPositional rejects every leftover positional argument with one stable
-// diagnostic code.
 func rejectPositional(code string) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		if len(args) > 0 {

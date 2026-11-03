@@ -1,11 +1,3 @@
-// cparse.go 实现受限 C 预处理:只支持归档已有的语法,未知相关内容
-// 即失败并给出文件与行号,不扩展为通用 C 编译器。覆盖:#pragma once、
-// 行/块注释、固定 include(从 c 输入目录内相对解析,<stdint.h> 只用
-// 固定标量映射)、 冻结的条件拼写(#ifdef/#if/#elif/#else/
-// #endif,非活跃分支同样检查)、AsstPort.h 的锁定宏表(名称与右值都
-// 必须精确匹配,defines 不允许出现在其他头文件)、extern "C" 链接
-// 包装,以及按顶层分号/花括号累积声明项。
-
 package main
 
 import (
@@ -14,7 +6,6 @@ import (
 	"strings"
 )
 
-// maxIncludeDepth 与 maxMacroDepth 防御 include 环与宏别名环。
 const (
 	maxIncludeDepth = 8
 	maxMacroDepth   = 16
@@ -27,7 +18,6 @@ type token struct {
 
 func (t token) is(text string) bool { return t.text == text }
 
-// tokenCanon 把 token 序列压缩为忽略空白/注释差异的规范拼写。
 func tokenCanon(toks []token) string {
 	var b strings.Builder
 	for _, t := range toks {
@@ -57,7 +47,6 @@ func isIdentStart(c byte) bool {
 
 func isIdentPart(c byte) bool { return isIdentStart(c) || (c >= '0' && c <= '9') }
 
-// isIdentSpell 判断拼写是否为完整标识符(用于参数名与函数名)。
 func isIdentSpell(s string) bool {
 	if s == "" || !isIdentStart(s[0]) {
 		return false
@@ -70,14 +59,11 @@ func isIdentSpell(s string) bool {
 	return true
 }
 
-// typeKeywords 是不得用作参数名/函数名的类型关键字与标量拼写。
 var typeKeywords = map[string]bool{
 	"const": true, "struct": true, "enum": true, "typedef": true, "extern": true,
 	"void": true, "char": true, "uint8_t": true, "int32_t": true, "uint64_t": true,
 }
 
-// stripComments 把行/块注释替换为空白并保留换行结构(行号不变),
-// 拒绝行续接与未闭合注释;字符串字面量原样保留。
 func stripComments(file string, src []byte) (string, *Diagnostic) {
 	var b strings.Builder
 	i, n := 0, len(src)
@@ -143,8 +129,6 @@ func stripComments(file string, src []byte) (string, *Diagnostic) {
 	return b.String(), nil
 }
 
-// tokenize 按受限词法切分一行:标识符、十进制数字串、字符串字面量
-// 与已知 punctuator;其他字符失败。
 func tokenize(file, s string, line int) ([]token, *Diagnostic) {
 	var out []token
 	i, n := 0, len(s)
@@ -197,9 +181,6 @@ func tokenize(file, s string, line int) ([]token, *Diagnostic) {
 	return out, nil
 }
 
-// condKind 区分条件框架的语义:_WIN32 标记 windows 内容,
-// ASST_WITH_EXTRA_CALLERS 标记实验内容,__cplusplus 只作链接包装,
-// 其余为 Port 内部的宏分支。
 type condKind int
 
 const (
@@ -214,8 +195,6 @@ type condSpec struct {
 	eval func(macroEnv) bool
 }
 
-// 冻结的条件拼写集(忽略空白/注释差异);未知条件一律失败,含当前
-// 目标不活跃分支中的未知条件。
 var knownIfdefNames = map[string]condSpec{
 	"_WIN32":           {condWindow, func(e macroEnv) bool { return e.isDefined("_WIN32") }},
 	"__cplusplus":      {condCPlusPlus, func(e macroEnv) bool { return e.isDefined("__cplusplus") }},
@@ -241,15 +220,12 @@ var knownElifConditions = map[string]condSpec{
 	"defined(_WIN32)": {condWindow, func(e macroEnv) bool { return e.isDefined("_WIN32") }},
 }
 
-// frozenIncludes 是每个 checker_input 的冻结 include 拼写集(按序)。
 var frozenIncludes = map[string][]string{
 	FileAsstCaller:      {`"AsstPort.h"`, "<stdint.h>"},
 	FileAsstPort:        {},
 	FileAsstCallerExtra: {`"AsstCaller.h"`},
 }
 
-// frozenDefines 是 AsstPort.h 锁定宏的名称与允许右值(规范拼写,
-// 忽略空白差异);其他宏名或其他右值一律失败。
 var frozenDefines = map[string]map[string]bool{
 	"ASST_CALL":       newSet("", "__stdcall", "__attribute__((sysv_abi))"),
 	"ASST_DLL_IMPORT": newSet("", "__declspec(dllimport)", `__attribute__((visibility("default")))`),
@@ -276,8 +252,6 @@ type condFrame struct {
 	inElse bool
 }
 
-// cparser 是单个提取 pass 的解析状态:宏表、typedef 表与条件栈都
-// 按 pass 隔离(ASST_WITH_EXTRA_CALLERS 0/1 各跑一次)。
 type cparser struct {
 	input        *CInput
 	env          macroEnv
@@ -315,7 +289,6 @@ func (p *cparser) activeNow() bool {
 	return true
 }
 
-// platformLabel 返回最内层平台框架的平台标注。
 func (p *cparser) platformLabel() string {
 	for i := len(p.stack) - 1; i >= 0; i-- {
 		switch p.stack[i].kind {
@@ -338,8 +311,6 @@ func (p *cparser) isMacroName(s string) bool {
 	return ok
 }
 
-// parseFile 处理单个归档文件:注释剥离、逐行指令/文本分发、EOF 处
-// 的条件栈与声明完整性检查、冻结 include 集合核对。
 func (p *cparser) parseFile(archivePath string) *Diagnostic {
 	p.includeDepth++
 	defer func() { p.includeDepth-- }()
@@ -447,8 +418,6 @@ func (p *cparser) directive(trimmed string, line int) *Diagnostic {
 		}
 		return p.diag(line, "#pragma", "pragma once", tokenCanon(toks), "unsupported pragma")
 	case "include":
-		// 尖括号拼写(<stdint.h>)在受限词法下是多个 token,include
-		// 须在分词前整体截取原样拼写。
 		return p.includeDirective(trimmed, line)
 	case "ifdef":
 		if len(toks) != 2 {
@@ -583,10 +552,10 @@ func (p *cparser) includeDirective(trimmed string, line int) *Diagnostic {
 			"include is not part of the locked include set")
 	}
 	if !p.activeNow() {
-		return nil // 非活跃分支:拼写已校验,不跟随
+		return nil
 	}
 	if spelling == "<stdint.h>" {
-		return nil // 固定标量映射,不读 host 头文件
+		return nil
 	}
 	target := path.Join(path.Dir(p.curFile), strings.Trim(spelling, `"`))
 	return p.parseFile(target)
@@ -617,7 +586,7 @@ func (p *cparser) defineDirective(toks []token, line int) *Diagnostic {
 			"macro right-value is not part of the locked set")
 	}
 	if !p.activeNow() {
-		return nil // 非活跃分支:拼写已校验,不进入宏表
+		return nil
 	}
 	if prev, exists := p.macros[name]; exists {
 		if tokenCanon(prev) != vcanon {
@@ -629,8 +598,6 @@ func (p *cparser) defineDirective(toks []token, line int) *Diagnostic {
 	return nil
 }
 
-// feedTokens 把一行文本 token 送入声明累积器:顶层分号结束声明项,
-// 花括号跟踪块结构,extern "C" { … } 仅识别为链接包装。
 func (p *cparser) feedTokens(toks []token) *Diagnostic {
 	for _, tok := range toks {
 		if d := p.feedToken(tok); d != nil {
@@ -690,7 +657,6 @@ func (p *cparser) appendPending(tok token) {
 	p.pending = append(p.pending, tok)
 }
 
-// splitTopLevel 按分隔符切分 token 序列(受限语法内无嵌套括号)。
 func splitTopLevel(toks []token, sep string) [][]token {
 	var out [][]token
 	cur := []token{}
